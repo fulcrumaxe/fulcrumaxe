@@ -1,0 +1,40 @@
+{
+  "session": "fixture-mission",
+  "topics": {
+    "identity": {
+      "project_name": "widgetforge",
+      "project_description": "Generates parametric widgets from a spec file.",
+      "repo_owner": "acme-labs",
+      "primary_domain": "manufacturing tooling",
+      "target_users": "internal CAD engineers"
+    },
+    "stack": {
+      "primary_language": "typescript",
+      "runtime_framework": "Next.js",
+      "package_manager": "pnpm",
+      "test_framework": "vitest",
+      "has_frontend": "yes"
+    },
+    "deploy": {
+      "deploy_target": "cloudflare",
+      "ci_provider": "github-actions",
+      "has_staging_env": "yes",
+      "release_cadence": "daily",
+      "hosting_provider": "n/a",
+      "domain": "widgetforge.example.com"
+    },
+    "autonomy": {
+      "agent_spawn_level": 4,
+      "merge_fast_path_level": 3,
+      "external_system_level": 2,
+      "intent_generate_level": 2,
+      "human_approval_before_merge": "no",
+      "security_review_required": "yes"
+    },
+    "mission": {
+      "product_vision": "WidgetForge turns a single spec file into a full set of manufacturable parametric widget designs, cutting CAD iteration time from days to minutes.",
+      "why_now": "Our CAD engineers are re-drafting near-identical widget variants by hand every week, and the manual process is the top complaint in engineering retros.",
+      "guiding_principles": "Never ship a design the physics engine hasn't validated. Prefer boring, provable geometry over clever-but-fragile parametric tricks."
+    }
+  }
+}

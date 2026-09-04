@@ -1,0 +1,5 @@
+{"type": "message", "timestamp": "2026-05-11T10:00:00Z", "message": {"role": "user", "content": "Run the long operation"}}
+{"type": "message", "timestamp": "2026-05-11T10:00:05Z", "message": {"role": "assistant", "content": [{"type": "tool_use", "name": "Bash", "id": "tc1", "input": {"command": "python3 backend/run_analyst.py --since=7d"}}]}}
+{"type": "message", "timestamp": "2026-05-11T10:02:30Z", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tc1", "content": "Report written", "is_error": false}]}}
+{"type": "message", "timestamp": "2026-05-11T10:02:31Z", "message": {"role": "assistant", "content": [{"type": "tool_use", "name": "Bash", "id": "tc2", "input": {"command": "bash scripts/rotate-team-log.sh comment \"[10:02] run-analyst: complete\""}}]}}
+{"type": "message", "timestamp": "2026-05-11T10:02:32Z", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tc2", "content": "OK", "is_error": false}]}}

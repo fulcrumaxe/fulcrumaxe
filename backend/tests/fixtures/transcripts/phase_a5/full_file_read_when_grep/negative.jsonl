@@ -1,0 +1,5 @@
+{"type": "message", "message": {"role": "user", "content": "Update the config file header comment"}}
+{"type": "message", "message": {"role": "assistant", "content": [{"type": "tool_use", "name": "Read", "id": "tc1", "input": {"file_path": "config/settings.py", "limit": 50}}]}}
+{"type": "message", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tc1", "content": "1\t# Config file\n2\t# Updated: 2026-01-01\n3\tTIMEOUT = 30\n4\tDEBUG = False\n5\tHOST = 'localhost'\n", "is_error": false}]}}
+{"type": "message", "message": {"role": "assistant", "content": [{"type": "tool_use", "name": "Edit", "id": "tc2", "input": {"file_path": "config/settings.py", "old_string": "# Updated: 2026-01-01", "new_string": "# Updated: 2026-05-11"}}]}}
+{"type": "message", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tc2", "content": "OK", "is_error": false}]}}

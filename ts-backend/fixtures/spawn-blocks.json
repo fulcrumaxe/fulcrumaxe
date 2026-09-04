@@ -1,0 +1,13 @@
+{
+  "captured_at": "2026-05-23T00:00:00Z",
+  "python_port": 18099,
+  "route": "/spawn-blocks",
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": [],
+  "raw_body": "[]",
+  "mask_applied": [],
+  "note": "Structure-only golden fixture. Response is an array of spawn_blocked event objects. Each item has: role (string), reason (string), ts (ISO-8601 timestamp normalized by rule 2), discussion (number or null). Array is empty when no spawn_blocked events in agent-feed.jsonl."
+}

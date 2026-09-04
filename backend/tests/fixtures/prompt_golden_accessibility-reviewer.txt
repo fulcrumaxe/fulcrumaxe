@@ -1,0 +1,19 @@
+## ROLE_BODY
+
+
+
+[Control plane gates: ]
+
+
+
+## BRIEF
+
+Review PR #977 for Discussion #977 ().
+
+Task:
+GOLDEN-FIXTURE-INPUT
+
+Discussion URL: 
+
+## DETAILED_STEP_1
+

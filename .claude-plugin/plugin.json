@@ -1,0 +1,7 @@
+{
+  "name": "fulcrumaxe",
+  "version": "0.1.0",
+  "displayName": "Fulcrumaxe",
+  "description": "An autonomous software team that runs in your GitHub repo, turns Discussions into merged PRs, and spends its own idle cycles improving itself.",
+  "license": "AGPL-3.0-only"
+}

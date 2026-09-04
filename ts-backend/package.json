@@ -1,0 +1,36 @@
+{
+  "name": "fulcrumaxe-ts-backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "dev": "bun --watch src/index.ts",
+    "build": "bun build src/index.ts --outdir dist --target bun --external @duckdb/node-api",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src tests --ext .ts --max-warnings 0",
+    "test": "bun test tests/ --timeout 30000",
+    "golden-capture": "bun run src/golden-capture.ts",
+    "golden-assert": "bun run src/golden-assert.ts",
+    "shadow-diff": "bun run src/shadow-proxy.ts",
+    "parity": "bun run src/parity-sweep.ts",
+    "parity:sweep": "bun run src/parity-sweep.ts",
+    "parity:live": "bun run src/parity-sweep.ts -- --live",
+    "openapi:gen": "bun run src/openapi-gen.ts"
+  },
+  "dependencies": {
+    "@duckdb/node-api": "^1.5.3-r.1",
+    "hono": "^4.12.0",
+    "minimatch": "^10.2.5",
+    "picomatch": "^4.0.4"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.1.0",
+    "@types/picomatch": "^4.0.3",
+    "@typescript-eslint/eslint-plugin": "^8.7.0",
+    "@typescript-eslint/parser": "^8.7.0",
+    "eslint": "^9.11.1",
+    "typescript": "^5.5.3",
+    "typescript-eslint": "^8.59.4"
+  }
+}

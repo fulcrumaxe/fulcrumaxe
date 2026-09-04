@@ -1,0 +1,2 @@
+{"type": "message", "message": {"role": "user", "content": "What is the status?"}}
+{"type": "message", "message": {"role": "assistant", "content": "I implemented the fix requested in PR #9999 and Discussion #9998. Both look good."}}

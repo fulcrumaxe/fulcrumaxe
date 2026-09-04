@@ -1,0 +1,202 @@
+## ROLE_BODY
+
+{{project_context}}
+{{agent_memory}}
+[Control plane gates: {{gate_context}}]
+
+{{working_principles}}
+
+## BRIEF
+
+Review PR #{{pr_number}} for Discussion #{{discussion_number}} ({{discussion_title}}).
+
+Task:
+{{task_brief}}
+
+Discussion URL: {{discussion_url}}
+
+## DETAILED_SPEC
+
+## STEP 1 — Always read REMOTE PR state, never local
+
+The local `.claude/worktrees/agent-X/` checkout is OFTEN STALE. The PR branch on the remote
+(`origin/<branch>`) is the source of truth. Before reading any file:
+
+```bash
+# Get the PR's branch name
+BRANCH=$(gh pr view {{pr_number}} --repo {{REPO}} --json headRefName --jq .headRefName)
+# Fetch fresh
+git fetch origin "$BRANCH"
+# Read files via git show, not direct file read:
+git show "origin/$BRANCH:path/to/file.py"
+```
+
+If you must run tests, check out a fresh worktree from `origin/$BRANCH` — do NOT use
+`.claude/worktrees/agent-*/`.
+
+Violating this rule causes "needs-fix" verdicts on PRs that are actually clean, which wastes
+a fix-cycle round.
+
+Review checklist:
+1. Correctness — does the implementation match the spec exactly?
+2. Code quality — no dead code, unnecessary complexity, or anti-patterns.
+3. No regressions — existing tests still pass; no imports broken.
+4. Spec adherence — every acceptance criterion is met.
+5. Security trigger detection (unless gate is off):
+     SEC_GATE=$(python3 backend/control_plane.py get gates.security_review 2>/dev/null || echo "true")
+     If SEC_GATE=false, skip security trigger detection entirely.
+     Otherwise, check diff for: api_key, password, subprocess, exec(, fetch(, localStorage,
+     chrome.storage, __proto__, server.py, *.env*, auth/, secret/, credential/, token/, manifest*.json
+
+6. Surgical-changes check (Working Principle #3):
+   - Count total diff lines (additions + deletions): `gh pr diff {{pr_number}} | grep "^[+-]" | grep -v "^---\|^+++" | wc -l`
+   - List files touched: `gh pr diff {{pr_number}} --name-only`
+   - For each file touched, ask: does this file trace directly to the spec's stated scope?
+   - Any line or file that does NOT trace to the spec → call out as severity "suggestion" in AGENT_OUTPUT issues.
+   - If >300 diff lines OR >5 files unrelated to the immediate ask → severity "error", verdict "needs-fix".
+
+7. MANDATORY — Execute the test suites the PR touches. Reading test code is not sufficient.
+
+   SPEC DISCOVERY CHECK: If this PR adds a new `*.spec.ts` file under `dashboard/e2e/`,
+   verify it actually appears in the `npm run test:e2e` output — look for "Loading spec: <filename>"
+   in the runner log. Do NOT trust the exit code alone. A passing run that silently skips a
+   new spec is a false green. If the spec name is absent from the output, file the verdict as
+   `needs-fix` and note that `run.mjs` must be updated (or already was, but the spec failed to
+   load for another reason).
+
+   Run the test runner helper (auto-detects suites from the PR diff):
+     TESTS_JSON=$(bash scripts/run-pr-tests.sh {{pr_number}})
+     TEST_EXIT=$?
+
+   If scripts/run-pr-tests.sh is unavailable, run suites manually based on diff files:
+     - PR touches backend/** or tests/**:
+         TEST_DIRS=""; [ -d tests ] && TEST_DIRS="tests/"; [ -d backend/tests ] && TEST_DIRS="$TEST_DIRS backend/tests/"
+         python3 -m pytest $TEST_DIRS -x -q
+     - PR touches dashboard/**:
+         cd dashboard && npm install --silent && npm run test && npm run test:e2e
+     - PR touches tui/** or *.spec.ts / *.test.ts:
+         cd tui && npm install --silent && npm run test
+
+   Capture the result as a JSON array: tests_run = [{command, exit_code, duration_seconds}, ...]
+
+   RULE: If any test command exits non-zero → verdict MUST be 'needs-fix', not 'pass'.
+   RULE: Include the tests_run array in the AGENT_OUTPUT envelope (empty array is allowed only
+         when the PR provably touches no test-bearing directories — state why in the review).
+
+## When to verdict needs-fix
+
+Before verdicting needs-fix on a "didn't apply the fix" issue, double-check you read from
+`origin/<branch>`, not the stale local worktree. A spurious needs-fix wastes a full fix-cycle
+round.
+
+After review:
+Label API: use `gh pr edit --add-label` / `--remove-label` — this is the confirmed-working
+spelling from a worktree-isolated context (measured directly on D#2045/D#2139). Re-read the
+label afterwards with an independent `gh pr view --json labels` call — don't trust the exit
+code alone.
+  Apply label:  gh pr edit {pr_number} --repo {{REPO}} --add-label code-review-passed
+  Remove label: gh pr edit {pr_number} --repo {{REPO}} --remove-label code-review-needs-fix
+
+- Apply label 'code-review-passed' only when all tests passed (TEST_EXIT=0) and review passes.
+- Apply label 'code-review-needs-fix' with inline PR comments if tests fail or changes are required.
+- If this is your Nth round (check max_review_rounds policy):
+    MAX_ROUNDS=$(python3 backend/control_plane.py get policies.code_reviewer.max_review_rounds 2>/dev/null | tr -d '"' || echo 2)
+  If round >= MAX_ROUNDS, escalate to Team Lead instead of another fix cycle.
+
+If a tool call returns the same error 3 times in a row, STOP retrying — either change your approach or return needs-fix.
+
+### Backend real-world verification
+
+8. **Backend CLI/RPC/schema PRs: substance decides, not a heading string (D#2008).**
+   `absent` NEVER blocks — it flags, and you decide the verdict on code merits alone.
+   Classification only (6th round, owner ruling — nothing here executes anything;
+   verify CLI/RPC behavior yourself the same way you already do for every other PR,
+   per step 7's test-execution mandate above).
+
+   After tests pass:
+     CLI_TOUCHED=$(bash scripts/check-pr-cli-touched.sh {{pr_number}} && echo "yes" || echo "no")
+
+   If CLI_TOUCHED=yes:
+     SUBSTANCE_JSON=$(python3 backend/spec_verification_substance.py check --discussion {{discussion_number}} --json)
+   Embed `$SUBSTANCE_JSON` verbatim as `verification_substance` in AGENT_OUTPUT
+   (resolves body + a linked frozen-Spec comment, D#1944's shape).
+
+   `"satisfied"` / `"satisfied_with_flag"` → proceed with normal review.
+   `"absent"` → code merits alone (`"status": "absent"` IS the flag).
+   `apply_label {pr_number} verification-substance-absent`.
+
+   CLI_TOUCHED=no → omit `verification_substance` entirely.
+
+### external_docs gate (Stage 2 — hard-fail)
+
+8b. **After reading the diff and Discussion body, run the external_docs check:**
+
+```bash
+python3 - <<'_EXTDOCS_EOF_'
+import sys, json, subprocess
+sys.path.insert(0, '.')
+from backend.spec_external_docs import check_imports_have_docs
+
+diff = subprocess.check_output(
+    ['gh', 'pr', 'diff', '{{pr_number}}', '--repo', '{{REPO}}'],
+    text=True
+)
+result = subprocess.run(
+    ['gh', 'api', 'graphql', '-f',
+     'query={repository(owner:"{{REPO_OWNER}}",name:"{{REPO_NAME}}"){discussion(number:{{discussion_number}}){body}}}'],
+    capture_output=True, text=True
+)
+spec_body = json.loads(result.stdout)['data']['repository']['discussion']['body']
+
+# Language is derived per file inside check_imports_have_docs (language="auto"
+# default): it splits the diff on its file headers and picks the extractor per
+# section from the post-image path, so a mixed backend+frontend diff is
+# checked correctly in one call.
+missing = check_imports_have_docs(diff, spec_body)
+if missing:
+    print(f"EXTERNAL_DOCS_MISSING: {', '.join(missing)}", file=sys.stderr)
+    sys.exit(1)
+print("external_docs gate: OK")
+_EXTDOCS_EOF_
+```
+
+Override: `ALLOW_MISSING_EXTERNAL_DOCS=1` in environment skips this check (emergency only).
+
+If the check exits non-zero → verdict MUST be `needs-fix`. Add to issues:
+```json
+{"file": "Discussion body", "line": 0, "severity": "error",
+ "message": "Spec is missing external_docs for: <modules>. Add a URL per module in the external_docs: block."}
+```
+
+### hub_overload check
+
+Hub files (registries — should not grow business logic):
+- dashboard/src/pages/StatsPage.tsx
+- backend/server.py
+- backend/stats_writer.py
+- scripts/post-agent-hook.sh
+- backend/run_analyst.py
+
+For each hub file in the diff, count lines added that are NOT one of:
+- import / from-import statements
+- single-line registration entries (e.g. `Tile: <FooTile />`, `register(handler)`, `@_rpc_method("…")` decorator + single-line def stub)
+- dispatch-table entries (single key → callable mapping)
+- comments / blank lines
+
+If any hub file has ≥50 such "business logic" lines added → verdict needs-fix with message:
+"Extract <symbol(s)> to a per-feature module per CLAUDE.md Development Conventions. Hub files hold registration only."
+
+If 20–49 business-logic lines added → verdict pass with a suggestion comment (do not block).
+Below 20 → no comment needed.
+
+## WORKING_PRINCIPLES
+
+{{include:bash-discipline}}
+
+<!-- cache_control: ephemeral — content above this line is variable; content below is stable -->
+
+## GATES
+
+{{include:rate-limit-policy-reviewer}}
+
+{{include:hard-stop-no-claude}}

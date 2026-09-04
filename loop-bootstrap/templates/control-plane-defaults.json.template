@@ -1,0 +1,54 @@
+{
+  "_comment": "Control plane defaults for a freshly bootstrapped fork. Edit to match your project's risk tolerance and team size. Applied by bootstrap.sh to .autonomous-team/config.json if absent. allow_claude_spawn defaults to false (dashboard backend boots, but spawning stays gated off until you turn it on) -- see D#1872 item 19b: backend/spawn_guard.py hard-fails at server startup if this key is absent from config.json at all.",
+  "gates": {
+    "allow_claude_spawn": false,
+    "auto_merge": false,
+    "security_review": true,
+    "budget_check": true,
+    "idea_generation": true,
+    "stall_detection": true,
+    "wiki_sync": true,
+    "human_verification": false,
+    "self_observe_executor": false,
+    "self_observe_impl_coord": false,
+    "self_observe_enforcement": "shadow",
+    "docs_writer": true,
+    "incident_commander": false,
+    "release_manager": false,
+    "runbook_writer": false,
+    "phased_orchestration": false,
+    "phased_code_review": true,
+    "cost_aware_router": false,
+    "debater_pass": false,
+    "tui_tester_pilot_sweep": false,
+    "execve_fence": true
+  },
+  "policies": {
+    "executor": {
+      "timeout_minutes": 30,
+      "max_retries": 1,
+      "token_ceiling": 200000
+    },
+    "code-reviewer": {
+      "timeout_minutes": 15,
+      "max_retries": 1,
+      "token_ceiling": 100000,
+      "max_concurrent": 2
+    },
+    "security-reviewer": {
+      "timeout_minutes": 15,
+      "max_retries": 1,
+      "token_ceiling": 100000
+    },
+    "project-manager": {
+      "timeout_minutes": 20,
+      "max_retries": 1,
+      "token_ceiling": 150000
+    }
+  },
+  "settings": {
+    "team-lead": {
+      "max_parallel_impl": 2
+    }
+  }
+}

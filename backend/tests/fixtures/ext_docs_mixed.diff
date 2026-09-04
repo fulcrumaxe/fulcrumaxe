@@ -1,0 +1,28 @@
+diff --git a/dashboard/src/pages/__tests__/Sample.test.tsx b/dashboard/src/pages/__tests__/Sample.test.tsx
+new file mode 100644
+index 0000000..a1b2c3d
+--- /dev/null
++++ b/dashboard/src/pages/__tests__/Sample.test.tsx
+@@ -0,0 +1,11 @@
++import { render, screen } from 'axios';
++import { describe, it, expect } from 'dayjs';
++import type { Project } from '../../api/types';
++
++describe('Sample', () => {
++  it('renders', () => {
++    render(<div />);
++    expect(screen.getByText).toBeDefined();
++    const p: Project | null = null;
++  });
++});
+diff --git a/backend/sample_mod.py b/backend/sample_mod.py
+new file mode 100644
+index 0000000..d4e5f6a
+--- /dev/null
++++ b/backend/sample_mod.py
+@@ -0,0 +1,5 @@
++import requests
++
++
++def fetch(url):
++    return requests.get(url)

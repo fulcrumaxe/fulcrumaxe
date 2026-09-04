@@ -1,0 +1,4 @@
+{
+  "security-reviewer": "security-reviewer.md has no ## Control Plane Gates section at all -- see D#2027. Writing that section is authoring policy content, tracked as a follow-up, not this reporting fix.",
+  "acceptance-tester": "acceptance-tester.md has no ## Control Plane Gates section at all -- see D#2027. Writing that section is authoring policy content, tracked as a follow-up, not this reporting fix."
+}

@@ -1,0 +1,4 @@
+{"type":"system","message":"Loaded session abc123","timestamp":"2026-05-11T09:00:00.000Z","uuid":"bbb00001-0000-0000-0000-000000000001"}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Doing some work."}]},"timestamp":"2026-05-11T09:00:01.000Z","uuid":"bbb00001-0000-0000-0000-000000000002"}
+{"file":"/ideas","line":null,"severity":"medium","message":"Chart fails to render when no data","timestamp":"2026-05-11T09:00:02.000Z","uuid":"bbb00001-0000-0000-0000-000000000003"}
+{"type":"message","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":"done","is_error":false}]},"timestamp":"2026-05-11T09:00:03.000Z","uuid":"bbb00001-0000-0000-0000-000000000004"}

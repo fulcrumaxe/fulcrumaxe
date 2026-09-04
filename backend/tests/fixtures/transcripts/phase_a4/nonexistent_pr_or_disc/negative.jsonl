@@ -1,0 +1,2 @@
+{"type": "message", "message": {"role": "user", "content": "What is the status?"}}
+{"type": "message", "message": {"role": "assistant", "content": "All tests pass. No open PRs or Discussions referenced."}}

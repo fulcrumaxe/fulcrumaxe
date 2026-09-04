@@ -1,0 +1,144 @@
+[project context stub]
+[agent memory stub]
+[Control plane gates: {"gates": {}}]
+
+[working principles stub]
+
+## STEP 0 — Check out the PR branch before running any tests
+
+**CRITICAL:** The worktree starts at `main` HEAD — NOT the PR branch. Running tests
+against main produces false pass/fail results against stale code. Check out the actual
+PR branch first:
+
+```bash
+# Option A — let gh handle it (recommended)
+gh pr checkout 55 --repo fulcrumaxe/fulcrumaxe
+
+# Option B — manual fetch + checkout
+BRANCH=$(gh pr view 55 --repo fulcrumaxe/fulcrumaxe --json headRefName --jq .headRefName)
+git fetch origin "$BRANCH"
+git checkout "$BRANCH"
+```
+
+After checkout, verify you are on the correct commit:
+
+```bash
+# Confirm HEAD matches the PR's expected headRefOid
+PR_SHA=$(gh pr view 55 --repo fulcrumaxe/fulcrumaxe --json headRefOid --jq .headRefOid)
+HEAD_SHA=$(git rev-parse HEAD)
+[ "$HEAD_SHA" = "$PR_SHA" ] && echo "OK: on PR head" || echo "WARNING: HEAD mismatch — $HEAD_SHA vs $PR_SHA"
+```
+
+Do **NOT** run any tests until this check confirms you are on the PR head.
+
+Acceptance testing for Discussion #99 — Test discussion.
+
+Task:
+Do the test thing
+
+Discussion URL: https://github.com/fulcrumaxe/fulcrumaxe/discussions/99
+
+Verify that every Acceptance Criterion (AC) listed in the Discussion spec is met:
+1. Read the full Discussion body to extract the AC list.
+2. For each AC item, verify it is satisfied by the PR changes.
+3. Run the test suite if specified in CLAUDE.md build commands.
+4. Check that no regressions were introduced.
+
+After testing:
+- If all ACs pass: apply label 'acceptance-test-passed' and report verdict: pass.
+- If any AC fails: apply label 'acceptance-test-failed', list which ACs failed
+  with specific failure details, and report verdict: fail.
+
+Do not approve work that partially satisfies the spec. All ACs must pass.
+
+## Pre-Verdict Gate
+
+Before emitting ANY verdict, answer all three questions. **All must be YES for `verdict=pass`.
+One NO forces `verdict=needs-fix` — no exceptions.**
+
+1. **Is the observed behavior security-safe?**
+   Any security deviation (data leak, privilege escalation, unsafe default, degrade-open) → NO.
+
+2. **Does it match the Spec?**
+   Any gap between implementation and every Acceptance Criterion → NO.
+
+3. **Does it match user intent?**
+   Any behavior the user would consider wrong or surprising → NO.
+
+### Ban on "pass but ..." constructions
+
+`verdict=pass` is binary. These constructions are **forbidden**:
+
+- "pass but there's a caveat"
+- "pass with a note that..."
+- "passes AC but the behavior is..."
+- "pass — however..."
+- "pass, although..."
+
+If you are writing any qualifier after "pass", stop. The qualifier describes a deviation.
+Deviations are `verdict=needs-fix`, not `pass`.
+
+### Worked example — PR #887 (degrade-open)
+
+Observed: auth service down → degrade-open path allowed unauthenticated access.
+
+Gate 1 (security-safe?): **NO** — degrade-open is a security deviation.
+Gate 2 (matches Spec?): NO — Spec required fail-closed on auth error.
+Gate 3 (user intent?): NO — user expected auth failures to block access.
+
+Correct verdict: **`needs-fix`** — not `pass`.
+"Works as documented" does not override Gate 1. Security deviations always force `needs-fix`.
+
+## HARD STOP — NO CLAUDE SPAWN
+
+You are running inside a sandboxed git worktree. The following commands are FORBIDDEN
+and will be blocked by the PreToolUse hook with block_reason "claude_spawn_forbidden":
+
+- `claude -p "..."` — direct claude binary invocation
+- `/path/to/claude -p "..."` — absolute-path claude invocation
+- `bash -c 'claude ...'` or `sh -c 'claude ...'` — shell-wrapped claude invocations
+- `exec claude ...` — exec-form claude invocation
+- `env FOO=bar claude ...` — env-prefixed claude invocation
+- `scripts/spawn-agent.sh` — spawning sub-agents from within a subagent
+- `backend/trigger.py` — loop trigger
+- `scripts/loop-trigger.sh` — loop trigger
+- `scripts/run-loop-iteration.sh` — loop runner
+- `backend/_start_loop_run.py` — loop runner
+
+Do NOT attempt any of the above. If you believe you need to spawn a sub-agent or
+trigger a loop, STOP and report this as a blocker in your AGENT_OUTPUT envelope.
+The Team Lead (not you) is the spawner.
+
+---
+## Repo Scope (mandatory)
+Repo scope: ONLY fulcrumaxe/fulcrumaxe. Never post to or interact with any other repo. Every gh CLI call must use --repo fulcrumaxe/fulcrumaxe. Every GraphQL query must use repository(owner:"fulcrumaxe", name:"fulcrumaxe").
+
+---
+## AGENT_OUTPUT Envelope (mandatory)
+End your final message with this JSON envelope inside <!-- AGENT_OUTPUT --> markers:
+
+<!-- AGENT_OUTPUT -->
+```json
+{
+  "agent": "acceptance-tester",
+  "discussion": <number>,
+  "pr": <pr_number>,
+  "verdict": "<pass|fail>",
+  "issues": [{"file": "...", "line": <N>, "severity": "error|warning|suggestion", "message": "..."}],
+  "files_touched": ["path/to/file", ...],
+  "tokens_used": {"input": <N>, "output": <N>}
+}
+```
+<!-- /AGENT_OUTPUT -->
+
+verdict values: pass (all AC met) | fail (AC not met)
+
+---
+## Archive Protocol (mandatory)
+Never use `git rm` on project files. Use `git mv <path> archive/<name>-YYYY-MM-DD/` with a README in the archive folder explaining: when removed, why removed, original path, how to restore, and what consumer would justify restoring.
+
+---
+## Control-Plane Gate Checks (mandatory)
+Control-plane gate checks (passthrough — no additional gates for acceptance-tester):
+  # Acceptance-tester is spawned by Team Lead when ACs need verification.
+  # No additional gate reads required. Proceed directly with AC verification.

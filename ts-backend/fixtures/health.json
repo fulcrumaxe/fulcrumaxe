@@ -1,0 +1,23 @@
+{
+  "captured_at": "2026-05-23T18:14:47Z",
+  "python_port": 18099,
+  "route": "/health",
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "_api_version": 1,
+    "loop_duration_s": "<masked>",
+    "loop_idle_rate": "<masked>",
+    "loop_last_run": "<masked>",
+    "malformed_lines": 0,
+    "ok": true
+  },
+  "raw_body": "{\"_api_version\": 1, \"ok\": true, \"loop_last_run\": \"2026-05-23T17:39:14Z\", \"loop_duration_s\": 300, \"loop_idle_rate\": 0.0, \"malformed_lines\": 0}",
+  "mask_applied": [
+    "loop_duration_s",
+    "loop_idle_rate",
+    "loop_last_run"
+  ]
+}

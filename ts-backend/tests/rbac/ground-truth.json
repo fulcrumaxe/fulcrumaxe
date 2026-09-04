@@ -1,0 +1,2672 @@
+[
+  {
+    "pattern": "*",
+    "path": "/agents/x/y/z",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "/a/b/c/d/e",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "/",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "GET /anything",
+    "expected": true
+  },
+  {
+    "pattern": "/agents/*",
+    "path": "/agents/x",
+    "expected": true
+  },
+  {
+    "pattern": "/agents/*",
+    "path": "/agents/x/y/z",
+    "expected": true
+  },
+  {
+    "pattern": "/agents/*",
+    "path": "/agents/",
+    "expected": true
+  },
+  {
+    "pattern": "/agents/*",
+    "path": "/agents",
+    "expected": false
+  },
+  {
+    "pattern": "/agents/*",
+    "path": "/agents/foo/bar/baz",
+    "expected": true
+  },
+  {
+    "pattern": "/a/b/*",
+    "path": "/a/b/c",
+    "expected": true
+  },
+  {
+    "pattern": "/a/b/*",
+    "path": "/a/b/c/d/e",
+    "expected": true
+  },
+  {
+    "pattern": "/a/b/*",
+    "path": "/a/b/",
+    "expected": true
+  },
+  {
+    "pattern": "/a/b/*",
+    "path": "/a/b",
+    "expected": false
+  },
+  {
+    "pattern": "GET *",
+    "path": "GET /agents/x",
+    "expected": true
+  },
+  {
+    "pattern": "GET *",
+    "path": "GET /",
+    "expected": true
+  },
+  {
+    "pattern": "GET *",
+    "path": "GET ",
+    "expected": true
+  },
+  {
+    "pattern": "GET *",
+    "path": "POST /x",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents/*",
+    "path": "GET /agents/x",
+    "expected": true
+  },
+  {
+    "pattern": "GET /agents/*",
+    "path": "GET /agents/x/y/z",
+    "expected": true
+  },
+  {
+    "pattern": "GET /registry/*",
+    "path": "GET /registry/foo",
+    "expected": true
+  },
+  {
+    "pattern": "GET /registry/*",
+    "path": "GET /registry/foo/bar",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": ".hidden",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": ".",
+    "expected": true
+  },
+  {
+    "pattern": "*.py",
+    "path": ".hidden.py",
+    "expected": true
+  },
+  {
+    "pattern": ".*",
+    "path": ".hidden",
+    "expected": true
+  },
+  {
+    "pattern": ".*",
+    "path": "not-hidden",
+    "expected": false
+  },
+  {
+    "pattern": ".hidden",
+    "path": ".hidden",
+    "expected": true
+  },
+  {
+    "pattern": ".hidden",
+    "path": "not-hidden",
+    "expected": false
+  },
+  {
+    "pattern": "*hidden*",
+    "path": ".hidden",
+    "expected": true
+  },
+  {
+    "pattern": "/a/?/c",
+    "path": "/a/b/c",
+    "expected": true
+  },
+  {
+    "pattern": "/a/?/c",
+    "path": "/a/bb/c",
+    "expected": false
+  },
+  {
+    "pattern": "/a/?/c",
+    "path": "/a//c",
+    "expected": false
+  },
+  {
+    "pattern": "/a/?/c",
+    "path": "/a/b/c/d",
+    "expected": false
+  },
+  {
+    "pattern": "?",
+    "path": "a",
+    "expected": true
+  },
+  {
+    "pattern": "?",
+    "path": "ab",
+    "expected": false
+  },
+  {
+    "pattern": "?",
+    "path": "",
+    "expected": false
+  },
+  {
+    "pattern": "?",
+    "path": "/",
+    "expected": true
+  },
+  {
+    "pattern": "GET/?",
+    "path": "GET/x",
+    "expected": true
+  },
+  {
+    "pattern": "GET/?",
+    "path": "GET/xy",
+    "expected": false
+  },
+  {
+    "pattern": "[abc]",
+    "path": "a",
+    "expected": true
+  },
+  {
+    "pattern": "[abc]",
+    "path": "b",
+    "expected": true
+  },
+  {
+    "pattern": "[abc]",
+    "path": "c",
+    "expected": true
+  },
+  {
+    "pattern": "[abc]",
+    "path": "d",
+    "expected": false
+  },
+  {
+    "pattern": "[abc]/*",
+    "path": "a/x",
+    "expected": true
+  },
+  {
+    "pattern": "[abc]/*",
+    "path": "d/x",
+    "expected": false
+  },
+  {
+    "pattern": "[!abc]",
+    "path": "d",
+    "expected": true
+  },
+  {
+    "pattern": "[!abc]",
+    "path": "a",
+    "expected": false
+  },
+  {
+    "pattern": "[!abc]/*",
+    "path": "d/x",
+    "expected": true
+  },
+  {
+    "pattern": "[!abc]/*",
+    "path": "a/x",
+    "expected": false
+  },
+  {
+    "pattern": "[a-z]",
+    "path": "b",
+    "expected": true
+  },
+  {
+    "pattern": "[a-z]",
+    "path": "B",
+    "expected": false
+  },
+  {
+    "pattern": "[a-z]",
+    "path": "z",
+    "expected": true
+  },
+  {
+    "pattern": "[a-z]",
+    "path": "a",
+    "expected": true
+  },
+  {
+    "pattern": "[A-Z]",
+    "path": "B",
+    "expected": true
+  },
+  {
+    "pattern": "[A-Z]",
+    "path": "b",
+    "expected": false
+  },
+  {
+    "pattern": "[a-zA-Z]",
+    "path": "X",
+    "expected": true
+  },
+  {
+    "pattern": "[a-zA-Z]",
+    "path": "1",
+    "expected": false
+  },
+  {
+    "pattern": "[!a-z]",
+    "path": "B",
+    "expected": true
+  },
+  {
+    "pattern": "[!a-z]",
+    "path": "b",
+    "expected": false
+  },
+  {
+    "pattern": "[0-9]",
+    "path": "5",
+    "expected": true
+  },
+  {
+    "pattern": "[0-9]",
+    "path": "a",
+    "expected": false
+  },
+  {
+    "pattern": "[a-z0-9]",
+    "path": "a",
+    "expected": true
+  },
+  {
+    "pattern": "[a-z0-9]",
+    "path": "5",
+    "expected": true
+  },
+  {
+    "pattern": "[a-z0-9]",
+    "path": "A",
+    "expected": false
+  },
+  {
+    "pattern": "[!0-9]",
+    "path": "a",
+    "expected": true
+  },
+  {
+    "pattern": "[!0-9]",
+    "path": "5",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health",
+    "path": "GET /health",
+    "expected": true
+  },
+  {
+    "pattern": "GET /health",
+    "path": "GET /health/",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health",
+    "path": "get /health",
+    "expected": false
+  },
+  {
+    "pattern": "GET /metrics",
+    "path": "GET /metrics",
+    "expected": true
+  },
+  {
+    "pattern": "POST /budget/init",
+    "path": "POST /budget/init",
+    "expected": true
+  },
+  {
+    "pattern": "POST /budget/init",
+    "path": "GET /budget/init",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health/*",
+    "path": "GET /health/loop",
+    "expected": true
+  },
+  {
+    "pattern": "GET /health/*",
+    "path": "GET /health/modules",
+    "expected": true
+  },
+  {
+    "pattern": "GET /health/*",
+    "path": "GET /health/",
+    "expected": true
+  },
+  {
+    "pattern": "GET /kpi/*",
+    "path": "GET /kpi/status",
+    "expected": true
+  },
+  {
+    "pattern": "GET /kpi/*",
+    "path": "GET /kpi/summary/v2",
+    "expected": true
+  },
+  {
+    "pattern": "GET /stream/*",
+    "path": "GET /stream/events",
+    "expected": true
+  },
+  {
+    "pattern": "GET /replays/*",
+    "path": "GET /replays/2024-01-01",
+    "expected": true
+  },
+  {
+    "pattern": "GET /budget/*",
+    "path": "GET /budget/status",
+    "expected": true
+  },
+  {
+    "pattern": "GET /budget/*",
+    "path": "GET /budget/history/month",
+    "expected": true
+  },
+  {
+    "pattern": "",
+    "path": "",
+    "expected": true
+  },
+  {
+    "pattern": "",
+    "path": "x",
+    "expected": false
+  },
+  {
+    "pattern": "/",
+    "path": "/",
+    "expected": true
+  },
+  {
+    "pattern": "/",
+    "path": "",
+    "expected": false
+  },
+  {
+    "pattern": "/agents/*/",
+    "path": "/agents/x/",
+    "expected": true
+  },
+  {
+    "pattern": "/agents/*/",
+    "path": "/agents/x",
+    "expected": false
+  },
+  {
+    "pattern": "/a/*",
+    "path": "/a/",
+    "expected": true
+  },
+  {
+    "pattern": "/a/*",
+    "path": "/a",
+    "expected": false
+  },
+  {
+    "pattern": "*/*",
+    "path": "a/b",
+    "expected": true
+  },
+  {
+    "pattern": "*/*",
+    "path": "a/b/c",
+    "expected": true
+  },
+  {
+    "pattern": "*/*",
+    "path": "ab",
+    "expected": false
+  },
+  {
+    "pattern": "*/*",
+    "path": "/a/b",
+    "expected": true
+  },
+  {
+    "pattern": "**",
+    "path": "a/b/c",
+    "expected": true
+  },
+  {
+    "pattern": "*/*/x",
+    "path": "a/b/x",
+    "expected": true
+  },
+  {
+    "pattern": "*/*/x",
+    "path": "a/b/c/x",
+    "expected": true
+  },
+  {
+    "pattern": "[",
+    "path": "[",
+    "expected": true
+  },
+  {
+    "pattern": "]",
+    "path": "]",
+    "expected": true
+  },
+  {
+    "pattern": "[]abc]",
+    "path": "]",
+    "expected": true
+  },
+  {
+    "pattern": "[]abc]",
+    "path": "a",
+    "expected": true
+  },
+  {
+    "pattern": "[!]abc]",
+    "path": "x",
+    "expected": true
+  },
+  {
+    "pattern": "[!]abc]",
+    "path": "]",
+    "expected": false
+  },
+  {
+    "pattern": "*",
+    "path": "GET /health",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "GET /health/loop",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "GET /health/modules",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "GET /metrics",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "GET /budget/status",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "GET /budget/history",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "GET /budget/history/month",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "GET /registry",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "GET /registry/agent1",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "GET /agents",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "GET /agents/abc",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "GET /agents/abc/status",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "GET /kpi",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "GET /kpi/summary",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "GET /kpi/summary/v2",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "GET /stream/events",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "GET /stream/updates/live",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "GET /replays",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "GET /replays/2024-01-01",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "GET /rbac/whoami",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "POST /budget/init",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "POST /budget/status",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "DELETE /agents/abc",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "GET /unknown",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "GET /",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "POST /",
+    "expected": true
+  },
+  {
+    "pattern": "GET /health",
+    "path": "GET /health/loop",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health",
+    "path": "GET /health/modules",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health",
+    "path": "GET /metrics",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health",
+    "path": "GET /budget/status",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health",
+    "path": "GET /budget/history",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health",
+    "path": "GET /budget/history/month",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health",
+    "path": "GET /registry",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health",
+    "path": "GET /registry/agent1",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health",
+    "path": "GET /agents",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health",
+    "path": "GET /agents/abc",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health",
+    "path": "GET /agents/abc/status",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health",
+    "path": "GET /kpi",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health",
+    "path": "GET /kpi/summary",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health",
+    "path": "GET /kpi/summary/v2",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health",
+    "path": "GET /stream/events",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health",
+    "path": "GET /stream/updates/live",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health",
+    "path": "GET /replays",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health",
+    "path": "GET /replays/2024-01-01",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health",
+    "path": "GET /rbac/whoami",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health",
+    "path": "POST /budget/init",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health",
+    "path": "POST /budget/status",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health",
+    "path": "DELETE /agents/abc",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health",
+    "path": "GET /unknown",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health",
+    "path": "GET /",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health",
+    "path": "POST /",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health/*",
+    "path": "GET /health",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health/*",
+    "path": "GET /metrics",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health/*",
+    "path": "GET /budget/status",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health/*",
+    "path": "GET /budget/history",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health/*",
+    "path": "GET /budget/history/month",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health/*",
+    "path": "GET /registry",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health/*",
+    "path": "GET /registry/agent1",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health/*",
+    "path": "GET /agents",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health/*",
+    "path": "GET /agents/abc",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health/*",
+    "path": "GET /agents/abc/status",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health/*",
+    "path": "GET /kpi",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health/*",
+    "path": "GET /kpi/summary",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health/*",
+    "path": "GET /kpi/summary/v2",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health/*",
+    "path": "GET /stream/events",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health/*",
+    "path": "GET /stream/updates/live",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health/*",
+    "path": "GET /replays",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health/*",
+    "path": "GET /replays/2024-01-01",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health/*",
+    "path": "GET /rbac/whoami",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health/*",
+    "path": "POST /budget/init",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health/*",
+    "path": "POST /budget/status",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health/*",
+    "path": "DELETE /agents/abc",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health/*",
+    "path": "GET /unknown",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health/*",
+    "path": "GET /",
+    "expected": false
+  },
+  {
+    "pattern": "GET /health/*",
+    "path": "POST /",
+    "expected": false
+  },
+  {
+    "pattern": "GET /metrics",
+    "path": "GET /health",
+    "expected": false
+  },
+  {
+    "pattern": "GET /metrics",
+    "path": "GET /health/loop",
+    "expected": false
+  },
+  {
+    "pattern": "GET /metrics",
+    "path": "GET /health/modules",
+    "expected": false
+  },
+  {
+    "pattern": "GET /metrics",
+    "path": "GET /budget/status",
+    "expected": false
+  },
+  {
+    "pattern": "GET /metrics",
+    "path": "GET /budget/history",
+    "expected": false
+  },
+  {
+    "pattern": "GET /metrics",
+    "path": "GET /budget/history/month",
+    "expected": false
+  },
+  {
+    "pattern": "GET /metrics",
+    "path": "GET /registry",
+    "expected": false
+  },
+  {
+    "pattern": "GET /metrics",
+    "path": "GET /registry/agent1",
+    "expected": false
+  },
+  {
+    "pattern": "GET /metrics",
+    "path": "GET /agents",
+    "expected": false
+  },
+  {
+    "pattern": "GET /metrics",
+    "path": "GET /agents/abc",
+    "expected": false
+  },
+  {
+    "pattern": "GET /metrics",
+    "path": "GET /agents/abc/status",
+    "expected": false
+  },
+  {
+    "pattern": "GET /metrics",
+    "path": "GET /kpi",
+    "expected": false
+  },
+  {
+    "pattern": "GET /metrics",
+    "path": "GET /kpi/summary",
+    "expected": false
+  },
+  {
+    "pattern": "GET /metrics",
+    "path": "GET /kpi/summary/v2",
+    "expected": false
+  },
+  {
+    "pattern": "GET /metrics",
+    "path": "GET /stream/events",
+    "expected": false
+  },
+  {
+    "pattern": "GET /metrics",
+    "path": "GET /stream/updates/live",
+    "expected": false
+  },
+  {
+    "pattern": "GET /metrics",
+    "path": "GET /replays",
+    "expected": false
+  },
+  {
+    "pattern": "GET /metrics",
+    "path": "GET /replays/2024-01-01",
+    "expected": false
+  },
+  {
+    "pattern": "GET /metrics",
+    "path": "GET /rbac/whoami",
+    "expected": false
+  },
+  {
+    "pattern": "GET /metrics",
+    "path": "POST /budget/init",
+    "expected": false
+  },
+  {
+    "pattern": "GET /metrics",
+    "path": "POST /budget/status",
+    "expected": false
+  },
+  {
+    "pattern": "GET /metrics",
+    "path": "DELETE /agents/abc",
+    "expected": false
+  },
+  {
+    "pattern": "GET /metrics",
+    "path": "GET /unknown",
+    "expected": false
+  },
+  {
+    "pattern": "GET /metrics",
+    "path": "GET /",
+    "expected": false
+  },
+  {
+    "pattern": "GET /metrics",
+    "path": "POST /",
+    "expected": false
+  },
+  {
+    "pattern": "GET /budget/*",
+    "path": "GET /health",
+    "expected": false
+  },
+  {
+    "pattern": "GET /budget/*",
+    "path": "GET /health/loop",
+    "expected": false
+  },
+  {
+    "pattern": "GET /budget/*",
+    "path": "GET /health/modules",
+    "expected": false
+  },
+  {
+    "pattern": "GET /budget/*",
+    "path": "GET /metrics",
+    "expected": false
+  },
+  {
+    "pattern": "GET /budget/*",
+    "path": "GET /budget/history",
+    "expected": true
+  },
+  {
+    "pattern": "GET /budget/*",
+    "path": "GET /registry",
+    "expected": false
+  },
+  {
+    "pattern": "GET /budget/*",
+    "path": "GET /registry/agent1",
+    "expected": false
+  },
+  {
+    "pattern": "GET /budget/*",
+    "path": "GET /agents",
+    "expected": false
+  },
+  {
+    "pattern": "GET /budget/*",
+    "path": "GET /agents/abc",
+    "expected": false
+  },
+  {
+    "pattern": "GET /budget/*",
+    "path": "GET /agents/abc/status",
+    "expected": false
+  },
+  {
+    "pattern": "GET /budget/*",
+    "path": "GET /kpi",
+    "expected": false
+  },
+  {
+    "pattern": "GET /budget/*",
+    "path": "GET /kpi/summary",
+    "expected": false
+  },
+  {
+    "pattern": "GET /budget/*",
+    "path": "GET /kpi/summary/v2",
+    "expected": false
+  },
+  {
+    "pattern": "GET /budget/*",
+    "path": "GET /stream/events",
+    "expected": false
+  },
+  {
+    "pattern": "GET /budget/*",
+    "path": "GET /stream/updates/live",
+    "expected": false
+  },
+  {
+    "pattern": "GET /budget/*",
+    "path": "GET /replays",
+    "expected": false
+  },
+  {
+    "pattern": "GET /budget/*",
+    "path": "GET /replays/2024-01-01",
+    "expected": false
+  },
+  {
+    "pattern": "GET /budget/*",
+    "path": "GET /rbac/whoami",
+    "expected": false
+  },
+  {
+    "pattern": "GET /budget/*",
+    "path": "POST /budget/init",
+    "expected": false
+  },
+  {
+    "pattern": "GET /budget/*",
+    "path": "POST /budget/status",
+    "expected": false
+  },
+  {
+    "pattern": "GET /budget/*",
+    "path": "DELETE /agents/abc",
+    "expected": false
+  },
+  {
+    "pattern": "GET /budget/*",
+    "path": "GET /unknown",
+    "expected": false
+  },
+  {
+    "pattern": "GET /budget/*",
+    "path": "GET /",
+    "expected": false
+  },
+  {
+    "pattern": "GET /budget/*",
+    "path": "POST /",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry",
+    "path": "GET /health",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry",
+    "path": "GET /health/loop",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry",
+    "path": "GET /health/modules",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry",
+    "path": "GET /metrics",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry",
+    "path": "GET /budget/status",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry",
+    "path": "GET /budget/history",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry",
+    "path": "GET /budget/history/month",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry",
+    "path": "GET /registry",
+    "expected": true
+  },
+  {
+    "pattern": "GET /registry",
+    "path": "GET /registry/agent1",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry",
+    "path": "GET /agents",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry",
+    "path": "GET /agents/abc",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry",
+    "path": "GET /agents/abc/status",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry",
+    "path": "GET /kpi",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry",
+    "path": "GET /kpi/summary",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry",
+    "path": "GET /kpi/summary/v2",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry",
+    "path": "GET /stream/events",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry",
+    "path": "GET /stream/updates/live",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry",
+    "path": "GET /replays",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry",
+    "path": "GET /replays/2024-01-01",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry",
+    "path": "GET /rbac/whoami",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry",
+    "path": "POST /budget/init",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry",
+    "path": "POST /budget/status",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry",
+    "path": "DELETE /agents/abc",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry",
+    "path": "GET /unknown",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry",
+    "path": "GET /",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry",
+    "path": "POST /",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry/*",
+    "path": "GET /health",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry/*",
+    "path": "GET /health/loop",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry/*",
+    "path": "GET /health/modules",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry/*",
+    "path": "GET /metrics",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry/*",
+    "path": "GET /budget/status",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry/*",
+    "path": "GET /budget/history",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry/*",
+    "path": "GET /budget/history/month",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry/*",
+    "path": "GET /registry",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry/*",
+    "path": "GET /registry/agent1",
+    "expected": true
+  },
+  {
+    "pattern": "GET /registry/*",
+    "path": "GET /agents",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry/*",
+    "path": "GET /agents/abc",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry/*",
+    "path": "GET /agents/abc/status",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry/*",
+    "path": "GET /kpi",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry/*",
+    "path": "GET /kpi/summary",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry/*",
+    "path": "GET /kpi/summary/v2",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry/*",
+    "path": "GET /stream/events",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry/*",
+    "path": "GET /stream/updates/live",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry/*",
+    "path": "GET /replays",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry/*",
+    "path": "GET /replays/2024-01-01",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry/*",
+    "path": "GET /rbac/whoami",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry/*",
+    "path": "POST /budget/init",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry/*",
+    "path": "POST /budget/status",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry/*",
+    "path": "DELETE /agents/abc",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry/*",
+    "path": "GET /unknown",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry/*",
+    "path": "GET /",
+    "expected": false
+  },
+  {
+    "pattern": "GET /registry/*",
+    "path": "POST /",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents",
+    "path": "GET /health",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents",
+    "path": "GET /health/loop",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents",
+    "path": "GET /health/modules",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents",
+    "path": "GET /metrics",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents",
+    "path": "GET /budget/status",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents",
+    "path": "GET /budget/history",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents",
+    "path": "GET /budget/history/month",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents",
+    "path": "GET /registry",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents",
+    "path": "GET /registry/agent1",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents",
+    "path": "GET /agents",
+    "expected": true
+  },
+  {
+    "pattern": "GET /agents",
+    "path": "GET /agents/abc",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents",
+    "path": "GET /agents/abc/status",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents",
+    "path": "GET /kpi",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents",
+    "path": "GET /kpi/summary",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents",
+    "path": "GET /kpi/summary/v2",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents",
+    "path": "GET /stream/events",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents",
+    "path": "GET /stream/updates/live",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents",
+    "path": "GET /replays",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents",
+    "path": "GET /replays/2024-01-01",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents",
+    "path": "GET /rbac/whoami",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents",
+    "path": "POST /budget/init",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents",
+    "path": "POST /budget/status",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents",
+    "path": "DELETE /agents/abc",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents",
+    "path": "GET /unknown",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents",
+    "path": "GET /",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents",
+    "path": "POST /",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents/*",
+    "path": "GET /health",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents/*",
+    "path": "GET /health/loop",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents/*",
+    "path": "GET /health/modules",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents/*",
+    "path": "GET /metrics",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents/*",
+    "path": "GET /budget/status",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents/*",
+    "path": "GET /budget/history",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents/*",
+    "path": "GET /budget/history/month",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents/*",
+    "path": "GET /registry",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents/*",
+    "path": "GET /registry/agent1",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents/*",
+    "path": "GET /agents",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents/*",
+    "path": "GET /agents/abc",
+    "expected": true
+  },
+  {
+    "pattern": "GET /agents/*",
+    "path": "GET /agents/abc/status",
+    "expected": true
+  },
+  {
+    "pattern": "GET /agents/*",
+    "path": "GET /kpi",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents/*",
+    "path": "GET /kpi/summary",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents/*",
+    "path": "GET /kpi/summary/v2",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents/*",
+    "path": "GET /stream/events",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents/*",
+    "path": "GET /stream/updates/live",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents/*",
+    "path": "GET /replays",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents/*",
+    "path": "GET /replays/2024-01-01",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents/*",
+    "path": "GET /rbac/whoami",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents/*",
+    "path": "POST /budget/init",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents/*",
+    "path": "POST /budget/status",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents/*",
+    "path": "DELETE /agents/abc",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents/*",
+    "path": "GET /unknown",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents/*",
+    "path": "GET /",
+    "expected": false
+  },
+  {
+    "pattern": "GET /agents/*",
+    "path": "POST /",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi",
+    "path": "GET /health",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi",
+    "path": "GET /health/loop",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi",
+    "path": "GET /health/modules",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi",
+    "path": "GET /metrics",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi",
+    "path": "GET /budget/status",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi",
+    "path": "GET /budget/history",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi",
+    "path": "GET /budget/history/month",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi",
+    "path": "GET /registry",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi",
+    "path": "GET /registry/agent1",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi",
+    "path": "GET /agents",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi",
+    "path": "GET /agents/abc",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi",
+    "path": "GET /agents/abc/status",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi",
+    "path": "GET /kpi",
+    "expected": true
+  },
+  {
+    "pattern": "GET /kpi",
+    "path": "GET /kpi/summary",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi",
+    "path": "GET /kpi/summary/v2",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi",
+    "path": "GET /stream/events",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi",
+    "path": "GET /stream/updates/live",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi",
+    "path": "GET /replays",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi",
+    "path": "GET /replays/2024-01-01",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi",
+    "path": "GET /rbac/whoami",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi",
+    "path": "POST /budget/init",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi",
+    "path": "POST /budget/status",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi",
+    "path": "DELETE /agents/abc",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi",
+    "path": "GET /unknown",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi",
+    "path": "GET /",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi",
+    "path": "POST /",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi/*",
+    "path": "GET /health",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi/*",
+    "path": "GET /health/loop",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi/*",
+    "path": "GET /health/modules",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi/*",
+    "path": "GET /metrics",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi/*",
+    "path": "GET /budget/status",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi/*",
+    "path": "GET /budget/history",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi/*",
+    "path": "GET /budget/history/month",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi/*",
+    "path": "GET /registry",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi/*",
+    "path": "GET /registry/agent1",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi/*",
+    "path": "GET /agents",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi/*",
+    "path": "GET /agents/abc",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi/*",
+    "path": "GET /agents/abc/status",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi/*",
+    "path": "GET /kpi",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi/*",
+    "path": "GET /kpi/summary",
+    "expected": true
+  },
+  {
+    "pattern": "GET /kpi/*",
+    "path": "GET /stream/events",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi/*",
+    "path": "GET /stream/updates/live",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi/*",
+    "path": "GET /replays",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi/*",
+    "path": "GET /replays/2024-01-01",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi/*",
+    "path": "GET /rbac/whoami",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi/*",
+    "path": "POST /budget/init",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi/*",
+    "path": "POST /budget/status",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi/*",
+    "path": "DELETE /agents/abc",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi/*",
+    "path": "GET /unknown",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi/*",
+    "path": "GET /",
+    "expected": false
+  },
+  {
+    "pattern": "GET /kpi/*",
+    "path": "POST /",
+    "expected": false
+  },
+  {
+    "pattern": "GET /stream/*",
+    "path": "GET /health",
+    "expected": false
+  },
+  {
+    "pattern": "GET /stream/*",
+    "path": "GET /health/loop",
+    "expected": false
+  },
+  {
+    "pattern": "GET /stream/*",
+    "path": "GET /health/modules",
+    "expected": false
+  },
+  {
+    "pattern": "GET /stream/*",
+    "path": "GET /metrics",
+    "expected": false
+  },
+  {
+    "pattern": "GET /stream/*",
+    "path": "GET /budget/status",
+    "expected": false
+  },
+  {
+    "pattern": "GET /stream/*",
+    "path": "GET /budget/history",
+    "expected": false
+  },
+  {
+    "pattern": "GET /stream/*",
+    "path": "GET /budget/history/month",
+    "expected": false
+  },
+  {
+    "pattern": "GET /stream/*",
+    "path": "GET /registry",
+    "expected": false
+  },
+  {
+    "pattern": "GET /stream/*",
+    "path": "GET /registry/agent1",
+    "expected": false
+  },
+  {
+    "pattern": "GET /stream/*",
+    "path": "GET /agents",
+    "expected": false
+  },
+  {
+    "pattern": "GET /stream/*",
+    "path": "GET /agents/abc",
+    "expected": false
+  },
+  {
+    "pattern": "GET /stream/*",
+    "path": "GET /agents/abc/status",
+    "expected": false
+  },
+  {
+    "pattern": "GET /stream/*",
+    "path": "GET /kpi",
+    "expected": false
+  },
+  {
+    "pattern": "GET /stream/*",
+    "path": "GET /kpi/summary",
+    "expected": false
+  },
+  {
+    "pattern": "GET /stream/*",
+    "path": "GET /kpi/summary/v2",
+    "expected": false
+  },
+  {
+    "pattern": "GET /stream/*",
+    "path": "GET /stream/updates/live",
+    "expected": true
+  },
+  {
+    "pattern": "GET /stream/*",
+    "path": "GET /replays",
+    "expected": false
+  },
+  {
+    "pattern": "GET /stream/*",
+    "path": "GET /replays/2024-01-01",
+    "expected": false
+  },
+  {
+    "pattern": "GET /stream/*",
+    "path": "GET /rbac/whoami",
+    "expected": false
+  },
+  {
+    "pattern": "GET /stream/*",
+    "path": "POST /budget/init",
+    "expected": false
+  },
+  {
+    "pattern": "GET /stream/*",
+    "path": "POST /budget/status",
+    "expected": false
+  },
+  {
+    "pattern": "GET /stream/*",
+    "path": "DELETE /agents/abc",
+    "expected": false
+  },
+  {
+    "pattern": "GET /stream/*",
+    "path": "GET /unknown",
+    "expected": false
+  },
+  {
+    "pattern": "GET /stream/*",
+    "path": "GET /",
+    "expected": false
+  },
+  {
+    "pattern": "GET /stream/*",
+    "path": "POST /",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays",
+    "path": "GET /health",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays",
+    "path": "GET /health/loop",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays",
+    "path": "GET /health/modules",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays",
+    "path": "GET /metrics",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays",
+    "path": "GET /budget/status",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays",
+    "path": "GET /budget/history",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays",
+    "path": "GET /budget/history/month",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays",
+    "path": "GET /registry",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays",
+    "path": "GET /registry/agent1",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays",
+    "path": "GET /agents",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays",
+    "path": "GET /agents/abc",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays",
+    "path": "GET /agents/abc/status",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays",
+    "path": "GET /kpi",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays",
+    "path": "GET /kpi/summary",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays",
+    "path": "GET /kpi/summary/v2",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays",
+    "path": "GET /stream/events",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays",
+    "path": "GET /stream/updates/live",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays",
+    "path": "GET /replays",
+    "expected": true
+  },
+  {
+    "pattern": "GET /replays",
+    "path": "GET /replays/2024-01-01",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays",
+    "path": "GET /rbac/whoami",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays",
+    "path": "POST /budget/init",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays",
+    "path": "POST /budget/status",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays",
+    "path": "DELETE /agents/abc",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays",
+    "path": "GET /unknown",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays",
+    "path": "GET /",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays",
+    "path": "POST /",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays/*",
+    "path": "GET /health",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays/*",
+    "path": "GET /health/loop",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays/*",
+    "path": "GET /health/modules",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays/*",
+    "path": "GET /metrics",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays/*",
+    "path": "GET /budget/status",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays/*",
+    "path": "GET /budget/history",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays/*",
+    "path": "GET /budget/history/month",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays/*",
+    "path": "GET /registry",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays/*",
+    "path": "GET /registry/agent1",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays/*",
+    "path": "GET /agents",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays/*",
+    "path": "GET /agents/abc",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays/*",
+    "path": "GET /agents/abc/status",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays/*",
+    "path": "GET /kpi",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays/*",
+    "path": "GET /kpi/summary",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays/*",
+    "path": "GET /kpi/summary/v2",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays/*",
+    "path": "GET /stream/events",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays/*",
+    "path": "GET /stream/updates/live",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays/*",
+    "path": "GET /replays",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays/*",
+    "path": "GET /rbac/whoami",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays/*",
+    "path": "POST /budget/init",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays/*",
+    "path": "POST /budget/status",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays/*",
+    "path": "DELETE /agents/abc",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays/*",
+    "path": "GET /unknown",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays/*",
+    "path": "GET /",
+    "expected": false
+  },
+  {
+    "pattern": "GET /replays/*",
+    "path": "POST /",
+    "expected": false
+  },
+  {
+    "pattern": "GET /rbac/whoami",
+    "path": "GET /health",
+    "expected": false
+  },
+  {
+    "pattern": "GET /rbac/whoami",
+    "path": "GET /health/loop",
+    "expected": false
+  },
+  {
+    "pattern": "GET /rbac/whoami",
+    "path": "GET /health/modules",
+    "expected": false
+  },
+  {
+    "pattern": "GET /rbac/whoami",
+    "path": "GET /metrics",
+    "expected": false
+  },
+  {
+    "pattern": "GET /rbac/whoami",
+    "path": "GET /budget/status",
+    "expected": false
+  },
+  {
+    "pattern": "GET /rbac/whoami",
+    "path": "GET /budget/history",
+    "expected": false
+  },
+  {
+    "pattern": "GET /rbac/whoami",
+    "path": "GET /budget/history/month",
+    "expected": false
+  },
+  {
+    "pattern": "GET /rbac/whoami",
+    "path": "GET /registry",
+    "expected": false
+  },
+  {
+    "pattern": "GET /rbac/whoami",
+    "path": "GET /registry/agent1",
+    "expected": false
+  },
+  {
+    "pattern": "GET /rbac/whoami",
+    "path": "GET /agents",
+    "expected": false
+  },
+  {
+    "pattern": "GET /rbac/whoami",
+    "path": "GET /agents/abc",
+    "expected": false
+  },
+  {
+    "pattern": "GET /rbac/whoami",
+    "path": "GET /agents/abc/status",
+    "expected": false
+  },
+  {
+    "pattern": "GET /rbac/whoami",
+    "path": "GET /kpi",
+    "expected": false
+  },
+  {
+    "pattern": "GET /rbac/whoami",
+    "path": "GET /kpi/summary",
+    "expected": false
+  },
+  {
+    "pattern": "GET /rbac/whoami",
+    "path": "GET /kpi/summary/v2",
+    "expected": false
+  },
+  {
+    "pattern": "GET /rbac/whoami",
+    "path": "GET /stream/events",
+    "expected": false
+  },
+  {
+    "pattern": "GET /rbac/whoami",
+    "path": "GET /stream/updates/live",
+    "expected": false
+  },
+  {
+    "pattern": "GET /rbac/whoami",
+    "path": "GET /replays",
+    "expected": false
+  },
+  {
+    "pattern": "GET /rbac/whoami",
+    "path": "GET /replays/2024-01-01",
+    "expected": false
+  },
+  {
+    "pattern": "GET /rbac/whoami",
+    "path": "GET /rbac/whoami",
+    "expected": true
+  },
+  {
+    "pattern": "GET /rbac/whoami",
+    "path": "POST /budget/init",
+    "expected": false
+  },
+  {
+    "pattern": "GET /rbac/whoami",
+    "path": "POST /budget/status",
+    "expected": false
+  },
+  {
+    "pattern": "GET /rbac/whoami",
+    "path": "DELETE /agents/abc",
+    "expected": false
+  },
+  {
+    "pattern": "GET /rbac/whoami",
+    "path": "GET /unknown",
+    "expected": false
+  },
+  {
+    "pattern": "GET /rbac/whoami",
+    "path": "GET /",
+    "expected": false
+  },
+  {
+    "pattern": "GET /rbac/whoami",
+    "path": "POST /",
+    "expected": false
+  },
+  {
+    "pattern": "POST /budget/init",
+    "path": "GET /health",
+    "expected": false
+  },
+  {
+    "pattern": "POST /budget/init",
+    "path": "GET /health/loop",
+    "expected": false
+  },
+  {
+    "pattern": "POST /budget/init",
+    "path": "GET /health/modules",
+    "expected": false
+  },
+  {
+    "pattern": "POST /budget/init",
+    "path": "GET /metrics",
+    "expected": false
+  },
+  {
+    "pattern": "POST /budget/init",
+    "path": "GET /budget/status",
+    "expected": false
+  },
+  {
+    "pattern": "POST /budget/init",
+    "path": "GET /budget/history",
+    "expected": false
+  },
+  {
+    "pattern": "POST /budget/init",
+    "path": "GET /budget/history/month",
+    "expected": false
+  },
+  {
+    "pattern": "POST /budget/init",
+    "path": "GET /registry",
+    "expected": false
+  },
+  {
+    "pattern": "POST /budget/init",
+    "path": "GET /registry/agent1",
+    "expected": false
+  },
+  {
+    "pattern": "POST /budget/init",
+    "path": "GET /agents",
+    "expected": false
+  },
+  {
+    "pattern": "POST /budget/init",
+    "path": "GET /agents/abc",
+    "expected": false
+  },
+  {
+    "pattern": "POST /budget/init",
+    "path": "GET /agents/abc/status",
+    "expected": false
+  },
+  {
+    "pattern": "POST /budget/init",
+    "path": "GET /kpi",
+    "expected": false
+  },
+  {
+    "pattern": "POST /budget/init",
+    "path": "GET /kpi/summary",
+    "expected": false
+  },
+  {
+    "pattern": "POST /budget/init",
+    "path": "GET /kpi/summary/v2",
+    "expected": false
+  },
+  {
+    "pattern": "POST /budget/init",
+    "path": "GET /stream/events",
+    "expected": false
+  },
+  {
+    "pattern": "POST /budget/init",
+    "path": "GET /stream/updates/live",
+    "expected": false
+  },
+  {
+    "pattern": "POST /budget/init",
+    "path": "GET /replays",
+    "expected": false
+  },
+  {
+    "pattern": "POST /budget/init",
+    "path": "GET /replays/2024-01-01",
+    "expected": false
+  },
+  {
+    "pattern": "POST /budget/init",
+    "path": "GET /rbac/whoami",
+    "expected": false
+  },
+  {
+    "pattern": "POST /budget/init",
+    "path": "POST /budget/status",
+    "expected": false
+  },
+  {
+    "pattern": "POST /budget/init",
+    "path": "DELETE /agents/abc",
+    "expected": false
+  },
+  {
+    "pattern": "POST /budget/init",
+    "path": "GET /unknown",
+    "expected": false
+  },
+  {
+    "pattern": "POST /budget/init",
+    "path": "GET /",
+    "expected": false
+  },
+  {
+    "pattern": "POST /budget/init",
+    "path": "POST /",
+    "expected": false
+  },
+  {
+    "pattern": "GET *",
+    "path": "GET /health",
+    "expected": true
+  },
+  {
+    "pattern": "GET *",
+    "path": "GET /health/loop",
+    "expected": true
+  },
+  {
+    "pattern": "GET *",
+    "path": "GET /health/modules",
+    "expected": true
+  },
+  {
+    "pattern": "GET *",
+    "path": "GET /metrics",
+    "expected": true
+  },
+  {
+    "pattern": "GET *",
+    "path": "GET /budget/status",
+    "expected": true
+  },
+  {
+    "pattern": "GET *",
+    "path": "GET /budget/history",
+    "expected": true
+  },
+  {
+    "pattern": "GET *",
+    "path": "GET /budget/history/month",
+    "expected": true
+  },
+  {
+    "pattern": "GET *",
+    "path": "GET /registry",
+    "expected": true
+  },
+  {
+    "pattern": "GET *",
+    "path": "GET /registry/agent1",
+    "expected": true
+  },
+  {
+    "pattern": "GET *",
+    "path": "GET /agents",
+    "expected": true
+  },
+  {
+    "pattern": "GET *",
+    "path": "GET /agents/abc",
+    "expected": true
+  },
+  {
+    "pattern": "GET *",
+    "path": "GET /agents/abc/status",
+    "expected": true
+  },
+  {
+    "pattern": "GET *",
+    "path": "GET /kpi",
+    "expected": true
+  },
+  {
+    "pattern": "GET *",
+    "path": "GET /kpi/summary",
+    "expected": true
+  },
+  {
+    "pattern": "GET *",
+    "path": "GET /kpi/summary/v2",
+    "expected": true
+  },
+  {
+    "pattern": "GET *",
+    "path": "GET /stream/events",
+    "expected": true
+  },
+  {
+    "pattern": "GET *",
+    "path": "GET /stream/updates/live",
+    "expected": true
+  },
+  {
+    "pattern": "GET *",
+    "path": "GET /replays",
+    "expected": true
+  },
+  {
+    "pattern": "GET *",
+    "path": "GET /replays/2024-01-01",
+    "expected": true
+  },
+  {
+    "pattern": "GET *",
+    "path": "GET /rbac/whoami",
+    "expected": true
+  },
+  {
+    "pattern": "GET *",
+    "path": "POST /budget/init",
+    "expected": false
+  },
+  {
+    "pattern": "GET *",
+    "path": "POST /budget/status",
+    "expected": false
+  },
+  {
+    "pattern": "GET *",
+    "path": "DELETE /agents/abc",
+    "expected": false
+  },
+  {
+    "pattern": "GET *",
+    "path": "GET /unknown",
+    "expected": true
+  },
+  {
+    "pattern": "GET *",
+    "path": "POST /",
+    "expected": false
+  }
+]

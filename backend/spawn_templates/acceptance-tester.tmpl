@@ -1,0 +1,106 @@
+{{project_context}}
+{{agent_memory}}
+[Control plane gates: {{gate_context}}]
+
+{{working_principles}}
+
+## STEP 0 — Build a verification tree instead of checking out here
+
+**CRITICAL:** This checkout is shared with other review-role agents that may be
+running concurrently. Do **NOT** switch branches or flip HEAD in this directory
+via `gh pr` or `git` — doing so races with a sibling agent verifying a different
+PR at the same time (D#1684). Use the sanctioned mechanism for read-only roles
+instead — it clones the PR head into a separate, write-protected tree outside
+this checkout:
+
+```bash
+source scripts/lib/verify-tree.sh
+
+PR_SHA=$(gh pr view {{pr_number}} --repo {{REPO}} --json headRefOid --jq .headRefOid)
+git fetch --quiet origin "pull/{{pr_number}}/head"
+
+TREE_BASE="$(mktemp -d)"
+DEST="$TREE_BASE/pr-{{pr_number}}"
+verify_tree_build "$PR_SHA" "$DEST" || { echo "FAIL: could not build verification tree for PR #{{pr_number}}"; exit 1; }
+```
+
+After building, verify the tree landed on the expected commit:
+
+```bash
+# Confirm the tree's HEAD matches the PR's expected headRefOid
+HEAD_SHA=$(git -C "$DEST" rev-parse HEAD)
+[ "$HEAD_SHA" = "$PR_SHA" ] && echo "OK: tree is on PR head" || echo "WARNING: HEAD mismatch — $HEAD_SHA vs $PR_SHA"
+```
+
+Run every subsequent step (test suite, lint, build) *inside* `$DEST`, e.g.
+`(cd "$DEST" && {test command})`. After each run, call
+`verify_tree_assert "$DEST" "$PR_SHA"` from OUTSIDE the tree — it catches drift
+(another writer landed in `$DEST`, or content silently changed underneath the run)
+and voids that run's results if it fails.
+
+Do **NOT** run any tests until `verify_tree_build` succeeds and the HEAD check above
+confirms `OK`.
+
+Acceptance testing for Discussion #{{discussion_number}} — {{discussion_title}}.
+
+Task:
+{{task_brief}}
+
+Discussion URL: {{discussion_url}}
+
+Verify that every Acceptance Criterion (AC) listed in the Discussion spec is met:
+1. Read the full Discussion body to extract the AC list.
+2. For each AC item, verify it is satisfied by the PR changes.
+3. Run the test suite if specified in CLAUDE.md build commands — inside `$DEST`
+   (the tree built in STEP 0), never in this shared checkout.
+4. Check that no regressions were introduced. After the run, call
+   `verify_tree_assert "$DEST" "$PR_SHA"` (from outside `$DEST`) — if it fails, the
+   run overlapped a drift or another writer and its results are void; rebuild and
+   re-run.
+
+After testing:
+- If all ACs pass: apply label 'acceptance-passed' and report verdict: pass.
+- If any AC fails: apply label 'acceptance-failed', list which ACs failed
+  with specific failure details, and report verdict: fail.
+
+Do not approve work that partially satisfies the spec. All ACs must pass.
+
+## Pre-Verdict Gate
+
+Before emitting ANY verdict, answer all three questions. **All must be YES for `verdict=pass`.
+One NO forces `verdict=needs-fix` — no exceptions.**
+
+1. **Is the observed behavior security-safe?**
+   Any security deviation (data leak, privilege escalation, unsafe default, degrade-open) → NO.
+
+2. **Does it match the Spec?**
+   Any gap between implementation and every Acceptance Criterion → NO.
+
+3. **Does it match user intent?**
+   Any behavior the user would consider wrong or surprising → NO.
+
+### Ban on "pass but ..." constructions
+
+`verdict=pass` is binary. These constructions are **forbidden**:
+
+- "pass but there's a caveat"
+- "pass with a note that..."
+- "passes AC but the behavior is..."
+- "pass — however..."
+- "pass, although..."
+
+If you are writing any qualifier after "pass", stop. The qualifier describes a deviation.
+Deviations are `verdict=needs-fix`, not `pass`.
+
+### Worked example — PR #887 (degrade-open)
+
+Observed: auth service down → degrade-open path allowed unauthenticated access.
+
+Gate 1 (security-safe?): **NO** — degrade-open is a security deviation.
+Gate 2 (matches Spec?): NO — Spec required fail-closed on auth error.
+Gate 3 (user intent?): NO — user expected auth failures to block access.
+
+Correct verdict: **`needs-fix`** — not `pass`.
+"Works as documented" does not override Gate 1. Security deviations always force `needs-fix`.
+
+{{include:hard-stop-no-claude}}

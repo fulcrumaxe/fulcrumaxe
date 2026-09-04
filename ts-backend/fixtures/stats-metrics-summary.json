@@ -1,0 +1,101 @@
+{
+  "_api_version": 1,
+  "metrics": [
+    {
+      "name": "acceptance_criteria_pass_rate",
+      "value": -1,
+      "unit": "ratio",
+      "updated_at_iso": "<masked>"
+    },
+    {
+      "name": "cost_per_merged_pr_usd",
+      "value": 0,
+      "unit": "usd",
+      "updated_at_iso": "<masked>"
+    },
+    {
+      "name": "fix_cycle_count",
+      "value": 0,
+      "unit": "count",
+      "updated_at_iso": "<masked>"
+    },
+    {
+      "name": "fix_rounds_per_pr",
+      "value": 0,
+      "unit": "count",
+      "updated_at_iso": "<masked>"
+    },
+    {
+      "name": "hard_rule_violation_count",
+      "value": 0,
+      "unit": "count",
+      "updated_at_iso": "<masked>"
+    },
+    {
+      "name": "impersonation_rate",
+      "value": 0,
+      "unit": "ratio",
+      "updated_at_iso": "<masked>"
+    },
+    {
+      "name": "loop_iteration_duration_seconds",
+      "value": 300,
+      "unit": "seconds",
+      "updated_at_iso": "<masked>"
+    },
+    {
+      "name": "orphan_worktree_rate",
+      "value": 0,
+      "unit": "count",
+      "updated_at_iso": "<masked>"
+    },
+    {
+      "name": "pr_file_conflict_score",
+      "value": 3,
+      "unit": "count",
+      "updated_at_iso": "<masked>"
+    },
+    {
+      "name": "reviewer_acceptance_latency_seconds",
+      "value": 173,
+      "unit": "seconds",
+      "updated_at_iso": "<masked>"
+    },
+    {
+      "name": "role_verdict",
+      "value": 1,
+      "unit": "event",
+      "updated_at_iso": "<masked>"
+    },
+    {
+      "name": "scan_to_spawn_ratio",
+      "value": 1,
+      "unit": "ratio",
+      "updated_at_iso": "<masked>"
+    },
+    {
+      "name": "spec_to_first_pr_latency_seconds",
+      "value": -1,
+      "unit": "seconds",
+      "updated_at_iso": "<masked>"
+    },
+    {
+      "name": "test_metric",
+      "value": 1,
+      "unit": "count",
+      "updated_at_iso": "<masked>"
+    },
+    {
+      "name": "time_to_merge_seconds",
+      "value": 274.503991,
+      "unit": "seconds",
+      "updated_at_iso": "<masked>"
+    },
+    {
+      "name": "wasted_tokens_ratio",
+      "value": 0,
+      "unit": "ratio",
+      "updated_at_iso": "<masked>"
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "session": "fixture-partial",
+  "topics": {
+    "identity": {
+      "project_name": "onlyidentity",
+      "project_description": "A project that only answered the identity topic before dropping the session."
+    }
+  }
+}

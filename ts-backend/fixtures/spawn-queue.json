@@ -1,0 +1,42 @@
+{
+  "captured_at": "2026-05-23T00:00:00Z",
+  "python_port": 18099,
+  "route": "/spawn-queue",
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "active_total": 0,
+    "by_role": {
+      "code-reviewer": {
+        "active": 0,
+        "limit": 2
+      },
+      "executor": {
+        "active": 0,
+        "limit": 2
+      },
+      "mission-analyst": {
+        "active": 0,
+        "limit": 1
+      },
+      "project-manager": {
+        "active": 0,
+        "limit": 1
+      },
+      "security-reviewer": {
+        "active": 0,
+        "limit": 1
+      }
+    },
+    "completed": 0,
+    "failed": 0,
+    "pending": 0,
+    "total_limit": 6,
+    "utilization_pct": 0
+  },
+  "raw_body": "",
+  "mask_applied": [],
+  "note": "Structure-only golden fixture. Counts (pending, active_total, completed, failed, utilization_pct) are live and will vary. The by_role structure and total_limit=6 must match exactly."
+}

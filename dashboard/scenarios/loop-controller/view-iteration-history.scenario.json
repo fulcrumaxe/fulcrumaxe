@@ -1,0 +1,71 @@
+{
+  "name": "view-iteration-history",
+  "goal": "Verify the Team Status panel reaches a terminal state (shows content or surfaces an error) without staying stuck in a loading spinner",
+  "url": "http://localhost:5173/loop-controller",
+  "preconditions": {
+    "localStorage": {
+      "af_dashboard_token": "<test-token>"
+    },
+    "env": {
+      "AF_MCP_TEST_ORIGIN": "1"
+    }
+  },
+  "steps": [
+    {
+      "action": "navigate_page",
+      "url": "http://localhost:5173/loop-controller",
+      "wait_until": "networkidle"
+    },
+    {
+      "action": "wait_for",
+      "any_of": [
+        { "text_contains": "Team Status" },
+        { "text_contains": "Discussions" },
+        { "text_contains": "Open PRs" },
+        { "text_contains": "Error" },
+        { "text_contains": "failed to load" },
+        { "text_contains": "No data" }
+      ],
+      "timeout_ms": 15000,
+      "description": "Wait for Team Status panel to reach any terminal state"
+    }
+  ],
+  "success_criteria": [
+    {
+      "kind": "any_text_present",
+      "values": [
+        "Team Status",
+        "Discussions",
+        "Open PRs",
+        "Error",
+        "failed to load",
+        "No data"
+      ],
+      "description": "Team Status panel must show rendered content or a surfaced error — not an infinite spinner"
+    },
+    {
+      "kind": "no_console_errors",
+      "description": "No uncaught JavaScript errors while the panel loads"
+    }
+  ],
+  "must_not_happen": [
+    {
+      "kind": "infinite_spinner",
+      "selector": "[data-testid='team-status-loading']",
+      "timeout_ms": 15000,
+      "description": "Loading indicator must resolve within 15 seconds"
+    }
+  ],
+  "covers_scenario": "D — Snapshot",
+  "visual_verification": {
+    "routes_touched": ["/loop-controller"],
+    "assertions": [
+      "Team Status panel reaches a terminal state (content or surfaced error)",
+      "No stuck loading spinner"
+    ],
+    "negative_checks": [
+      "No uncaught console errors",
+      "team-status-loading indicator resolves within 15 seconds"
+    ]
+  }
+}

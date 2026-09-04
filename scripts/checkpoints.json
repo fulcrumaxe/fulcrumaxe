@@ -1,0 +1,29 @@
+{
+  "checkpoints": [
+    {
+      "name": "startup",
+      "wait": { "type": "delay", "seconds": 3 },
+      "expected": "header renders, empty feed area, status bar with red dot, '> ' input prompt visible"
+    },
+    {
+      "name": "backend-connect",
+      "wait": { "type": "grep", "pattern": "ready|connected|green", "timeout": 15 },
+      "expected": "status bar indicator turns green, 'ready' or connection event visible in feed"
+    },
+    {
+      "name": "user-input",
+      "wait": { "type": "send-then-delay", "keys": "hello world", "seconds": 2 },
+      "expected": "ChatInput shows typed text 'hello world', cursor visible"
+    },
+    {
+      "name": "streaming",
+      "wait": { "type": "send-then-grep", "keys": "Enter", "pattern": "thinking|streaming|tool", "timeout": 30 },
+      "expected": "thinking indicator visible, content streaming in feed, possibly tool call status"
+    },
+    {
+      "name": "completion",
+      "wait": { "type": "grep", "pattern": "done|complete|tokens", "timeout": 60 },
+      "expected": "done separator visible, input re-enabled with '> ' prompt, token count in status bar"
+    }
+  ]
+}

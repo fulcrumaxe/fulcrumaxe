@@ -1,0 +1,17 @@
+{
+  "session": "fixture-mission-placeholder",
+  "topics": {
+    "identity": {
+      "project_name": "widgetforge",
+      "project_description": "Generates parametric widgets from a spec file.",
+      "repo_owner": "acme-labs",
+      "primary_domain": "manufacturing tooling",
+      "target_users": "internal CAD engineers"
+    },
+    "mission": {
+      "product_vision": "(not captured)",
+      "why_now": "",
+      "guiding_principles": "(not captured)"
+    }
+  }
+}

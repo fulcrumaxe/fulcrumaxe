@@ -1,0 +1,39 @@
+# Python dependencies for the autonomous loop backend.
+#
+# Install with:
+#   pip install -r requirements.txt
+#
+# Or use setup-deps.sh (which wraps this with a venv check):
+#   bash scripts/setup-deps.sh
+#
+# These packages are imported by backend/ modules. All are optional at import
+# time (graceful fallback when missing), but required for full functionality.
+
+# Core data / persistence
+duckdb>=0.10.0          # stats.duckdb — metrics store and query engine
+pyyaml>=6.0             # YAML config files
+
+# Anthropic SDK — used by backend modules that call Claude directly
+anthropic>=0.25.0
+
+# Claude Agent SDK — backend.prompt_lane.sdk_lane, the module backend/server.py
+# imports at module load time. Not optional: without this, `import backend.server`
+# fails outright rather than degrading gracefully (D#1890 — this line was
+# missing here while the live requirements.txt had already pinned it).
+claude-agent-sdk>=0.2.82
+
+# HTTP / API
+requests>=2.31.0        # external HTTP calls (researcher, notifier)
+
+# Auth
+PyJWT>=2.7.0            # JWT token verification (rbac, github_app_auth)
+
+# Testing
+pytest>=7.0.0           # test runner
+pytest-timeout>=2.1.0   # per-test timeout enforcement
+
+# Optional — uncomment if your project uses these backends:
+# aiohttp>=3.9.0         # async HTTP (websocket server)
+# websockets>=12.0       # WebSocket support
+# fastapi>=0.110.0       # REST API server
+# uvicorn>=0.29.0        # ASGI server for fastapi

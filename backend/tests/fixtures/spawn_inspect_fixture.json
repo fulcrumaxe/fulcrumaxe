@@ -1,0 +1,12 @@
+{
+  "allowed": true,
+  "role": "executor",
+  "discussion": 365,
+  "project_context": "[project_context fixture]",
+  "agent_memory": "[agent_memory fixture]",
+  "gate_context": {"gates": {"lint_must_pass": true}},
+  "circuit_breaker_failures": 0,
+  "budget_remaining": 1000000,
+  "warnings": [],
+  "in_flight_impl": 0
+}

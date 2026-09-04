@@ -1,0 +1,48 @@
+# Declarative job manifest for the cron-bridge dispatcher.
+# Schema: scripts/schedule/parse_jobs.py
+#
+# Fields per entry:
+#   name:                       [a-z0-9-]+ slug; used in flock path and log path
+#   job:                        registry key; must match scripts/schedule/jobs/<key>.sh
+#   schedule:                   standard 5-field cron expression
+#   timeout_seconds:            wall-clock limit (enforced via setsid + timeout --kill-after=5s)
+#   token_ceiling:              0 = no agent spawn allowed
+#   backoff_minutes_on_failure: reserved for future use
+#   enabled:                    true/false; disables without removing entry
+#
+# Sentinel exit codes: 124=timeout, 125=already_running, 126=budget_blocked, 127=breaker_open
+#
+# To gate the entire dispatcher: python3 backend/control_plane.py set gates.scheduled_jobs false
+# To disable a single job: set enabled: false
+
+- name: heartbeat
+  job: heartbeat
+  schedule: "* * * * *"
+  timeout_seconds: 30
+  token_ceiling: 0
+  backoff_minutes_on_failure: 0
+  enabled: false
+
+- name: tui-tester-pilot-sweep
+  job: tui-tester-pilot-sweep
+  schedule: "*/15 * * * *"
+  timeout_seconds: 60
+  token_ceiling: 0
+  backoff_minutes_on_failure: 0
+  enabled: false
+
+- name: corpus-drift-audit
+  job: corpus-drift-audit
+  schedule: "0 6 * * 0"
+  timeout_seconds: 180
+  token_ceiling: 0
+  backoff_minutes_on_failure: 0
+  enabled: false
+
+- name: dial-state-summary
+  job: dial-state-summary
+  schedule: "0 7 * * *"
+  timeout_seconds: 60
+  token_ceiling: 0
+  backoff_minutes_on_failure: 0
+  enabled: false

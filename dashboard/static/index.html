@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Autonomous Team Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div id="app">
+
+    <!-- Status bar -->
+    <header id="status-bar">
+      <div id="status-left">
+        <span id="connection-dot" class="dot dot-disconnected"></span>
+        <span id="connection-label">connecting...</span>
+      </div>
+      <div id="status-center">
+        <span id="model-label"></span>
+      </div>
+      <div id="status-right">
+        <span id="uptime-label"></span>
+        <span id="client-label"></span>
+        <span id="last-event-label"></span>
+      </div>
+    </header>
+
+    <!-- Agent event feed -->
+    <main id="feed-container">
+      <div id="feed" role="log" aria-live="polite" aria-label="Agent event feed"></div>
+    </main>
+
+    <!-- Input area -->
+    <footer id="input-area">
+      <div id="input-row">
+        <input
+          id="prompt-input"
+          type="text"
+          placeholder="Send a prompt to the Team Lead..."
+          autocomplete="off"
+          spellcheck="false"
+        >
+        <button id="send-btn" type="button">Send</button>
+        <button id="loop-btn" type="button">Run Loop</button>
+      </div>
+    </footer>
+
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

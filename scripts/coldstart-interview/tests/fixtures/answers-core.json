@@ -1,0 +1,35 @@
+{
+  "session": "fixture-core",
+  "topics": {
+    "identity": {
+      "project_name": "widgetforge",
+      "project_description": "Generates parametric widgets from a spec file.",
+      "repo_owner": "acme-labs",
+      "primary_domain": "manufacturing tooling",
+      "target_users": "internal CAD engineers"
+    },
+    "stack": {
+      "primary_language": "typescript",
+      "runtime_framework": "Next.js",
+      "package_manager": "pnpm",
+      "test_framework": "vitest",
+      "has_frontend": "yes"
+    },
+    "deploy": {
+      "deploy_target": "cloudflare",
+      "ci_provider": "github-actions",
+      "has_staging_env": "yes",
+      "release_cadence": "daily",
+      "hosting_provider": "n/a",
+      "domain": "widgetforge.example.com"
+    },
+    "autonomy": {
+      "agent_spawn_level": 4,
+      "merge_fast_path_level": 3,
+      "external_system_level": 2,
+      "intent_generate_level": 2,
+      "human_approval_before_merge": "no",
+      "security_review_required": "yes"
+    }
+  }
+}

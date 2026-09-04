@@ -1,0 +1,268 @@
+{
+  "version": 1,
+  "topics": [
+    {
+      "id": "mode",
+      "title": "New vs existing project",
+      "questions": [
+        {
+          "id": "project_kind",
+          "prompt": "Are you wrapping existing code or starting brand new?",
+          "tier": "core",
+          "default": "existing",
+          "choices": ["existing", "new"],
+          "why": "This reframes the stack/deploy questions below — existing projects get detect-and-confirm prompts, new projects get pick-for-greenfield prompts — and gates whether mission-analyst starts from code analysis or an empty backlog."
+        }
+      ]
+    },
+    {
+      "id": "identity",
+      "title": "Project identity",
+      "questions": [
+        {
+          "id": "project_name",
+          "prompt": "What is the project's name?",
+          "tier": "core",
+          "default": "my-project"
+        },
+        {
+          "id": "project_description",
+          "prompt": "One-sentence description of what this project does?",
+          "tier": "core",
+          "default": "A software project."
+        },
+        {
+          "id": "repo_owner",
+          "prompt": "GitHub org/user that owns the repo?",
+          "tier": "core",
+          "default": "your-org"
+        },
+        {
+          "id": "primary_domain",
+          "prompt": "What domain does this project operate in? (e.g. fintech, devtools, consumer app)",
+          "tier": "core",
+          "default": "general software"
+        },
+        {
+          "id": "target_users",
+          "prompt": "Who are the primary users of this project?",
+          "tier": "optional",
+          "default": "internal team"
+        }
+      ]
+    },
+    {
+      "id": "stack",
+      "title": "Tech stack",
+      "questions": [
+        {
+          "id": "primary_language",
+          "prompt": "Primary programming language?",
+          "prompt_new": "What language do you want to build this in?",
+          "tier": "core",
+          "default": "python",
+          "choices": ["python", "typescript", "javascript", "go", "rust", "other"],
+          "why": "For an existing repo we'll try to detect this and just confirm it; for a brand-new project you're picking the language coldstart scaffolds."
+        },
+        {
+          "id": "runtime_framework",
+          "prompt": "Primary framework/runtime (e.g. FastAPI, Next.js, Express)?",
+          "prompt_new": "What framework/runtime do you want to scaffold with (e.g. FastAPI, Next.js, Express), or none?",
+          "tier": "core",
+          "default": "none",
+          "why": "Existing projects: confirm what's already there. New projects: pick what to scaffold."
+        },
+        {
+          "id": "package_manager",
+          "prompt": "Package manager?",
+          "prompt_new": "Which package manager do you want to use?",
+          "tier": "core",
+          "default": "pip",
+          "choices": ["pip", "npm", "yarn", "pnpm", "cargo", "go-mod", "other"],
+          "why": "Drives which preflight/build commands the team runs — detected-and-confirmed on existing repos, chosen fresh on new ones."
+        },
+        {
+          "id": "test_framework",
+          "prompt": "Test framework/command?",
+          "prompt_new": "What test framework do you want to start with?",
+          "tier": "core",
+          "default": "pytest",
+          "why": "The executor role runs this before every PR — existing repos confirm what's already wired up, new repos pick a starting default."
+        },
+        {
+          "id": "has_frontend",
+          "prompt": "Does this project have a user-facing frontend?",
+          "tier": "core",
+          "default": "no",
+          "choices": ["yes", "no"],
+          "why": "Determines whether browser-tester/visual-verifier roles are relevant to this project at all."
+        }
+      ]
+    },
+    {
+      "id": "deploy",
+      "title": "Deploy target",
+      "questions": [
+        {
+          "id": "deploy_target",
+          "prompt": "Primary deploy target?",
+          "prompt_new": "Where do you plan to deploy this once it exists?",
+          "tier": "core",
+          "default": "self-hosted",
+          "choices": ["cloudflare", "vercel", "aws", "gcp", "self-hosted", "none"],
+          "why": "Existing projects: confirm the current deploy target. New projects: pick one so release-manager knows what a release means here."
+        },
+        {
+          "id": "ci_provider",
+          "prompt": "CI provider?",
+          "prompt_new": "Which CI provider do you want to set up?",
+          "tier": "core",
+          "default": "github-actions",
+          "choices": ["github-actions", "circleci", "gitlab-ci", "none"],
+          "why": "Determines what CI config coldstart should expect or scaffold — detect-and-confirm on existing, pick-for-greenfield on new."
+        },
+        {
+          "id": "has_staging_env",
+          "prompt": "Is there a staging environment separate from production?",
+          "tier": "core",
+          "default": "no",
+          "choices": ["yes", "no"],
+          "why": "Affects merge-gate strictness — a new project usually starts with 'no' until staging exists."
+        },
+        {
+          "id": "release_cadence",
+          "prompt": "How often do you expect to ship releases?",
+          "tier": "core",
+          "default": "continuous",
+          "choices": ["continuous", "daily", "weekly", "ad-hoc"],
+          "why": "Tunes how aggressively release-manager batches merges into releases."
+        },
+        {
+          "id": "hosting_provider",
+          "prompt": "Specific hosting provider (if any beyond the deploy target)?",
+          "tier": "optional",
+          "default": "n/a",
+          "why": "Optional detail beyond deploy_target — only useful if you already know it."
+        },
+        {
+          "id": "domain",
+          "prompt": "Production domain (if known yet)?",
+          "tier": "optional",
+          "default": "n/a",
+          "why": "Optional — most projects don't have this decided at coldstart time."
+        }
+      ]
+    },
+    {
+      "id": "autonomy",
+      "title": "Autonomy and risk dials",
+      "questions": [
+        {
+          "id": "agent_spawn_level",
+          "prompt": "Autonomy level for spawning sub-agents (1=manual approval each time, 5=fully autonomous)?",
+          "tier": "core",
+          "default": 3,
+          "choices": [1, 2, 3, 4, 5]
+        },
+        {
+          "id": "merge_fast_path_level",
+          "prompt": "Autonomy level for fast-path merges of small/low-risk PRs (1-5)?",
+          "tier": "core",
+          "default": 2,
+          "choices": [1, 2, 3, 4, 5]
+        },
+        {
+          "id": "external_system_level",
+          "prompt": "Autonomy level for touching external systems (APIs, deploys, third-party services) (1-5)?",
+          "tier": "core",
+          "default": 1,
+          "choices": [1, 2, 3, 4, 5]
+        },
+        {
+          "id": "intent_generate_level",
+          "prompt": "Autonomy level for self-generated work/idea intake (1-5)?",
+          "tier": "core",
+          "default": 1,
+          "choices": [1, 2, 3, 4, 5]
+        },
+        {
+          "id": "human_approval_before_merge",
+          "prompt": "Require human approval before every merge?",
+          "tier": "core",
+          "default": "no",
+          "choices": ["yes", "no"]
+        },
+        {
+          "id": "security_review_required",
+          "prompt": "Require a security review gate on every PR?",
+          "tier": "core",
+          "default": "yes",
+          "choices": ["yes", "no"]
+        }
+      ]
+    },
+    {
+      "id": "mission",
+      "title": "Mission and vision",
+      "questions": [
+        {
+          "id": "product_vision",
+          "prompt": "What are you building, and what does it do for the people who use it?",
+          "tier": "optional",
+          "default": "(not captured)"
+        },
+        {
+          "id": "why_now",
+          "prompt": "Why build this now? What's the motivating problem or opportunity?",
+          "tier": "optional",
+          "default": "(not captured)"
+        },
+        {
+          "id": "guiding_principles",
+          "prompt": "What guiding principles or decision-making rules should this project follow?",
+          "tier": "optional",
+          "default": "(not captured)"
+        }
+      ]
+    },
+    {
+      "id": "roster",
+      "title": "Role roster (deep-dive, deferred to Slice C)",
+      "questions": [
+        {
+          "id": "trim_roster",
+          "prompt": "Should the role roster be trimmed to only the roles used by this project? (deferred — allowlist-based, agents/*.md files are never deleted)",
+          "tier": "optional",
+          "default": "no",
+          "choices": ["yes", "no"]
+        }
+      ]
+    },
+    {
+      "id": "module_conventions",
+      "title": "Module conventions (deep-dive)",
+      "questions": [
+        {
+          "id": "module_per_feature",
+          "prompt": "Enforce module-per-feature convention (new file per feature, hub only imports)?",
+          "tier": "optional",
+          "default": "yes",
+          "choices": ["yes", "no"]
+        }
+      ]
+    },
+    {
+      "id": "backlog",
+      "title": "Initial backlog (deep-dive, deferred to Slice C)",
+      "questions": [
+        {
+          "id": "seed_backlog",
+          "prompt": "Seed an initial Discussion backlog from mission analysis? (deferred — batched GH writes with bounded retry)",
+          "tier": "optional",
+          "default": "no",
+          "choices": ["yes", "no"]
+        }
+      ]
+    }
+  ]
+}

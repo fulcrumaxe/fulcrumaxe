@@ -1,0 +1,16 @@
+{
+  "name": "fulcrumaxe",
+  "owner": {
+    "name": "fulcrumaxe"
+  },
+  "description": "The fulcrumaxe autonomous development team, installable as a self-contained Claude Code plugin.",
+  "plugins": [
+    {
+      "name": "fulcrumaxe",
+      "source": "./",
+      "displayName": "Fulcrumaxe",
+      "description": "26 agent roles plus the /coldstart and /start-the-day commands for running an autonomous, self-improving development team in your own GitHub repo.",
+      "license": "AGPL-3.0-only"
+    }
+  ]
+}

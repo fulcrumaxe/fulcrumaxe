@@ -1,0 +1,60 @@
+{
+  "name": "load-page",
+  "goal": "Verify the Loop Controller page loads without console errors and renders its key UI sections",
+  "url": "http://localhost:5173/loop-controller",
+  "preconditions": {
+    "localStorage": {
+      "af_dashboard_token": "<test-token>"
+    },
+    "env": {
+      "AF_MCP_TEST_ORIGIN": "1"
+    }
+  },
+  "steps": [
+    {
+      "action": "navigate_page",
+      "url": "http://localhost:5173/loop-controller",
+      "wait_until": "domcontentloaded"
+    },
+    {
+      "action": "wait_for",
+      "selector": "h1, h2, [data-testid='loop-controller']",
+      "timeout_ms": 10000
+    }
+  ],
+  "success_criteria": [
+    {
+      "kind": "text_contains",
+      "value": "Loop Controller",
+      "description": "Page heading must render"
+    },
+    {
+      "kind": "no_console_errors",
+      "description": "No uncaught JavaScript errors on load"
+    }
+  ],
+  "must_not_happen": [
+    {
+      "kind": "network_request",
+      "url_matches": "/api/innovate/tick",
+      "description": "Page load must not trigger an innovate tick"
+    },
+    {
+      "kind": "network_request",
+      "url_matches": "/api/loop/run",
+      "description": "Page load must not trigger a loop run"
+    }
+  ],
+  "covers_scenario": "A (partial — page load only; button interaction is in start-loop-button.scenario.json)",
+  "visual_verification": {
+    "routes_touched": ["/loop-controller"],
+    "assertions": [
+      "Page heading 'Loop Controller' visible",
+      "Key UI sections render without an infinite spinner"
+    ],
+    "negative_checks": [
+      "No uncaught console errors",
+      "No innovate tick or loop run triggered on page load"
+    ]
+  }
+}

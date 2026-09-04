@@ -1,0 +1,35 @@
+# engine-sync enforcer self-protection set — G4 (D#1586 Batch B2b).
+#
+# T-B2-SELFUPDATE: the update-distribution channel's own guard code (the
+# classifier, the manifest generator, the verified fetcher, the applier, the
+# allowlist that decides what's distributable at all, the trust anchor, and
+# the sibling-side lockfile) must NEVER be clean-apply-writable, even when
+# local == base. If it were, a single compromised (or merely buggy) release
+# could silently replace the code that is supposed to be enforcing every
+# other guarantee in this channel -- a circular-trust bypass (CWE-494).
+#
+# Every path listed here is EXCLUDED from apply.py's clean-apply write set
+# regardless of its pull.py classification. A protected path that would
+# otherwise be clean-apply is instead flagged "protected" / needs-human-review
+# and surfaced in the PR body -- it is never silently applied.
+#
+# This file itself is listed below: it must be as hard to quietly neuter as
+# any other file in the set, otherwise an attacker could clean-apply a
+# smaller protected.txt in one release and then clean-apply pull.py itself
+# in the next. apply.py's read_protected_set() fails closed (raises, does
+# not fall back to an empty set) if this file is missing or unreadable.
+#
+# One path per line, relative to the sibling repo root. Blank lines and
+# lines starting with '#' are ignored.
+
+scripts/engine-sync/pull.py
+scripts/engine-sync/manifest.py
+scripts/engine-sync/fetch.py
+scripts/engine-sync/apply.py
+scripts/engine-sync/merge.py
+scripts/engine-sync/resolver.py
+scripts/engine-sync/allowlist.txt
+scripts/engine-sync/protected.txt
+scripts/engine-sync/drift-check.sh
+engine/trust.json
+engine/applied.json

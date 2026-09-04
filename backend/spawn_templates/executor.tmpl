@@ -1,0 +1,113 @@
+## ROLE_BODY
+
+{{project_context}}
+{{agent_memory}}
+[Control plane gates: {{gate_context}}]
+
+{{working_principles}}
+
+{{self_observe_gate}}
+
+## BRIEF
+
+Implement Discussion #{{discussion_number}} — {{discussion_title}}.
+
+Full spec:
+{{task_brief}}
+
+Discussion URL: {{discussion_url}}
+
+Steps:
+1. Do NOT create a new branch here. `--isolation worktree` already provisioned
+   your worktree on its own auto-created branch, checked out at main's tip,
+   before this prompt ever ran — creating another branch on top just abandons
+   the one the harness (and the worktree registry) is tracking. If in doubt,
+   confirm what you're already on: `git log -1 --format='%H %D' HEAD`.
+2. Implement everything in the spec exactly as written.
+3. Run scripts/preflight-fast.sh — fix any failures before proceeding.
+   Check the lint_must_pass gate first, then capture only the summary line for routing:
+     LINT_GATE=$(python3 backend/control_plane.py get gates.lint_must_pass 2>/dev/null || echo "true")
+     if [ "$LINT_GATE" = "false" ]; then
+       PRESUM=$(bash scripts/preflight-fast.sh --skip-lint 2>&1 | tail -1)
+     else
+       PRESUM=$(bash scripts/preflight-fast.sh 2>&1 | tail -1)
+     fi
+     # Passes look like: PRESUM: pass checks=N duration=Ns
+     # Failures look like: PRESUM: fail step=<slug> exit=<code> checks=N duration=Ns
+   If the PRESUM line starts with "PRESUM: fail", stop and fix the indicated step before continuing.
+4. Check the pr_size_max_lines policy — refuse to open a PR if diff exceeds it:
+     MAX_LINES=$(python3 backend/control_plane.py get policies.executor.pr_size_max_lines 2>/dev/null | tr -d '"' || echo 2000)
+     DIFF_LINES=$(git diff --stat HEAD | tail -1 | grep -oE '[0-9]+ insertion' | grep -oE '[0-9]+' || echo 0)
+     if [ "$DIFF_LINES" -gt "$MAX_LINES" ] 2>/dev/null; then
+       echo "ERROR: PR diff ($DIFF_LINES lines) exceeds pr_size_max_lines ($MAX_LINES). Split the work."
+       exit 1
+     fi
+5. Open a PR targeting main. Title: "#{{discussion_number}}: {{discussion_title}}"
+   Include the Discussion URL in the PR body: {{discussion_url}}
+
+   Before creating the PR, check if project.json defines release-category labels:
+     PR_CATS=$(python3 -c "import json; print(' '.join(json.load(open('.autonomous-team/project.json')).get('pr_categories', [])))" 2>/dev/null || true)
+   If PR_CATS is non-empty, pick the single most appropriate label from that list and
+   append `--label <category>` to your `gh pr create` command. Category guide:
+     bugfix    — fixing broken behaviour
+     feature   — new functionality
+     security  — vulnerability / auth / secret-handling
+     breaking  — API / CLI / schema breaks
+     perf      — performance optimisation
+     infra     — build / CI / tooling
+     docs      — documentation only
+     cosmetic  — typos, formatting, no semantic change
+   If PR_CATS is empty or the file is absent, skip this step (no label added).
+
+5b. Link the new PR back to the worktree registry (no-op if not running in a worktree):
+     if [[ -n "${WORKTREE_ID:-}" ]]; then
+       PR_NUMBER=$(gh pr view --json number --jq '.number' --repo {{REPO}})
+       bash scripts/lib/worktree-registry.sh set-pr "$WORKTREE_ID" "$PR_NUMBER"
+     fi
+6. Report back: "PR #<number> created for Discussion #{{discussion_number}}."
+
+If a tool call returns the same error 3 times in a row, STOP retrying — either change your approach or return needs-fix.
+
+### Anti-pattern: do NOT set cwd outside your worktree
+
+Your worktree is the source of truth for your work. The following patterns
+trigger sandbox blocks and waste tokens:
+
+- `subprocess.run(..., cwd=<the main checkout>)`
+- `cd <the main checkout> && ...`
+- `git -C <the main checkout> ...`
+- Any explicit cwd= argument pointing outside your worktree
+
+If you need to compare against main:
+- `git fetch origin main`
+- `git show origin/main:path/to/file` (read-only, safe)
+- `git diff origin/main..HEAD` (run from inside your worktree)
+
+If you need to write output:
+- /tmp/ is allowed (ephemeral)
+- Your worktree path is allowed
+- The main checkout your worktree was branched from is NEVER allowed —
+  that is the directory your worktree path sits under, not a fixed path
+
+The sandbox blocks these patterns. Each block burns ~50-100 tokens. The right
+pattern is to operate entirely within your worktree.
+
+## GATES
+
+{{include:two-gate-protocol}}
+
+## WORKING_PRINCIPLES
+
+{{include:bash-discipline}}
+
+## DETAILED_SPEC
+
+{{include:rate-limit-policy}}
+
+{{include:hard-stop-no-claude}}
+
+<!-- cache_control: ephemeral — content above this line is variable; content below is stable -->
+
+## WORKTREE
+
+{{include:archive-protocol}}

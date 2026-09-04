@@ -1,0 +1,77 @@
+{
+  "name": "start-loop-button",
+  "goal": "Verify clicking Start triggers the loop.start RPC and the new loop ID appears in the active list",
+  "url": "http://localhost:5173/loop-controller",
+  "preconditions": {
+    "localStorage": {
+      "af_dashboard_token": "<test-token>"
+    },
+    "env": {
+      "AF_MCP_TEST_ORIGIN": "1"
+    }
+  },
+  "steps": [
+    {
+      "action": "navigate_page",
+      "url": "http://localhost:5173/loop-controller",
+      "wait_until": "networkidle"
+    },
+    {
+      "action": "wait_for",
+      "selector": "textarea",
+      "timeout_ms": 10000
+    },
+    {
+      "action": "fill",
+      "selector": "textarea",
+      "value": "E2E test prompt"
+    },
+    {
+      "action": "click",
+      "selector": "button[type=submit]",
+      "description": "Click the Start / submit button"
+    },
+    {
+      "action": "wait_for",
+      "text_contains": "loop-",
+      "timeout_ms": 8000,
+      "description": "Wait for the new loop ID to appear in the active list"
+    }
+  ],
+  "success_criteria": [
+    {
+      "kind": "text_contains",
+      "value": "loop-",
+      "description": "A loop ID matching 'loop-' must appear in the active loops list"
+    },
+    {
+      "kind": "no_console_errors",
+      "description": "No uncaught JavaScript errors during the interaction"
+    },
+    {
+      "kind": "network_request_made",
+      "url_matches": "/rpc",
+      "body_contains": "loop.start",
+      "description": "loop.start RPC must have been called"
+    }
+  ],
+  "must_not_happen": [
+    {
+      "kind": "network_request",
+      "url_matches": "/api/innovate/tick",
+      "description": "Start button must not trigger an innovate tick directly"
+    }
+  ],
+  "covers_scenario": "A — Happy start",
+  "visual_verification": {
+    "routes_touched": ["/loop-controller"],
+    "assertions": [
+      "New loop ID appears in the active loops list after submit",
+      "loop.start RPC call observed on the wire"
+    ],
+    "negative_checks": [
+      "No uncaught console errors",
+      "No innovate tick triggered by the Start button"
+    ]
+  }
+}

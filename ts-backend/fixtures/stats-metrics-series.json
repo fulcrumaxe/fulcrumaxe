@@ -1,0 +1,26 @@
+{
+  "name": "scan_to_spawn_ratio",
+  "sample_points": [
+    {
+      "ts_iso": "<masked>",
+      "value": 1
+    },
+    {
+      "ts_iso": "<masked>",
+      "value": 1
+    },
+    {
+      "ts_iso": "<masked>",
+      "value": 1
+    },
+    {
+      "ts_iso": "<masked>",
+      "value": 1
+    },
+    {
+      "ts_iso": "<masked>",
+      "value": 1
+    }
+  ],
+  "point_count": 227
+}

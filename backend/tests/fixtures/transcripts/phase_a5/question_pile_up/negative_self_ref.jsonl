@@ -1,0 +1,2 @@
+{"type": "message", "message": {"role": "user", "content": "Explain classify_question_pile_up from phase_a classifiers"}}
+{"type": "message", "message": {"role": "assistant", "content": [{"type": "text", "text": "The classify_question_pile_up classifier in phase_a5 fires when an assistant turn has 3+ question marks outside code blocks. Should this fire on Discussion #548 spec text? What about fixtures/transcripts/ test cases? Does the d#548 guidance cover edge cases?"}]}}

@@ -1,0 +1,2 @@
+{"type": "user", "message": {"role": "user", "content": "Start task."}, "system": "team-lead", "uuid": "u1", "timestamp": "2026-05-19T00:00:01Z"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Scanning for work."}]}, "uuid": "a1", "timestamp": "2026-05-19T00:00:02Z"}

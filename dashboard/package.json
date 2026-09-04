@@ -1,0 +1,46 @@
+{
+  "name": "fulcrumaxe-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src --ext .ts,.tsx --max-warnings 0",
+    "test": "vitest run",
+    "gen:route-manifest": "node scenarios/scripts/generate-route-manifest.mjs",
+    "gen:route-manifest:check": "node scenarios/scripts/generate-route-manifest.mjs --check",
+    "test:route-coverage": "vitest run scenarios/__tests__/route-coverage.test.ts"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.26.2",
+    "recharts": "^2.13.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.19.1",
+    "@eslint/js": "^9.11.1",
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/jest-dom": "^6.5.0",
+    "@testing-library/react": "^16.0.1",
+    "@testing-library/user-event": "^14.5.2",
+    "@types/react": "^18.3.5",
+    "@types/react-dom": "^18.3.0",
+    "@typescript-eslint/eslint-plugin": "^8.7.0",
+    "@typescript-eslint/parser": "^8.7.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "eslint": "^9.11.1",
+    "eslint-plugin-react-hooks": "^5.1.0-rc.0",
+    "eslint-plugin-react-refresh": "^0.4.12",
+    "globals": "^17.4.0",
+    "jsdom": "^25.0.1",
+    "typescript": "^5.5.3",
+    "typescript-eslint": "^8.58.1",
+    "vite": "^5.4.8",
+    "vitest": "^2.1.1"
+  }
+}

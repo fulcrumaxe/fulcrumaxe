@@ -1,0 +1,36 @@
+{
+  "session": "fixture-new",
+  "topics": {
+    "mode": {
+      "project_kind": "new"
+    },
+    "identity": {
+      "project_name": "freshstart",
+      "project_description": "A brand-new project scaffolded from an empty directory.",
+      "repo_owner": "acme-labs",
+      "primary_domain": "devtools",
+      "target_users": "internal team"
+    },
+    "stack": {
+      "primary_language": "typescript",
+      "runtime_framework": "none",
+      "package_manager": "pnpm",
+      "test_framework": "vitest",
+      "has_frontend": "no"
+    },
+    "deploy": {
+      "deploy_target": "self-hosted",
+      "ci_provider": "github-actions",
+      "has_staging_env": "no",
+      "release_cadence": "ad-hoc"
+    },
+    "autonomy": {
+      "agent_spawn_level": 3,
+      "merge_fast_path_level": 2,
+      "external_system_level": 1,
+      "intent_generate_level": 1,
+      "human_approval_before_merge": "no",
+      "security_review_required": "yes"
+    }
+  }
+}

@@ -1,0 +1,43 @@
+# engine-sync allowlist — single source of truth for the framework-vs-project boundary.
+#
+# Format: one glob pattern per line, fnmatch-style (matched against the POSIX
+# relative path from the repo root, using pathlib.Path.match semantics via
+# fnmatch.fnmatch against the full relative path string).
+#
+# Lines are processed in two ordered blocks:
+#   [include]  — patterns that pull a file INTO the manifest candidate set.
+#   [exclude]  — patterns checked AFTER include-matching; deny always wins.
+#                A file matching ANY exclude pattern is NEVER emitted, even if
+#                it also matches an include pattern (design-time hard gate).
+#
+# Blank lines and lines starting with '#' are ignored.
+
+[include]
+scripts/*.sh
+scripts/lib/*.sh
+scripts/hooks/**/*
+hooks/*.py
+.claude/agents/*.md
+scripts/engine-sync/**
+
+# NOTE: matching is done with fnmatch.fnmatch(), where '*' already matches
+# any character INCLUDING '/' (fnmatch is not path-component-aware like
+# pathlib globbing). A leading/trailing bare '*' is therefore sufficient to
+# match "anywhere in the path" — patterns are deliberately not written with
+# '**' since fnmatch treats '**' identically to '*'.
+
+[exclude]
+config.json
+*/config.json
+.env
+.env.*
+*.env
+*.env.*
+.autonomous-team/*
+archive/*
+*state*
+*token*
+*secret*
+*state_paths.py
+__pycache__/*
+*.pyc

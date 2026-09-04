@@ -1,0 +1,42 @@
+anthropic>=0.49.0
+claude-agent-sdk>=0.2.126,<0.3
+rich>=13.7.1
+textual>=8.2.6
+# DuckDB-backed stats store (backend/stats_writer.py, agent_run_tracker.py,
+# cost_tracker.py, etc.) — was previously installed only by accident in some
+# dev environments; never declared here until D#1575 traced ts-backend's
+# python3-shellout parity tests failing in CI to this gap.
+duckdb>=1.5.2
+# duckdb's Python binding needs pytz internally when binding timezone-aware
+# datetimes (e.g. agent_run_tracker's start_ts/end_ts columns) — without it,
+# every write silently no-ops (duckdb.InvalidInputException swallowed by
+# agent_run_tracker's non-fatal error handling). Also only ever present by
+# accident via some other package's transitive dependency in dev environments.
+pytz>=2024.1
+# backend/server.py imports sqlalchemy directly; was previously present only
+# by accident in dev/agent environments, never declared here — this is what
+# broke the "backend (import-smoke)" GitHub Actions job on a clean install.
+sqlalchemy>=2.0.49
+# structlog's only importer was a module in the Python CLI port that used
+# to ship from this repo's root; that tree was retired and archived (see
+# git history around 2026-08-17) and ships nowhere in the live tree now.
+# Added here for the same ambient-only gap as sqlalchemy above, back when
+# that importer was still live. Looks dead now; removing the declared
+# dependency is a separate follow-up since it's a behavioural/CI-exposure
+# change, not a comment fix.
+structlog>=25.5.0
+# FastAPI strangler-fig stack (P1 — pinned to installed versions; bump acceptable)
+fastapi>=0.135.3
+uvicorn[standard]>=0.44.0
+pydantic>=2.12.5
+httpx>=0.28.1
+# Test dependencies
+pytest-testmon>=2.2.0
+pytest-picked>=0.5.1
+# pytest.ini sets asyncio_mode = auto (needed for every @pytest.mark.asyncio
+# test across backend/tests/) but the plugin providing that marker was never
+# declared here — same "worked by accident in dev environments" gap as
+# duckdb/sqlalchemy/structlog above. Without it every async test in the repo
+# collects fine and then fails at runtime with "async def functions are not
+# natively supported."
+pytest-asyncio>=0.24.0

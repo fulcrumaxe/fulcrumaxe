@@ -1,0 +1,4 @@
+{"type": "message", "message": {"role": "user", "content": "Fix the broken test"}}
+{"type": "message", "message": {"role": "assistant", "content": [{"type": "tool_use", "name": "Bash", "id": "tc1", "input": {"command": "python3 -m pytest tests/test_foo.py"}}]}}
+{"type": "message", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tc1", "content": "FAILED tests/test_foo.py::test_bar - AssertionError: expected 1 got 2\nexit code 1", "is_error": true}]}}
+{"type": "message", "message": {"role": "assistant", "content": [{"type": "text", "text": "The test is failing. Let me look at the implementation."}, {"type": "tool_use", "name": "Read", "id": "tc2", "input": {"file_path": "src/foo.py"}}]}}

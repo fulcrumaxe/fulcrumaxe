@@ -1,0 +1,22 @@
+- [Agent isolation param](feedback_agent_isolation_param.md) — Agent() needs isolation:"worktree" itself; spawn-agent.sh --isolation only assembles the prompt
+- [Docs as wiki-importable markdown](feedback_docs_wiki_format.md) — use wiki/ dir with GitHub Wiki conventions, not docs/
+- [Don't close ambitious discussions](feedback_dont_close_ambitious.md) — scope down, never reject — let user decide what's out of scope
+- [Use all built subsystems](feedback_use_all_subsystems.md) — run pre-spawn-check.sh, post-agent-hook.sh, post-merge-hook.sh every time — never skip protocol steps
+- [Team Lead never writes code](feedback_team_lead_never_writes_code.md) — every code change goes through an executor agent; Edit/Write for project files is the HARD STOP
+- [Use real subagent_types](feedback_use_real_subagent_types.md) — executor / code-reviewer / project-manager — NEVER general-purpose for project work; isolation:worktree when parallel
+- [Canonical /loop is 8 steps](feedback_canonical_loop_8_steps.md) — every iteration runs steps 0-9 from CLAUDE.md, not "do work and ScheduleWakeup"
+- [Remove not delete](feedback_remove_not_delete.md) — git rm is NEVER allowed; inactive files get git mv'd to archive/<name>-<date>/ with a README; user rule from session 85514482
+- [Never dump auth headers](feedback_never_dump_auth_headers.md) — curl -v, vastai --explain/--curl, gh api --verbose, set -x with secrets all leak; use curl -i or --raw instead
+- [Always parallelize](feedback_always_parallelize.md) — if steps don't depend on each other, they're separate parallel agents — never sequential
+- [Don't ask, just act](feedback_dont_ask_just_act.md) — when SPEC_READY work exists and pre-spawn passes, spawn immediately — never ask permission
+- [Fixes apply everywhere](feedback_fixes_apply_everywhere.md) — when fixing a pattern, apply to ALL subsystems (API, SaaS, TUI, dashboard) — not just where the bug was found
+- [Rotate team-log at 2500-comment cap](feedback_team_log_rotation.md) — archive full Issue, open new one labeled team-log; hooks must auto-rotate, not drop the log line
+- [High agent concurrency when monitored](feedback_higher_agent_concurrency.md) — 4-6+ parallel subagents with worktree isolation; sweep ALL SPEC_READY and ALL DISCUSSING per iteration, don't serialize
+- [Runaway loop prevention](feedback_no_runaway_loops.md) — every claude -p / _start_loop_run / /loop trigger needs rate-limit + concurrency cap + feature gate + visible counter; runaway 2026-05-10 burned credit
+- [Pull main after every merge](feedback_pull_after_every_merge.md) — git pull --ff-only after every PR merge; stale local main causes rebase races + conflict noise (PR #438 burned hours on this)
+- [Coordinator impersonation pattern](feedback_impl_coord_impersonation.md) — nested coordinators skip Agent() spawn for executor/code-reviewer, do the work themselves, write fake envelopes; observed 2026-05-10; breaks per-role tracking + audit + independent verdicts
+- [Don't use nested coordinator role](feedback_no_nested_coordinator.md) — sub-spawned coordinators lack Agent() tool, fail or impersonate; Team Lead orchestrates executor+reviewers directly (D#834 confirmed 2026-05-14)
+- [Kill-and-message, not pkill-and-wait](feedback_a2a_kill_and_message.md) — when agents hang, the missing primitive is A2A messaging — log kill reason to audit.jsonl until the channel exists
+- [Concurrency caps](feedback_concurrency_caps.md) — max 4 executors + max 4 other agents = 8 total; bottleneck is state.db/GH API/preflight, not subscription quota
+- [Tests-pass is not feature-works](feedback_tests_pass_not_equals_feature_works.md) — synthetic fixtures verify code-vs-spec; running real binary/UI verifies spec-vs-reality; both gates required (D#497 for UI, D#508 for CLI)
+- [Four working principles](feedback_four_working_principles.md) — Think Before Coding / Simplicity First / Surgical Changes / Goal-Driven Execution; apply to every PR; the aggregate test before emitting verdict:done

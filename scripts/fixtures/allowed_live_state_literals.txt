@@ -1,0 +1,37 @@
+# Allowlist for scripts/check-tests-live-state-paths.sh
+#
+# Format: one entry per line — "<path-relative-to-repo-root>:<literal>:<reason>"
+# <literal> is the exact matched $REPO_ROOT/$REAL_REPO_ROOT/$MAIN_REPO_ROOT
+# -anchored .autonomous-team/... substring (not a line number, not a hash).
+# Blank lines and lines starting with # are ignored.
+#
+# D#2267's 17 converted suites have NO entries here for a WRITE or an
+# unconverted read — the lint lands with the allowlist empty of every
+# defect it was written to fix, because those suites were already isolated
+# in PRs #2304 and #2311. An entry here papering over an unconverted suite
+# would be a bug in this file, not a pragmatic compromise.
+#
+# ONE disclosed exception below, inside the 17: test_pre_spawn_check_
+# block_events.sh's AC8 deliberately reads (never writes) the real live
+# feed to prove THIS suite didn't write to it — see that file's own
+# comment marking the read as intentional. An earlier version of this
+# lint exempted that read via a comment-marker mechanism instead of an
+# allowlist entry, specifically to keep the allowlist's "no entry for any
+# of the 17" letter — code review on PR #2320 found that mechanism
+# exempted writes too, invisibly, with none of this file's stale/dangling
+# protection. Removed; this entry is the honest replacement. It is a
+# stated deviation from the "no entry for any of the 17" Spec item, not
+# a silent one — see the PR body for D#2267 PR 3/3.
+#
+# The three entries after it are suites OUTSIDE the 17 — none are in
+# D#2267's scope. Two do the same thing: fall back to reading the
+# checked-out repo's static config.json (not runtime state — it doesn't
+# change while agents run) into a scratch workspace, with an inline
+# default if that read fails. This is a config snapshot for offline test
+# setup, not a live-state write or a false-pass hazard. The third copies
+# a committed, static manifest file as fixture source data.
+
+tests/test_pre_spawn_check_block_events.sh:$REPO_ROOT/.autonomous-team/agent-feed.jsonl:AC8's deliberate live-state guard — reads the real feed's line count before running, to prove afterward that this suite did not write to it. A read, never a write; disclosed exception to "no entry for any of the 17" (see PR body).
+tests/test_pre_spawn_token_cap.sh:$REPO_ROOT/.autonomous-team/config.json:reads the repo's static config.json as a fallback default when building a scratch workspace for pre-spawn-check.sh; falls back to an inline JSON literal if the read fails.
+tests/test_start_the_day_selfheal.sh:$REPO_ROOT/.autonomous-team/config.json:reads the repo's static config.json as a fallback default for a scratch config copy used by control_plane.py in this test; falls back to an inline JSON literal if the read fails.
+tests/test_state_symlinks_in_worktree.sh:$REPO_ROOT/.autonomous-team/state-symlinks.json:reads the repo's own committed manifest file as fixture source data to copy into synthetic worktree/main-repo trees built elsewhere in this suite; the manifest itself is checked into git, not runtime state.

@@ -1,0 +1,10 @@
+{
+  "files": [
+    {"path": ".autonomous-team/agent-feed.jsonl", "max_size_mb": 50, "keep_archives": 5},
+    {"path": ".autonomous-team/audit.jsonl", "max_size_mb": 100, "keep_archives": 10},
+    {"path": ".autonomous-team/agent-retros.jsonl", "max_size_mb": 20, "keep_archives": 3},
+    {"path": ".autonomous-team/browser-tour-queue.jsonl", "max_size_mb": 10, "keep_archives": 2}
+  ],
+  "hook_events_max_age_days": 7,
+  "hook_events_done_max_age_days": 2
+}

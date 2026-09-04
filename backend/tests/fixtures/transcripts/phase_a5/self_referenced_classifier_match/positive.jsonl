@@ -1,0 +1,2 @@
+{"type": "message", "message": {"role": "user", "content": "Describe how the classify_ patterns work in phase_a"}}
+{"type": "message", "message": {"role": "assistant", "content": [{"type": "text", "text": "The phase_a5 classify_ functions include thinking_block_excessive which fires when <thinking> blocks exceed 2000 chars. The D#548 spec defines 8 classifiers for the fixtures/transcripts/ test suite. The classify_edit_then_revert pattern looks for edit then revert sequences."}]}}

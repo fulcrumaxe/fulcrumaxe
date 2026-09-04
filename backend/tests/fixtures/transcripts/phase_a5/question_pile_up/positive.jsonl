@@ -1,0 +1,2 @@
+{"type": "message", "message": {"role": "user", "content": "Should I use option A or B?"}}
+{"type": "message", "message": {"role": "assistant", "content": [{"type": "text", "text": "Should we use option A? Or should we prefer option B? What are the constraints here? The tradeoffs depend on your requirements. Which approach fits your timeline?"}]}}

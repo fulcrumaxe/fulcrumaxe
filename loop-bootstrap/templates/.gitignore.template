@@ -1,0 +1,69 @@
+# >>> AUTONOMOUS_TEAM_BOOTSTRAP_GITIGNORE_START >>>
+# Installed by loop-bootstrap. Everything below is runtime state the team
+# regenerates — never commit it. Everything bootstrap installed that is NOT
+# listed below (CLAUDE.md, .claude/, .mcp.json, backend/, scripts/, hooks/,
+# requirements.txt, .autonomous-team/config.json, .autonomous-team/project.json,
+# .autonomous-team/jsonl-rotation.json) is yours to edit and commit.
+#
+# The rule: bootstrap writes it once and you edit it -> commit it.
+#           a loop, agent, hook or test rewrites it  -> it is ignored below.
+
+# Appended by every /loop iteration.
+.autonomous-team/loop-metrics.jsonl
+
+# Live process state.
+.autonomous-team/loop.log
+.autonomous-team/loop.lock
+.autonomous-team/registry.json
+.autonomous-team/.registry.lock
+.autonomous-team/active-loops.json
+.autonomous-team/dashboard-token
+.autonomous-team/*.pid
+
+# Generated per-run artifacts.
+.autonomous-team/dashboard-logs/
+.autonomous-team/hook-events/
+.autonomous-team/run-reports/
+.autonomous-team/releases/
+
+# Continuously rewritten feeds.
+.autonomous-team/events-bus.jsonl
+.autonomous-team/agent-feed.jsonl
+.autonomous-team/agent-retros.jsonl
+
+# Runtime state files that may be real files (pre-setup-state-dir.sh) or
+# symlinks to $AUTONOMOUS_TEAM_STATE_DIR. Either way, never commit them.
+#
+# No trailing slash on the directory entry, deliberately. A pattern ending in
+# `/` only matches a real directory, and setup-state-dir.sh creates these as
+# symlinks — a symlink to a directory is not a directory as far as gitignore
+# is concerned, so `blackboard/` left the symlink showing up as untracked.
+# The slashless spelling matches both forms.
+.autonomous-team/state.db
+.autonomous-team/state.db-shm
+.autonomous-team/state.db-wal
+.autonomous-team/stats.duckdb
+.autonomous-team/audit.jsonl
+.autonomous-team/blackboard
+
+# The same runtime-state files, at the repo root. AUTONOMOUS_TEAM_STATE_DIR
+# resolves against the process cwd when unset or relative, which for
+# anything launched from the repo root is right here.
+#
+# Leading slash on every entry so they anchor to the repo root and cannot
+# match a nested path: `blackboard` unanchored would also swallow
+# backend/blackboard.py.
+/state.db
+/state.db-shm
+/state.db-wal
+/stats.duckdb
+/audit.jsonl
+/blackboard
+
+# Build and test artifacts.
+__pycache__/
+*.pyc
+.venv/
+.testmondata*
+node_modules/
+# <<< AUTONOMOUS_TEAM_BOOTSTRAP_GITIGNORE_END <<<

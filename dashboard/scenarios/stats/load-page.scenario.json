@@ -1,0 +1,69 @@
+{
+  "name": "load-page",
+  "goal": "Verify the Stats page loads at /stats, renders metric cards, and shows no console errors",
+  "url": "http://localhost:5173/stats",
+  "preconditions": {
+    "localStorage": {
+      "af_dashboard_token": "<test-token>"
+    },
+    "env": {
+      "AF_MCP_TEST_ORIGIN": "1"
+    }
+  },
+  "steps": [
+    {
+      "action": "navigate_page",
+      "url": "http://localhost:5173/stats",
+      "wait_until": "domcontentloaded"
+    },
+    {
+      "action": "wait_for",
+      "selector": "[data-testid='stats-grid'], [data-testid='stats-empty'], [data-testid='stats-error']",
+      "timeout_ms": 15000
+    }
+  ],
+  "success_criteria": [
+    {
+      "kind": "text_contains",
+      "value": "Team Stats",
+      "description": "Page heading must render"
+    },
+    {
+      "kind": "element_exists",
+      "selector": "[data-testid='stats-refresh-button']",
+      "description": "Refresh button must be present"
+    },
+    {
+      "kind": "element_exists",
+      "selector": "[data-testid='stats-grid']",
+      "description": "Metric grid container must render"
+    },
+    {
+      "kind": "no_console_errors",
+      "description": "No uncaught JavaScript errors on load"
+    }
+  ],
+  "must_not_happen": [
+    {
+      "kind": "network_request",
+      "url_matches": "/api/loop/run",
+      "description": "Stats page load must not trigger a loop run"
+    }
+  ],
+  "visual_verification": {
+    "routes_touched": ["/stats"],
+    "assertions": [
+      "Page heading 'Team Stats' visible",
+      "data-testid='stats-grid' present",
+      "data-testid='stats-refresh-button' present",
+      "At least one metric card rendered when stats.duckdb has data (data-testid starting with 'metric-card-')",
+      "Empty state shown when no metrics recorded yet"
+    ],
+    "negative_checks": [
+      "No uncaught console errors",
+      "No loop run triggered on page load",
+      "Page does not redirect away from /stats"
+    ]
+  },
+  "covers_discussion": "549"
+}

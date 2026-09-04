@@ -1,0 +1,138 @@
+[
+  {
+    "route": "/",
+    "component": "ProjectListPage",
+    "parameterized": false,
+    "expected_done_state": "data",
+    "needs_seed_fixture": false,
+    "console_warning_allowlist": []
+  },
+  {
+    "route": "/projects",
+    "component": "ProjectListPage",
+    "parameterized": false,
+    "expected_done_state": "data",
+    "needs_seed_fixture": false,
+    "console_warning_allowlist": []
+  },
+  {
+    "route": "/project/:id",
+    "component": "ProjectDashboardPage",
+    "parameterized": true,
+    "expected_done_state": "data",
+    "needs_seed_fixture": true,
+    "console_warning_allowlist": []
+  },
+  {
+    "route": "/project/:id/agents",
+    "component": "AgentFeedPage",
+    "parameterized": true,
+    "expected_done_state": "empty",
+    "needs_seed_fixture": true,
+    "console_warning_allowlist": []
+  },
+  {
+    "route": "/project/:id/settings",
+    "component": "SettingsPage",
+    "parameterized": true,
+    "expected_done_state": "data",
+    "needs_seed_fixture": true,
+    "console_warning_allowlist": []
+  },
+  {
+    "route": "/project/:id/kpi",
+    "component": "KpiDetailPage",
+    "parameterized": true,
+    "expected_done_state": "empty",
+    "needs_seed_fixture": true,
+    "console_warning_allowlist": []
+  },
+  {
+    "route": "/kpi",
+    "component": "KpiDetailPage",
+    "parameterized": false,
+    "expected_done_state": "empty",
+    "needs_seed_fixture": false,
+    "console_warning_allowlist": []
+  },
+  {
+    "route": "/ideas",
+    "component": "IdeasPage",
+    "parameterized": false,
+    "expected_done_state": "empty",
+    "needs_seed_fixture": false,
+    "console_warning_allowlist": []
+  },
+  {
+    "route": "/loop-controller",
+    "component": "LoopController",
+    "parameterized": false,
+    "expected_done_state": "data",
+    "needs_seed_fixture": false,
+    "console_warning_allowlist": []
+  },
+  {
+    "route": "/discussions",
+    "component": "DiscussionExplorer",
+    "parameterized": false,
+    "expected_done_state": "data",
+    "needs_seed_fixture": false,
+    "console_warning_allowlist": []
+  },
+  {
+    "route": "/prs",
+    "component": "PrInspectorPage",
+    "parameterized": false,
+    "expected_done_state": "data",
+    "needs_seed_fixture": false,
+    "console_warning_allowlist": []
+  },
+  {
+    "route": "/pr/:number",
+    "component": "PRDetailPage",
+    "parameterized": true,
+    "expected_done_state": "data",
+    "needs_seed_fixture": true,
+    "console_warning_allowlist": []
+  },
+  {
+    "route": "/loop-timeline",
+    "component": "LoopTimeline",
+    "parameterized": false,
+    "expected_done_state": "data",
+    "needs_seed_fixture": false,
+    "console_warning_allowlist": []
+  },
+  {
+    "route": "/stats",
+    "component": "StatsPage",
+    "parameterized": false,
+    "expected_done_state": "data",
+    "needs_seed_fixture": false,
+    "console_warning_allowlist": []
+  },
+  {
+    "route": "/runs",
+    "component": "RunsPage",
+    "parameterized": false,
+    "expected_done_state": "data",
+    "needs_seed_fixture": false,
+    "console_warning_allowlist": []
+  },
+  {
+    "route": "/fleet",
+    "component": "FleetPage",
+    "parameterized": false,
+    "expected_done_state": "data",
+    "needs_seed_fixture": false,
+    "console_warning_allowlist": []
+  },
+  {
+    "route": "/settings",
+    "component": "SettingsPage",
+    "parameterized": false,
+    "expected_done_state": "data",
+    "needs_seed_fixture": false,
+    "console_warning_allowlist": []
+  }
+]

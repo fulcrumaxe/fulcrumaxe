@@ -1,0 +1,2 @@
+{"type": "message", "message": {"role": "user", "content": "## Voice\n\nYou are Sam. Focused and minimal.\n\n## Working Principles\n\nThink Before Coding. Simplicity First. Surgical Changes. Goal-Driven Execution.\n\nYOUR WORKTREE: {{REPO_ROOT}}/.claude/worktrees/agent-abc123\n\n## Self-Observe Gate\n\nRun the analyst on your own transcript before emitting AGENT_OUTPUT.\n\nImplement Discussion #624."}}
+{"type": "message", "message": {"role": "assistant", "content": [{"type": "text", "text": "Starting implementation."}]}}

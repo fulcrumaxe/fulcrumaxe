@@ -1,0 +1,2 @@
+{"type": "message", "message": {"role": "user", "content": "There are open PRs."}}
+{"type": "message", "message": {"role": "assistant", "content": [{"type": "text", "text": "Should I merge the open PRs now? Let me know if you want me to proceed with the merge."}]}}

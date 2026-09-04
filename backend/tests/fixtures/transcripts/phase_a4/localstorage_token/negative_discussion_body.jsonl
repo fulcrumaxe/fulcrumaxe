@@ -1,0 +1,3 @@
+{"type": "message", "message": {"role": "user", "content": "Post a Discussion comment about the bug"}}
+{"type": "message", "message": {"role": "assistant", "content": [{"type": "tool_use", "name": "Bash", "id": "tc1", "input": {"command": "gh api graphql -f query='mutation{addDiscussionComment(input:{discussionId:\"D_abc\",body:\"Agent called localStorage.setItem(\\\"rpcToken\\\", value) which exposes the token\"}){comment{id}}}'"}}}]}}
+{"type": "message", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tc1", "content": "{}", "is_error": false}]}}

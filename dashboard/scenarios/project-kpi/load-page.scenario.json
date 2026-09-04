@@ -1,0 +1,57 @@
+{
+  "name": "load-page",
+  "goal": "Verify /project/:id/kpi loads at /project/fulcrumaxe/kpi and reaches its expected 'empty' done-state without console errors",
+  "url": "http://localhost:5173/project/fulcrumaxe/kpi",
+  "preconditions": {
+    "localStorage": {
+      "af_dashboard_token": "<test-token>"
+    },
+    "env": {
+      "AF_MCP_TEST_ORIGIN": "1"
+    }
+  },
+  "steps": [
+    {
+      "action": "navigate_page",
+      "url": "http://localhost:5173/project/fulcrumaxe/kpi",
+      "wait_until": "domcontentloaded"
+    },
+    {
+      "action": "wait_for",
+      "selector": "[data-testid='kpi-empty']",
+      "timeout_ms": 15000
+    }
+  ],
+  "success_criteria": [
+    {
+      "kind": "element_exists",
+      "selector": "[data-testid='kpi-empty']",
+      "description": "Empty-state marker 'kpi-empty' must render when no data is present"
+    },
+    {
+      "kind": "no_console_errors",
+      "description": "No uncaught JavaScript errors on load"
+    }
+  ],
+  "must_not_happen": [
+    {
+      "kind": "network_request",
+      "url_matches": "/api/loop/run",
+      "description": "Page load must not trigger a loop run"
+    }
+  ],
+  "visual_verification": {
+    "routes_touched": [
+      "/project/:id/kpi"
+    ],
+    "assertions": [
+      "Route /project/:id/kpi renders its 'empty' done-state",
+      "data-testid='kpi-empty' present"
+    ],
+    "negative_checks": [
+      "No uncaught console errors",
+      "No loop run triggered on page load"
+    ]
+  },
+  "covers_discussion": "1536"
+}

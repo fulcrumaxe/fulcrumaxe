@@ -1,0 +1,10 @@
+{"type": "message", "message": {"role": "user", "content": "Review the backend code"}}
+{"type": "message", "message": {"role": "assistant", "content": [{"type": "tool_use", "name": "Read", "id": "tc1", "input": {"file_path": "{{REPO_ROOT}}/backend/run_analyst.py"}}]}}
+{"type": "message", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tc1", "content": "file content here", "is_error": false}]}}
+{"type": "message", "message": {"role": "assistant", "content": [{"type": "tool_use", "name": "Read", "id": "tc2", "input": {"file_path": "{{REPO_ROOT}}/backend/run_analyst.py"}}]}}
+{"type": "message", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tc2", "content": "file content here", "is_error": false}]}}
+{"type": "message", "message": {"role": "assistant", "content": [{"type": "tool_use", "name": "Read", "id": "tc3", "input": {"file_path": "{{REPO_ROOT}}/backend/run_analyst.py"}}]}}
+{"type": "message", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tc3", "content": "file content here", "is_error": false}]}}
+{"type": "message", "message": {"role": "assistant", "content": [{"type": "tool_use", "name": "Read", "id": "tc4", "input": {"file_path": "{{REPO_ROOT}}/backend/run_analyst.py"}}]}}
+{"type": "message", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tc4", "content": "file content here", "is_error": false}]}}
+{"type": "message", "message": {"role": "assistant", "content": [{"type": "text", "text": "I have reviewed the file."}]}}

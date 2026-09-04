@@ -1,0 +1,40 @@
+# spec_external_docs_allowlist.txt
+# One module name per line.  Names listed here are skipped by check_imports_have_docs()
+# even when they are not in sys.stdlib_module_names.
+#
+# Add entries for:
+#   - Internal packages that live in this repo (backend.*, scripts.*)
+#   - Widely-known dev-only tools that do not need an external_docs anchor
+#   - Packages already permanently documented in the team wiki
+#
+# Why an enumerated list and not a manifest lookup (package.json / pyproject):
+# a manifest records that a dependency *exists*; this list records the
+# separate judgement that a dependency *needs no doc anchor*. Nothing in a
+# manifest encodes that judgement, and package.json has a measured hole
+# (tui/ imports vitest without declaring it). The trade-off this list makes
+# is deliberate: its decay is loud — a missing entry blocks the next PR that
+# hits it and someone notices within the hour, which is how D#2257 itself
+# came to exist — unlike a denylist (D#2275), whose decay is silent. See
+# D#2257 for the full reasoning and D#2275 for the contrasting case.
+
+# Internal re-imports resolved structurally now (see _first_party_names in spec_external_docs.py)
+
+# Core vendored runtime deps — documented in team wiki, no per-file anchor needed
+duckdb
+
+# Dev tooling — not user-facing external deps
+pytest
+pytest_mock
+unittest
+
+# Type stubs — no runtime dependency
+typing_extensions
+
+# Frontend — core vendored runtime + dev tooling
+react
+react-dom
+react-router-dom
+recharts
+vitest
+@testing-library/react
+@testing-library/user-event

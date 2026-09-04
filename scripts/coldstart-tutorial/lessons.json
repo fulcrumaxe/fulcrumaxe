@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "lessons": [
+    {
+      "id": "orient",
+      "title": "Welcome — the mental model",
+      "phase": "orient",
+      "applies_to": ["both"],
+      "est_minutes": 3,
+      "teaching_text": "A Team Lead spawns specialist roles (executor, code-reviewer, security-reviewer, project-manager, and others) to do the actual work. Every unit of work starts life as a GitHub Discussion, gets turned into a frozen Spec, is implemented by an executor in an isolated worktree as a PR, gets reviewed, and only then merges. Nothing you haven't reviewed runs unsandboxed.",
+      "wiki_ref": "CLAUDE.md#team-lead-operating-protocol"
+    },
+    {
+      "id": "roles",
+      "title": "The role roster",
+      "phase": "deep",
+      "applies_to": ["both"],
+      "est_minutes": 5,
+      "teaching_text": "Each role is a named agent persona with a narrow job: executor implements code from a Spec, code-reviewer inspects diffs for quality, security-reviewer audits auth/SQL/secrets-sensitive changes, project-manager writes and freezes Specs, acceptance-tester validates against the Spec, and a handful of specialists (technical-architect, product-owner, cost-analyst, performance-expert, security-expert) weigh in on Feature/Critical Discussions before a Spec is written. Team Lead is the only role that spawns others.",
+      "wiki_ref": "wiki/CLAUDE-md-index.md"
+    },
+    {
+      "id": "loop",
+      "title": "The Discussion → Spec → PR → merge loop",
+      "phase": "deep",
+      "applies_to": ["both"],
+      "est_minutes": 5,
+      "teaching_text": "Every improvement starts as a GitHub Discussion. A consensus panel of specialists weighs in for Feature/Critical work, then project-manager freezes a Spec with runnable pass/fail acceptance criteria. An executor implements against that Spec in an isolated worktree and opens a PR. code-reviewer and (when auth/SQL/secrets are touched) security-reviewer each post a verdict; only a PR carrying all required gate labels gets merged, and the loop does that merge automatically.",
+      "wiki_ref": "wiki/Team-Lead-Operations.md"
+    },
+    {
+      "id": "sandbox",
+      "title": "Sandbox and worktree isolation",
+      "phase": "deep",
+      "applies_to": ["both"],
+      "est_minutes": 4,
+      "teaching_text": "Executors and reviewers run inside a git worktree, not the parent checkout — a PreToolUse hook blocks any attempt to write to the parent repo, flip HEAD, or merge a PR from inside that isolation. This means a misbehaving or buggy agent literally cannot touch main directly; every block is logged so you can audit what was attempted.",
+      "wiki_ref": "wiki/Sub-Agent-Sandbox.md"
+    },
+    {
+      "id": "dashboard",
+      "title": "Reading the dashboard",
+      "phase": "deep",
+      "applies_to": ["both"],
+      "est_minutes": 4,
+      "teaching_text": "The dashboard surfaces what the team is doing in real time: active/recent agent runs, loop iteration history, KPI trends, and cost. Start it with scripts/start-dashboard.sh and treat it as your primary window into what's happening between check-ins rather than reading raw logs.",
+      "wiki_ref": "wiki/Team-KPIs-Dashboard.md"
+    },
+    {
+      "id": "dials",
+      "title": "Autonomy dials",
+      "phase": "deep",
+      "applies_to": ["both"],
+      "est_minutes": 4,
+      "teaching_text": "Autonomy is tunable per operation class (agent spawning, fast-path merges, touching external systems, self-generated idea intake), each on a 1-5 scale from manual-approval-every-time to fully autonomous. Dials default conservative and can be raised deliberately; lowering a dial takes effect immediately, raising one is a more deliberate action. Check current levels with the dial CLI before assuming a class is more or less autonomous than it is.",
+      "wiki_ref": "wiki/Subsystems-Index.md#dials"
+    }
+  ]
+}

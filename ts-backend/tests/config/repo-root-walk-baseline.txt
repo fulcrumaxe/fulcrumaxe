@@ -1,0 +1,44 @@
+# repo-root-walk-baseline.txt (D#1825)
+#
+# Per-file count of hand-rolled ".." checkout-path walks under ts-backend/src,
+# as enforced by tests/config/no-hand-rolled-repo-root-walks.test.ts. A file's
+# actual count must equal its entry here exactly — see that test file's
+# top-of-file comment for why both directions (higher and lower) fail.
+#
+# Regenerate after converting a site, from ts-backend/:
+#   DUMP_BASELINE=1 bun test tests/config/no-hand-rolled-repo-root-walks.test.ts
+# and replace the entries below with the printed lines.
+#
+# Generated after the six D#1825 conversions landed (spawn-agent.ts,
+# pre-spawn-check.ts x2, dispatch.ts x2, hook-runner.ts) — a baseline taken
+# before those conversions would have baked the six defects in as permitted.
+
+# The one legitimate walk site: config/repo-root.ts resolves its own module
+# location as the env-immune floor for repoRoot(). Every other entry below is
+# one of the ~20 already-correct sites, or one of the 14 out-of-scope wrong
+# sites named in D#1825's Spec (each has an AF_REPO_ROOT short-circuit ahead
+# of it, so none are urgent; they convert opportunistically as the port
+# program touches them, ratcheting this file down one entry at a time).
+config/repo-root.ts 1
+
+config/repo.ts 1
+loop/discussion-driven-iteration.ts 1
+loop/fix-loop-iteration-opencode.ts 1
+loop/loop-phased-step5.ts 1
+loop/loop-preflight.ts 1
+routes/rpc.ts 1
+rpc/loop.ts 1
+rpc/misc-batch5.ts 1
+rpc/stats-batch3.ts 1
+rpc/stats-dora.ts 1
+rpc/stats.ts 3
+spawn/budget.ts 3
+spawn/circuit-breaker.ts 2
+spawn/claude-spawn-tracker.ts 1
+spawn/control-plane.ts 1
+spawn/cost-tracker.ts 1
+spawn/discussion-cache.ts 1
+spawn/discussion-status.ts 1
+spawn/loop-runs.ts 1
+spawn/post-agent-hook.ts 1
+spawn/post-merge-hook.ts 1

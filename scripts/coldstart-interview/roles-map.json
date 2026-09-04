@@ -1,0 +1,59 @@
+{
+  "_comment": "Data table consulted by generate.py to derive config.json's active_roles allowlist (D#1622 Batch C1). This is data, not generator if/else branches -- edit this file to change role gating, not generate.py. 'known_roles' mirrors the current .claude/agents/*.md role set and is asserted against by test_generate.py.",
+  "always_on": [
+    "acceptance-tester",
+    "code-reviewer",
+    "docs-writer",
+    "executor",
+    "mission-analyst",
+    "project-manager",
+    "security-reviewer",
+    "technical-architect"
+  ],
+  "frontend_gated": [
+    "accessibility-reviewer",
+    "browser-tester",
+    "tui-tester",
+    "ux-designer",
+    "visual-verifier"
+  ],
+  "deploy_gated": [
+    "incident-commander",
+    "release-manager",
+    "runbook-writer"
+  ],
+  "non_real_deploy_targets": [
+    "none",
+    "local",
+    "n/a",
+    ""
+  ],
+  "known_roles": [
+    "acceptance-tester",
+    "accessibility-reviewer",
+    "analytics-engineer",
+    "browser-tester",
+    "code-reviewer",
+    "cost-analyst",
+    "debater",
+    "docs-writer",
+    "executor",
+    "feedback-scanner",
+    "incident-commander",
+    "mission-analyst",
+    "performance-expert",
+    "product-owner",
+    "project-manager",
+    "quality-sweep",
+    "release-manager",
+    "researcher",
+    "run-analyst",
+    "runbook-writer",
+    "security-expert",
+    "security-reviewer",
+    "technical-architect",
+    "tui-tester",
+    "ux-designer",
+    "visual-verifier"
+  ]
+}

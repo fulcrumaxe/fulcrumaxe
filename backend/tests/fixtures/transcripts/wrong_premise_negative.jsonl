@@ -1,0 +1,4 @@
+{"type": "message", "message": {"role": "user", "content": "Run the tests"}}
+{"type": "message", "message": {"role": "assistant", "content": [{"type": "tool_use", "name": "Bash", "id": "tc1", "input": {"command": "python3 -m pytest backend/tests/"}}]}}
+{"type": "message", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tc1", "content": "5 passed", "is_error": false}]}}
+{"type": "message", "message": {"role": "assistant", "content": [{"type": "text", "text": "Tests passed successfully."}]}}

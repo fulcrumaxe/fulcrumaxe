@@ -1,0 +1,3 @@
+{"type": "message", "message": {"role": "user", "content": "Write the health check script"}}
+{"type": "message", "message": {"role": "assistant", "content": [{"type": "tool_use", "name": "Write", "id": "tc1", "input": {"file_path": "scripts/health_check.sh", "content": "#!/bin/bash\ncurl -k https://internal.api.example.com/health\n"}}]}}
+{"type": "message", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tc1", "content": "OK", "is_error": false}]}}

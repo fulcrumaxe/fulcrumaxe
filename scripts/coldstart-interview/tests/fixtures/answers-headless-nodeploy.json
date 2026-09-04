@@ -1,0 +1,33 @@
+{
+  "session": "fixture-headless-nodeploy",
+  "topics": {
+    "identity": {
+      "project_name": "batchcruncher",
+      "project_description": "A headless CLI that crunches CSV batches on a schedule.",
+      "repo_owner": "acme-labs",
+      "primary_domain": "data tooling",
+      "target_users": "internal analysts"
+    },
+    "stack": {
+      "primary_language": "python",
+      "runtime_framework": "none",
+      "package_manager": "pip",
+      "test_framework": "pytest",
+      "has_frontend": "no"
+    },
+    "deploy": {
+      "deploy_target": "none",
+      "ci_provider": "none",
+      "has_staging_env": "no",
+      "release_cadence": "ad-hoc"
+    },
+    "autonomy": {
+      "agent_spawn_level": 2,
+      "merge_fast_path_level": 1,
+      "external_system_level": 1,
+      "intent_generate_level": 1,
+      "human_approval_before_merge": "yes",
+      "security_review_required": "no"
+    }
+  }
+}

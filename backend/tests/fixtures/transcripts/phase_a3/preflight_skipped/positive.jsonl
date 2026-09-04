@@ -1,0 +1,5 @@
+{"type": "message", "message": {"role": "user", "content": "Implement the feature and create a PR"}}
+{"type": "message", "message": {"role": "assistant", "content": [{"type": "tool_use", "name": "Edit", "id": "tc1", "input": {"file_path": "src/feature.py", "old_string": "", "new_string": "# feature"}}]}}
+{"type": "message", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tc1", "content": "File updated", "is_error": false}]}}
+{"type": "message", "message": {"role": "assistant", "content": [{"type": "tool_use", "name": "Bash", "id": "tc2", "input": {"command": "gh pr create --title 'Add feature' --body 'Implements #123'"}}]}}
+{"type": "message", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tc2", "content": "https://github.com/org/repo/pull/42", "is_error": false}]}}

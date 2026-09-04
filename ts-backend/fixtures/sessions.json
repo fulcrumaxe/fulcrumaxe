@@ -1,0 +1,15 @@
+{
+  "captured_at": "2026-05-23T00:00:00Z",
+  "python_port": 18099,
+  "route": "/sessions",
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "sessions": []
+  },
+  "raw_body": "{\"sessions\": []}",
+  "mask_applied": [],
+  "note": "Structure-only golden fixture. sessions array contains session dicts with fields: session_id, started_at, ended_at, iteration_count, prs_merged, discussions_completed. Array may be empty in fresh environments."
+}

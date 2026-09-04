@@ -1,0 +1,108 @@
+# CI divergence gate for the TypeScript backend parity harness (D#1437 P0).
+#
+# What this does:
+#   1. bun install — installs ts-backend dependencies
+#   2. bun run typecheck — TypeScript typecheck (no emit)
+#   3. bun build — verifies the bundle compiles
+#   4. bun test — normalizer unit tests (all rules)
+#   5. golden-assert — boots TS backend, asserts /health matches golden fixture
+#      after normalization (structure check; live fields masked)
+#   6. shadow-diff (smoke) — boots both Python and TS backends on loopback,
+#      diffs /health status + content-type header + normalized body.
+#      Exit 1 = divergence = CI FAIL.
+#
+# Gate: any divergence in step 5 or 6 fails the build and blocks merge.
+# This becomes a required status check once it runs green on main.
+#
+# Ports used (loopback only):
+#   Python reference: 18099 (started by start-dashboard.sh)
+#   TS backend:       19099 (started inside golden-assert / shadow-diff scripts)
+#
+# No daemons are left running after any step. The golden-assert and shadow-proxy
+# scripts start the TS backend as a subprocess with a trap+kill on exit.
+
+name: ts-backend-parity
+
+on:
+  push:
+    paths:
+      - "ts-backend/**"
+      - ".github/workflows/ts-backend-parity.yml"
+  pull_request:
+    paths:
+      - "ts-backend/**"
+      - ".github/workflows/ts-backend-parity.yml"
+
+jobs:
+  parity:
+    name: TypeScript backend — build, typecheck, unit tests, parity gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: bun install
+        working-directory: ts-backend
+        run: bun install --frozen-lockfile
+
+      - name: typecheck
+        working-directory: ts-backend
+        run: bun run typecheck
+
+      - name: build
+        working-directory: ts-backend
+        # @duckdb/node-api is a native N-API addon — must be marked external so
+        # bun build doesn't try to inline it (the .node binary is loaded at runtime).
+        run: bun run build
+
+      - name: normalizer unit tests
+        working-directory: ts-backend
+        run: bun test tests/normalizer.test.ts
+
+      - name: Start Python reference backend
+        run: |
+          # Start the Python FastAPI backend on loopback port 18099.
+          # Set up state dir first.
+          bash scripts/setup-state-dir.sh
+          python3 -m uvicorn backend.asgi_app:app --host 127.0.0.1 --port 18099 &
+          PYTHON_PID=$!
+          echo "PYTHON_PID=$PYTHON_PID" >> $GITHUB_ENV
+          # Wait for it to be ready
+          for i in $(seq 1 20); do
+            if curl -sf http://127.0.0.1:18099/health > /dev/null 2>&1; then
+              echo "Python backend ready (attempt $i)"
+              break
+            fi
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:18099/health || (echo "Python backend failed to start" && exit 1)
+
+      - name: golden assertion (structure parity)
+        working-directory: ts-backend
+        run: bun run golden-assert
+
+      - name: shadow diff (zero divergence gate)
+        working-directory: ts-backend
+        run: bun run shadow-diff
+
+      - name: Stop Python backend
+        if: always()
+        run: |
+          if [ -n "$PYTHON_PID" ]; then
+            kill "$PYTHON_PID" 2>/dev/null || true
+          fi
