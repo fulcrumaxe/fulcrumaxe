@@ -14,7 +14,9 @@ What "self-improving" looks like in practice: when the Discussion queue runs dry
 
 fulcrumaxe is a self-hosted AI development environment built for one developer running their own infrastructure, not a multi-tenant SaaS. You get an operations console (the dashboard), a team of specialized agent roles that coordinate through GitHub Discussions and PRs, and a loop that keeps proposing and shipping improvements without you having to babysit every step. If you want to hand off routine implementation work — bug fixes, small features, docs — while staying the one who decides direction, this is built for you.
 
-This repo (`fulcrumaxe`) is the real thing — full internal history, not a mirror or export target. It also holds internal-only material (training tooling, experiments) that doesn't ship publicly. A separate curated export (`open-source/export.sh` + `open-source/MANIFEST.md`) copies only the paths marked ready in the manifest out to the public release.
+This repository is the curated public release of fulcrumaxe. It is produced by `export.sh` in the private engine repo, which copies out only the paths a machine-readable manifest marks as ready to ship — so the public tree is a vetted subset by construction rather than by anyone remembering what to leave out. It is published as a squashed snapshot, so the git history here starts at the export, not at the beginning of the project.
+
+The development record is public, just not as commits: 1,135 merged pull requests and 932 closed discussions, browsable as a live queue at <https://fulcrumaxe.dev/discussions.html>, and the codebase as a graph of 4,811 nodes at <https://fulcrumaxe.dev/understand.html>.
 
 ## Prerequisites
 
