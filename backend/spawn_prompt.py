@@ -11,7 +11,7 @@ The canonical library API is backend.spawn_templates.render().
 Examples:
     python3 backend/spawn_prompt.py docs-writer --discussion 551 --pr 487 \
         --var pr_branch=disc-551-docs-writer \
-        --var pr_url=https://github.com/fulcrumaxe/fulcrumaxe/pull/487
+        --var pr_url=https://github.com/autonomous-agent-7/autonomous-forever/pull/487
 
     python3 backend/spawn_prompt.py executor --discussion 42 \
         --var discussion_title="add URL detection" \

@@ -48,7 +48,12 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/lib/repo-resolve.sh"
-_REPO="$(_resolve_repo)"
+# Three consumers, all PR-side: the open-PR file-scope conflict scan, and the
+# two `repos/<slug>/pulls/<n>` head-sha lookups that call the resolver inline
+# rather than reading this variable. Nothing here reads a Discussion through
+# either spelling — grep for `_resolve_repo` as well as `_REPO` before
+# concluding a call site does not exist.
+_CODE_REPO="$(_resolve_code_repo)"
 
 # ── GH_TOKEN: prefer installation token (15k/hr) over user PAT (5k/hr) ───────
 # shellcheck source=scripts/lib/gh-token.sh
@@ -209,7 +214,7 @@ unset _v
 # spawn. Any other flag combination is byte-identical to before.
 if [[ -n "$DRY_RUN_ENV_DUMP" ]]; then
   if [[ -n "$PR_ARG" && "$ISOLATION" == "worktree" ]]; then
-    _DRP_INFO=$(gh api "repos/$(_resolve_repo)/pulls/${PR_ARG}" --jq '[.head.sha, .head.ref] | @tsv' 2>/dev/null || true)
+    _DRP_INFO=$(gh api "repos/$(_resolve_code_repo)/pulls/${PR_ARG}" --jq '[.head.sha, .head.ref] | @tsv' 2>/dev/null || true)
     _DRP_SHA=$(printf '%s' "$_DRP_INFO" | cut -f1)
     if [[ -n "$_DRP_SHA" ]]; then
       # shellcheck source=scripts/lib/pr-tree.sh
@@ -560,7 +565,7 @@ source "$SCRIPT_DIR/lib/role-capabilities.sh"
 if [[ -z "$TOUCHPOINTS" ]]; then
   echo "WARN: --touchpoints not set for role=$ROLE discussion=${DISCUSSION:-} — file-scope conflict detection skipped" >&2
 else
-  _PR_FILES=$(gh pr list --repo "$_REPO" \
+  _PR_FILES=$(gh pr list --repo "$_CODE_REPO" \
     --state open --json number,files \
     --jq '.[] | {n: .number, f: [.files[].path]} | .f[] | . + " PR#\(.n)"' \
     2>/dev/null || echo "")
@@ -864,7 +869,7 @@ PR_BRANCH=""
 _PA_SHA_FULL=""
 if [[ -n "$PR_ARG" ]]; then
   _PA_ERR=$(mktemp)
-  _PA_INFO=$(gh api "repos/$(_resolve_repo)/pulls/${PR_ARG}" --jq '[.head.sha, .head.ref] | @tsv' 2>"$_PA_ERR" || true)
+  _PA_INFO=$(gh api "repos/$(_resolve_code_repo)/pulls/${PR_ARG}" --jq '[.head.sha, .head.ref] | @tsv' 2>"$_PA_ERR" || true)
   _PA_API_FAILED=""
   if [[ -z "$_PA_INFO" ]]; then
     _PA_API_FAILED=1

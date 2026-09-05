@@ -282,7 +282,7 @@ html = f"""<!DOCTYPE html>
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>fulcrumaxe — E2E Proof Report ({timestamp})</title>
+  <title>autonomous-forever — E2E Proof Report ({timestamp})</title>
   <link rel="stylesheet"
         href="https://cdn.jsdelivr.net/npm/asciinema-player@3.6.3/dist/bundle/asciinema-player.min.css"/>
   <style>
@@ -333,7 +333,7 @@ html = f"""<!DOCTYPE html>
   </style>
 </head>
 <body>
-  <h1>fulcrumaxe — E2E Proof Report</h1>
+  <h1>autonomous-forever — E2E Proof Report</h1>
   <p class="meta">Generated: {timestamp}
     {f'| Proof directory: <code>{esc(proof_dir)}</code>' if proof_dir else ''}
   </p>

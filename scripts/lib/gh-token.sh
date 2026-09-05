@@ -7,7 +7,7 @@
 # Usage:
 #   source scripts/lib/gh-token.sh
 
-_GH_TOKEN_PEM="${GITHUB_APP_KEY_PATH:-${HOME}/.fulcrumaxe-state/secrets/github-app.pem}"
+_GH_TOKEN_PEM="${GITHUB_APP_KEY_PATH:-${HOME}/.autonomous-forever-state/secrets/github-app.pem}"
 _REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 if [[ -f "$_GH_TOKEN_PEM" ]]; then

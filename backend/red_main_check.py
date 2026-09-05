@@ -26,7 +26,7 @@ import sys
 from pathlib import Path
 from typing import NamedTuple
 
-from backend._repo import REPO
+from backend._repo import CODE_REPO
 
 logger = logging.getLogger(__name__)
 
@@ -294,7 +294,7 @@ def _fetch_pr_changed_files(pr: int, repo_root: Path) -> list[str]:
             ["gh", "pr", "view", str(pr),
              "--json", "files",
              "--jq", ".files[].path",
-             "--repo", REPO],
+             "--repo", CODE_REPO],
             capture_output=True,
             text=True,
             timeout=30,

@@ -29,7 +29,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # Discover all stats.duckdb paths to migrate.
-# Covers: the primary fulcrumaxe state dir plus any other project
+# Covers: the primary autonomous-forever state dir plus any other project
 # state dirs that exist on this host.
 # ---------------------------------------------------------------------------
 
@@ -56,7 +56,7 @@ home = pathlib.Path.home()
 candidates = {}
 
 # Primary
-candidates[str(_state_paths.STATS_DB)] = 'fulcrumaxe (primary)'
+candidates[str(_state_paths.STATS_DB)] = 'autonomous-forever (primary)'
 
 # Other project state dirs
 for state_dir in sorted(home.glob('*-state')):

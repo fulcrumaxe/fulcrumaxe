@@ -1,5 +1,5 @@
 """
-Structured logging for the fulcrumaxe backend.
+Structured logging for the autonomous-forever backend.
 
 Usage in each module:
     import logging

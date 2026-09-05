@@ -5,7 +5,7 @@ Usage::
     from backend.fleet.discovery import discover_projects, invalidate_cache
     projects = discover_projects()
     # [
-    #   {"name": "fulcrumaxe", "state_dir": "...", "dashboard_port": 5173,
+    #   {"name": "autonomous-forever", "state_dir": "...", "dashboard_port": 5173,
     #    "version": 1, "ok": True},
     #   {"name": "projectb", "state_dir": "...", "dashboard_port": 5100,
     #    "version": 1, "ok": True},

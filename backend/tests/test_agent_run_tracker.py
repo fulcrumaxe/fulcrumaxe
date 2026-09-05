@@ -5,7 +5,7 @@ Covers: start_run, complete_run, backfill, _validate_token_count, _db_path,
 and the CLI entry point.
 
 All persistence is isolated to tmp_path via the STATS_DB_PATH env var.
-The real ~/.fulcrumaxe-state/ is NEVER touched.
+The real ~/.autonomous-forever-state/ is NEVER touched.
 
 Run with:
     python3 -m pytest backend/tests/test_agent_run_tracker.py -v

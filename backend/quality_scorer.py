@@ -37,7 +37,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from backend._repo import REPO
+from backend._repo import CODE_REPO
 
 from backend.blackboard import get_blackboard  # noqa: E402
 from backend.event_bus import QualityScoreEvent, get_bus  # noqa: E402
@@ -622,7 +622,7 @@ class QualityScorer:
             result = subprocess.run(
                 [
                     "gh", "pr", "view", str(pr_number),
-                    "--repo", REPO,
+                    "--repo", CODE_REPO,
                     "--json", "headRefOid",
                     "--jq", ".headRefOid",
                 ],
@@ -667,7 +667,7 @@ class QualityScorer:
         """Fetch the diff for a PR via gh CLI, falling back to empty string."""
         try:
             result = subprocess.run(
-                ["gh", "pr", "diff", str(pr_number), "--repo", REPO],
+                ["gh", "pr", "diff", str(pr_number), "--repo", CODE_REPO],
                 capture_output=True,
                 text=True,
                 timeout=30,

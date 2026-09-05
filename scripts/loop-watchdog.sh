@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/loop-watchdog.sh — loop self-restart watchdog
 #
-# Checks ~/.fulcrumaxe-state/loop-metrics.jsonl (or override via
+# Checks ~/.autonomous-forever-state/loop-metrics.jsonl (or override via
 # LOOP_METRICS_FILE env var) every time it runs. If the file is older than
 # STALE_MINUTES (default 30) or does not exist, the loop is assumed dead and
 # trigger.py is called to restart it.
@@ -43,7 +43,7 @@ REPO_ROOT="${REPO_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 
 # ── Config ────────────────────────────────────────────────────────────────
 
-STATE_DIR="${AUTONOMOUS_TEAM_STATE_DIR:-$HOME/.fulcrumaxe-state}"
+STATE_DIR="${AUTONOMOUS_TEAM_STATE_DIR:-$HOME/.autonomous-forever-state}"
 METRICS_FILE="${LOOP_METRICS_FILE:-$STATE_DIR/loop-metrics.jsonl}"
 LOG_FILE="$REPO_ROOT/.autonomous-team/loop-watchdog.log"
 STALE_MINUTES="${STALE_MINUTES:-30}"

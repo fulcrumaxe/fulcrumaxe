@@ -23,7 +23,15 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/lib/repo-resolve.sh"
-REPO="$(_resolve_repo)"
+# The CODE plane: every use of $REPO in this file is `gh pr list`.
+#
+# This assignment used to be `_resolve_repo`, and it also used to be silently
+# discarded: sourcing lib/gh-label.sh a few lines below assigned its own
+# un-namespaced REPO on top of this one, so the value actually used by
+# `gh pr list --repo "$REPO"` came from gh-label.sh, not from here. Both are the
+# code plane now, and gh-label.sh's variable is namespaced (_GH_LABEL_REPO), so
+# this assignment is the one that survives and it is the right plane.
+REPO="$(_require_code_repo "sweep-stuck-prs")" || exit 1
 
 RESPAWNS_FILE="$REPO_ROOT/.autonomous-team/stuck-pr-respawns.json"
 DRY_RUN="${DRY_RUN:-}"

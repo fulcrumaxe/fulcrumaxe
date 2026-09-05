@@ -13,7 +13,7 @@
  * URL sync: when the current URL contains a /project/:name/ segment, that project
  * is activated (URL wins over localStorage). This means navigating directly to
  * http://localhost:5102/project/projectb/kpi shows projectb data even if localStorage
- * previously stored "fulcrumaxe".
+ * previously stored "autonomous-forever".
  *
  * Usage:
  *   // Wrap your app:

@@ -2,7 +2,7 @@
 # scripts/tail-agents.sh — Stream all active agent transcripts to stdout.
 #
 # Discovers the 20 most-recently-modified subagent JSONL transcripts under
-#   ~/.claude/projects/-home-agent-fulcrumaxe/*/subagents/agent-*.jsonl
+#   ~/.claude/projects/-home-agent-autonomous-forever/*/subagents/agent-*.jsonl
 # and multiplexes their content to stdout with a [agent-XXXX] prefix.
 #
 # Each line is secret-scrubbed by transcript_tailer.py before emission.
@@ -57,7 +57,7 @@ spawns = discover_active_spawns(max_spawns=max_spawns)
 if not spawns:
     print("[tail-agents] No active agent transcripts found.", file=sys.stderr)
     print(
-        "[tail-agents] Glob: ~/.claude/projects/-home-agent-fulcrumaxe"
+        "[tail-agents] Glob: ~/.claude/projects/-home-agent-autonomous-forever"
         "/*/subagents/agent-*.jsonl",
         file=sys.stderr,
     )

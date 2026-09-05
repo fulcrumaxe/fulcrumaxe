@@ -24,7 +24,7 @@ done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FIXTURE_DIR="$SCRIPT_DIR"
-REAL_MEMORY_DIR="$HOME/.claude/projects/-home-agent-fulcrumaxe/memory"
+REAL_MEMORY_DIR="$HOME/.claude/projects/-home-agent-autonomous-forever/memory"
 
 if [ ! -d "$REAL_MEMORY_DIR" ]; then
   echo "ERROR: memory dir not found: $REAL_MEMORY_DIR" >&2

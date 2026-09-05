@@ -2,7 +2,7 @@
 Unit tests for backend/control_plane.py — ControlPlane class and module helpers.
 
 State isolation: every test uses a tmp_path-backed config file so the real
-~/.fulcrumaxe-state/ directory is never touched.  The
+~/.autonomous-forever-state/ directory is never touched.  The
 AUTONOMOUS_TEAM_STATE_DIR env var is overridden via the `isolated_env`
 fixture to redirect audit_trail writes to a temp dir as well.
 
@@ -54,7 +54,7 @@ from backend.control_plane import (  # noqa: E402
 
 @pytest.fixture()
 def isolated_env(tmp_path, monkeypatch):
-    """Redirect AUTONOMOUS_TEAM_STATE_DIR so audit_trail never writes to ~/.fulcrumaxe-state/."""
+    """Redirect AUTONOMOUS_TEAM_STATE_DIR so audit_trail never writes to ~/.autonomous-forever-state/."""
     monkeypatch.setenv("AUTONOMOUS_TEAM_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("AF_CONTROL_PLANE_CONFIG", str(tmp_path / "config.json"))
     (tmp_path / "state").mkdir(parents=True, exist_ok=True)
@@ -798,8 +798,8 @@ def test_cli_mode_show_after_set(isolated_env, capsys):
 
 
 def test_no_real_state_dir_writes_during_set(isolated_env):
-    """Confirm set() does not write to the real ~/.fulcrumaxe-state/."""
-    real_state = Path.home() / ".fulcrumaxe-state"
+    """Confirm set() does not write to the real ~/.autonomous-forever-state/."""
+    real_state = Path.home() / ".autonomous-forever-state"
     if real_state.exists():
         audit_file = real_state / "audit.jsonl"
         size_before = audit_file.stat().st_size if audit_file.exists() else 0
@@ -818,6 +818,6 @@ def test_no_real_state_dir_writes_during_set(isolated_env):
         size_after = audit_file.stat().st_size if audit_file.exists() else 0
         # The real state dir's audit.jsonl must not have grown
         assert size_after == size_before, (
-            "control_plane wrote to real ~/.fulcrumaxe-state/audit.jsonl "
+            "control_plane wrote to real ~/.autonomous-forever-state/audit.jsonl "
             "during test — state isolation is broken"
         )

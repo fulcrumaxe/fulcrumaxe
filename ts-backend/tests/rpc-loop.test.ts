@@ -476,7 +476,7 @@ describe("loop.iteration_detail", () => {
     process.env.AF_LOOP_METRICS_PATH = path;
 
     // Create log directory and file
-    const logDir = join(tmpDir, ".autonomous-team", "loop-runs", "fulcrumaxe");
+    const logDir = join(tmpDir, ".autonomous-team", "loop-runs", "autonomous-forever");
     mkdirSync(logDir, { recursive: true });
     writeFileSync(
       join(logDir, "run-test-1.log"),

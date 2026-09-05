@@ -1,5 +1,5 @@
 """
-dashboard/server.py — HTTP/SSE bridge for the fulcrumaxe backend.
+dashboard/server.py — HTTP/SSE bridge for the autonomous-forever backend.
 
 Reads .autonomous-team/agent-feed.jsonl directly via tail-follow and fans
 events out to connected SSE clients. No subprocess spawning — no LLM key
@@ -280,7 +280,7 @@ def _make_app() -> web.Application:
 # Entry point
 # ---------------------------------------------------------------------------
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Fulcrumaxe dashboard SSE bridge")
+    parser = argparse.ArgumentParser(description="Autonomous-forever dashboard SSE bridge")
     parser.add_argument(
         "--port",
         type=int,

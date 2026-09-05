@@ -195,6 +195,15 @@ def test_anchor_still_matches_real_repo_files(scorer: QualityScorer) -> None:
     """Sanity check against the real tracked repo: both files this
     regression depends on actually exist, and the real index still does not
     cross-credit them."""
+    # The premise is that both anchor files are TRACKED. Guarded against the
+    # index rather than the filesystem, because that is what the scorer reads
+    # (git ls-files): after dashboard_tui/ moves out, an operator's checkout can
+    # still have the file on disk while it is no longer tracked, and a
+    # Path.exists() guard would sail past exactly that case. Without the anchor
+    # there is nothing to cross-credit, so the check is vacuous rather than
+    # failing.
+    if "dashboard_tui/app.py" not in scorer._test_index:
+        pytest.skip("dashboard_tui/app.py is not tracked in this tree")
     assert "dashboard_tui/app.py" in scorer._test_index
     assert "scripts/engine-sync/tests/test_apply.py" in scorer._test_index
     result = scorer._test_coverage_score({"dashboard_tui/app.py": []})

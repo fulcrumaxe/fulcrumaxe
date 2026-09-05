@@ -1,0 +1,138 @@
+# Allowlist for scripts/check-no-hardcoded-checkout-paths.sh
+#
+# Format: one entry per line — "<path-relative-to-repo-root>:<hash>:<reason>"
+# <hash> is the first 12 hex chars of sha256(trimmed matched-line content) —
+# NOT a line number. Blank lines and lines starting with # are ignored. Keys
+# on path:content, not whole-file and not path:line — an entry only exempts
+# the specific matched line it was derived from (by content, not position), so
+# a new hit on a different line in an already-listed file still fails the
+# build, and an unrelated edit above a listed line doesn't shift it out from
+# under its own entry.
+#
+# archive/** is excluded by construction in the check itself (never edited, so
+# it can never fix a match) and does not need entries here. Same for
+# wiki/Changelog.md, wiki/Project-Status.md (both machine-generated from
+# PR/Discussion titles — a hit there is a title, not source), and
+# tests/test_no_hardcoded_checkout_paths_guard.sh (its synthetic mutation
+# fixtures deliberately contain the pattern as test data).
+#
+# This list was built by running the guard's own pattern
+# (/home/(agent|jp)/(autonomous-forever|fulcrumaxe)) against `git ls-files`
+# on 2026-08-16, after fixing run-loop-iteration.sh, wiki/Scheduled-Jobs.md,
+# and wiki/Codebase-Map.md for D#1767. It is a real sweep, not copied from
+# the Discussion's illustrative list — several live bugs of the same class
+# turned up that are out of this ticket's acceptance_files scope; see the
+# PR description for the follow-up recommendation.
+#
+# Re-derived 2026-08-17 for D#1857: the guard pattern widened from
+# /home/(agent|jp)/(autonomous-forever|fulcrumaxe) to bare /home/(agent|jp)
+# — the slash form missed bare HOME=... fixtures (no trailing project path)
+# entirely. This re-derivation adds every newly-exposed match with its own
+# written reason and resolves the two genuinely live hardcodes
+# (scripts/env-bootstrap.sh, scripts/start-the-day.sh) instead of
+# allowlisting them. It does not remove any pre-existing entry, per Archive
+# Protocol and D#1857's own failure conditions.
+#
+# Re-keyed to path:line 2026-08-18 for D#1877 (round 1): whole-file exemption
+# let 25 files go from enforced to fully unprotected the moment the pattern
+# above widened, because the old format exempted every line in a listed file,
+# not just the line that earned the entry. That pass also removed 29 dead
+# entries (5 stale, 24 dangling — all from the PR that deleted
+# loop-bootstrap/backend-snapshot/) and added the two files below that were
+# failing under the current pattern.
+#
+# Re-keyed AGAIN to path:content-hash 2026-08-18 for D#1877 (round 2, review
+# feedback): path:line turned out to be line-shift fragile — one unrelated
+# import added above 11 entries in a single file produced 22 spurious
+# failures (11 unlisted-match + 11 now-"stale") from an edit that never
+# touched a flagged line. Hashing the matched line's own trimmed content
+# survives reflow and reordering, and only goes stale when the content itself
+# changes — closing the same whole-file over-exemption defect as path:line
+# did, without the fragility. This also moved the check and this fixture
+# from tests/ to scripts/ so both ship with scripts/lib/preflight-common.sh
+# in the open-source export (tests/ isn't in MANIFEST.md's PATHS_START).
+# Every surviving entry keeps its original written reason; only the key
+# format and the check's location changed. Entry count dropped from 179
+# (path:line, one row per matched line) to 169 (path:hash, deduplicated —
+# a handful of files have two or three lines with byte-identical content,
+# e.g. repeated docstring examples, which now share one entry).
+#
+# ###########################################################################
+# THIS LIST IS EMPTY, AND THAT IS THE POINT.
+#
+# Drained to zero on 2026-08-19 for D#1997. It was never a steady state — it
+# was a backlog, and the reasons written in it were the argument for leaving
+# the work undone. Two whole reason families turned out to be wrong rather
+# than merely unfinished:
+#
+#   "not a live hardcode"  was attached, among other things, to the constant
+#                          that made the worktree-contamination classifier dead
+#                          on this host for months, and to a SubagentStop hook
+#                          writing its audit rows into a directory that does
+#                          not exist. Both were live. Nobody checked, because
+#                          the reason field is prose and prose is not verified.
+#
+#   deferral to another    "owned by D#1814", "lives in draft PR #1813",
+#   Discussion/PR/scope    "out of acceptance_files scope". Every one of these
+#                          outlived the thing it deferred to — PR #1813 was
+#                          closed months before the entries citing it were
+#                          read again.
+#
+# scripts/check-no-hardcoded-checkout-paths.sh now REJECTS both families
+# outright: an entry whose reason matches either is a hard failure, not a
+# warning. See tests/test_no_hardcoded_checkout_paths_guard.sh for one case
+# per banned family. The enforcement landed in the same change that emptied
+# the list, so there was never a window where the guard was red.
+#
+# If you are about to add an entry here: the bar is a *mechanical*
+# impossibility — the file is byte-compared against an external artifact this
+# repo does not control, or similar. "It is a fixture", "it is prose", and "it
+# is historical" are not mechanical impossibilities, and each of those three
+# was tried and resolved during the drain. Fixtures took a shared constant or a
+# load-time placeholder; prose took a placeholder or the pattern's own regex
+# spelling; historical records moved to archive/ under the Archive Protocol,
+# where the guard does not reach them and nobody has to edit evidence.
+# ###########################################################################
+#
+# Drain log, most recent first:
+#   -29 (29 -> 0): the last of it — docstring and comment examples took
+#     placeholders, the three shell suites that pinned a checkout root now
+#     resolve it through scripts/lib/repo-root-resolve.sh, and two live bugs
+#     came out: hooks/subagent_stop_dial_audit.py was resolving its repo root
+#     to a directory that does not exist (so its worktree prefixes could never
+#     match and its audit rows went nowhere, silently, because that hook is
+#     documented to always exit 0), and classify_team_lead_self_edit was
+#     filtering on the worktree instead of the main checkout. Two negative
+#     assertions that named one spelling of the literal now match the guard's
+#     pattern instead, which is strictly stronger — one of them turned out to
+#     have been passing only because this host's home directory was not the one
+#     it named.
+#   -43 (72 -> 29): prose, walkthroughs, and one historical record. Docs that
+#     used a checkout path as an *example* took a placeholder (<home>,
+#     <repo-root>). Docs whose subject IS the literal — the OSS audit record,
+#     the bootstrap classification, the Codebase-Map rough-edges note — name the
+#     pattern in its regex spelling instead, because `grep -E '/home/(agent|jp)'`
+#     does not match the text "/home/(agent|jp)". That is the same move
+#     scripts/check-no-hardcoded-checkout-paths.sh makes on itself, and it keeps
+#     the two reproducible grep commands in the audit runnable. The
+#     verification-report/ proof artifacts were a record of one day in April and
+#     could not be edited without turning evidence into fiction, so they moved
+#     under Archive Protocol to archive/verification-report-proof-2026-08-19/;
+#     the three files there that are live *inputs* stayed put.
+#   -24 (96 -> 72): golden prompt fixtures and recorded transcripts. The live
+#     transcript fixtures now carry {{REPO_ROOT}} / {{HOME}} / {{PROJECT_SLUG}}
+#     tokens that testsupport/transcript_fixtures.py substitutes at load time,
+#     so the classifier sees the running machine's real checkout instead of the
+#     one that recorded the fixture. The executor spawn template stopped naming
+#     a checkout at all: it was telling every executor never to write to a
+#     directory that does not exist on this machine, which made the instruction
+#     inert. Two of the files in this batch turned out to have no consumer at
+#     all — see the PR description.
+#   -55 (151 -> 96): the synthetic path-fixture class. Twenty test files each
+#     spelled out their own made-up checkout root and all picked the same
+#     literal; they now import one constant from testsupport/fixture_paths.py,
+#     which is a constants module and deliberately not a second path resolver.
+#     tests/conftest.py's SANDBOX_MAIN_REPO_ROOT pin moved with them because it
+#     pins the same value. The three shell test files in this class are not
+#     here: they pin a literal that hooks/subagent_stop_dial_audit.py still
+#     hardcodes, so they drain with that hook, not before it.

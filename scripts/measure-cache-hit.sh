@@ -20,7 +20,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-STATE_DIR="${AUTONOMOUS_TEAM_STATE_DIR:-${HOME}/.fulcrumaxe-state}"
+STATE_DIR="${AUTONOMOUS_TEAM_STATE_DIR:-${HOME}/.autonomous-forever-state}"
 
 ROLE=""
 

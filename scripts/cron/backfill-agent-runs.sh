@@ -28,7 +28,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # Default sessions root: ~/.claude/projects/*/sessions/
 # Claude Code stores sessions under a per-project directory named after the
 # canonicalized project path, e.g.:
-#   ~/.claude/projects/-home-agent-fulcrumaxe/sessions/
+#   ~/.claude/projects/-home-agent-autonomous-forever/sessions/
 # Session dirs contain transcript JSONL files and may themselves be symlinks
 # (Claude rotates the active session symlink on each new session).
 SESSIONS_GLOB="${HOME}/.claude/projects/*/sessions"

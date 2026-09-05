@@ -60,7 +60,7 @@ import { runPreSpawnCheck } from "./pre-spawn-check.js";
 import { readFreshBody } from "./fresh-body-read.js";
 import { startRun, completeRun } from "./agent-run-tracker.js";
 import { runOpencodeRole, isOpencodeRuntimeEnabled, DEFAULT_OPENCODE_MODEL } from "./runtime/opencode-runtime.js";
-import { resolveRepo } from "../config/repo.js";
+import { resolveCodeRepo } from "../config/repo.js";
 import { repoRoot as resolveRepoRoot } from "../config/repo-root.js";
 
 // ---------------------------------------------------------------------------
@@ -262,7 +262,8 @@ function checkTouchpointConflicts(
 
   // Check open PRs for file conflicts
   try {
-    const repoSlug = resolveRepo();
+    // Open PRs and their files — code plane.
+    const repoSlug = resolveCodeRepo();
 
     const prFilesRaw = execFileSync(
       "gh",
@@ -498,7 +499,7 @@ function collectPriorTestRunsBlock(repoRoot: string, pr: number | null): string 
       "gh",
       [
         "api",
-        `repos/${resolveRepo()}/pulls/${pr}`,
+        `repos/${resolveCodeRepo()}/pulls/${pr}`,
         "--jq",
         ".head.sha",
       ],

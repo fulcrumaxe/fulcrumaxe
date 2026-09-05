@@ -154,7 +154,7 @@ def test_no_second_spelling_of_stats_or_audit_paths():
     state_paths.py itself."""
     import re
     pattern = re.compile(
-        r"(\.autonomous-team|\.fulcrumaxe-state)[^\n]*(stats\.duckdb|audit\.jsonl)"
+        r"(\.autonomous-team|\.autonomous-forever-state)[^\n]*(stats\.duckdb|audit\.jsonl)"
     )
     offenders = []
     for path in sorted((_REPO_ROOT / "backend").rglob("*.py")):

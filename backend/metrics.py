@@ -1,4 +1,4 @@
-"""Prometheus metrics exporter for fulcrumaxe.
+"""Prometheus metrics exporter for autonomous-forever.
 
 Converts internal KPI and operational metrics to Prometheus text exposition
 format (https://prometheus.io/docs/instrumenting/exposition_formats/).

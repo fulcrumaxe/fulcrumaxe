@@ -11,7 +11,7 @@ Covers:
   - CLI: check and alert subcommands, exit codes
 
 Isolation: all file reads use tmp_path; no state is read from or written to
-~/.fulcrumaxe-state/ or the real .autonomous-team/ directory.
+~/.autonomous-forever-state/ or the real .autonomous-team/ directory.
 _get_latest_loop_run_mtime is monkeypatched for check_loop_health tests to avoid
 touching the repo's .autonomous-team/loop-runs/ directory.
 
@@ -468,7 +468,7 @@ class TestCreateAlertIssue:
     def test_creates_issue_when_no_duplicate(self):
         mock_proc = MagicMock()
         mock_proc.returncode = 0
-        mock_proc.stdout = "https://github.com/fulcrumaxe/fulcrumaxe/issues/999"
+        mock_proc.stdout = "https://github.com/autonomous-agent-7/autonomous-forever/issues/999"
         with patch.object(hm_mod, "_open_stale_alert_exists", return_value=False), \
              patch("subprocess.run", return_value=mock_proc):
             result = create_alert_issue(self._health_stale())
@@ -490,7 +490,7 @@ class TestCreateAlertIssue:
             captured_args.extend(args)
             mock = MagicMock()
             mock.returncode = 0
-            mock.stdout = "https://github.com/fulcrumaxe/fulcrumaxe/issues/100\n"
+            mock.stdout = "https://github.com/autonomous-agent-7/autonomous-forever/issues/100\n"
             return mock
 
         with patch.object(hm_mod, "_open_stale_alert_exists", return_value=False), \
@@ -510,7 +510,7 @@ class TestCreateAlertIssue:
 
         mock_proc = MagicMock()
         mock_proc.returncode = 0
-        mock_proc.stdout = "https://github.com/fulcrumaxe/fulcrumaxe/issues/101\n"
+        mock_proc.stdout = "https://github.com/autonomous-agent-7/autonomous-forever/issues/101\n"
         with patch.object(hm_mod, "_open_stale_alert_exists", return_value=False), \
              patch("subprocess.run", return_value=mock_proc):
             result = create_alert_issue(health)
@@ -528,7 +528,7 @@ class TestCreateAlertIssue:
         }
         mock_proc = MagicMock()
         mock_proc.returncode = 0
-        mock_proc.stdout = "https://github.com/fulcrumaxe/fulcrumaxe/issues/102\n"
+        mock_proc.stdout = "https://github.com/autonomous-agent-7/autonomous-forever/issues/102\n"
         with patch.object(hm_mod, "_open_stale_alert_exists", return_value=False), \
              patch("subprocess.run", return_value=mock_proc):
             result = create_alert_issue(health)

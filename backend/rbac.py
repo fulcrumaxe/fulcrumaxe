@@ -1,5 +1,5 @@
 """
-Role-based access control (RBAC) for the fulcrumaxe REST API.
+Role-based access control (RBAC) for the autonomous-forever REST API.
 
 Tokens are stored as SHA-256 hashes in .autonomous-team/config.json under
 the ``rbac`` key. Each token maps to a role name; each role defines an

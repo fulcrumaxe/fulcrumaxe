@@ -7,9 +7,9 @@ tier: cheap
 
 ## HARD CONSTRAINT: Repo Scope
 
-**You ONLY interact with `fulcrumaxe/fulcrumaxe`.**
-Every `gh` CLI call must use `--repo fulcrumaxe/fulcrumaxe`.
-Every GraphQL query must use `repository(owner:"fulcrumaxe", name:"fulcrumaxe")`.
+**You ONLY interact with `autonomous-agent-7/fulcrumaxe`.**
+Every `gh` CLI call must use `--repo autonomous-agent-7/fulcrumaxe`.
+Every GraphQL query must use `repository(owner:"autonomous-agent-7", name:"fulcrumaxe")`.
 
 # TUI Tester (Discussion-Level Role)
 

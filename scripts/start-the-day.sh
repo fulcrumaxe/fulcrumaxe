@@ -23,6 +23,11 @@ source "$SCRIPT_DIR/lib/repo-resolve.sh"
 REPO="$(_resolve_repo)"
 REPO_OWNER="${REPO%%/*}"
 REPO_NAME="${REPO##*/}"
+# REPO_OWNER/REPO_NAME feed the discussions GraphQL below and belong on the
+# Discussion plane. The two `gh pr list` calls do not — they read PRs.
+# _require_code_repo prints nothing and returns 1 rather than handing `gh` an
+# empty --repo, which gh resolves from the checkout instead of rejecting.
+CODE_REPO="$(_require_code_repo "start-the-day")" || exit 1
 
 SKIP_SWEEPS=false
 for arg in "$@"; do
@@ -243,7 +248,7 @@ fi
 echo "  HEAD: $(git -C "$_SYNC_MAIN_ROOT" rev-parse --short HEAD) — $(git -C "$_SYNC_MAIN_ROOT" log -1 --format=%s)"
 
 # Clear auto-pull-blocked marker if present — start-of-day sync just succeeded
-_APB_MARKER="${AUTONOMOUS_TEAM_STATE_DIR:-$HOME/.fulcrumaxe-state}/auto-pull-blocked"
+_APB_MARKER="${AUTONOMOUS_TEAM_STATE_DIR:-$HOME/.autonomous-forever-state}/auto-pull-blocked"
 if [[ -f "$_APB_MARKER" ]]; then
   rm -f "$_APB_MARKER"
   echo "  [FIX] Cleared auto-pull-blocked marker (unmerged paths resolved)"
@@ -273,7 +278,7 @@ fi
 echo ""
 echo "## 2. External state dir health"
 
-EXT=${AUTONOMOUS_TEAM_STATE_DIR:-$HOME/.fulcrumaxe-state}
+EXT=${AUTONOMOUS_TEAM_STATE_DIR:-$HOME/.autonomous-forever-state}
 if [[ -d "$EXT" ]]; then
   echo "  ✅ External state dir: $EXT"
   for f in stats.duckdb state.db audit.jsonl circuit-breaker-history.jsonl blackboard; do
@@ -539,7 +544,7 @@ else
   # Check gh's own exit code directly (not the exit code of a pipeline whose
   # last stage is something that always succeeds) so a failed call reports
   # its actual error text instead of a guessed cause.
-  PR_LIST_RAW=$(gh pr list --repo "$REPO" --state open --json number,title,labels --limit 20 2>&1)
+  PR_LIST_RAW=$(gh pr list --repo "$CODE_REPO" --state open --json number,title,labels --limit 20 2>&1)
   PR_LIST_RC=$?
   if [[ $PR_LIST_RC -ne 0 ]]; then
     echo "    (gh pr list failed, exit ${PR_LIST_RC}: ${PR_LIST_RAW:0:200})"
@@ -693,7 +698,7 @@ if [[ -n "$PLAN_FILE" && -f "$PLAN_FILE" ]]; then
     STALE_COUNT=0
     SWEEP_FAILED=false
     for N in $PLAN_DISCS; do
-      MERGED_PRS=$(gh pr list --repo "$REPO" \
+      MERGED_PRS=$(gh pr list --repo "$CODE_REPO" \
         --state merged --limit 30 --search "D#${N}" \
         --json number,title --jq 'length' 2>/dev/null)
       MERGED_RC=$?

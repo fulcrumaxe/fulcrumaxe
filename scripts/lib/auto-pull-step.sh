@@ -125,8 +125,8 @@ auto_pull_step() {
       # ── Unmerged-paths guard: check BEFORE attempting pull ───────────────────
       # git pull aborts with "unmerged files" error when the index has UU entries.
       # Detect pre-emptively so we can emit one loud warning instead of a cryptic fail.
-      AUTO_PULL_BLOCKED_MARKER="${AUTONOMOUS_TEAM_STATE_DIR:-$HOME/.fulcrumaxe-state}/auto-pull-blocked"
-      AUTO_PULL_BLOCKED_MODIFIED_MARKER="${AUTONOMOUS_TEAM_STATE_DIR:-$HOME/.fulcrumaxe-state}/auto-pull-blocked-modified"
+      AUTO_PULL_BLOCKED_MARKER="${AUTONOMOUS_TEAM_STATE_DIR:-$HOME/.autonomous-forever-state}/auto-pull-blocked"
+      AUTO_PULL_BLOCKED_MODIFIED_MARKER="${AUTONOMOUS_TEAM_STATE_DIR:-$HOME/.autonomous-forever-state}/auto-pull-blocked-modified"
       UNMERGED_FILES=$(git -C "$repo_root" diff --name-only --diff-filter=U 2>/dev/null || echo "")
       if [[ -n "$UNMERGED_FILES" ]]; then
         if [[ -f "$AUTO_PULL_BLOCKED_MARKER" ]]; then
@@ -168,7 +168,7 @@ ${UNMERGED_FILES}
 
 **Resolution**: resolve conflicts in the repo root (or discard with \`git checkout -- <file>\`), then remove the marker:
 \`\`\`
-rm ~/.fulcrumaxe-state/auto-pull-blocked
+rm ~/.autonomous-forever-state/auto-pull-blocked
 \`\`\`
 " 2>/dev/null || echo "")
             if [[ -n "$NEW_ISSUE_URL" ]]; then

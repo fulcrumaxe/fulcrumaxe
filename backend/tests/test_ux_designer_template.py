@@ -19,7 +19,7 @@ from backend.tests.test_spawn_templates import (  # noqa: E402
 _STUB_VARS = {
     "discussion_number": "1381",
     "discussion_title": "UX Designer test",
-    "discussion_url": "https://github.com/fulcrumaxe/fulcrumaxe/discussions/1381",
+    "discussion_url": "https://github.com/autonomous-agent-7/autonomous-forever/discussions/1381",
     "task_brief": "Design a dashboard tile",
     "project_context": "[project context stub]",
     "agent_memory": "[agent memory stub]",
@@ -27,7 +27,7 @@ _STUB_VARS = {
     # Extra vars used by secondary roles (not needed for ux-designer but kept for safety)
     "pr_number": "55",
     "pr_branch": "feature/stub-branch",
-    "pr_url": "https://github.com/fulcrumaxe/fulcrumaxe/pull/55",
+    "pr_url": "https://github.com/autonomous-agent-7/autonomous-forever/pull/55",
     "trigger_type": "circuit_breaker",
     "evidence_json": "{}",
     "release_id": "v0.0.1",

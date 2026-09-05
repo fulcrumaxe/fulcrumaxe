@@ -23,7 +23,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="${REPO_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 # shellcheck source=scripts/lib/repo-resolve.sh
 source "$SCRIPT_DIR/lib/repo-resolve.sh"
-_REPO="$(_resolve_repo)"
+# The CODE plane. _REPO's consumer is the `repos/$_REPO/pulls` POST below —
+# PR *creation*, so a wrong plane here opens pull requests on the wrong repo.
+#
+# This site survived two audits by looking like it could not interpolate. The
+# POST is spelled as a Python argv inside `python3 -c "` — and that opening
+# quote is a DOUBLE quote, so bash expands $_REPO before Python ever sees the
+# string. The single quotes around 'repos/$_REPO/pulls' are Python's, not the
+# shell's, and they do not stop anything. A grep for `gh ` finds nothing here
+# either, because the argv is a list of quoted literals.
+_REPO="$(_require_code_repo "drain-pending-prs")" || exit 1
 
 PENDING_FILE="${REPO_ROOT}/.autonomous-team/pending-prs.json"
 DRY_RUN=false

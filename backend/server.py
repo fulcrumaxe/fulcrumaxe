@@ -55,7 +55,7 @@ FIFO_PATH = "/tmp/af-trigger.fifo"
 
 #: Legacy location, predates the STATE_DIR convention. Kept only so
 #: ``_migrate_legacy_db_path()`` can find and move an old file forward.
-_LEGACY_DB_PATH = Path.home() / ".fulcrumaxe" / "server.db"
+_LEGACY_DB_PATH = Path.home() / ".autonomous-forever" / "server.db"
 
 
 def _db_path() -> Path:
@@ -692,27 +692,17 @@ def _rpc_loop_timeline(params: dict) -> list:
     # Pass include_test=true to bypass the filter for debugging.
     include_test = bool(params.get("include_test", False))
 
-    # Per-project scoping: resolve loop-metrics.jsonl for the requested project.
-    # Resolution order for a named project:
-    #   1. <state_dir>/loop-metrics.jsonl        (future convention)
-    #   2. <state_dir parent>/<project>/.autonomous-team/loop-metrics.jsonl
-    #      (projects that write metrics into their own repo checkout)
-    # If neither exists, return [] — don't fall through to AF's data.
-    # When no project param, use the AF default path (_REPO_ROOT/.autonomous-team).
-    project = params.get("project") or None
-    if project:
-        from backend.state_paths import for_project as _fp  # noqa: PLC0415
-        project_paths = _fp(project)
-        # Try state_dir first
-        metrics_path = project_paths.state_dir / "loop-metrics.jsonl"
-        if not metrics_path.exists():
-            # Try the project's repo root
-            project_repo_root = project_paths.state_dir.parent / project
-            metrics_path = project_repo_root / ".autonomous-team" / "loop-metrics.jsonl"
-    else:
-        metrics_path = _REPO_ROOT / ".autonomous-team" / "loop-metrics.jsonl"
+    # Per-project scoping: backend.loop_metrics_path is the one resolver,
+    # shared with loop.iteration_detail below and with
+    # rpc/stats_loop_idle_ratio.py (D#2327). It returns None when a named
+    # project has no reachable metrics file; an empty timeline is the honest
+    # answer here — a list of zero iterations says what it means — so don't
+    # fall through to this checkout's own data.
+    from backend.loop_metrics_path import resolve_loop_metrics_path  # noqa: PLC0415
 
-    if not metrics_path.exists():
+    project = params.get("project") or None
+    metrics_path = resolve_loop_metrics_path(project, _REPO_ROOT)
+    if metrics_path is None:
         return []
 
     import collections
@@ -764,7 +754,7 @@ def _rpc_loop_iteration_detail(params: dict) -> dict:
     Params: {"timestamp": str}  (ISO8601, must match a row in loop-metrics.jsonl)
     Returns: {"timestamp", "metrics": <row>, "log": <str|null>, "log_path": <str|null>}
 
-    The log file is located under .autonomous-team/loop-runs/fulcrumaxe/
+    The log file is located under .autonomous-team/loop-runs/autonomous-forever/
     using the pattern YYYYMMDDTHHMMSSZ.log (UTC, Z suffix). Content is capped at
     64 KB; larger files are truncated with a "[truncated: original size N bytes]" marker.
     Returns log: null when the file does not exist (older entries pre-date that directory).
@@ -785,20 +775,18 @@ def _rpc_loop_iteration_detail(params: dict) -> dict:
     if not ts:
         raise _rpc_invalid_params("timestamp is required")
 
-    # Per-project scoping: resolve loop-metrics.jsonl for the requested project.
-    # Same resolution strategy as _rpc_loop_timeline.
+    # Per-project scoping: same resolver as loop.timeline above
+    # (backend.loop_metrics_path). The not-found policy deliberately differs
+    # from loop.timeline's: this response also carries the run log, so a
+    # missing metrics file yields an empty metrics row rather than an empty
+    # response. That decision belongs to each caller, which is why the
+    # resolver returns a path-or-None instead of deciding for them.
+    from backend.loop_metrics_path import resolve_loop_metrics_path  # noqa: PLC0415
+
     project = params.get("project") or None
-    if project:
-        from backend.state_paths import for_project as _fp  # noqa: PLC0415
-        project_paths = _fp(project)
-        metrics_path = project_paths.state_dir / "loop-metrics.jsonl"
-        if not metrics_path.exists():
-            project_repo_root = project_paths.state_dir.parent / project
-            metrics_path = project_repo_root / ".autonomous-team" / "loop-metrics.jsonl"
-    else:
-        metrics_path = _REPO_ROOT / ".autonomous-team" / "loop-metrics.jsonl"
+    metrics_path = resolve_loop_metrics_path(project, _REPO_ROOT)
     metrics_row: dict = {}
-    if metrics_path.exists():
+    if metrics_path is not None:
         with metrics_path.open("r", encoding="utf-8", errors="replace") as fh:
             for raw in fh:
                 raw = raw.strip()
@@ -842,7 +830,7 @@ def _rpc_loop_iteration_detail(params: dict) -> dict:
         if not log_dir.exists():
             log_dir = _pp.state_dir / "loop-runs" / project
     else:
-        log_dir = _REPO_ROOT / ".autonomous-team" / "loop-runs" / "fulcrumaxe"
+        log_dir = _REPO_ROOT / ".autonomous-team" / "loop-runs" / "autonomous-forever"
 
     # Prefer the run_id field from the metrics row (Bug 3 fix).
     # The log filename is keyed off run_id, not the timestamp.
@@ -2445,7 +2433,7 @@ def _rpc_stats_cost_per_outcome(params: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="fulcrumaxe backend server")
+    parser = argparse.ArgumentParser(description="autonomous-forever backend server")
     parser.add_argument(
         "--http",
         type=int,

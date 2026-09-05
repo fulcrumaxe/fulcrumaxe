@@ -307,6 +307,23 @@ jobs:
       - name: RPC scope cache guard
         run: python3 scripts/ci/rpc-scope-cache-guard.py
 
+      # D#2327 PR-a: the scope registry must not contradict itself. On main
+      # at dc5868b2, stats.loop_idle_ratio was classified SCOPED next to a
+      # justification saying it was NOT wrapped and was bound to the serving
+      # checkout — the field a machine reads was the false one, and nothing
+      # noticed for six days. Nineteen entries also shared one "already
+      # wrapped in _with_project_stats_db()" claim nobody had checked
+      # against what those handlers read. This asserts the classification,
+      # the justification text, and the audited per-method data source stay
+      # consistent, with a live canary so it cannot go inert. Static by
+      # design — the behavioral question is the cache guard's above and
+      # D#2327 PR-b's. Same job-naming note as the guards around it: this
+      # step lives in "backend (import-smoke)" because that name is what
+      # scripts/lib/ci-status-check.sh's CI_REQUIRED_CHECKS matches. Do not
+      # rename the job.
+      - name: RPC scope registry consistency guard
+        run: python3 scripts/ci/rpc-scope-registry-guard.py
+
       # D#2314: behavioral guard for the Projects-page liveness signal. The
       # probe used to read three cron signals that were never written on the
       # operator's host — it read `idle` through the team's highest-volume
@@ -388,6 +405,21 @@ jobs:
       - name: Fleet status honesty guard
         run: python3 scripts/ci/fleet-status-honesty-guard.py
 
+      # D#2317 PR-b: behavioral guard for the Fleet Token Spend panel. It
+      # read "LAST 24H = 0" against "LAST 7D = 1.2M" on the busiest day the
+      # team had ever had, because fleet.cost iterated the project.json
+      # discovery path and so never opened the one cost_summary.json that
+      # is actually written, the writer pruned by entry count rather than
+      # date (a "7d" total covering 19 days), and a project with no
+      # observation reported a 0 indistinguishable from a measured zero.
+      # Not a lint over source text: it seeds fixture state dirs with a
+      # 60-day-sparse summary and calls the real read_cost_summary /
+      # update_cost_summary / fleet_cost.handle. Same naming caveat as the
+      # guards above: this job's name is string-matched by
+      # CI_REQUIRED_CHECKS — add steps here freely, do not rename the job.
+      - name: Fleet cost window guard
+        run: python3 scripts/ci/fleet-cost-window-guard.py
+
       # D#2335 PR 1: behavioral guard for scripts/update-check.sh, the
       # detection half of /update. Builds scratch trees in a tmpdir and
       # drives the real script with UPDATE_CHECK_UPSTREAM_CMD injected for
@@ -399,6 +431,125 @@ jobs:
       # add steps here freely, do not rename the job.
       - name: update-check guard
         run: python3 scripts/ci/update-check-guard.py
+
+      # D#2317 PR-c: a test may not coldstart into the operator's home
+      # directory. Both coldstart entry points hardcoded $HOME/.<name>-state
+      # with no override, and tests/test_loop_metrics_path.sh coldstarted
+      # `test-proj-$$` on every run while "cleaning up"
+      # /tmp/${PROJECT_NAME}-state — wrong root, missing leading dot — so it
+      # never removed what it created. That one line produced 44 of the 75
+      # dead fixtures the Fleet page was listing as live projects, at one
+      # directory per run. This guard fails when a file under tests/ runs a
+      # coldstart script without redirecting COLDSTART_STATE_ROOT, and runs
+      # its own positive/negative self-test first so it cannot rot into a
+      # check that never fails. Stdlib only, no network, no GH_TOKEN. Same
+      # naming caveat as the guards above: this job's name is string-matched
+      # by CI_REQUIRED_CHECKS — add steps here freely, do not rename the job.
+      - name: Coldstart state-dir containment guard
+        run: python3 scripts/ci/coldstart-state-dir-guard.py
+      # D#2316 PR-c: behavioral guard for two stats readers that each reported
+      # a confident value they never measured. sdk_vs_cc's pass rate averaged
+      # CASE-over-COUNT(*), so a population where nothing ever recorded a
+      # verdict (every routed_via='cc' row — 5526 rows, 0 verdicts, dead since
+      # 2026-08-19) read as a flat 0.0% across all 22 roles. The freshness
+      # watchdog branched on hasattr(ts, "astimezone"), which every datetime
+      # has, so naive UTC timestamps got reinterpreted as local and 16 of 17
+      # metrics came back with NEGATIVE ages on the operator host. Not a lint
+      # over source text: builds a fixture stats.duckdb in a tmpdir
+      # (STATS_DB_PATH), writes metric_event rows through the real
+      # stats_writer.record(), and calls the real sdk_vs_cc_by_role() and
+      # freshness check() against it under TZ=America/New_York — a UTC runner
+      # cannot see the timezone defect at all. Every expectation derives from
+      # the fixture's own construction; no literal population counts. Same
+      # job-naming note as the guards above — this step lives in
+      # "backend (import-smoke)" because that name is what
+      # scripts/lib/ci-status-check.sh's CI_REQUIRED_CHECKS matches. Do not
+      # rename the job.
+      - name: Stats reader honesty guard
+        run: python3 scripts/ci/stats-reader-honesty-guard.py
+
+      # D#2348 PR-i: three checks that until now only ever ran against a
+      # PRODUCED EXPORT TREE, from open-source/verify-export.sh. That is the
+      # wrong subject once development happens in the public repo — the
+      # repository itself becomes the artifact, and a gate scoped to what
+      # the export shipped cannot audit what the export did not. D#2348
+      # found that hole three separate times (307 stale slugs in tests/, 10
+      # in dashboard_tui/, 115 product-identifier hits across backend/,
+      # dashboard/ and scripts/), each one structurally invisible to a check
+      # pointed at export output.
+      #
+      # These are ports, not moves. open-source/verify-export.sh still runs
+      # the originals against a real export in the export-audit job above,
+      # and it must keep working until D#2348's archive phase retires the
+      # export — that Discussion names an export-audit that survives as a
+      # permanently-skipping green stub as an explicit failure condition.
+      #
+      # Bash, not Python, and no new dependency: git + grep only. Same
+      # naming caveat as every guard above — this job's name is
+      # string-matched by CI_REQUIRED_CHECKS in
+      # scripts/lib/ci-status-check.sh. Add steps here freely, do not
+      # rename the job.
+      - name: Repo-target default guard (source tree)
+        run: bash scripts/ci/repo-target-gate.sh
+
+      - name: README link resolution
+        run: bash scripts/ci/readme-links.sh
+
+      - name: Dangling doc commands
+        run: bash scripts/ci/dangling-doc-commands.sh
+
+      # The repo-plane cutover gate. Runs here, in this unconditional job,
+      # because everywhere else it would have been unreachable on the one
+      # change it exists to stop: ci.yml's backend job runs targeted
+      # scripts/ci/* guards rather than pytest, preflight runs
+      # run_always_gates, and run-pr-tests.sh routes a config-only PR to no
+      # suite at all — and setting "code_repo" is a config-only PR.
+      #
+      # Same naming caveat as every guard above: this job's name is
+      # string-matched by CI_REQUIRED_CHECKS in scripts/lib/ci-status-check.sh
+      # — add steps here freely, do not rename the job.
+      - name: Repo-plane cutover guard
+        run: python3 scripts/ci/repo-plane-cutover-guard.py
+
+      # D#2339 PR-a: reconciles scripts/ci/ against this workflow. Every one
+      # of the guards above is a step at the same insertion point in this
+      # one job, so resolving a merge conflict here by taking one side drops
+      # the other — and nothing fails. The job still runs, the PR still
+      # merges, and that guard is gone with no signal. This step is the
+      # signal: a file in scripts/ci/ that is neither run here nor listed in
+      # scripts/ci/guard-ledger.json with a reason fails the build, naming
+      # the file. It found one already present on main
+      # (clean-install-check.sh, unreferenced since D#1617 — now ledgered).
+      #
+      # `!cancelled()` on purpose: without it a red guard above would stop
+      # the job before this step ran, and a dropped guard would stay hidden
+      # behind an unrelated failure for that whole CI round. This step's own
+      # failure still fails the job.
+      #
+      # Same naming caveat as every guard above: this job's name is
+      # string-matched by CI_REQUIRED_CHECKS in scripts/lib/ci-status-check.sh
+      # — add steps here freely, do not rename the job.
+      - name: Guard registry reconciliation
+        if: ${{ !cancelled() }}
+        run: python3 scripts/ci/guard-registry-check.py
+
+      # D#2335 PR 2: behavioral guard for scripts/update-apply.sh, the
+      # application half of /update. Builds a scratch adopter project and a
+      # fixture engine tree in a tmpdir and drives the real script against
+      # them: the first apply must write nothing but a preview marker, the
+      # second must actually install, a third must report already-up-to-date
+      # and write nothing, and local .autonomous-team/*.json plus
+      # $AUTONOMOUS_TEAM_STATE_DIR must come out byte-identical. Also
+      # asserts mechanically that an update removes nothing (no --delete on
+      # any rsync in bootstrap.sh, no `git rm` anywhere), which is what
+      # makes the Archive Protocol a no-op here rather than a claim. A
+      # fixture engine rather than the real loop-bootstrap/ because a real
+      # bootstrap shells out to `gh` — no network, no GH_TOKEN, no new
+      # dependency. Same naming caveat as the guards above: this job's name
+      # is string-matched by CI_REQUIRED_CHECKS — add steps here freely, do
+      # not rename the job.
+      - name: update-apply guard
+        run: python3 scripts/ci/update-apply-guard.py
 
       # No ruff/flake8 config exists in the repo today (checked
       # pyproject.toml / setup.cfg) — Python lint is intentionally omitted

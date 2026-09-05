@@ -1,0 +1,15 @@
+# Allowlist for scripts/ci/coldstart-state-dir-guard.py (D#2317 PR-c).
+#
+# Format:  <path>:<coldstart script>:<reason>
+# One entry covers every uncontained invocation of that script in that file.
+#
+# This file is EMPTY on purpose. Every test in the tree that runs a coldstart
+# script sets COLDSTART_STATE_ROOT on that invocation, so nothing needs
+# excusing. If you are about to add an entry here, redirect the state root
+# instead — that is a one-line change and it actually fixes the problem.
+#
+# Reasons that describe a deferral rather than a justification ("out of
+# scope", "owned by", "parked", "flag for follow-up", ...) are rejected by
+# the guard. Entries that no longer match anything (stale) or name a file
+# that is no longer tracked (dangling) also hard-fail, so this file cannot
+# silently rot.

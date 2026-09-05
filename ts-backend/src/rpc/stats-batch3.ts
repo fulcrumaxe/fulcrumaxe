@@ -44,7 +44,7 @@ import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { openReadConn, closeConn, queryDicts } from "../duckdb-helpers.js";
 import { stateDir as sharedStateDir } from "../config/state-paths.js";
-import { resolveRepo } from "../config/repo.js";
+import { resolveCodeRepo } from "../config/repo.js";
 
 // ---------------------------------------------------------------------------
 // Shared path helpers
@@ -205,7 +205,8 @@ export async function handleFreshnessList(
  *   - Timeout: 15s (matches Python subprocess timeout).
  */
 
-const AF_REPO = resolveRepo();
+// Merged PRs live with the code.
+const AF_REPO = resolveCodeRepo();
 
 /** Format a Date as "YYYY-MM-DDTHH:MM:SSZ". */
 function fmtIsoZ(d: Date): string {

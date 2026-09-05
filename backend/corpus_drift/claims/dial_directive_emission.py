@@ -38,7 +38,7 @@ def _state_dir() -> Path:
         from backend.state_paths import STATE_DIR  # noqa: PLC0415
         return STATE_DIR
     except ImportError:
-        return Path.home() / ".fulcrumaxe-state"
+        return Path.home() / ".autonomous-forever-state"
 
 
 def _count_dial_changes(audit_path: Path, cutoff_ts: float) -> int:

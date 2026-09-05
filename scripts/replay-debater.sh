@@ -18,7 +18,10 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/lib/repo-resolve.sh"
-REPO="$(_resolve_repo)"
+# Everything this script reads — the PR list, reviewer comments, diffs — is
+# code plane. _require_code_repo prints nothing and returns 1 on an empty
+# slug, so `gh` never runs against the checkout's origin remote by accident.
+REPO="$(_require_code_repo "replay-debater")" || exit 1
 TODAY=$(date +%Y-%m-%d)
 OUT="$REPO_ROOT/.autonomous-team/debater-replay-${TODAY}.json"
 
@@ -73,10 +76,25 @@ TOTAL=0
 for PR in "${PRS[@]}"; do
   TOTAL=$((TOTAL+1))
 
-  # Get the code-reviewer pass comment for this PR (heuristic: latest review with state APPROVED
-  # or comment that mentions verdict: pass).
-  REVIEWER_COMMENT=$(gh pr view "$PR" --repo "$REPO" --json comments \
-    --jq '[.comments[] | select(.body | test("verdict.*pass|code-review-passed";"i"))] | last | .body // ""' 2>/dev/null || echo "")
+  # Get the code-reviewer pass comment for this PR (heuristic: latest comment
+  # that mentions verdict: pass).
+  #
+  # D#2348 PR-k: this used to select straight out of `gh pr view --json comments`
+  # on the body text alone, and the selected body was then pasted into a spawned
+  # debater's prompt. That made "wrote `verdict: pass` in a comment" the entire
+  # trust decision — the exact shape PR-k item 3 forbids, and reachable by any
+  # commenter once PRs are public. The text pattern is still how we pick WHICH
+  # reviewer comment, but only from comments whose GitHub-authenticated author
+  # is in the trust set; scripts/lib/pr_comment_trust.py does that partition and
+  # nothing from its untrusted half is eligible.
+  #
+  # The partition's stderr is NOT silenced. It fails safe either way — exit 1
+  # prints nothing to stdout, so REVIEWER_COMMENT ends up empty — but silencing
+  # it would make "the trust set could not be resolved" look identical to "this
+  # PR has no reviewer comment", and the whole point of that diagnostic is that
+  # those two must not be confused.
+  REVIEWER_COMMENT=$(python3 "$REPO_ROOT/scripts/lib/pr_comment_trust.py" "$PR" --repo "$REPO" --json \
+    | jq -r '[.trusted[] | select(.body | test("verdict.*pass|code-review-passed";"i"))] | last | .body // ""' 2>/dev/null || echo "")
 
   # Sanitize diff via inline Python (same logic as loop-phased-step5.sh _sanitize_diff).
   RAW_DIFF=$(gh pr diff "$PR" --repo "$REPO" 2>/dev/null || echo "")

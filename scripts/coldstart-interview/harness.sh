@@ -40,7 +40,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MANIFEST="${COLDSTART_MANIFEST:-$SCRIPT_DIR/questions.json}"
-STATE_ROOT="${AUTONOMOUS_TEAM_STATE_DIR:-$HOME/.fulcrumaxe-state}"
+STATE_ROOT="${AUTONOMOUS_TEAM_STATE_DIR:-$HOME/.autonomous-forever-state}"
 
 CORE_TOPIC_IDS=(identity stack deploy autonomy mission)
 

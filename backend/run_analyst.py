@@ -29,7 +29,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, NamedTuple
 
-from backend._repo import REPO, REPO_OWNER, REPO_NAME
+# CODE_REPO for `gh pr` calls; REPO_OWNER/REPO_NAME stay on the
+# Discussion plane, which is what the discussion GraphQL queries below want.
+from backend._repo import CODE_REPO, REPO_OWNER, REPO_NAME
 from backend.loop_metrics_ts import parse_loop_metrics_ts as _parse_ts
 from backend.repo_root import main_repo_root, repo_root
 from backend.snapshot_path import SNAPSHOT_PATH
@@ -220,7 +222,7 @@ def load_needs_fix_prs() -> list[dict]:
     """Load open PRs with code-review-needs-fix label."""
     try:
         result = subprocess.run(
-            ["gh", "pr", "list", "--repo", REPO,
+            ["gh", "pr", "list", "--repo", CODE_REPO,
              "--label", "code-review-needs-fix", "--json",
              "number,title,labels,createdAt,url"],
             capture_output=True, text=True, timeout=30,
@@ -346,7 +348,7 @@ def get_pr_diff_size(pr_number: int) -> dict:
     try:
         result = subprocess.run(
             ["gh", "pr", "view", str(pr_number), "--repo",
-             REPO,
+             CODE_REPO,
              "--json", "additions,deletions,labels,files"],
             capture_output=True, text=True, timeout=30,
         )
@@ -2067,7 +2069,7 @@ def _gh_ref_exists(kind: str, number: int) -> bool:
     try:
         if kind == "pr":
             r = subprocess.run(
-                ["gh", "pr", "view", str(number), "--repo", REPO,
+                ["gh", "pr", "view", str(number), "--repo", CODE_REPO,
                  "--json", "number"],
                 capture_output=True, text=True, timeout=10,
             )

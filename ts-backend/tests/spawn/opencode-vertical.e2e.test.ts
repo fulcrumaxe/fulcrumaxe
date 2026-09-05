@@ -80,7 +80,7 @@ async function findAgentRun(
 // ---------------------------------------------------------------------------
 
 const CONFIG_JSON = JSON.stringify({
-  repo: "fulcrumaxe/fulcrumaxe",
+  repo: "autonomous-agent-7/autonomous-forever",
   max_concurrent_agents: 8,
   dials: {
     "agent.spawn": { level: 5, ceiling: 5 },

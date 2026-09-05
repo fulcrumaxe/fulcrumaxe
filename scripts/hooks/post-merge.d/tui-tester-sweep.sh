@@ -18,7 +18,12 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 source "$REPO_ROOT/scripts/lib/repo-resolve.sh"
+# Two planes here. REPO stays where the tui-bug Issues and their label live;
+# CODE_REPO is for reading the merged PR's file list. An unresolved code
+# plane skips the sweep rather than reading a PR from the wrong repo —
+# `gh pr view --repo ""` exits 0 against the checkout's origin remote.
 REPO="$(_resolve_repo)"
+CODE_REPO="$(_resolve_code_repo 2>/dev/null || true)"
 PR=""
 
 while [[ $# -gt 0 ]]; do
@@ -34,7 +39,12 @@ if [[ -z "$PR" ]]; then
 fi
 
 # ── 1. Check if this PR touched dashboard_tui/** ───────────────────────────────
-CHANGED_TUI_FILES=$(gh pr view "$PR" --repo "$REPO" \
+if [[ -z "$CODE_REPO" ]]; then
+  echo "[tui-tester-sweep] ERROR: could not resolve the code repo — skipping the sweep rather than reading a PR from the wrong repo. Add a \"code_repo\" (or \"repo\") field to .autonomous-team/config.json, or set AUTONOMOUS_TEAM_REPO." >&2
+  exit 0
+fi
+
+CHANGED_TUI_FILES=$(gh pr view "$PR" --repo "$CODE_REPO" \
   --json files --jq '[.files[].path | select(startswith("dashboard_tui/"))] | join("\n")' \
   2>/dev/null || echo "")
 

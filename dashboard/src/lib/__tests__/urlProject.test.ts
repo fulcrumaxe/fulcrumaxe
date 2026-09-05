@@ -11,7 +11,7 @@ describe('projectNameFromPathname — matching paths', () => {
   })
 
   it('extracts project name from /project/:name (no trailing slash)', () => {
-    expect(projectNameFromPathname('/project/fulcrumaxe')).toBe('fulcrumaxe')
+    expect(projectNameFromPathname('/project/autonomous-forever')).toBe('autonomous-forever')
   })
 
   it('extracts project with hyphenated name', () => {

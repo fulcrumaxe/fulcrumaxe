@@ -1,0 +1,142 @@
+diff --git a/dashboard/src/components/MetricSparkline.tsx b/dashboard/src/components/MetricSparkline.tsx
+index a1de6a6f..50280e06 100644
+--- a/dashboard/src/components/MetricSparkline.tsx
++++ b/dashboard/src/components/MetricSparkline.tsx
+@@ -51,12 +51,15 @@ function formatAge(isoTimestamp: string | null): string {
+   return `${Math.floor(diff / 3600)}h ago`
+ }
+
+-// Map recharts data to {t, v} for simple display
++// Map recharts data to {t, v} for simple display.
++// Filters out negative values — backend uses -1 as a "missing data" sentinel.
+ function toChartData(series: SeriesPoint[]): { t: string; v: number }[] {
+-  return series.map(pt => ({
+-    t: formatDate(pt.ts_iso),
+-    v: pt.value,
+-  }))
++  return series
++    .filter(pt => pt.value >= 0)
++    .map(pt => ({
++      t: formatDate(pt.ts_iso),
++      v: pt.value,
++    }))
+ }
+
+ export default function MetricSparkline({ label, value, unit, series, updatedAt }: Props) {
+diff --git a/dashboard/src/pages/KpiDetailPage.tsx b/dashboard/src/pages/KpiDetailPage.tsx
+index eae5f911..ddee5545 100644
+--- a/dashboard/src/pages/KpiDetailPage.tsx
++++ b/dashboard/src/pages/KpiDetailPage.tsx
+@@ -16,7 +16,7 @@
+  * to all three sibling charts (Req #3).
+  */
+
+-import { useState } from 'react'
++import { useState, useEffect } from 'react'
+ import VelocityChart from './kpi/VelocityChart'
+ import CycleTimeChart from './kpi/CycleTimeChart'
+ import CostChart from './kpi/CostChart'
+@@ -27,7 +27,15 @@ type Window = (typeof WINDOWS)[number]
+
+ export default function KpiDetailPage() {
+   const [days, setDays] = useState<Window>(30)
+-  const [fetchedAt] = useState<string>(() => new Date().toISOString())
++  const [fetchedAt, setFetchedAt] = useState<string>(() => new Date().toISOString())
++
++  // Refresh timestamp whenever days changes (charts re-fetch immediately)
++  // and every 60s to stay current while the page is open.
++  useEffect(() => {
++    setFetchedAt(new Date().toISOString())
++    const t = setInterval(() => setFetchedAt(new Date().toISOString()), 60_000)
++    return () => clearInterval(t)
++  }, [days])
+
+   return (
+     <div style={styles.page}>
+diff --git a/dashboard/src/pages/LoopTimeline.tsx b/dashboard/src/pages/LoopTimeline.tsx
+index 798467a1..29407849 100644
+--- a/dashboard/src/pages/LoopTimeline.tsx
++++ b/dashboard/src/pages/LoopTimeline.tsx
+@@ -23,7 +23,7 @@
+  *   Extra    — Array.isArray guard on detail.metrics.actions.
+  */
+
+-import { useState, useEffect, useCallback } from 'react'
++import { useState, useEffect, useCallback, useRef } from 'react'
+ import {
+   LineChart,
+   Line,
+@@ -39,6 +39,7 @@ import {
+ } from 'recharts'
+ import { getLoopTimeline, getIterationDetail } from '../api/loop'
+ import type { LoopIterationPoint, LoopIterationDetail } from '../api/loop'
++import { LastUpdated } from '../components/LastUpdated'
+
+ // ---------------------------------------------------------------------------
+ // Helpers
+@@ -200,6 +201,8 @@ export default function LoopTimeline() {
+   const [rows, setRows] = useState<LoopIterationPoint[]>([])
+   const [loading, setLoading] = useState(true)
+   const [error, setError] = useState<string | null>(null)
++  const [fetchedAt, setFetchedAt] = useState<string | null>(null)
++  const autoRefreshRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+   // Drawer state
+   const [selectedTimestamp, setSelectedTimestamp] = useState<string | null>(null)
+@@ -213,6 +216,7 @@ export default function LoopTimeline() {
+     getLoopTimeline(lim)
+       .then(data => {
+         setRows(data)
++        setFetchedAt(new Date().toISOString())
+         setLoading(false)
+       })
+       .catch(err => {
+@@ -223,6 +227,11 @@ export default function LoopTimeline() {
+
+   useEffect(() => {
+     fetchTimeline(limit)
++    // Auto-refresh every 30 seconds
++    autoRefreshRef.current = setInterval(() => fetchTimeline(limit), 30_000)
++    return () => {
++      if (autoRefreshRef.current) clearInterval(autoRefreshRef.current)
++    }
+   }, [limit, fetchTimeline])
+
+   // Fetch detail when a data point is clicked
+@@ -287,7 +296,10 @@ export default function LoopTimeline() {
+   return (
+     <div style={styles.page}>
+       <header style={styles.header}>
+-        <h1 style={styles.heading}>Loop Timeline</h1>
++        <div style={styles.headerTop}>
++          <h1 style={styles.heading}>Loop Timeline</h1>
++          <LastUpdated fetchedAt={fetchedAt} />
++        </div>
+         <p style={styles.subtitle}>
+           Iteration-over-iteration trends from <code style={styles.code}>loop-metrics.jsonl</code>.
+           Click any data point to see the full loop-run log.
+diff --git a/dashboard/src/pages/runs/RecentRunsFeedTile.tsx b/dashboard/src/pages/runs/RecentRunsFeedTile.tsx
+index 7904f2c6..4b44a043 100644
+--- a/dashboard/src/pages/runs/RecentRunsFeedTile.tsx
++++ b/dashboard/src/pages/runs/RecentRunsFeedTile.tsx
+@@ -20,8 +20,9 @@ interface AgentRun {
+   duration_s: number | null
+   verdict: string | null
+   model: string | null
+-  input_tokens: number | null
+-  output_tokens: number | null
++  // Backend DuckDB column names are input_tok / output_tok (not input_tokens / output_tokens)
++  input_tok: number | null
++  output_tok: number | null
+ }
+
+ interface RecentResponse {
+@@ -95,7 +96,7 @@ export default function RecentRunsFeedTile({ refreshSignal }: Props) {
+           <tbody>
+             {runs.map(run => {
+               const tokTotal =
+-                (run.input_tokens ?? 0) + (run.output_tokens ?? 0)
++                (run.input_tok ?? 0) + (run.output_tok ?? 0)
+               return (
+                 <tr key={run.agent_id} style={sharedStyles.tr}>
+                   <td style={sharedStyles.td}>

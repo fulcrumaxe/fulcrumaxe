@@ -32,7 +32,7 @@ describe('DocumentTitleSync', () => {
   it('never leaves the hardcoded pre-rename product name on the tab', () => {
     mockUseActiveProjectName.mockReturnValue('fulcrumaxe')
     render(<DocumentTitleSync />)
-    expect(document.title).not.toContain('Fulcrumaxe')
+    expect(document.title).not.toContain('Autonomous Forever')
   })
 
   it('uses the static fallback while no project has resolved yet', () => {

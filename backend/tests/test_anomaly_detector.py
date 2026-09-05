@@ -387,7 +387,7 @@ class TestPostTeamLog:
             return mock
 
         with patch("subprocess.run", fake_run):
-            _post_team_log([self._make_anomaly()], "fulcrumaxe/fulcrumaxe")
+            _post_team_log([self._make_anomaly()], "autonomous-agent-7/autonomous-forever")
 
         # First call: gh issue list to find team-log number
         assert calls[0][0] == "gh"
@@ -410,7 +410,7 @@ class TestPostTeamLog:
             return mock
 
         with patch("subprocess.run", fake_run):
-            _post_team_log([self._make_anomaly()], "fulcrumaxe/fulcrumaxe")
+            _post_team_log([self._make_anomaly()], "autonomous-agent-7/autonomous-forever")
 
         # Only one call (the list call) — comment not posted
         assert len(calls) == 1
@@ -429,7 +429,7 @@ class TestPostTeamLog:
             Anomaly("total_cost_usd", "", 1.0, 8.0, 8.0, 5.0, "2026-01-01T00:00:00Z"),
         ]
         with patch("subprocess.run", fake_run):
-            _post_team_log(anomalies, "fulcrumaxe/fulcrumaxe")
+            _post_team_log(anomalies, "autonomous-agent-7/autonomous-forever")
 
         body_idx = calls[1].index("--body") + 1
         body = calls[1][body_idx]
@@ -442,7 +442,7 @@ class TestPostTeamLog:
 
         with patch("subprocess.run", fake_run):
             # Should swallow the exception — logged as warning
-            _post_team_log([self._make_anomaly()], "fulcrumaxe/fulcrumaxe")
+            _post_team_log([self._make_anomaly()], "autonomous-agent-7/autonomous-forever")
 
 
 # ===========================================================================

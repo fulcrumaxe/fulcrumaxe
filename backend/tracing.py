@@ -197,7 +197,7 @@ def start_span(
     operation_name: str,
     *,
     attributes: dict | None = None,
-    service_name: str = "fulcrumaxe",
+    service_name: str = "autonomous-forever",
 ) -> Generator[Span, None, None]:
     """
     Context manager that creates a child span automatically parented to the

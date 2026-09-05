@@ -6,7 +6,7 @@ used across backend modules that make GitHub API calls.
 Resolution order:
   1. AUTONOMOUS_TEAM_REPO environment variable (highest priority)
   2. <state_dir>/project.json "repo" field, where state_dir is
-     AUTONOMOUS_TEAM_STATE_DIR env var (default: ~/.fulcrumaxe-state)
+     AUTONOMOUS_TEAM_STATE_DIR env var (default: ~/.autonomous-forever-state)
   3. Repo-root .autonomous-team/project.json "repo" field
   4. The origin remote in <repo_root>/.git/config, parsed as INI (D#2340).
      A fork's origin is the adopter's own repo, so this resolves each clone
@@ -35,6 +35,7 @@ import json
 import os
 from pathlib import Path
 
+from backend._repo_planes import resolve_code_repo, resolve_discussion_repo
 from backend._repo_remote import repo_slug_from_git_config
 
 
@@ -72,7 +73,7 @@ def _load_repo() -> str:
     state_dir = Path(
         os.environ.get(
             "AUTONOMOUS_TEAM_STATE_DIR",
-            str(Path.home() / ".fulcrumaxe-state"),
+            str(Path.home() / ".autonomous-forever-state"),
         )
     )
     repo = _read_project_json(state_dir / "project.json")
@@ -106,6 +107,15 @@ REPO_OWNER: str
 REPO_NAME: str
 REPO_OWNER, REPO_NAME = REPO.split("/", 1)
 
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# The code plane and the Discussion plane. Both equal REPO on any tree that has
+# not cut over, which is every tree today. DISCUSSION_REPO is legitimately ""
+# in a fork with no private twin — see backend/_repo_planes.py for why that is
+# a valid answer rather than an error, and why it must never default to a slug.
+CODE_REPO: str = resolve_code_repo(REPO, _REPO_ROOT)
+DISCUSSION_REPO: str = resolve_discussion_repo(_REPO_ROOT)
+
 
 def _project_transcript_slug() -> str:
     """Claude Code encodes a project's absolute repo path as a directory slug
@@ -115,10 +125,16 @@ def _project_transcript_slug() -> str:
     Computed from this file's actual location so it's correct for any clone,
     rather than hard-coding the slug for this specific checkout path.
     """
-    repo_root = Path(__file__).resolve().parent.parent
-    return str(repo_root).replace("/", "-")
+    return str(_REPO_ROOT).replace("/", "-")
 
 
 PROJECT_TRANSCRIPT_SLUG: str = _project_transcript_slug()
 
-__all__ = ["REPO", "REPO_OWNER", "REPO_NAME", "PROJECT_TRANSCRIPT_SLUG"]
+__all__ = [
+    "REPO",
+    "REPO_OWNER",
+    "REPO_NAME",
+    "CODE_REPO",
+    "DISCUSSION_REPO",
+    "PROJECT_TRANSCRIPT_SLUG",
+]

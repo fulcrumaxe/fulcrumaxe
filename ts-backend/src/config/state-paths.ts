@@ -18,7 +18,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-export const DEFAULT_STATE_DIRNAME = ".fulcrumaxe-state";
+export const DEFAULT_STATE_DIRNAME = ".autonomous-forever-state";
 
 /** Root directory for all runtime state. Override via AUTONOMOUS_TEAM_STATE_DIR. */
 export function stateDir(): string {

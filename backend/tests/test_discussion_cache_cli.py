@@ -93,7 +93,7 @@ def cli_env(tmp_path: Path):
 
     env = dict(os.environ)
     env["AUTONOMOUS_TEAM_STATE_DIR"] = str(state_dir)
-    env["AUTONOMOUS_TEAM_REPO"] = "fulcrumaxe/fulcrumaxe"
+    env["AUTONOMOUS_TEAM_REPO"] = "autonomous-agent-7/fulcrumaxe"
     env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
     return state_dir, env
 

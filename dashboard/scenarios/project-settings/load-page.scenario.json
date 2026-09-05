@@ -1,7 +1,7 @@
 {
   "name": "load-page",
-  "goal": "Verify /project/:id/settings loads at /project/fulcrumaxe/settings and reaches its expected 'data' done-state without console errors",
-  "url": "http://localhost:5173/project/fulcrumaxe/settings",
+  "goal": "Verify /project/:id/settings loads at /project/autonomous-forever/settings and reaches its expected 'data' done-state without console errors",
+  "url": "http://localhost:5173/project/autonomous-forever/settings",
   "preconditions": {
     "localStorage": {
       "af_dashboard_token": "<test-token>"
@@ -13,7 +13,7 @@
   "steps": [
     {
       "action": "navigate_page",
-      "url": "http://localhost:5173/project/fulcrumaxe/settings",
+      "url": "http://localhost:5173/project/autonomous-forever/settings",
       "wait_until": "domcontentloaded"
     },
     {

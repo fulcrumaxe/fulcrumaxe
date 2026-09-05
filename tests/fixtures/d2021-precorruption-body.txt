@@ -1,0 +1,20 @@
+<!-- STATUS:SPEC_READY SINCE:2026-08-20T22:05:00Z -->
+
+## What happened
+
+The writer at `scripts/post-merge-hook.sh:336` rewrote every occurrence of the marker
+token anywhere in the body. Any prose mention of STATUS:DONE was unsafe to write until
+this shipped — a stray STATUS:DONE in an example turned into a second live marker, and
+STATUS:DONE showing up a third time in a caption made a third. By the time a fourth
+STATUS:DONE appeared in the closing paragraph, the body had four prose mentions with
+nothing anchoring them to a specific line.
+
+## Reproduction
+
+```
+STATUS:PENDING
+STATUS:BLOCKED
+```
+
+Everything below the line-1 marker is prose or a fenced example; none of it should change
+when the marker is rewritten.

@@ -33,7 +33,7 @@ from backend.tracing import Span, get_collector
 # Service metadata
 # ---------------------------------------------------------------------------
 
-_SERVICE_NAME = "fulcrumaxe"
+_SERVICE_NAME = "autonomous-forever"
 
 try:
     # Attempt to read a version from a VERSION file if it exists, else fall back.
@@ -67,7 +67,7 @@ def export_spans(spans: Sequence[Span]) -> dict:
                   "resource": {"attributes": [...]},
                   "scopeSpans": [
                     {
-                      "scope": {"name": "fulcrumaxe"},
+                      "scope": {"name": "autonomous-forever"},
                       "spans": [...]
                     }
                   ]

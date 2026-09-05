@@ -50,6 +50,9 @@ from typing import Any, Literal
 # Allow running as a script from repo root: `python3 backend/spawn_queue.py`
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+# _GH_REPO stays undifferentiated-following-Discussions for the discussion
+# existence check and the team-log Issue; _GH_CODE_REPO is for the PR check.
+from backend._repo import CODE_REPO as _GH_CODE_REPO  # noqa: E402
 from backend._repo import REPO as _GH_REPO  # noqa: E402
 
 # ---------------------------------------------------------------------------
@@ -590,7 +593,7 @@ class SpawnQueue:
             result = subprocess.run(
                 [
                     "gh", "pr", "view", str(pr_num),
-                    "--repo", _GH_REPO,
+                    "--repo", _GH_CODE_REPO,
                     "--json", "number,state",
                 ],
                 capture_output=True,

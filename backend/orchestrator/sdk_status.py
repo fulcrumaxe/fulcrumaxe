@@ -215,7 +215,7 @@ def _routing_counts(db_path: Optional[Path] = None) -> dict[str, Any]:
     try:
         state_dir = os.environ.get(
             "AUTONOMOUS_TEAM_STATE_DIR",
-            str(Path.home() / ".fulcrumaxe-state"),
+            str(Path.home() / ".autonomous-forever-state"),
         )
         path = db_path or Path(state_dir) / "stats.duckdb"
 

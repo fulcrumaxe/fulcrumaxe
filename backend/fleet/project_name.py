@@ -4,7 +4,7 @@ D#2314 finding D1: the read side (backend/api.py, via ``count_project()``)
 queried fleet.db with ``projects.json``'s display name ("fulcrumaxe"), while
 the write side (scripts/pre-spawn-check.sh) queried
 ``.autonomous-team/config.json`` for a ``project_name`` key that did not
-exist, and silently fell back to a hard-coded ``"fulcrumaxe"``.
+exist, and silently fell back to a hard-coded ``"autonomous-forever"``.
 Result: every real spawn registered under one name, every read queried
 another, and ``activeAgents``/liveness read zero on a project working at
 full tilt.
@@ -24,7 +24,7 @@ Resolution order:
      every spawn was hard-blocked at this call (D#2340). When the file is
      present its keys still decide, unchanged.
   4. Raise ``ProjectNameUnresolvable`` — a loud failure. A silent mis-key
-     (the previous ``"fulcrumaxe"`` fallback) is explicitly not
+     (the previous ``"autonomous-forever"`` fallback) is explicitly not
      acceptable per D#2314's Spec item 2: it is what caused the bug.
 """
 

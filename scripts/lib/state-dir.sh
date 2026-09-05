@@ -4,7 +4,7 @@
 # Source this file early in any hook or spawn script that invokes Python code
 # that depends on AUTONOMOUS_TEAM_STATE_DIR (e.g. agent_run_tracker.py,
 # stats_writer.py).  Without this export, those modules fall through to the
-# hardcoded ~/.fulcrumaxe-state/ fallback, which causes all telemetry
+# hardcoded ~/.autonomous-forever-state/ fallback, which causes all telemetry
 # from forked projects to land in the wrong database.
 #
 # Safe to re-source: the if-guard is a no-op when the var is already exported.
@@ -17,7 +17,7 @@
 #   2. Read state_dir from <repo-root>/.autonomous-team/project.json.
 #   3. If found and non-empty, export AUTONOMOUS_TEAM_STATE_DIR.
 #   4. If not found (no project.json, or key absent), leave var unset —
-#      the Python fallback chain still works for fulcrumaxe itself.
+#      the Python fallback chain still works for autonomous-forever itself.
 #
 # No external dependencies beyond bash 4+ and python3 (both always available).
 

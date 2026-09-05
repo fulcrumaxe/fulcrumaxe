@@ -1,7 +1,9 @@
 """backend/fleet/cost_summary.py — per-project rolling cost summary.
 
 Maintains a small JSON file at <state_dir>/cost_summary.json that tracks
-billable token spend over a 7-day rolling window.
+billable token spend over the 7 UTC calendar days ending today. The window
+itself lives in backend/fleet/cost_window.py — both the prune below and the
+totals read back out of it go through that one module (D#2317 PR-b).
 
 Cache_read_input_tokens are FREE — they are excluded from billable totals.
 Only input_tokens (prompt) and output_tokens are billable.
@@ -22,7 +24,7 @@ Schema of cost_summary.json::
 CLI::
 
     python3 -m backend.fleet.cost_summary record \\
-        --state-dir ~/.fulcrumaxe-state \\
+        --state-dir ~/.autonomous-forever-state \\
         --input-tokens 12000 \\
         --output-tokens 3000 \\
         --cache-read-tokens 5000
@@ -37,12 +39,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-
-_WINDOW_DAYS = 7
-
-
-def _today_utc() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+from backend.fleet.cost_window import entries_in_window, summarize, today_utc
 
 
 def _read_summary(state_dir: Path) -> dict[str, Any]:
@@ -76,7 +73,7 @@ def update_cost_summary(
     output_tokens = completion tokens (billable).
     """
     summary = _read_summary(state_dir)
-    today = _today_utc()
+    today = today_utc()
 
     entries: list[dict[str, Any]] = summary.get("last_7d", [])
 
@@ -89,9 +86,12 @@ def update_cost_summary(
     today_entry["input_tokens"] = today_entry.get("input_tokens", 0) + input_tokens
     today_entry["output_tokens"] = today_entry.get("output_tokens", 0) + output_tokens
 
-    # Prune to last 7 days
-    entries.sort(key=lambda e: e.get("date", ""))
-    entries = entries[-_WINDOW_DAYS:]
+    # Prune by date, not by entry count. `entries[-7:]` kept the last seven
+    # *written* entries however old they were — on a project that runs
+    # agents sparsely that is a window of arbitrary length (19 days, on the
+    # host D#2317 was reported from), all of it summed into a figure the UI
+    # called "Last 7d".
+    entries = entries_in_window(entries, today)
 
     summary["last_7d"] = entries
     summary["updated_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -100,37 +100,18 @@ def update_cost_summary(
 
 
 def read_cost_summary(state_dir: Path) -> dict[str, Any]:
-    """Return the cost summary for a single project, enriched with totals."""
+    """Return the cost summary for a single project, enriched with totals.
+
+    Totals come from backend.fleet.cost_window.summarize(), which is also
+    what the writer prunes against — so a stale entry can neither be
+    pruned-but-counted nor counted-but-pruned. All three totals are
+    ``None`` (never ``0``) when the file holds nothing inside the window;
+    see that module's docstring for why no-signal and measured-zero have
+    to stay distinguishable here.
+    """
     summary = _read_summary(state_dir)
-    entries = summary.get("last_7d", [])
-    today = _today_utc()
-
-    # 24h = today only
-    today_entry = next((e for e in entries if e.get("date") == today), None)
-    tokens_24h = 0
-    if today_entry:
-        tokens_24h = today_entry.get("input_tokens", 0) + today_entry.get("output_tokens", 0)
-
-    # 7d = full window
-    tokens_7d = sum(
-        e.get("input_tokens", 0) + e.get("output_tokens", 0)
-        for e in entries
-    )
-
-    # Projected EOD: linear extrapolation from hours elapsed today
-    now = datetime.now(timezone.utc)
-    hours_elapsed = now.hour + now.minute / 60.0
-    projected_eod = 0
-    if hours_elapsed > 0 and tokens_24h > 0:
-        projected_eod = int(tokens_24h / hours_elapsed * 24)
-
-    return {
-        "tokens_24h": tokens_24h,
-        "tokens_7d": tokens_7d,
-        "projected_eod_tokens": projected_eod,
-        "by_day": entries,
-        "updated_at": summary.get("updated_at", ""),
-    }
+    totals = summarize(summary.get("last_7d", []))
+    return {**totals, "updated_at": summary.get("updated_at", "")}
 
 
 def _cli_record(args: argparse.Namespace) -> None:

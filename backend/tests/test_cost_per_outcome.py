@@ -212,14 +212,18 @@ def test_rpc_handle_passes_days_param():
     """handle() must pass days param to cost_per_outcome_rows."""
     captured: dict = {}
 
-    def _fake_rows(days=30):
+    def _fake_rows(days=30, repo=None):
         captured["days"] = days
+        captured["repo"] = repo
         return []
 
     with patch("backend.rpc.stats_cost_per_outcome._rows", side_effect=_fake_rows):
         handle({"days": 7})
 
     assert captured["days"] == 7
+    # No project param -> no slug to resolve; cost_per_outcome_rows falls
+    # back to backend._repo.REPO, which is correct for the serving project.
+    assert captured["repo"] is None
 
 
 def test_rpc_handle_limit_caps_rows():

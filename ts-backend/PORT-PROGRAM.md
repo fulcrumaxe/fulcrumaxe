@@ -1,7 +1,7 @@
 # Spawn/Loop Orchestration → TypeScript Port Program
 
 **Goal (ian, 2026-06-01):** faithfully port the Python spawn + loop orchestration to
-TypeScript (1:1 parity, additive — Python untouched), so the full fulcrumaxe
+TypeScript (1:1 parity, additive — Python untouched), so the full autonomous-forever
 loop can then run on opencode/Qwen as the agent runtime, and later integrate cleanly into
 the sandboxed.sh bridge.
 

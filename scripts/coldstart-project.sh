@@ -14,6 +14,11 @@
 #      non-git, non-empty directory always errors -- never clobbered, mode
 #      or no mode (Spec item 16).
 #   2. Creates ~/.<project-name>-state/ with placeholder files.
+#      The `~` here is $COLDSTART_STATE_ROOT, defaulting to $HOME. Set
+#      COLDSTART_STATE_ROOT to an absolute path to write the state dir
+#      somewhere else -- this is how a test coldstarts without permanently
+#      enlarging the operator's fleet (D#2317). Operator behaviour with the
+#      variable unset is unchanged.
 #   3. Creates <repo-path>/.autonomous-team/ and symlinks for state files.
 #   4. Generates or merges <repo-path>/.autonomous-team/project.json,
 #      including the project_mode field (Spec item 17).
@@ -27,12 +32,23 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# shellcheck source=scripts/lib/coldstart-state-root.sh
+source "$SCRIPT_DIR/lib/coldstart-state-root.sh"
+
 # ---------------------------------------------------------------------------
 # --self-test — dispatched before normal arg parsing since it takes no
 # positional repo-path/project-name args.
 # ---------------------------------------------------------------------------
 self_test() {
     local fail=0
+
+    # The self-test coldstarts two throwaway projects. Redirect their state
+    # dirs into a scratch root so a killed self-test cannot leave anything
+    # under the operator's $HOME -- the rm -rf lines below are hygiene, and
+    # hygiene does not survive a SIGKILL (D#2317 PR-c).
+    local selftest_state_root
+    selftest_state_root="$(mktemp -d)"
+    export COLDSTART_STATE_ROOT="$selftest_state_root"
 
     # 1. --mode new pointed at an EMPTY dir must scaffold, not hard-fail.
     local empty_dir
@@ -56,7 +72,7 @@ self_test() {
         fail=1
     fi
     rm -f "/tmp/coldstart-project-selftest-empty-$$.log"
-    rm -rf "$empty_dir" "$HOME/.selftestnew$$-state"
+    rm -rf "$empty_dir" "$selftest_state_root/.selftestnew$$-state"
 
     # 2. --mode new pointed at a POPULATED non-git dir must error, and must
     #    NOT run git init (no clobbering an existing, unrelated directory).
@@ -75,7 +91,8 @@ self_test() {
         fi
     fi
     rm -f "/tmp/coldstart-project-selftest-pop-$$.log"
-    rm -rf "$populated_dir" "$HOME/.selftestpop$$-state"
+    rm -rf "$populated_dir" "$selftest_state_root/.selftestpop$$-state"
+    rm -rf "$selftest_state_root"
 
     if [[ "$fail" -eq 0 ]]; then
         echo "[self-test] PASS"
@@ -215,7 +232,7 @@ fi
 # ---------------------------------------------------------------------------
 # State dir
 # ---------------------------------------------------------------------------
-STATE_DIR="$HOME/.${PROJECT_NAME}-state"
+STATE_DIR="$(coldstart_state_dir "$PROJECT_NAME")"
 echo "=== coldstart-project: $PROJECT_NAME ==="
 echo ""
 

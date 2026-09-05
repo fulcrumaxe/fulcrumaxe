@@ -1,6 +1,6 @@
 """backend/orchestrator/credit_tracker.py — SDK credit balance tracker.
 
-Reads and writes ~/.fulcrumaxe-state/sdk_credit.json.
+Reads and writes ~/.autonomous-forever-state/sdk_credit.json.
 Decrements on each successful SDK response.
 Exposes remaining_usd() and soft_cap_breached() with a per-loop-iteration
 cache and 10-minute TTL.
@@ -41,7 +41,7 @@ def _credit_file() -> Path:
     import os
     state_dir = os.environ.get(
         "AUTONOMOUS_TEAM_STATE_DIR",
-        str(Path.home() / ".fulcrumaxe-state"),
+        str(Path.home() / ".autonomous-forever-state"),
     )
     return Path(state_dir) / "sdk_credit.json"
 

@@ -548,7 +548,7 @@ def _resolve_fleet_project_name(p: dict) -> str:
     resolver ``scripts/pre-spawn-check.sh`` registers agents with, so the
     read side and the write side of fleet.db can never disagree again
     (D#2314 D1/F1: they used to — the read side queried ``"fulcrumaxe"``
-    while the write side registered under a hardcoded ``"fulcrumaxe"``
+    while the write side registered under a hardcoded ``"autonomous-forever"``
     fallback).
 
     For any other project listed in ``projects.json`` (a different
@@ -1374,7 +1374,7 @@ def _audit_loop_run_request(instruction: str, source_ip: str) -> None:
         pass  # Non-fatal — never let audit I/O break the endpoint
 
 
-def _start_loop_run(instruction: str, project_id: str = "fulcrumaxe", source: str = "start_loop_run_direct") -> dict:
+def _start_loop_run(instruction: str, project_id: str = "autonomous-forever", source: str = "start_loop_run_direct") -> dict:
     """Spawn `claude -p <instruction>` in a daemon thread.
 
     Returns the run dict (also stored in _LOOP_RUNS). Raises FileNotFoundError
@@ -1599,7 +1599,7 @@ def _get_loop_run(run_id: str, since_line: int = 0, project_id: str | None = Non
             "status": run["status"],
             "error": run["error"],
             "log_path": run["log_path"],
-            "project_id": run.get("project_id", "fulcrumaxe"),
+            "project_id": run.get("project_id", "autonomous-forever"),
             "total_lines": len(all_lines),
             "new_lines": new_lines,
         }
@@ -1624,7 +1624,7 @@ def _list_loop_runs(project_id: str | None = None) -> list[dict]:
             "exit_code": r["exit_code"],
             "line_count": len(r["lines"]),
             "instruction_preview": r["instruction"][:100],
-            "project_id": r.get("project_id", "fulcrumaxe"),
+            "project_id": r.get("project_id", "autonomous-forever"),
         }
         for r in items
     ]
@@ -3564,7 +3564,7 @@ class _Handler(BaseHTTPRequestHandler):
                 if not _instr_ok:
                     self._err(400, f"invalid instruction: {_instr_err}")
                     return
-                req_project_id = (body.get("project_id") or "fulcrumaxe").strip()
+                req_project_id = (body.get("project_id") or "autonomous-forever").strip()
                 if not _validate_project_id(req_project_id):
                     self._err(400, f"invalid project_id: {req_project_id!r}")
                     return
@@ -3963,13 +3963,13 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             if not self._check_auth():
                 return
-            # Project deletion. The fulcrumaxe project itself is
+            # Project deletion. The autonomous-forever project itself is
             # protected — deleting the team's own project would orphan all
             # the .autonomous-team/ state and break health checks.
             if raw_path.startswith("/api/projects/") and "/" not in raw_path[len("/api/projects/"):]:
                 pid = raw_path[len("/api/projects/"):]
-                if pid == "fulcrumaxe":
-                    self._err(403, "cannot delete the fulcrumaxe project")
+                if pid == "autonomous-forever":
+                    self._err(403, "cannot delete the autonomous-forever project")
                     return
                 if not _delete_project(pid):
                     self._err(404, f"project {pid!r} not found")
@@ -3991,7 +3991,7 @@ class _Handler(BaseHTTPRequestHandler):
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="REST API gateway for fulcrumaxe backend modules"
+        description="REST API gateway for autonomous-forever backend modules"
     )
     parser.add_argument("--host", default="0.0.0.0", help="Bind address (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=18099, help="Port (default: 18099)")

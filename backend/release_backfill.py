@@ -39,7 +39,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from backend.release_manager import REPO, record_release  # noqa: E402
+from backend.release_manager import CODE_REPO, record_release  # noqa: E402
 
 _RELEASES_DIR = REPO_ROOT / ".autonomous-team" / "releases"
 
@@ -134,7 +134,7 @@ def _bulk_fetch_merged_at(pr_numbers: list[int]) -> dict[int, str]:
     result = subprocess.run(
         [
             "gh", "pr", "list",
-            "--repo", REPO,
+            "--repo", CODE_REPO,
             "--state", "merged",
             "--json", "number,mergedAt",
             "--limit", "1000",

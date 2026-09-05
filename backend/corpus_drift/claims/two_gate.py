@@ -23,7 +23,10 @@ import json
 from pathlib import Path
 from typing import Any
 
-from backend._repo import REPO as _REPO
+# PR bodies live with the code, so this reads the CODE plane. CODE_REPO
+# falls back to REPO, whose resolver raises rather than returning "", so
+# it can never be empty here.
+from backend._repo import CODE_REPO as _CODE_REPO
 from backend.corpus_drift.types import ClaimResult
 
 logger = logging.getLogger(__name__)
@@ -50,7 +53,7 @@ def _fetch_pr_bodies(pr_numbers: list[int], limit: int) -> list[tuple[int, str]]
                 out = subprocess.run(
                     [
                         "gh", "pr", "view", str(pr_num),
-                        "--repo", _REPO,
+                        "--repo", _CODE_REPO,
                         "--json", "number,body",
                     ],
                     capture_output=True, text=True, timeout=30,
@@ -67,7 +70,7 @@ def _fetch_pr_bodies(pr_numbers: list[int], limit: int) -> list[tuple[int, str]]
         out = subprocess.run(
             [
                 "gh", "pr", "list",
-                "--repo", _REPO,
+                "--repo", _CODE_REPO,
                 "--state", "merged",
                 "--limit", str(limit),
                 "--json", "number,body",

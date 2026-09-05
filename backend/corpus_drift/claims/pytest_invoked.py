@@ -65,8 +65,8 @@ def evaluate(
     # ~/.claude/projects JSONL archive, filtered by mtime.
     all_paths = find_transcripts(since_seconds=since_seconds)
     # Filter to code-reviewer transcripts by path convention or run metadata.
-    # transcript path: /tmp/claude-*/-home-agent-fulcrumaxe/*/tasks/<agent_id>.output
-    # or ~/.claude/projects/-home-agent-fulcrumaxe/<uuid>.jsonl
+    # transcript path: /tmp/claude-*/-home-agent-autonomous-forever/*/tasks/<agent_id>.output
+    # or ~/.claude/projects/-home-agent-autonomous-forever/<uuid>.jsonl
     # We match by agent_id from the runs list when available, otherwise fall through
     # to mtime-filtered list (less precise but still useful).
 

@@ -67,7 +67,7 @@ import {
 } from "node:fs";
 import { join, dirname } from "node:path";
 import { DuckDBInstance } from "@duckdb/node-api";
-import { resolveRepo } from "../config/repo.js";
+import { resolveCodeRepo, resolveRepo } from "../config/repo.js";
 import { stateDir as sharedStateDir } from "../config/state-paths.js";
 
 // ---------------------------------------------------------------------------
@@ -331,6 +331,14 @@ function stepWikiSync(pr: string): void {
 // ---------------------------------------------------------------------------
 
 function stepDiscussionClose(discussions: string[], pr: string): void {
+  // Two planes: stepDiscussionClose — PR list; discussion id and body.
+  //
+  // The code-plane value is `codeRepo`, and the name is
+  // load-bearing: `repo` still means the Discussion plane
+  // elsewhere in this file, and the embedded Python below
+  // receives its slug by argv position, so the two have to
+  // be distinguishable by more than context.
+  const codeRepo = resolveCodeRepo();
   const repo = resolveRepo();
   const repoOwner = repo.split("/")[0]!;
   const repoName = repo.split("/")[1]!;
@@ -379,7 +387,7 @@ function stepDiscussionClose(discussions: string[], pr: string): void {
       // Merged count
       const mergedResult = runShellNonFatal(
         [
-          "gh", "pr", "list", "--repo", repo,
+          "gh", "pr", "list", "--repo", codeRepo,
           "--state", "merged", "--json", "number,body",
           "--jq", `[.[] | select(.body | test("#${disc}([^0-9]|$)"))] | length`,
         ],
@@ -399,7 +407,7 @@ function stepDiscussionClose(discussions: string[], pr: string): void {
           // Determine remaining labels
           const mergedBodiesResult = runShellNonFatal(
             [
-              "gh", "pr", "list", "--repo", repo,
+              "gh", "pr", "list", "--repo", codeRepo,
               "--state", "merged", "--json", "number,body,title",
               "--jq",
               `[.[] | select(.body | test("#${disc}([^0-9]|$)"))] | map(.body + " " + .title) | join(" ")`,
@@ -562,6 +570,14 @@ function stepCompletionBlock(
   currentBody: string,
   pr: string
 ): void {
+  // Two planes: stepCompletionBlock — PR list and view; discussion createdAt.
+  //
+  // The code-plane value is `codeRepo`, and the name is
+  // load-bearing: `repo` still means the Discussion plane
+  // elsewhere in this file, and the embedded Python below
+  // receives its slug by argv position, so the two have to
+  // be distinguishable by more than context.
+  const codeRepo = resolveCodeRepo();
   const repo = resolveRepo();
   const repoOwner = repo.split("/")[0]!;
   const repoName = repo.split("/")[1]!;
@@ -579,7 +595,7 @@ function stepCompletionBlock(
     }
     const mergedResult = runShellNonFatal(
       [
-        "gh", "pr", "list", "--repo", repo,
+        "gh", "pr", "list", "--repo", codeRepo,
         "--state", "merged", "--json", "number,body",
         "--jq", `[.[] | select(.body | test("#${discussion}([^0-9]|$)"))] | length`,
       ],
@@ -606,7 +622,7 @@ function stepCompletionBlock(
   const discCreatedAt = discCreatedResult.stdout.trim();
 
   const prMergedResult = runShellNonFatal(
-    ["gh", "pr", "view", pr, "--repo", repo, "--json", "mergedAt", "--jq", ".mergedAt"],
+    ["gh", "pr", "view", pr, "--repo", codeRepo, "--json", "mergedAt", "--jq", ".mergedAt"],
     `completion_block pr merged_at #${pr}`
   );
   const prMergedAt = prMergedResult.stdout.trim();
@@ -840,10 +856,11 @@ function stepTeamLog(pr: string, discussion: string | null): void {
 // ---------------------------------------------------------------------------
 
 function stepTmuxReloadFlag(pr: string): void {
-  const repo = resolveRepo();
+  // Code plane: stepTmuxReloadFlag — reads a PR's changed files.
+  const codeRepo = resolveCodeRepo();
   const result = runShellNonFatal(
     [
-      "gh", "pr", "view", pr, "--repo", repo,
+      "gh", "pr", "view", pr, "--repo", codeRepo,
       "--json", "files",
       "--jq", `[.files[].path | select(. == "CLAUDE.md")] | length`,
     ],
@@ -1122,11 +1139,12 @@ async function stepAutoPull(pr: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 function stepBrowserTourQueue(pr: string): void {
-  const repo = resolveRepo();
+  // Code plane: stepBrowserTourQueue — reads a PR's changed files.
+  const codeRepo = resolveCodeRepo();
 
   const result = runShellNonFatal(
     [
-      "gh", "pr", "view", pr, "--repo", repo,
+      "gh", "pr", "view", pr, "--repo", codeRepo,
       "--json", "files",
       "--jq", `[.files[].path | select(startswith("dashboard/"))] | join("\n")`,
     ],
@@ -1276,7 +1294,66 @@ export async function stepStatsMetrics(
 // (mirrors bash stats_metrics section data-gathering)
 // ---------------------------------------------------------------------------
 
+/**
+ * How many files this PR touches that a PR merged in the previous 6h also
+ * touched, counted once per overlapping file per other PR.
+ *
+ * Was a Python program built as a string in gatherStatsInputs(), spawning `gh`
+ * twice from inside it. Behaviour is preserved exactly, including returning 0
+ * on any failure and short-circuiting when the PR touches no files — the
+ * Python printed 0 and exited in both cases.
+ */
+function _prFileConflictScore(pr: string, codeRepo: string): number {
+  let prFiles: Set<string>;
+  try {
+    const r = runShellNonFatal(
+      ["gh", "pr", "view", pr, "--repo", codeRepo,
+       "--json", "files", "--jq", "[.files[].path]"],
+      "stats conflictScore files"
+    );
+    const parsed = JSON.parse(r.stdout.trim() || "[]") as unknown;
+    if (!Array.isArray(parsed)) return 0;
+    prFiles = new Set(parsed.filter((x): x is string => typeof x === "string"));
+  } catch {
+    return 0;
+  }
+  if (prFiles.size === 0) return 0;
+
+  const cutoff = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
+  let recent: Array<{ files?: Array<{ path?: string }> }>;
+  try {
+    const r2 = runShellNonFatal(
+      ["gh", "pr", "list", "--repo", codeRepo, "--state", "merged",
+       "--json", "number,mergedAt,files",
+       "--jq",
+       `[.[] | select(.number != ${pr} and .mergedAt != null and .mergedAt > "${cutoff}")]`],
+      "stats conflictScore recent"
+    );
+    const parsed = JSON.parse(r2.stdout.trim() || "[]") as unknown;
+    if (!Array.isArray(parsed)) return 0;
+    recent = parsed as Array<{ files?: Array<{ path?: string }> }>;
+  } catch {
+    return 0;
+  }
+
+  let overlapCount = 0;
+  for (const other of recent) {
+    for (const f of other.files ?? []) {
+      if (f.path && prFiles.has(f.path)) overlapCount += 1;
+    }
+  }
+  return overlapCount;
+}
+
 function gatherStatsInputs(pr: string, discussion: string | null): StatsMetricsInput {
+  // Two planes: gatherStatsInputs — PR reads incl. embedded Python; discussion queries.
+  //
+  // The code-plane value is `codeRepo`, and the name is
+  // load-bearing: `repo` still means the Discussion plane
+  // elsewhere in this file, and the embedded Python below
+  // receives its slug by argv position, so the two have to
+  // be distinguishable by more than context.
+  const codeRepo = resolveCodeRepo();
   const repo = resolveRepo();
   const repoOwner = repo.split("/")[0]!;
   const repoName = repo.split("/")[1]!;
@@ -1301,7 +1378,7 @@ function gatherStatsInputs(pr: string, discussion: string | null): StatsMetricsI
 
   // PR creation time
   const prCreatedResult = runShellNonFatal(
-    ["gh", "pr", "view", pr, "--repo", repo, "--json", "createdAt", "--jq", ".createdAt"],
+    ["gh", "pr", "view", pr, "--repo", codeRepo, "--json", "createdAt", "--jq", ".createdAt"],
     "stats prCreatedAt"
   );
   const prCreatedAt = prCreatedResult.stdout.trim();
@@ -1309,7 +1386,7 @@ function gatherStatsInputs(pr: string, discussion: string | null): StatsMetricsI
   // Fix cycle count (label applications)
   const fixCycleResult = runShellNonFatal(
     [
-      "gh", "pr", "view", pr, "--repo", repo,
+      "gh", "pr", "view", pr, "--repo", codeRepo,
       "--json", "timelineItems",
       "--jq", `[.timelineItems.nodes[] | select(.label.name == "code-review-needs-fix")] | length`,
     ],
@@ -1339,47 +1416,14 @@ function gatherStatsInputs(pr: string, discussion: string | null): StatsMetricsI
     }
   }
 
-  // PR file conflict score: overlap with PRs merged in previous 6h
-  // Values as argv — no shell interpolation of untrusted pr/repo
-  const pyConflict =
-    "import subprocess, json, sys, datetime\n" +
-    "pr = sys.argv[1]\n" +
-    "repo = sys.argv[2]\n" +
-    "try:\n" +
-    "    r = subprocess.run(\n" +
-    "        ['gh', 'pr', 'view', pr, '--repo', repo,\n" +
-    "         '--json', 'files', '--jq', '[.files[].path]'],\n" +
-    "        capture_output=True, text=True, check=True,\n" +
-    "    )\n" +
-    "    pr_files = set(json.loads(r.stdout))\n" +
-    "except Exception:\n" +
-    "    print(0); exit()\n" +
-    "if not pr_files:\n" +
-    "    print(0); exit()\n" +
-    "cutoff = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=6)).isoformat()\n" +
-    "try:\n" +
-    "    r2 = subprocess.run(\n" +
-    "        ['gh', 'pr', 'list', '--repo', repo, '--state', 'merged',\n" +
-    "         '--json', 'number,mergedAt,files',\n" +
-    "         '--jq', f'[.[] | select(.number != {pr} and .mergedAt != null and .mergedAt > \"{cutoff}\")]'],\n" +
-    "        capture_output=True, text=True, check=True,\n" +
-    "    )\n" +
-    "    recent_prs = json.loads(r2.stdout)\n" +
-    "except Exception:\n" +
-    "    print(0); exit()\n" +
-    "overlap_count = 0\n" +
-    "for other_pr in recent_prs:\n" +
-    "    other_files = {f['path'] for f in other_pr.get('files', [])}\n" +
-    "    overlap = pr_files & other_files\n" +
-    "    if overlap:\n" +
-    "        overlap_count += len(overlap)\n" +
-    "print(overlap_count)\n";
-
-  const conflictResult = runShellNonFatal(
-    ["python3", "-c", pyConflict, pr, repo],
-    "stats conflictScore"
-  );
-  const conflictScore = parseInt(conflictResult.stdout.trim() || "0", 10) || 0;
+  // PR file conflict score: overlap with PRs merged in previous 6h.
+  //
+  // This used to be a Python program, built as a string here, whose first two
+  // acts were to spawn `gh`. The repo those calls used was an identifier
+  // inside a string literal — unreadable from this file by anyone, tool or
+  // person, without following an argv position by hand. Same computation, one
+  // fewer process, and the plane is now visible at the call site.
+  const conflictScore = _prFileConflictScore(pr, codeRepo);
 
   // SPEC_READY timestamp from Discussion body
   let specReadyTs = "";
@@ -1402,7 +1446,7 @@ function gatherStatsInputs(pr: string, discussion: string | null): StatsMetricsI
   // Reviewer acceptance latency: PR open -> first code-review-passed label
   const reviewerResult = runShellNonFatal(
     [
-      "gh", "api", `repos/${repo}/issues/${pr}/timeline`,
+      "gh", "api", `repos/${codeRepo}/issues/${pr}/timeline`,
       "--jq",
       `[.[] | select(.event == "labeled" and .label.name == "code-review-passed")] | first | .created_at`,
     ],
@@ -1414,10 +1458,13 @@ function gatherStatsInputs(pr: string, discussion: string | null): StatsMetricsI
   let acPassRate = -1;
   if (discussion && discBody) {
     const pyAc =
-      "import re, subprocess, json, sys\n" +
+      // No subprocess import: the gh call this used to make now happens in
+      // TypeScript above, and its JSON arrives as argv[3]. The regex and
+      // formatting semantics below are Python's and stay Python's.
+      "import re, json, sys\n" +
       "disc_body = sys.argv[1]\n" +
       "pr = sys.argv[2]\n" +
-      "repo = sys.argv[3]\n" +
+      "pr_json = sys.argv[3]\n" +
       "ac_section = re.search(r'### Acceptance Criteria\\s*([\\s\\S]*?)(?=\\n###|\\Z)', disc_body)\n" +
       "if not ac_section:\n" +
       "    print('-1.0'); exit()\n" +
@@ -1426,11 +1473,7 @@ function gatherStatsInputs(pr: string, discussion: string | null): StatsMetricsI
       "if not ac_lines:\n" +
       "    print('-1.0'); exit()\n" +
       "try:\n" +
-      "    r = subprocess.run(\n" +
-      "        ['gh', 'pr', 'view', pr, '--repo', repo, '--json', 'body,comments'],\n" +
-      "        capture_output=True, text=True, check=True,\n" +
-      "    )\n" +
-      "    pr_data = json.loads(r.stdout)\n" +
+      "    pr_data = json.loads(pr_json)\n" +
       "    evidence_text = (pr_data.get('body') or '') + ' '.join(\n" +
       "        c.get('body', '') for c in pr_data.get('comments', [])\n" +
       "    )\n" +
@@ -1444,8 +1487,15 @@ function gatherStatsInputs(pr: string, discussion: string | null): StatsMetricsI
       "rate = referenced / len(ac_lines)\n" +
       "print(f'{rate:.4f}')\n";
 
+    // The gh call the Python used to make, hoisted so its plane is readable
+    // from this file. An empty string on failure reproduces the old
+    // behaviour exactly: the Python's own `except` set evidence_text to "".
+    const acEvidence = runShellNonFatal(
+      ["gh", "pr", "view", pr, "--repo", codeRepo, "--json", "body,comments"],
+      "stats acPassRate evidence"
+    );
     const acResult = runShellNonFatal(
-      ["python3", "-c", pyAc, discBody, pr, repo],
+      ["python3", "-c", pyAc, discBody, pr, acEvidence.stdout.trim() || "{}"],
       "stats acPassRate"
     );
     const acStr = acResult.stdout.trim();
@@ -1590,12 +1640,20 @@ function stepSweepLoopRuns(): void {
 // ---------------------------------------------------------------------------
 
 function autoDetectDiscussions(pr: string): string[] {
+  // Two planes: autoDetectDiscussions — reads a PR body; queries discussions.
+  //
+  // The code-plane value is `codeRepo`, and the name is
+  // load-bearing: `repo` still means the Discussion plane
+  // elsewhere in this file, and the embedded Python below
+  // receives its slug by argv position, so the two have to
+  // be distinguishable by more than context.
+  const codeRepo = resolveCodeRepo();
   const repo = resolveRepo();
   const repoOwner = repo.split("/")[0]!;
   const repoName = repo.split("/")[1]!;
 
   const bodyResult = runShellNonFatal(
-    ["gh", "pr", "view", pr, "--repo", repo, "--json", "body", "--jq", ".body"],
+    ["gh", "pr", "view", pr, "--repo", codeRepo, "--json", "body", "--jq", ".body"],
     "auto-detect discussions body"
   );
   const prBody = bodyResult.stdout.trim();

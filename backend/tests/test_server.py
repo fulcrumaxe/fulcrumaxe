@@ -523,7 +523,9 @@ def test_resolve_repo_error_message_distinguishes_causes(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
 
     (tmp_path / ".projectb-state").mkdir()
-    (tmp_path / ".projectb-state" / "project.json").write_text(json.dumps({"name": "projectb"}))
+    (tmp_path / ".projectb-state" / "project.json").write_text(
+        json.dumps({"name": "projectb"})
+    )
 
     with pytest.raises(UnresolvableProjectError) as no_repo_exc:
         _resolve_repo_for_project("projectb")

@@ -30,7 +30,7 @@ router = APIRouter(
     "/graphql",
     summary="Execute a GraphQL query",
     description=(
-        "Executes a home-grown GraphQL query against the fulcrumaxe data layer. "
+        "Executes a home-grown GraphQL query against the autonomous-forever data layer. "
         "Body: {\"query\": \"<graphql query string>\"}. "
         "Returns {\"data\": {...}} on success or {\"errors\": [...]} on failure. "
         "Requires authentication."

@@ -37,17 +37,17 @@ _SERVER_PY = _REPO_ROOT / "backend" / "server.py"
 # ---------------------------------------------------------------------------
 
 _HARDCODED_MARKERS = (
-    "fulcrumaxe/.autonomous-team",
+    "autonomous-forever/.autonomous-team",
     # Assembled rather than written out, and not for style: this file is
     # scanned by scripts/check-no-hardcoded-checkout-paths.sh like every other
     # tracked file, and a scanner that spells its own needle out flags itself
     # on every run. The guard's header explains that it does the same thing to
     # its own examples. Splitting after the "/home/" prefix is enough, and
     # keeps the marker byte-identical to what it was.
-    "/home/" + "agent/fulcrumaxe",
-    # Note: ".fulcrumaxe-state" is the default AF state dir.
+    "/home/" + "agent/autonomous-forever",
+    # Note: ".autonomous-forever-state" is the default AF state dir.
     # It IS a hardcoded AF path — other projects use different state dirs.
-    ".fulcrumaxe-state",
+    ".autonomous-forever-state",
 )
 
 # ---------------------------------------------------------------------------

@@ -72,7 +72,7 @@ export class BackendClient extends EventEmitter {
         AF_PROVIDER: process.env['AF_PROVIDER'],
         AF_MODEL: process.env['AF_MODEL'],
         AF_BASE_URL: process.env['AF_BASE_URL'],
-        GH_REPO: 'fulcrumaxe/fulcrumaxe',
+        GH_REPO: 'autonomous-agent-7/autonomous-forever',
         AF_REQUEST_TIMEOUT: '0',
       },
       stdio: ['pipe', 'pipe', 'pipe'],

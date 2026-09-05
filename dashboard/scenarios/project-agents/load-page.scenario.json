@@ -1,7 +1,7 @@
 {
   "name": "load-page",
-  "goal": "Verify /project/:id/agents loads at /project/fulcrumaxe/agents and reaches its expected 'empty' done-state without console errors",
-  "url": "http://localhost:5173/project/fulcrumaxe/agents",
+  "goal": "Verify /project/:id/agents loads at /project/autonomous-forever/agents and reaches its expected 'empty' done-state without console errors",
+  "url": "http://localhost:5173/project/autonomous-forever/agents",
   "preconditions": {
     "localStorage": {
       "af_dashboard_token": "<test-token>"
@@ -13,7 +13,7 @@
   "steps": [
     {
       "action": "navigate_page",
-      "url": "http://localhost:5173/project/fulcrumaxe/agents",
+      "url": "http://localhost:5173/project/autonomous-forever/agents",
       "wait_until": "domcontentloaded"
     },
     {

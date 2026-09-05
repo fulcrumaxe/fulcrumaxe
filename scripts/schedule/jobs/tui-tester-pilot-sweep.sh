@@ -23,7 +23,7 @@ REPO="$(_resolve_repo)"
 REPO_OWNER="${REPO%%/*}"
 REPO_NAME="${REPO##*/}"
 
-STATE_DIR="${AUTONOMOUS_TEAM_STATE_DIR:-$HOME/.fulcrumaxe-state}"
+STATE_DIR="${AUTONOMOUS_TEAM_STATE_DIR:-$HOME/.autonomous-forever-state}"
 DISMISSED_PAIRS_FILE="$STATE_DIR/tui-tester/dismissed-pairs.json"
 MAX_DISCUSSIONS_PER_RUN=3
 

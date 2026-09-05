@@ -712,7 +712,7 @@ class CostTracker:
     def summarize_team_lead(self, window_seconds: int = 18000) -> dict:
         """Return Team Lead (parent session) token and cost summary.
 
-        Reads JSONL transcripts from ~/.claude/projects/-home-agent-fulcrumaxe/
+        Reads JSONL transcripts from ~/.claude/projects/-home-agent-autonomous-forever/
         (the exact project root — sub-agent worktree dirs are excluded).
 
         Args:

@@ -1,0 +1,81 @@
+# REPO-PLANE-LEDGER-V1
+#
+# Known-remaining repo-plane defects: none.
+#
+# The marker on the first line is load-bearing. Readers of this file must be
+# able to tell "every defect is fixed" (no entries, marker present) from "this
+# file was truncated, emptied or never read" (no marker) — because those two
+# states look identical to anything that just counts lines, and only one of
+# them should let the cutover proceed. A reader that treats an unreadable
+# ledger as an empty one green-lights the flip on the strength of a missing
+# file.
+#
+# Generated and enforced by scripts/audit_repo_plane.py. Format: one
+# "<path> <count>" per line. `audit_repo_plane.py --check` exits non-zero when
+# a file not listed here has a defect, when a listed file's count grows, AND
+# when a listed count is too high because sites were fixed without lowering it.
+# Both directions fail on purpose: a stale baseline that over-allows is how a
+# list like this rots into a rubber stamp. With the list empty only the first
+# can fire, and it now fires on any new mis-planed call site anywhere in the
+# tree, with no baseline left to hide behind. It runs on every PR via
+# scripts/ci/repo-plane-cutover-guard.py.
+#
+# HOW THE NUMBER MOVED, AND WHY THAT IS THE POINT
+#
+#   16   first audit — a line-based bash sweep
+#   21+  after a reviewer measured the "cleared" bucket and found 5 more
+#   48   after the Python surface was measured at all
+#   59   after two detector blind spots closed and TypeScript was scanned
+#   71   after two more closed: gh argv passed as one array to a helper in
+#        TypeScript, and a second assignment on the same `local` line in bash
+#
+# Every one of those was published as if it were the answer. What changed each
+# time was the corpus, not the tree — a surface the detector does not read
+# reports zero call sites, and that is the same string as zero defects. Read
+# the zero below with that history in mind: it is the best current measurement,
+# not a proof that none remain. The residual risk of a further blind spot is
+# tracked on D#2406 (a TypeScript compiler-API pass as a second, independent
+# instrument) rather than treated as closed.
+#
+# 71 defects across 391 call sites — 323 bash, 24 Python, 44 TypeScript. All
+# fixed: 14 in the first change, 57 in the second.
+#
+# Keeping this file, empty, rather than deleting it is deliberate: deleting it
+# makes load_baseline() raise, which is the right behaviour for a missing
+# ledger and useless as a steady state. An empty ledger with an intact marker
+# is the only spelling of "there is nothing left" this tooling can verify.
+#
+# WHAT IS STILL UNMEASURED, STATED RATHER THAN LEFT IMPLICIT
+#
+# Reported to the coordinator rather than patched, because the detector has one
+# owner and two agents editing it concurrently is how a ledger stops matching
+# the instrument that produced it. Measured on this tree:
+#
+#   * Heredoc-carried embedded programs are unread. bash_logical_lines() skips
+#     heredoc bodies, correctly, and the python-in-bash pass runs only over
+#     logical lines. scripts/compute-pr-defect-density.sh reports ZERO call
+#     sites — its only gh call is a heredoc-carried `gh api graphql`.
+#     sweep-stuck-prs.sh reports 1 of 4, post-merge-hook.sh 17 of 20,
+#     hooks/post-merge.d/tui-tester-sweep.sh 2 of 3. Every one of the missed
+#     calls is on the right plane today; none of them is measured.
+#   * backend/release_backfill.py reports zero call sites: it imports the slug
+#     from backend.release_manager rather than backend._repo, and the import
+#     filter keys on a source module named *_repo. One laundering hop. Fixed
+#     here by reading it, so not live — but not measured either.
+#
+# Neither is a live defect. Both are places where a future edit would land in a
+# surface nothing checks, which is the condition this ledger exists to remove.
+#
+# THE CUTOVER IS NO LONGER BLOCKED BY THIS FILE.
+# Setting "code_repo" in .autonomous-team/config.json is the cutover. With zero
+# entries below, tests/test_repo_plane_cutover_gate.py and
+# scripts/ci/repo-plane-cutover-guard.py both allow it. That gate is the only
+# thing this list was holding shut, and it now measures an empty list rather
+# than a promise.
+#
+# What the gate cannot see: a cutover performed only in the runtime state
+# directory's project.json, which no in-repo test may read. That is a scope
+# boundary, not an oversight — see _CUTOVER_FILES in
+# scripts/audit_repo_plane.py.
+#
+# Entries go below this line, one "<path> <count>" per line. There are none.

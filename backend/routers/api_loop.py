@@ -152,7 +152,7 @@ async def api_loop_run_start(request: Request) -> Any:
     if not ok:
         raise HTTPException(status_code=400, detail=f"invalid instruction: {err}")
 
-    req_project_id = (body.get("project_id") or "fulcrumaxe").strip()
+    req_project_id = (body.get("project_id") or "autonomous-forever").strip()
     if not _validate_project_id(req_project_id):
         raise HTTPException(status_code=400, detail=f"invalid project_id: {req_project_id!r}")
 

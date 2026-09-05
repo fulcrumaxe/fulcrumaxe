@@ -1,5 +1,5 @@
 """
-Python client SDK for the fulcrumaxe REST API.
+Python client SDK for the autonomous-forever REST API.
 
 Wraps all API endpoints in typed methods with automatic auth, error handling,
 and response dataclasses. Uses only stdlib — no requests, no httpx.
@@ -500,7 +500,7 @@ class Notification:
 
 class AutonomousClient:
     """
-    Client for the fulcrumaxe REST API.
+    Client for the autonomous-forever REST API.
 
     Args:
         base_url: Base URL of the running API server (default: http://localhost:18099).

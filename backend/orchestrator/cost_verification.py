@@ -141,7 +141,7 @@ def _db_path() -> Path:
         return Path(env)
     state_dir = os.environ.get(
         "AUTONOMOUS_TEAM_STATE_DIR",
-        str(Path.home() / ".fulcrumaxe-state"),
+        str(Path.home() / ".autonomous-forever-state"),
     )
     return Path(state_dir) / "stats.duckdb"
 
@@ -149,7 +149,7 @@ def _db_path() -> Path:
 def _credit_file() -> Path:
     state_dir = os.environ.get(
         "AUTONOMOUS_TEAM_STATE_DIR",
-        str(Path.home() / ".fulcrumaxe-state"),
+        str(Path.home() / ".autonomous-forever-state"),
     )
     return Path(state_dir) / "sdk_credit.json"
 

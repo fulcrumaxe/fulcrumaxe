@@ -53,7 +53,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STAMP_FILE="$REPO_ROOT/.autonomous-team/engine-install.json"
-DEFAULT_ENGINE_REPO="${LOOP_BOOTSTRAP_ENGINE_REPO:-fulcrumaxe/fulcrumaxe}"
+DEFAULT_ENGINE_REPO="${LOOP_BOOTSTRAP_ENGINE_REPO:-autonomous-agent-7/fulcrumaxe}"
 
 usage() {
   cat <<'EOF'

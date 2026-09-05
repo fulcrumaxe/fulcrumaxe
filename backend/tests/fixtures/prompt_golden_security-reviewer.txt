@@ -11,7 +11,7 @@ The local worktree checkout is OFTEN STALE. The PR branch on the remote
 
 ```bash
 # Get the PR's branch name
-BRANCH=$(gh pr view 55 --repo fulcrumaxe/fulcrumaxe --json headRefName --jq .headRefName)
+BRANCH=$(gh pr view 55 --repo autonomous-agent-7/autonomous-forever --json headRefName --jq .headRefName)
 # Fetch fresh
 git fetch origin "$BRANCH"
 # Read files via git show, not direct file read:
@@ -26,7 +26,7 @@ Security review PR for Discussion #99 (Test discussion).
 Task:
 Do the test thing
 
-Discussion URL: https://github.com/fulcrumaxe/fulcrumaxe/discussions/99
+Discussion URL: https://github.com/autonomous-agent-7/autonomous-forever/discussions/99
 
 Security review focus areas:
 1. Credential leaks — api_key, password, token, secret in code or config.
@@ -39,8 +39,8 @@ Security review focus areas:
 
 After review:
 IMPORTANT — label API: `gh pr edit --add-label` silently no-ops on this repo. Use REST API instead:
-  Apply label:  gh api -X POST repos/fulcrumaxe/fulcrumaxe/issues/{pr_number}/labels -f labels[]="security-review-passed"
-  Remove label: gh api -X DELETE repos/fulcrumaxe/fulcrumaxe/issues/{pr_number}/labels/security-issue
+  Apply label:  gh api -X POST repos/autonomous-agent-7/autonomous-forever/issues/{pr_number}/labels -f labels[]="security-review-passed"
+  Remove label: gh api -X DELETE repos/autonomous-agent-7/autonomous-forever/issues/{pr_number}/labels/security-issue
   Or source and call: source scripts/lib/gh-label.sh && apply_label {pr_number} security-review-passed
 
 - Apply label 'security-review-passed' (via REST) if no issues found.
@@ -102,7 +102,7 @@ The Team Lead (not you) is the spawner.
 
 ---
 ## Repo Scope (mandatory)
-Repo scope: ONLY fulcrumaxe/fulcrumaxe. Never post to or interact with any other repo. Every gh CLI call must use --repo fulcrumaxe/fulcrumaxe. Every GraphQL query must use repository(owner:"fulcrumaxe", name:"fulcrumaxe").
+Repo scope: ONLY autonomous-agent-7/autonomous-forever. Never post to or interact with any other repo. Every gh CLI call must use --repo autonomous-agent-7/autonomous-forever. Every GraphQL query must use repository(owner:"autonomous-agent-7", name:"autonomous-forever").
 
 ---
 ## AGENT_OUTPUT Envelope (mandatory)

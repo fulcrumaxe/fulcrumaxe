@@ -4,7 +4,7 @@ Slice B1 / D#1535, which explicitly deferred this).
 
 Deterministic, zero-LLM, zero-writes-to-sibling-tree trust anchor for the
 engine-sync update-distribution channel. Given a signed release tag in the
-upstream engine repo (fulcrumaxe/fulcrumaxe), this tool
+upstream engine repo (autonomous-agent-7/fulcrumaxe), this tool
 fetches and verifies it end-to-end:
 
   signed tag -> pinned key (TOFU, engine/trust.json) -> commit SHA ->

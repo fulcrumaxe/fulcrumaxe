@@ -239,7 +239,7 @@ class TestTranscriptReader(unittest.TestCase):
 
     def test_agent_id_from_path(self):
         """agent_id_from_path extracts stem from path."""
-        p = Path("/tmp/claude-abc/-home-agent-fulcrumaxe/uuid/tasks/agent-123.output")
+        p = Path("/tmp/claude-abc/-home-agent-autonomous-forever/uuid/tasks/agent-123.output")
         self.assertEqual(agent_id_from_path(p), "agent-123")
 
     def test_iter_turns_string_message_no_crash(self):

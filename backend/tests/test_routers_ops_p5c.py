@@ -749,12 +749,12 @@ class TestProjectDelete:
         assert data["ok"] is True
         assert data["id"] == "my-proj"
 
-    def test_delete_fulcrumaxe_403(self, monkeypatch):
-        """Deleting fulcrumaxe project → 403."""
+    def test_delete_autonomous_forever_403(self, monkeypatch):
+        """Deleting autonomous-forever project → 403."""
         monkeypatch.setenv("AF_API_AUTH_KEY", _AUTH_TOKEN)
 
         with patch("backend.routers.ops_projects._delete_project") as mock_del:
-            resp = _authed().delete("/api/projects/fulcrumaxe")
+            resp = _authed().delete("/api/projects/autonomous-forever")
 
         assert resp.status_code == 403
         assert "cannot delete" in envelope_error(resp)

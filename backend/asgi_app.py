@@ -158,7 +158,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 # ---------------------------------------------------------------------------
 
 app = FastAPI(
-    title="fulcrumaxe API",
+    title="autonomous-forever API",
     description="FastAPI strangler-fig app — Phase 1 scaffolding.",
     version="1.0.0-p1",
     lifespan=_lifespan,

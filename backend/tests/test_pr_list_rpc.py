@@ -34,7 +34,7 @@ FIXTURE_PR_LIST = [
         "fix_cycles": 0,
         "quality_score": 75.0,
         "discussion_number": 100,
-        "html_url": "https://github.com/fulcrumaxe/fulcrumaxe/pull/42",
+        "html_url": "https://github.com/autonomous-agent-7/autonomous-forever/pull/42",
     },
     {
         "number": 43,
@@ -45,7 +45,7 @@ FIXTURE_PR_LIST = [
         "fix_cycles": 2,
         "quality_score": None,
         "discussion_number": None,
-        "html_url": "https://github.com/fulcrumaxe/fulcrumaxe/pull/43",
+        "html_url": "https://github.com/autonomous-agent-7/autonomous-forever/pull/43",
     },
 ]
 

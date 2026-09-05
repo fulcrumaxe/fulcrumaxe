@@ -40,7 +40,7 @@ from backend.changelog import (
 # REPO_SLUG mirrors backend.changelog's own repo resolution (backend._repo.REPO)
 # rather than hard-coding a parallel literal — a hard-coded copy here silently
 # drifted from reality once (D#1870: this constant still said the pre-rename
-# "fulcrumaxe" slug after the resolver was fixed to resolve correctly).
+# "autonomous-forever" slug after the resolver was fixed to resolve correctly).
 
 
 def _make_pr(

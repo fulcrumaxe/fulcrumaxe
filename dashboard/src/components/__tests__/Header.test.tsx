@@ -26,9 +26,9 @@ describe('Header', () => {
   it('renders project name', async () => {
     mockSummary.mockResolvedValue({ tripped: [], warnings: [], threshold: 3 })
     await act(async () => {
-      render(<Header projectName="fulcrumaxe" />)
+      render(<Header projectName="autonomous-forever" />)
     })
-    expect(screen.getByText('fulcrumaxe')).toBeInTheDocument()
+    expect(screen.getByText('autonomous-forever')).toBeInTheDocument()
   })
 
   it('renders no badge when tripped count is 0', async () => {

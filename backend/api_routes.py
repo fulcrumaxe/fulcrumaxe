@@ -1,5 +1,5 @@
 """
-Route registry for the fulcrumaxe REST API.
+Route registry for the autonomous-forever REST API.
 
 Each entry describes one endpoint's metadata — used both by api.py for
 routing and by openapi.py to build the OpenAPI 3.0.1 spec. Keeping this

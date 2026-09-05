@@ -304,6 +304,38 @@ check_no_live_state_paths_in_tests() {
     fi
 }
 
+# Gate: no test coldstarts into the operator's home directory (D#2317 PR-c).
+# The required-check step in `backend (import-smoke)` is what actually blocks
+# a merge; this registration is so the same guard runs locally, in the same
+# place an executor already runs the D#2267 live-state lint above.
+#
+# Same tree-shape reasoning as check_no_live_state_paths_in_tests: the guard
+# scans tests/, which does not ship in the open-source export, so an absent
+# tests/ is a legitimate skip and only an absent guard script counts as rot.
+check_no_unscoped_coldstart_in_tests() {
+    CURRENT_CHECK="No Unscoped Coldstart Invocations in Tests"
+    CURRENT_SLUG="no-unscoped-coldstart-in-tests"
+    ((CHECKS_RUN++)) || true
+
+    if [ ! -d "$REPO_ROOT/tests" ]; then
+        echo "[SKIP] $CURRENT_CHECK (no tests/ directory — open-source export)"
+        return 0
+    fi
+
+    local guard="$REPO_ROOT/scripts/ci/coldstart-state-dir-guard.py"
+    if [ ! -f "$guard" ]; then
+        self_skip "$CURRENT_CHECK" "coldstart-state-dir-guard.py not found, but tests/ is present"
+        return 0
+    fi
+
+    local output
+    if output=$(python3 "$guard" 2>&1); then
+        pass "$CURRENT_CHECK"
+    else
+        fail "$CURRENT_CHECK" "$output"
+    fi
+}
+
 # Gate: every tracked `bun test` invocation of the ts-backend suite routes
 # through the configured `bun run test` script (D#2276) — bun's per-test
 # default timeout is 5000ms, and nothing else in the repo overrides it
@@ -364,6 +396,53 @@ check_subsystems_index() {
     fi
 }
 
+# Gate: Forbidden identifiers in added lines (D#2348 PR-g)
+#
+# export.sh used to run this scan on the way out and nothing was published
+# until it passed. D#2348 retires export.sh, and a `pull_request` CI job is
+# not a replacement — that job runs after the branch is already pushed, and
+# on a public repo a pushed branch is world-readable immediately. So the
+# scan moves here, pre-push, into the function executors run locally and
+# the `preflight` CI job runs. One mechanism, two invocation points.
+#
+# No pattern lives in this file. Patterns and allowlist both come from
+# open-source/IDENTIFIER-RULES.txt at runtime — the same file export.sh and
+# open-source/checks/identifier-gate.sh read, so they cannot drift (D#1837).
+#
+# Skipped, not failed, when open-source/ is absent: that directory never
+# ships (MANIFEST.md excludes it), so an exported or adopter tree has no
+# rules file to read and there is nothing here to gate. The tree-shape
+# check runs FIRST — only once open-source/ is confirmed present does a
+# missing check script or rules file count as self_skip (rot) rather than
+# legitimate export shape.
+check_forbidden_identifiers() {
+    CURRENT_CHECK="Forbidden Identifiers (pre-push)"
+    CURRENT_SLUG="forbidden-identifiers"
+    ((CHECKS_RUN++)) || true
+
+    if [ ! -d "$REPO_ROOT/open-source" ]; then
+        echo "[SKIP] $CURRENT_CHECK (no open-source/ directory — export or adopter tree, no rules file to read)"
+        return 0
+    fi
+
+    local scan_script="$REPO_ROOT/scripts/check-forbidden-identifiers.sh"
+    if [ ! -f "$scan_script" ]; then
+        self_skip "$CURRENT_CHECK" "check-forbidden-identifiers.sh not found, but open-source/ is present"
+        return 0
+    fi
+    if [ ! -f "$REPO_ROOT/open-source/IDENTIFIER-RULES.txt" ]; then
+        self_skip "$CURRENT_CHECK" "open-source/IDENTIFIER-RULES.txt not found, but open-source/ is present"
+        return 0
+    fi
+
+    local output
+    if output=$(bash "$scan_script" 2>&1); then
+        pass "$CURRENT_CHECK"
+    else
+        fail "$CURRENT_CHECK" "$output"
+    fi
+}
+
 # Gate: Prompt drift detector (only when CLAUDE.md or spawn_templates touched)
 check_prompt_drift() {
     CURRENT_CHECK="Prompt Drift Check"
@@ -415,8 +494,10 @@ run_always_gates() {
     check_no_hardcoded_checkout_paths
     check_no_fixed_tmp_paths_in_tests
     check_no_live_state_paths_in_tests
+    check_no_unscoped_coldstart_in_tests
     check_bun_test_timeout
     check_subsystems_index
+    check_forbidden_identifiers
     check_prompt_drift
 
     local ran_for_real=$((CHECKS_RUN - SELF_SKIPPED_COUNT))

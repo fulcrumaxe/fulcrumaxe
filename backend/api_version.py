@@ -1,4 +1,4 @@
-"""API versioning utilities for fulcrumaxe REST gateway.
+"""API versioning utilities for autonomous-forever REST gateway.
 
 Provides version extraction from URL paths, Accept-Version header support,
 and deprecation metadata for unversioned access.

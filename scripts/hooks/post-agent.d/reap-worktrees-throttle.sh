@@ -46,7 +46,7 @@
 #
 # Non-fatal: failures must not block the hook exit code.
 
-_REAP_STATE_DIR="${AUTONOMOUS_TEAM_STATE_DIR:-${HOME}/.fulcrumaxe-state}"
+_REAP_STATE_DIR="${AUTONOMOUS_TEAM_STATE_DIR:-${HOME}/.autonomous-forever-state}"
 _REAP_STAMP="${REAP_STAMP_OVERRIDE:-$_REAP_STATE_DIR/.last-worktree-reap}"
 _REAP_INTERVAL="${REAP_INTERVAL_OVERRIDE:-3600}"  # 1 hour — see rationale above
 _RUN_REAP=false

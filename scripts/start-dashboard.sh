@@ -11,7 +11,7 @@
 #   1. AF_API_PORT / AF_RPC_PORT / AF_SSE_PORT / AF_VITE_PORT env vars
 #   2. "ports" block in .autonomous-team/project.json
 #   3. Derived from dashboard_port in project.json (vite=base, api=+100, rpc=+200, sse=+300)
-#   4. Hardcoded fulcrumaxe defaults (18099/8765/8420/5173)
+#   4. Hardcoded autonomous-forever defaults (18099/8765/8420/5173)
 #
 # Pre-start port occupancy check:
 #   Before starting any service, checks whether its target port is already bound. If so,
@@ -68,7 +68,7 @@ if [[ -z "$THIS_PROJECT" && -n "${AUTONOMOUS_TEAM_STATE_DIR:-}" ]]; then
     THIS_PROJECT="${_dir_name:1:-6}"  # strip leading "." and trailing "-state"
   fi
 fi
-THIS_PROJECT="${THIS_PROJECT:-fulcrumaxe}"
+THIS_PROJECT="${THIS_PROJECT:-autonomous-forever}"
 
 # ---- Determine state dir for runtime JSON -----------------------------------
 # Write dashboard-runtime.json to the state dir (outside repo) so fleet
@@ -114,14 +114,14 @@ RUNTIME_FILE="$REPO_ROOT/.autonomous-team/dashboard-runtime.json"
 # stay untouched here -- it feeds the "State dir:" log line
 # test_dashboard_lifecycle.sh's DL-2 asserts on (D#1635) and the "state_dir"
 # field embedded in the runtime JSON's own content -- so a test that must not
-# write the operator's real ~/.fulcrumaxe-state/dashboard-runtime.json
+# write the operator's real ~/.autonomous-forever-state/dashboard-runtime.json
 # (the default STATE_DIR fallback when AUTONOMOUS_TEAM_STATE_DIR is
 # deliberately left unset, as DL-2 requires) redirects only the write target,
 # not STATE_DIR. Unset in production -- default path unchanged.
 STATE_RUNTIME_FILE="${AF_DASHBOARD_STATE_RUNTIME_FILE:-$STATE_DIR/dashboard-runtime.json}"
 
 # ---- Port resolution --------------------------------------------------------
-# Fulcrumaxe keeps its existing ports explicitly in project.json.
+# Autonomous-forever keeps its existing ports explicitly in project.json.
 # New projects get ports derived from dashboard_port.
 
 _read_ports_from_project() {
@@ -150,7 +150,7 @@ except Exception:
 PYEOF
 }
 
-# Default ports (fulcrumaxe hardcoded values — preserved for backward compatibility)
+# Default ports (autonomous-forever hardcoded values — preserved for backward compatibility)
 API_PORT=18099
 RPC_PORT=8765
 SSE_PORT=8420

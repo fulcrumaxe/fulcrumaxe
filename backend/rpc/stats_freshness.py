@@ -6,10 +6,15 @@ a stale-metrics banner.
 
 Response:
   {
-    "rows": [{"metric_name": str, "last_ts": str, "age_seconds": int}, ...],
+    "rows": [{"metric_name": str, "last_ts": str, "age_seconds": int,
+              "monitored": bool}, ...],
     "warn_age_seconds": int,
     "bug_age_seconds": int
   }
+
+``monitored`` is False for a metric with no live writer (a one-shot marker like
+``bootstrap_ping``). Those rows keep their real age but must not drive the
+banner — staleness nobody can act on is noise. See backend/stats/freshness.py.
 """
 import os
 import sys

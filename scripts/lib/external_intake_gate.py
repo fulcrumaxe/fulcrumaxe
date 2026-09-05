@@ -123,8 +123,8 @@ def _resolve_bot_account(config: Optional[dict] = None) -> str:
     )
 
 
-def _resolve_default_repo_slug() -> str:
-    """Resolve this module's default repo slug via backend._repo.
+def _resolve_default_discussion_repo_slug() -> str:
+    """Resolve this module's default repo slug — the **Discussion** plane.
 
     D#1870/#1879: this used to be a hard-coded literal shared by 13 function
     signatures in this module. All six real call sites invoke this module's
@@ -138,14 +138,53 @@ def _resolve_default_repo_slug() -> str:
     token (CWE-863 / CWE-441 confused deputy / CWE-668). Resolve through
     the same fail-loud path backend/_repo.py uses instead of defaulting to
     a slug the caller may not own.
+
+    D#2348 PR-f2: that fix resolved through ``backend._repo.REPO``, which is
+    the *code* plane once code and Discussions live in different repos. Every
+    consumer of this constant is Discussion-plane — enumerated below — so it
+    now resolves ``DISCUSSION_REPO``. The fourteen consumers, by what they
+    actually do rather than by what they are named:
+
+      GraphQL reads/writes against a Discussion node
+        fetch_discussion_meta, _get_label_id, apply_provenance_label,
+        remove_label, post_discussion_comment, setup_labels,
+        backfill_all_open_discussions, _reconcile_baseline
+
+      Composite entry points that pass the slug down to those
+        check_discussion, classify_and_label, _security_required_check
+
+      Baseline store key (``"<repo>#<number>"`` namespacing)
+        _discussion_key — keys a Discussion, so it keys by the repo the
+        Discussion lives in
+
+      Trust set — collaborators(permission=push|admin)
+        _fetch_collaborators, resolve_allowlist, resolve_allowlist_ids
+
+    The trust-set three are the only ones that could plausibly read the code
+    plane, and they must not. The question they answer is "is the author of
+    *this Discussion* a maintainer", and after the cutover the code repo is
+    public: push on a public code repo is routinely granted to outside
+    contributors who have no standing to drive automation. Keying trust on
+    the private Discussion repo's collaborators is the same confused-deputy
+    argument D#1879 made, applied across planes instead of across forks.
+
+    There is no code-plane consumer in this module. Nothing here touches a
+    PR, a commit or a check run.
+
+    ``DISCUSSION_REPO`` is legitimately "" in a fork with no private twin
+    (see backend/_repo_planes.py). Falling back to ``REPO`` there is not a
+    hard-coded default and not a fail-open: an empty Discussion plane means
+    the checkout was never split, so its Discussions live in the one repo it
+    knows about — which is exactly what this module read before, so a fork's
+    behaviour is unchanged.
     """
     sys.path.insert(0, str(_REPO_ROOT))
-    from backend._repo import REPO  # type: ignore  # noqa: PLC0415
+    from backend._repo import DISCUSSION_REPO, REPO  # type: ignore  # noqa: PLC0415
 
-    return REPO
+    return DISCUSSION_REPO or REPO
 
 
-DEFAULT_REPO_SLUG = _resolve_default_repo_slug()
+DEFAULT_DISCUSSION_REPO_SLUG = _resolve_default_discussion_repo_slug()
 
 #: Collaborator resolution cache TTL — avoids hammering the GitHub API on every
 #: loop iteration / spawn check.
@@ -227,7 +266,7 @@ def _write_collaborator_cache(cache_path: Path, collaborators: set) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _fetch_collaborators(repo_slug: str = DEFAULT_REPO_SLUG) -> set:
+def _fetch_collaborators(repo_slug: str = DEFAULT_DISCUSSION_REPO_SLUG) -> set:
     """Return the set of GitHub logins with push or admin permission on *repo_slug*.
 
     Fail-closed: any error (network, auth, parse) returns an EMPTY set rather than
@@ -264,7 +303,7 @@ def _fetch_collaborators(repo_slug: str = DEFAULT_REPO_SLUG) -> set:
 def resolve_allowlist(
     config: Optional[dict] = None,
     *,
-    repo_slug: str = DEFAULT_REPO_SLUG,
+    repo_slug: str = DEFAULT_DISCUSSION_REPO_SLUG,
     cache_path: Optional[Path] = None,
     collaborators_fetcher=None,
     force_refresh: bool = False,
@@ -329,7 +368,7 @@ def _log_loud(message: str) -> None:
 def resolve_allowlist_ids(
     config: Optional[dict] = None,
     *,
-    repo_slug: str = DEFAULT_REPO_SLUG,
+    repo_slug: str = DEFAULT_DISCUSSION_REPO_SLUG,
     id_cache_path: Optional[Path] = None,
     collaborator_id_fetcher=None,
     trust_store_path: Optional[Path] = None,
@@ -522,11 +561,23 @@ def sanitize_and_delimit_external(body: str) -> str:
     Reuses route_discussion_wiring.sanitize_body() so the same control-token
     stripping (SPAWN_REQUEST / TERMINATE_REQUEST / STATUS: / HTML comments /
     fake AGENT_OUTPUT blocks) applies here too — no duplicate denylist to drift.
+
+    The delimiters are neutralized inside the body before wrapping (D#2348
+    PR-k). sanitize_body()'s denylist covers control tokens but never covered
+    the fence itself, so a body containing the literal close delimiter ended
+    the fence early and could then forge a trusted-looking section after it —
+    the exact escape the fence exists to prevent, arriving through the fence.
+    Neutralizing is provably closed rather than merely one pass: neither
+    replacement string contains either delimiter, and no delimiter can be
+    reconstructed across a replacement boundary, because every prefix of a
+    replacement begins "<<" while every suffix of a delimiter ends ">>".
     """
     sys.path.insert(0, str(_REPO_ROOT / "scripts" / "lib"))
     from route_discussion_wiring import sanitize_body  # noqa: E402  (local import — keeps this module importable standalone)
 
     sanitized = sanitize_body(body)
+    sanitized = sanitized.replace(UNTRUSTED_DELIMITER_END, "<<END UNTRUSTED (neutralized)>>")
+    sanitized = sanitized.replace(UNTRUSTED_DELIMITER_START, "<<UNTRUSTED EXTERNAL CONTENT (neutralized)>>")
     return f"{UNTRUSTED_DELIMITER_START}\n{sanitized}\n{UNTRUSTED_DELIMITER_END}"
 
 
@@ -589,7 +640,7 @@ _META_FAILURE_SHAPE = {
 }
 
 
-def fetch_discussion_meta(number: int, repo_slug: str = DEFAULT_REPO_SLUG) -> dict:
+def fetch_discussion_meta(number: int, repo_slug: str = DEFAULT_DISCUSSION_REPO_SLUG) -> dict:
     """Fetch a Discussion's id, author, labels, and content-baseline fields
     (live, uncached) — a single GraphQL round-trip (performance-expert, D#1672:
     zero net-new round-trips — the baseline fields ride the existing query).
@@ -661,7 +712,7 @@ def fetch_discussion_meta(number: int, repo_slug: str = DEFAULT_REPO_SLUG) -> di
         return dict(_META_FAILURE_SHAPE)
 
 
-def _get_label_id(label_name: str, repo_slug: str = DEFAULT_REPO_SLUG) -> Optional[str]:
+def _get_label_id(label_name: str, repo_slug: str = DEFAULT_DISCUSSION_REPO_SLUG) -> Optional[str]:
     owner, name = repo_slug.split("/", 1)
     query = (
         "query($owner:String!,$name:String!,$label:String!){ "
@@ -684,7 +735,7 @@ def _get_label_id(label_name: str, repo_slug: str = DEFAULT_REPO_SLUG) -> Option
 
 
 def apply_provenance_label(
-    discussion_id: str, provenance: str, repo_slug: str = DEFAULT_REPO_SLUG
+    discussion_id: str, provenance: str, repo_slug: str = DEFAULT_DISCUSSION_REPO_SLUG
 ) -> bool:
     """Apply exactly one of provenance:internal / provenance:external via the
     GraphQL addLabelsToLabelable mutation (REST issues/N/labels silently no-ops
@@ -712,7 +763,7 @@ def apply_provenance_label(
     return data is not None and "errors" not in data
 
 
-def remove_label(discussion_id: str, label_name: str, repo_slug: str = DEFAULT_REPO_SLUG) -> bool:
+def remove_label(discussion_id: str, label_name: str, repo_slug: str = DEFAULT_DISCUSSION_REPO_SLUG) -> bool:
     """Remove *label_name* from a Discussion via removeLabelsFromLabelable.
 
     HG-8a carve-out (D#1672, R2): this is the ONLY label-removal path in this
@@ -748,7 +799,7 @@ def remove_label(discussion_id: str, label_name: str, repo_slug: str = DEFAULT_R
     return data is not None and "errors" not in data
 
 
-def post_discussion_comment(discussion_id: str, body: str, repo_slug: str = DEFAULT_REPO_SLUG) -> bool:
+def post_discussion_comment(discussion_id: str, body: str, repo_slug: str = DEFAULT_DISCUSSION_REPO_SLUG) -> bool:
     """Post *body* as a comment on a Discussion via addDiscussionComment.
 
     Used only for the dismissal notice (AC-14) — `addDiscussionComment` is on
@@ -766,7 +817,7 @@ def post_discussion_comment(discussion_id: str, body: str, repo_slug: str = DEFA
     return data is not None and "errors" not in data
 
 
-def setup_labels(repo_slug: str = DEFAULT_REPO_SLUG) -> None:
+def setup_labels(repo_slug: str = DEFAULT_DISCUSSION_REPO_SLUG) -> None:
     """One-time (idempotent) label setup: provenance:internal, provenance:external,
     intake-approved. Safe to re-run — `gh label create --force` updates in place.
     """
@@ -789,7 +840,7 @@ def setup_labels(repo_slug: str = DEFAULT_REPO_SLUG) -> None:
         )
 
 
-def backfill_all_open_discussions(repo_slug: str = DEFAULT_REPO_SLUG) -> dict:
+def backfill_all_open_discussions(repo_slug: str = DEFAULT_DISCUSSION_REPO_SLUG) -> dict:
     """Classify every currently-open Discussion that lacks a provenance:* label
     and apply provenance:internal / provenance:external accordingly.
 
@@ -842,7 +893,7 @@ def backfill_all_open_discussions(repo_slug: str = DEFAULT_REPO_SLUG) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _discussion_key(number: int, repo_slug: str = DEFAULT_REPO_SLUG) -> str:
+def _discussion_key(number: int, repo_slug: str = DEFAULT_DISCUSSION_REPO_SLUG) -> str:
     """Repo-scoped baseline store key: "{owner}/{name}#{number}" (R9, AC-8)."""
     return f"{repo_slug}#{number}"
 
@@ -1028,7 +1079,7 @@ def _reconcile_baseline(
     }
 
 
-def check_discussion(number: int, repo_slug: str = DEFAULT_REPO_SLUG) -> dict:
+def check_discussion(number: int, repo_slug: str = DEFAULT_DISCUSSION_REPO_SLUG) -> dict:
     """Live gate check for a single Discussion — used by pre-spawn-check.sh and
     the loop Discussion scan. Always re-derives provenance from live author
     identity at decision time (labels are audit-only) to close the scan-lag
@@ -1056,7 +1107,7 @@ def check_discussion(number: int, repo_slug: str = DEFAULT_REPO_SLUG) -> dict:
     }
 
 
-def classify_and_label(number: int, repo_slug: str = DEFAULT_REPO_SLUG) -> dict:
+def classify_and_label(number: int, repo_slug: str = DEFAULT_DISCUSSION_REPO_SLUG) -> dict:
     """Combined loop-chokepoint call: fetch live Discussion meta, apply exactly
     one of provenance:internal / provenance:external if not already present
     (idempotent — never touches a Discussion that already carries a
@@ -1098,7 +1149,7 @@ def classify_and_label(number: int, repo_slug: str = DEFAULT_REPO_SLUG) -> dict:
     }
 
 
-def _security_required_check(number: int, repo_slug: str = DEFAULT_REPO_SLUG) -> tuple[str, int]:
+def _security_required_check(number: int, repo_slug: str = DEFAULT_DISCUSSION_REPO_SLUG) -> tuple[str, int]:
     """Core logic behind the `security-required` CLI command — split out so it
     is unit-testable without a subprocess/gh stub. Returns (stdout_line, exit_code).
 

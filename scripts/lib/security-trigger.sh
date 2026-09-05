@@ -11,10 +11,22 @@
 #
 # Single source of truth for security trigger detection — used by phased orchestration.
 
-# Resolve the project repo (project.json → env → fallback)
+# Resolve the CODE plane — this file reads PR diffs, which live with the code.
+#
+# Failure direction is what makes this the highest-severity site in the audit.
+# detect_security_trigger returns 1 ("no trigger") on any API error, which is
+# the right call for a transient 403 but is indistinguishable from a real
+# "nothing security-sensitive here". Post-cutover a Discussion-plane slug would
+# make `gh pr diff` fail for every PR — every PR would report no trigger, and
+# the security-review gate would switch itself off silently, in the direction
+# that looks healthy. Hence the code plane, and hence the explicit empty check
+# in the entry point below.
+#
 # shellcheck source=repo-resolve.sh
 source "$(dirname "${BASH_SOURCE[0]}")/repo-resolve.sh"
-_SECURITY_TRIGGER_REPO="$(_resolve_repo)"
+# Resolved at source time; checked in detect_security_trigger. A top-level
+# `exit` here would kill any caller that sources this file.
+_SECURITY_TRIGGER_REPO="$(_resolve_code_repo 2>/dev/null || true)"
 
 # -----------------------------------------------------------------------
 # Security-trigger file patterns (matched against changed file names)
@@ -61,6 +73,24 @@ SECURITY_DIFF_KEYWORDS=(
 # -----------------------------------------------------------------------
 detect_security_trigger() {
   local pr="${1:?detect_security_trigger requires a PR number}"
+
+  # An unresolved code plane fails CLOSED — return 0 ("triggered"), forcing a
+  # security review rather than skipping one.
+  #
+  # Returning non-zero here would be wrong in a way that is hard to see: this
+  # function's contract is 0 = triggered, non-zero = not triggered, and
+  # loop-phased-step5.sh's _check_security_trigger passes that straight through.
+  # So *any* non-zero — including a bespoke error code — is read by the only
+  # caller as "no security review needed". The one exit status that cannot be
+  # misread as a clean bill of health is the one that demands the review.
+  #
+  # We must also not fall through to `gh` with an empty --repo: `gh pr diff
+  # --repo ""` exits 0 against whatever repo the checkout's remote points at,
+  # so it would return a real diff for the wrong PR and scan that instead.
+  if [ -z "${_SECURITY_TRIGGER_REPO:-}" ]; then
+    echo "[security-trigger] ERROR: could not resolve the code repo — failing closed (reporting 'triggered') so a PR is not waved through unscanned. Add a \"code_repo\" (or \"repo\") field to .autonomous-team/config.json." >&2
+    return 0
+  fi
 
   # --- Get list of changed files ---
   local changed_files

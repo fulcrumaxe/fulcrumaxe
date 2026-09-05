@@ -7,7 +7,7 @@ Installation tokens have a 15000/hr GraphQL rate limit vs 5000/hr for user PATs.
 Config (env vars with constant fallbacks):
   GITHUB_APP_ID            — App ID (default: 3701553)
   GITHUB_INSTALLATION_ID   — Installation ID (default: 132036881)
-  GITHUB_APP_KEY_PATH      — Path to .pem (default: ~/.fulcrumaxe-state/secrets/github-app.pem)
+  GITHUB_APP_KEY_PATH      — Path to .pem (default: ~/.autonomous-forever-state/secrets/github-app.pem)
 """
 
 import argparse
@@ -29,7 +29,7 @@ INSTALLATION_ID = int(os.environ.get("GITHUB_INSTALLATION_ID", "132036881"))
 KEY_PATH = Path(
     os.environ.get(
         "GITHUB_APP_KEY_PATH",
-        os.path.expanduser("~/.fulcrumaxe-state/secrets/github-app.pem"),
+        os.path.expanduser("~/.autonomous-forever-state/secrets/github-app.pem"),
     )
 )
 

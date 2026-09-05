@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tui-local.sh — Launch the fulcrumaxe TUI against a local Ollama model.
+# tui-local.sh — Launch the autonomous-forever TUI against a local Ollama model.
 #
 # Prerequisites:
 #   - Ollama installed (binary at ~/.local/bin/ollama or system)

@@ -439,7 +439,7 @@ describe("post-merge-hook parity", () => {
           AF_REPO_ROOT: fakeRoot,
           AUTONOMOUS_TEAM_STATE_DIR: tsStateDir,
           AUTONOMOUS_TEAM_DIR: fakeAutTeam,
-          GH_REPO: "fulcrumaxe/fulcrumaxe",
+          GH_REPO: "autonomous-agent-7/autonomous-forever",
         }
       );
       // Exit 0 — all external side-effect steps are non-fatal

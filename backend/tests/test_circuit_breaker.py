@@ -114,7 +114,7 @@ def test_discussion_state_argv_vars_match_bindings():
     # Specific regression check: repo= present, name= absent. Asserted
     # against backend._repo's own resolved value (not a second hard-coded
     # copy) — D#1879: this literal used to be the stale pre-rename
-    # "fulcrumaxe" and only passed because backend._repo.REPO_NAME
+    # "autonomous-forever" and only passed because backend._repo.REPO_NAME
     # was itself stuck on that value; fixing the resolver's return value
     # correctly made the hard-coded copy here wrong instead.
     from backend._repo import REPO_NAME as _expected_repo_name
@@ -123,8 +123,8 @@ def test_discussion_state_argv_vars_match_bindings():
     assert f"repo={_expected_repo_name}" in flat_argv, (
         f"argv must contain 'repo={_expected_repo_name}'"
     )
-    assert "name=fulcrumaxe" not in flat_argv, (
-        "argv must NOT contain 'name=fulcrumaxe' (old broken binding)"
+    assert "name=autonomous-forever" not in flat_argv, (
+        "argv must NOT contain 'name=autonomous-forever' (old broken binding)"
     )
 
     # End-to-end: the real parsing logic must return "closed"

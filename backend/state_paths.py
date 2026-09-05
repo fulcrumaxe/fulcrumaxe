@@ -5,7 +5,7 @@ All mutable runtime state lives outside the repo tree so that git worktree
 merges can never wipe it.  The directory can be overridden via the env var
 ``AUTONOMOUS_TEAM_STATE_DIR`` (useful for tests and CI).
 
-Default: ``~/.fulcrumaxe-state/``
+Default: ``~/.autonomous-forever-state/``
 
 ``AUTONOMOUS_TEAM_STATE_DIR`` must be absolute (``~`` is expanded for you).
 A relative value raises :class:`RelativeStateDirError` instead of resolving
@@ -17,7 +17,7 @@ Usage::
     from backend.state_paths import ensure_state_dir
 
     ensure_state_dir()               # idempotent — creates dir + subdirs if missing
-    print(state_paths.STATS_DB)      # PosixPath('/home/user/.fulcrumaxe-state/stats.duckdb')
+    print(state_paths.STATS_DB)      # PosixPath('/home/user/.autonomous-forever-state/stats.duckdb')
 
 Override (e.g. in tests)::
 
@@ -123,7 +123,7 @@ def _guard(var_name: str) -> None:
     ):
         raise UnsandboxedStatePathError(
             f"backend.state_paths.{var_name}: refusing to resolve to the "
-            "production state dir (~/.fulcrumaxe-state/) while "
+            "production state dir (~/.autonomous-forever-state/) while "
             "running under pytest. Set AUTONOMOUS_TEAM_STATE_DIR to a "
             "scratch directory before this value is accessed, e.g.: "
             'export AUTONOMOUS_TEAM_STATE_DIR="$(mktemp -d)"'
@@ -156,11 +156,11 @@ def _state_dir(var_name: str = "STATE_DIR") -> Path:
                 "Relative state dirs resolve against the current working "
                 "directory, which scatters runtime state into whatever tree "
                 "the process was launched from. Set it to an absolute path "
-                "(e.g. $(mktemp -d), or ~/.fulcrumaxe-state)."
+                "(e.g. $(mktemp -d), or ~/.autonomous-forever-state)."
             )
         return path
     _guard(var_name)
-    return Path.home() / ".fulcrumaxe-state"
+    return Path.home() / ".autonomous-forever-state"
 
 
 def _stats_db() -> Path:
@@ -370,7 +370,7 @@ def for_project(name: str) -> ProjectPaths:
     Parameters
     ----------
     name:
-        Short project name, e.g. ``"projectb"`` or ``"fulcrumaxe"``.
+        Short project name, e.g. ``"projectb"`` or ``"autonomous-forever"``.
 
     Returns
     -------

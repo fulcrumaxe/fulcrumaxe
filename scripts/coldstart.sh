@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # scripts/coldstart.sh — one-command front door for spinning up a new
-# fulcrumaxe team on an existing repo.
+# autonomous-forever team on an existing repo.
 #
 # Usage:
 #   bash scripts/coldstart.sh --path <repo-path> --name <project-name> \
@@ -74,6 +74,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# shellcheck source=scripts/lib/coldstart-state-root.sh
+source "$SCRIPT_DIR/lib/coldstart-state-root.sh"
 
 # ---------------------------------------------------------------------------
 # Usage / help
@@ -201,7 +204,10 @@ if [[ -n "$PHASE" && "$PHASE" != "provision" && "$PHASE" != "seed" ]]; then
   exit 1
 fi
 
-STATE_DIR="$HOME/.${PROJECT_NAME}-state"
+# Same resolver coldstart-project.sh (step 2) uses, so the two never disagree
+# about where this project's state lives. Honours $COLDSTART_STATE_ROOT,
+# defaulting to $HOME (D#2317 PR-c).
+STATE_DIR="$(coldstart_state_dir "$PROJECT_NAME")"
 EPICS_DIR="${BACKLOG:-$REPO_PATH/epics}"
 
 # D#2216: export this NOW, not just compute it locally. coldstart-project.sh
@@ -209,7 +215,7 @@ EPICS_DIR="${BACKLOG:-$REPO_PATH/epics}"
 # .autonomous-team/project.json's "state_dir" field, but nothing exported it
 # into the environment for step 7's HALT flow -- so the interview harness
 # (scripts/coldstart-interview/harness.sh) fell through to ITS OWN default
-# ($HOME/.fulcrumaxe-state, or the plugin's rewritten
+# ($HOME/.autonomous-forever-state, or the plugin's rewritten
 # $HOME/.<engine-name>-state) instead of this project's. Exporting here
 # covers coldstart.sh's own process tree: the mechanical-wiring subprocess
 # below, and everything coldstart_halt_flow calls (including the read-loop

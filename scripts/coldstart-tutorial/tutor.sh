@@ -29,7 +29,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LESSONS="${COLDSTART_TUTORIAL_LESSONS:-$SCRIPT_DIR/lessons.json}"
-STATE_ROOT="${AUTONOMOUS_TEAM_STATE_DIR:-$HOME/.fulcrumaxe-state}"
+STATE_ROOT="${AUTONOMOUS_TEAM_STATE_DIR:-$HOME/.autonomous-forever-state}"
 
 # shellcheck source=../lib/platform-compat.sh
 source "$SCRIPT_DIR/../lib/platform-compat.sh"

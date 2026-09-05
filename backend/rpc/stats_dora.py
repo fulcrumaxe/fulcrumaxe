@@ -6,11 +6,22 @@ analytics_engineer.compute_snapshot — no independent recomputation.
 
 change_failure_rate_pct is passed through verbatim as a string (e.g. "n/a"
 when no bug data is available) rather than coerced to a number.
+
+Project scoping (D#2327 PR-a): this handler is UNSCOPABLE, and `params` is
+ignored because there is nothing a per-request override could reach. Every
+source compute_snapshot() reads is bound to the serving checkout at import:
+analytics_engineer._RELEASES_DIR and kpi_engine.REGISTRY are module
+constants built from Path(__file__).resolve().parent.parent, and
+_compute_cfr() shells `gh api graphql` at analytics_engineer's module-level
+REPO. `dispatch_scoped` now refuses a cross-project call here rather than
+answering it with the serving checkout's DORA numbers. Fixing this means
+de-anchoring analytics_engineer, release_manager and kpi_engine, which is
+not in scope for the audit that found it.
 """
 from __future__ import annotations
 
 
-def handle(params: dict) -> dict:  # noqa: ARG001 — params reserved for future project-scoping
+def handle(params: dict) -> dict:  # noqa: ARG001 — UNSCOPABLE, see module docstring
     """Return DORA + KPI snapshot for the dashboard.
 
     Response shape:

@@ -13,7 +13,7 @@ bash scripts/start-the-day.sh
 
 The script will:
 1. Pull `origin/main`, restore HEAD if drifted (worktree contamination defense)
-2. Verify `~/.fulcrumaxe-state/` and `.autonomous-team/` symlinks intact
+2. Verify `~/.autonomous-forever-state/` and `.autonomous-team/` symlinks intact
 3. Run sweeps: budget, subscription, run-analyst (last 12h), open PRs, stats freshness, SPEC_READY Discussion count
 4. Print the plan from `.autonomous-team/PLAN-YYYY-MM-DD.md` (today's, or most recent)
 
@@ -34,9 +34,10 @@ Per the plan's "morning ritual" section:
 - Apply NEW spawn templates' policy: agents return `blocked_reason: "rate_limit"` instead of sleep-looping
 - Run `scripts/drain-pending-prs.sh` if `.autonomous-team/pending-prs.json` accumulates
 
-## Step 4: Apply yesterday's mistakes-to-avoid
+## Step 4: Apply the standing mistakes-to-avoid
 
-(From `PLAN-2026-05-12.md` "Today's mistakes to avoid")
+These came out of an earlier session retro and are reproduced in full here —
+there is no separate file to go and read.
 
 1. Escalate worktree contamination to STRUCTURAL within hour 1
 2. Verify state is intact BEFORE spawning executors
@@ -59,5 +60,5 @@ Before session ends, update `.autonomous-team/PLAN-YYYY-MM-DD+1.md` for tomorrow
 - Repo: see CLAUDE.md's Repo Scope Invariant section (do not hard-code the slug in
   this file — it ships in the open-source export and a hard-coded slug here would
   point every adopter's Team Lead at this project's own repo, not theirs; D#1870)
-- External state dir: `~/.fulcrumaxe-state/` (env: `AUTONOMOUS_TEAM_STATE_DIR`)
+- External state dir: `~/.autonomous-forever-state/` (env: `AUTONOMOUS_TEAM_STATE_DIR`)
 - Worktree base: `.claude/worktrees/agent-<id>/`

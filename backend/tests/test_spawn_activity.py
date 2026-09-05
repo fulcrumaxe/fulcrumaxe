@@ -2,7 +2,7 @@
 Tests for backend/spawn_activity.py
 
 Isolation: every test points STATS_DB_PATH at a fresh tmp DuckDB file so the
-real ~/.fulcrumaxe-state/stats.duckdb is never touched.
+real ~/.autonomous-forever-state/stats.duckdb is never touched.
 
 Run bounded:
     timeout 120 python3 -m pytest backend/tests/test_spawn_activity.py -q

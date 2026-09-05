@@ -2,7 +2,7 @@
 backend/tests/test_loop_runs.py — behavioral tests for backend/loop_runs.py.
 
 Isolation: every test monkeypatches backend.loop_runs._runs_dir to return a
-fresh tmp_path subdirectory.  The real ~/.fulcrumaxe-state/ and the
+fresh tmp_path subdirectory.  The real ~/.autonomous-forever-state/ and the
 repo's .autonomous-team/loop-runs/ directories are never touched.
 """
 from __future__ import annotations

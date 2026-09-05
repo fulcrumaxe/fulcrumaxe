@@ -12,16 +12,31 @@
 # Output: JSON array of objects, one per stuck PR:
 #   [{"number": 42, "updated_at": "2026-05-10T06:00:00Z", "age_minutes": 37}, ...]
 #
-# Repo is resolved from project.json → STUCK_PR_REPO env → repo-resolve fallback.
+# Repo is the CODE plane: STUCK_PR_REPO env override → _resolve_code_repo.
 
+# The CODE plane: the only thing this library does is `gh pr list`.
+#
+# Resolved at source time and checked in the entry point rather than aborting
+# here — this file is sourced, so a top-level `exit` would kill the caller.
+#
 # shellcheck source=repo-resolve.sh
 source "$(dirname "${BASH_SOURCE[0]}")/repo-resolve.sh"
-STUCK_PR_REPO="${STUCK_PR_REPO:-$(_resolve_repo)}"
+STUCK_PR_REPO="${STUCK_PR_REPO:-$(_resolve_code_repo 2>/dev/null || true)}"
 
 list_stuck_prs() {
   local threshold="${1:-${STUCK_PR_THRESHOLD_MINUTES:-30}}"
   local now_epoch
   now_epoch=$(date -u +%s)
+
+  # An unresolved plane must not fall through to `gh pr list --repo ""`, which
+  # exits 0 against whatever repo the checkout's remote names — that would
+  # return a real PR list from the wrong repo and the caller would respawn
+  # executors against it. Empty list plus a loud stderr line instead.
+  if [ -z "${STUCK_PR_REPO:-}" ]; then
+    echo "[stuck-pr-detect] ERROR: could not resolve the code repo — returning no stuck PRs rather than listing an arbitrary repo's. Add a \"code_repo\" (or \"repo\") field to .autonomous-team/config.json, or set STUCK_PR_REPO." >&2
+    echo "[]"
+    return 0
+  fi
 
   # Fetch open PRs with code-review-needs-fix label (includes updatedAt for age calc)
   local raw

@@ -65,7 +65,7 @@ def _agent_id_from_cwd(cwd: str) -> "str | None":
 def _find_transcript(agent_id: str) -> "str | None":
     """Return the path to the agent transcript file, or None."""
     patterns = [
-        f"/tmp/claude-*/-home-agent-fulcrumaxe/*/tasks/{agent_id}.output",
+        f"/tmp/claude-*/-home-agent-autonomous-forever/*/tasks/{agent_id}.output",
         f"/tmp/claude-*/**/{agent_id}.output",
     ]
     for pattern in patterns:

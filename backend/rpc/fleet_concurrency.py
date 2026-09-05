@@ -7,7 +7,7 @@ interface contract:
         "fleet_total": 3,
         "fleet_cap": 8,
         "per_project": [
-            {"name": "fulcrumaxe", "agents_running": 2, "cap": 8, "ok": true},
+            {"name": "autonomous-forever", "agents_running": 2, "cap": 8, "ok": true},
             {"name": "projectb", "agents_running": 1, "cap": 8, "ok": true},
         ]
     }

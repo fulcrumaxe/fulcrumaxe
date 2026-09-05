@@ -14,7 +14,7 @@
 #   * Git does not quote-escape paths in that message, and a filename may
 #     contain a newline. `evil<LF>../canary` arrives as two lines, the second of
 #     which concatenated to a path one level *above* the repo root — in
-#     range of ~/.fulcrumaxe-state/, ~/.config/gh/ and ~/.ssh/.
+#     range of ~/.autonomous-forever-state/, ~/.config/gh/ and ~/.ssh/.
 #
 # The fix is not a better parser. The set of paths this code acts on is
 # *derived* from git plumbing (NUL-delimited) and never from a name's text, so

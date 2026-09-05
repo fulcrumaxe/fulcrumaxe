@@ -1,7 +1,7 @@
 # SPIKE-1: Bun vs Node DuckDB go/no-go for stats routes
 
 **Date**: 2026-05-23  
-**DB**: `~/.fulcrumaxe-state/stats.duckdb` (7 MB, 4 tables, 3544 agent_run rows / 3789 metric_event rows)  
+**DB**: `~/.autonomous-forever-state/stats.duckdb` (7 MB, 4 tables, 3544 agent_run rows / 3789 metric_event rows)  
 **Package**: `@duckdb/node-api@1.5.3-r.1` ("Neo" DuckDB binding)  
 **Runtimes**: Bun 1.3.14, Node v24.15.0  
 

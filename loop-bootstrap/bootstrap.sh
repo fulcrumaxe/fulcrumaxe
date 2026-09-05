@@ -83,8 +83,8 @@ GENERATED_PATHS_FILE="$SCRIPT_DIR/bootstrap-paths.generated"
 # corpus (backend/, scripts/, hooks/, agents/, commands/) today — not "the
 # current correct repo identity". Those two sound the same but aren't: large
 # parts of the corpus still literally carry the pre-rename
-# "fulcrumaxe/fulcrumaxe" slug (it was never migrated to
-# "fulcrumaxe/fulcrumaxe" file-by-file — see D#1893, filed by D#1890
+# "autonomous-agent-7/autonomous-forever" slug (it was never migrated to
+# "autonomous-agent-7/fulcrumaxe" file-by-file — see D#1893, filed by D#1890
 # PR 1 for exactly this gap). Resolving this value from
 # .autonomous-team/project.json instead — which correctly holds the *current*
 # slug — silently breaks the rewrite for the whole corpus: the sed search key
@@ -103,7 +103,7 @@ GENERATED_PATHS_FILE="$SCRIPT_DIR/bootstrap-paths.generated"
 # diverge (e.g. after a future rename touches one but not the other) —
 # that's the check this Discussion's item 8 asks for in place of silent
 # staleness.
-SOURCE_REPO="${LOOP_BOOTSTRAP_SOURCE_REPO:-fulcrumaxe/fulcrumaxe}"
+SOURCE_REPO="${LOOP_BOOTSTRAP_SOURCE_REPO:-autonomous-agent-7/autonomous-forever}"
 
 DRY_RUN=false
 FORCE=false
@@ -1224,7 +1224,7 @@ else
   else
     ENGINE_SOURCE_KIND="export"
   fi
-  ENGINE_CANONICAL_REPO="${LOOP_BOOTSTRAP_ENGINE_REPO:-fulcrumaxe/fulcrumaxe}"
+  ENGINE_CANONICAL_REPO="${LOOP_BOOTSTRAP_ENGINE_REPO:-autonomous-agent-7/fulcrumaxe}"
   python3 - "$ENGINE_INSTALL_JSON_DST" "$ENGINE_VERSION_VAL" "$ENGINE_COMMIT_VAL" "$ENGINE_SOURCE_KIND" "$ENGINE_CANONICAL_REPO" <<'ENGINE_INSTALL_PY'
 import json, sys
 from datetime import datetime, timezone

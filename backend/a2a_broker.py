@@ -1,5 +1,5 @@
 """
-a2a_broker.py — localhost Agent-to-Agent message broker for fulcrumaxe.
+a2a_broker.py — localhost Agent-to-Agent message broker for autonomous-forever.
 
 Binds to 127.0.0.1:8830.  Provides:
   POST /a2a/register          (admin-token, loopback only) — register (agent_id, token_sha256)

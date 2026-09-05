@@ -27,7 +27,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # shellcheck source=scripts/lib/repo-resolve.sh
 source "$SCRIPT_DIR/lib/repo-resolve.sh"
-_REPO="$(_resolve_repo)"
+# The CODE plane. _REPO's only consumer here is verify_pr_exists (below), which
+# REST-checks repos/$_REPO/pulls/$PR — a PR, so a code-plane surface.
+#
+# Failure direction: verify_pr_exists downgrades verdict=done to fail on a 404.
+# Post-cutover a Discussion-plane slug would 404 for every PR that exists, so
+# *every* executor PR would be reported as having silently failed to create.
+# This site was deferred to "PR-d" in an earlier plan, but PR-d's subject is
+# post-merge-hook.sh — a different file that does not use this resolver — so
+# nothing actually covered it.
+_REPO="$(_require_code_repo "post-agent-hook")" || exit 1
 # shellcheck source=scripts/lib/state-dir.sh
 source "$SCRIPT_DIR/lib/state-dir.sh" || true
 
@@ -370,7 +379,16 @@ if ! hook_event_has_step "memory"; then
 fi
 
 # ── 6. Training data miner ───────────────────────────────────────────────────
+# Every script this step runs lives under scripts/training/, which moved to the
+# private internal repo (D#2348 phase 1). The calls were already non-fatal, but
+# "non-fatal" meant printing `incremental-miner failed (non-fatal)` to stderr on
+# EVERY agent run — a permanent warning about an absence that is now the normal
+# state. Skip the step when the directory isn't here, the same way the
+# cost-summary step below guards on its own file existing.
 if ! hook_event_has_step "training_mine"; then
+ if [[ ! -d "$REPO_ROOT/scripts/training" ]]; then
+  echo "[post-agent-hook] Training miner: scripts/training/ not in this tree — skipping"
+ else
   echo "[post-agent-hook] Mining new training examples"
   python3 "$REPO_ROOT/scripts/training/incremental-miner.py" 2>/dev/null \
     || echo "[post-agent-hook] Warning: incremental-miner failed (non-fatal)" >&2
@@ -393,6 +411,7 @@ if ! hook_event_has_step "training_mine"; then
     echo "[post-agent-hook] Checking training threshold (existing-box mode)"
     python3 "$REPO_ROOT/scripts/training/training-trigger.py" --mode existing-box --quiet || true
   fi
+ fi
 
   hook_event_mark_step "training_mine"
 fi

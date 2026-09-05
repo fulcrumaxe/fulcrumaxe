@@ -41,12 +41,12 @@ describe('NewProjectToast — backend is the source of truth', () => {
   it('renders null when the backend already knows every live project, even with empty localStorage', async () => {
     mockJsonRpc.mockImplementation((method: string) => {
       if (method === 'fleet.discovery_known') {
-        return Promise.resolve({ known: ['fulcrumaxe', 'projectb'] })
+        return Promise.resolve({ known: ['autonomous-forever', 'projectb'] })
       }
       return Promise.resolve({ ok: true, known: [] })
     })
 
-    render(<NewProjectToast projectNames={['fulcrumaxe', 'projectb']} />)
+    render(<NewProjectToast projectNames={['autonomous-forever', 'projectb']} />)
 
     await waitFor(() => {
       expect(mockJsonRpc).toHaveBeenCalledWith('fleet.discovery_known', {})
@@ -57,12 +57,12 @@ describe('NewProjectToast — backend is the source of truth', () => {
   it('still announces a project the backend does not know about', async () => {
     mockJsonRpc.mockImplementation((method: string) => {
       if (method === 'fleet.discovery_known') {
-        return Promise.resolve({ known: ['fulcrumaxe'] })
+        return Promise.resolve({ known: ['autonomous-forever'] })
       }
       return Promise.resolve({ ok: true, known: [] })
     })
 
-    render(<NewProjectToast projectNames={['fulcrumaxe', 'projectb']} />)
+    render(<NewProjectToast projectNames={['autonomous-forever', 'projectb']} />)
 
     await waitFor(() => {
       expect(screen.getByTestId('new-project-toast')).toBeTruthy()
@@ -85,13 +85,13 @@ describe('NewProjectToast — backend is the source of truth', () => {
   })
 
   it('falls back to the localStorage cache when the backend call fails', async () => {
-    localStorageMock.setItem('fleet_known_projects', JSON.stringify(['fulcrumaxe', 'projectb']))
+    localStorageMock.setItem('fleet_known_projects', JSON.stringify(['autonomous-forever', 'projectb']))
     mockJsonRpc.mockImplementation((method: string) => {
       if (method === 'fleet.discovery_known') return Promise.reject(new Error('network error'))
       return Promise.resolve({ ok: true, known: [] })
     })
 
-    render(<NewProjectToast projectNames={['fulcrumaxe', 'projectb']} />)
+    render(<NewProjectToast projectNames={['autonomous-forever', 'projectb']} />)
 
     await waitFor(() => {
       expect(mockJsonRpc).toHaveBeenCalledWith('fleet.discovery_known', {})

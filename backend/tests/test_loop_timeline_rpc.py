@@ -44,7 +44,7 @@ def _make_log_file(tmp_path: Path, timestamp: str, content: str) -> Path:
     m = re.match(r"(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})Z?", timestamp)
     assert m, f"Bad timestamp: {timestamp}"
     filename = f"{m.group(1)}{m.group(2)}{m.group(3)}T{m.group(4)}{m.group(5)}{m.group(6)}Z.log"
-    log_dir = tmp_path / ".autonomous-team" / "loop-runs" / "fulcrumaxe"
+    log_dir = tmp_path / ".autonomous-team" / "loop-runs" / "autonomous-forever"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / filename
     log_path.write_text(content)
@@ -422,7 +422,7 @@ class TestLoopIterationDetailRunId(unittest.TestCase):
             "run_id": run_id,
         }
         _make_metrics_file(tmp_path, [row])
-        log_dir = tmp_path / ".autonomous-team" / "loop-runs" / "fulcrumaxe"
+        log_dir = tmp_path / ".autonomous-team" / "loop-runs" / "autonomous-forever"
         log_dir.mkdir(parents=True, exist_ok=True)
         log_file = log_dir / f"{run_id}.log"
         log_file.write_text("log content for run_id test")
@@ -447,7 +447,7 @@ class TestLoopIterationDetailRunId(unittest.TestCase):
             "run_id": run_id,
         }
         _make_metrics_file(tmp_path, [row])
-        log_dir = tmp_path / ".autonomous-team" / "loop-runs" / "fulcrumaxe"
+        log_dir = tmp_path / ".autonomous-team" / "loop-runs" / "autonomous-forever"
         log_dir.mkdir(parents=True, exist_ok=True)
         # Only the suffixed variant exists
         (log_dir / f"{run_id}-1.log").write_text("suffixed log content")

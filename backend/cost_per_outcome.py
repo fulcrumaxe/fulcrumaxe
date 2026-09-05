@@ -25,11 +25,21 @@ from typing import Any
 # Allow running as a script from repo root
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from backend._repo import REPO  # noqa: E402 (after sys.path.insert)
+from backend._repo import CODE_REPO  # noqa: E402 (after sys.path.insert)
 
 
-def _get_merged_prs(days: int = 30) -> list[dict]:
+def _get_merged_prs(days: int = 30, repo: str | None = None) -> list[dict]:
     """Return recently-merged PR numbers from gh CLI.
+
+    Args:
+        days: look-back window.
+        repo: GitHub ``owner/name`` slug to query. When None, falls back to
+            the module-level CODE_REPO constant, which backend/_repo.py binds
+            once at import time from the *serving* process's environment.
+            Always pass this for a named project (D#2327 PR-a) -- otherwise
+            the PR numbers come from the serving checkout's repo while the
+            spend they are joined to comes from the requested project's
+            DuckDB, and PR numbers collide across repos.
 
     Falls back to an empty list if gh is unavailable or returns no results.
     """
@@ -39,7 +49,7 @@ def _get_merged_prs(days: int = 30) -> list[dict]:
         result = subprocess.run(
             [
                 "gh", "pr", "list",
-                "--repo", REPO,
+                "--repo", repo or CODE_REPO,
                 "--state", "merged",
                 "--limit", "200",
                 "--json", "number,mergedAt,title",
@@ -93,7 +103,7 @@ def _fix_rounds_for_pr(pr_number: int) -> int:
         conn.close()
 
 
-def cost_per_outcome_rows(days: int = 30) -> list[dict]:
+def cost_per_outcome_rows(days: int = 30, repo: str | None = None) -> list[dict]:
     """Return ranked cost-per-merged-PR rows.
 
     Each row contains:
@@ -105,11 +115,15 @@ def cost_per_outcome_rows(days: int = 30) -> list[dict]:
 
     PRs with no cost records are omitted.
     Rows are sorted by usd descending (most expensive first).
+
+    *repo* names the GitHub repo whose merged PRs are listed; pass the
+    requested project's slug so the PR numbers and the spend joined to them
+    come from the same repo (D#2327 PR-a).
     """
     from backend.cost_tracker import CostTracker  # noqa: PLC0415
 
     ct = CostTracker()
-    merged_prs = _get_merged_prs(days=days)
+    merged_prs = _get_merged_prs(days=days, repo=repo)
 
     rows: list[dict] = []
     for pr_meta in merged_prs:

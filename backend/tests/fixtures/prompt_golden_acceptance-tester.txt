@@ -12,10 +12,10 @@ PR branch first:
 
 ```bash
 # Option A — let gh handle it (recommended)
-gh pr checkout 55 --repo fulcrumaxe/fulcrumaxe
+gh pr checkout 55 --repo autonomous-agent-7/autonomous-forever
 
 # Option B — manual fetch + checkout
-BRANCH=$(gh pr view 55 --repo fulcrumaxe/fulcrumaxe --json headRefName --jq .headRefName)
+BRANCH=$(gh pr view 55 --repo autonomous-agent-7/autonomous-forever --json headRefName --jq .headRefName)
 git fetch origin "$BRANCH"
 git checkout "$BRANCH"
 ```
@@ -24,7 +24,7 @@ After checkout, verify you are on the correct commit:
 
 ```bash
 # Confirm HEAD matches the PR's expected headRefOid
-PR_SHA=$(gh pr view 55 --repo fulcrumaxe/fulcrumaxe --json headRefOid --jq .headRefOid)
+PR_SHA=$(gh pr view 55 --repo autonomous-agent-7/autonomous-forever --json headRefOid --jq .headRefOid)
 HEAD_SHA=$(git rev-parse HEAD)
 [ "$HEAD_SHA" = "$PR_SHA" ] && echo "OK: on PR head" || echo "WARNING: HEAD mismatch — $HEAD_SHA vs $PR_SHA"
 ```
@@ -36,7 +36,7 @@ Acceptance testing for Discussion #99 — Test discussion.
 Task:
 Do the test thing
 
-Discussion URL: https://github.com/fulcrumaxe/fulcrumaxe/discussions/99
+Discussion URL: https://github.com/autonomous-agent-7/autonomous-forever/discussions/99
 
 Verify that every Acceptance Criterion (AC) listed in the Discussion spec is met:
 1. Read the full Discussion body to extract the AC list.
@@ -111,7 +111,7 @@ The Team Lead (not you) is the spawner.
 
 ---
 ## Repo Scope (mandatory)
-Repo scope: ONLY fulcrumaxe/fulcrumaxe. Never post to or interact with any other repo. Every gh CLI call must use --repo fulcrumaxe/fulcrumaxe. Every GraphQL query must use repository(owner:"fulcrumaxe", name:"fulcrumaxe").
+Repo scope: ONLY autonomous-agent-7/autonomous-forever. Never post to or interact with any other repo. Every gh CLI call must use --repo autonomous-agent-7/autonomous-forever. Every GraphQL query must use repository(owner:"autonomous-agent-7", name:"autonomous-forever").
 
 ---
 ## AGENT_OUTPUT Envelope (mandatory)

@@ -246,8 +246,8 @@ def check_one_resolver_only() -> None:
         _fail("one-resolver: fleet_set.py does not import resolve_project_name from backend.fleet.project_name")
     if "config.json" in source:
         _fail("one-resolver: fleet_set.py contains a 'config.json' string literal")
-    if "fulcrumaxe" in source:
-        _fail("one-resolver: fleet_set.py contains an 'fulcrumaxe' fallback literal")
+    if "autonomous-forever" in source:
+        _fail("one-resolver: fleet_set.py contains an 'autonomous-forever' fallback literal")
 
 
 def check_never_touches_real_home() -> None:

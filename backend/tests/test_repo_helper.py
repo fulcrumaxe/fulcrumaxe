@@ -73,7 +73,7 @@ def _call_load_repo(tmp_path: Path, project_json_content: dict | None, env_repo:
                 return repo
         except (OSError, ValueError):
             pass
-        return os.environ.get("AUTONOMOUS_TEAM_REPO", "fulcrumaxe/fulcrumaxe")
+        return os.environ.get("AUTONOMOUS_TEAM_REPO", "autonomous-agent-7/autonomous-forever")
 
     with patch.dict(os.environ, env, clear=False):
         return patched_load_repo()
@@ -115,7 +115,7 @@ class TestLoadRepo:
             project_json_content=None,
             env_repo=None,
         )
-        assert result == "fulcrumaxe/fulcrumaxe"
+        assert result == "autonomous-agent-7/autonomous-forever"
 
     def test_malformed_project_json_falls_back_to_env(self, tmp_path: Path) -> None:
         """Malformed project.json (invalid JSON) falls through to env var."""
@@ -135,7 +135,7 @@ class TestLoadRepo:
                     return repo
             except (OSError, ValueError):
                 pass
-            return os.environ.get("AUTONOMOUS_TEAM_REPO", "fulcrumaxe/fulcrumaxe")
+            return os.environ.get("AUTONOMOUS_TEAM_REPO", "autonomous-agent-7/autonomous-forever")
 
         env = dict(os.environ)
         env["AUTONOMOUS_TEAM_REPO"] = "owner/env-fallback"

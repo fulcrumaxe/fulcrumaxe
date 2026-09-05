@@ -35,9 +35,26 @@ REPO_ROOT="${REPO_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 # SNAPSHOT_PATH in the environment still wins (both here and inside that module).
 SNAPSHOT_PATH="${SNAPSHOT_PATH:-$(python3 "$REPO_ROOT/backend/snapshot_path.py" 2>/dev/null)}"
 source "$SCRIPT_DIR/lib/repo-resolve.sh"
-_REPO="$(_resolve_repo)"
-_REPO_OWNER="${_REPO%%/*}"
-_REPO_NAME="${_REPO##*/}"
+# Two planes, two slugs. Commits, PRs, labels, CI and merges resolve through
+# _CODE_REPO. Discussions — the two discussions(first:50) GraphQL queries below,
+# and every Discussion URL handed to a spawned agent — resolve through
+# _DISCUSSION_REPO. While config.json carries neither "code_repo" nor
+# "discussion_repo" both accessors return exactly what _resolve_repo returns, so
+# the split is a no-op until the cutover sets one of them.
+#
+# _DISCUSSION_REPO is legitimately empty in a fork with no private twin. That is
+# a state, not an error, but it is guarded explicitly below rather than argued
+# away: _get_spec_ready_discussions has a snapshot fast path that returns
+# SPEC_READY rows and never consults the slug, so "no plane means no work list"
+# is NOT something the call graph guarantees, and a fresh snapshot plus an empty
+# slug would hand a spawned executor https://github.com//discussions/N as its
+# only pointer to a Spec. There is deliberately no fallback from
+# _DISCUSSION_REPO to _CODE_REPO: that would point Discussion reads at the public
+# repo, which is the one outcome this split exists to prevent.
+_CODE_REPO="$(_resolve_code_repo)"
+_DISCUSSION_REPO="$(_resolve_discussion_repo)"
+_DISCUSSION_OWNER="${_DISCUSSION_REPO%%/*}"
+_DISCUSSION_NAME="${_DISCUSSION_REPO##*/}"
 
 # -----------------------------------------------------------------------
 # Gate check — exit immediately if phased_orchestration is off
@@ -48,6 +65,17 @@ if [ "$PHASED_GATE" != "true" ]; then
 fi
 
 CODE_REVIEW_GATE=$(python3 "$REPO_ROOT/backend/control_plane.py" get gates.phased_code_review 2>/dev/null || echo "false")
+
+# -----------------------------------------------------------------------
+# Discussion-plane check — every Discussion query and every Discussion URL in
+# this file needs a slug, and one consumer (the snapshot fast path in
+# _get_spec_ready_discussions) can produce work without ever reading one. Check
+# once, here, above every consumer, instead of per call site.
+# -----------------------------------------------------------------------
+if [ -z "$_DISCUSSION_REPO" ]; then
+  echo "loop-phased-step5: no Discussion plane resolved — set \"discussion_repo\" or \"repo\" in .autonomous-team/config.json, or AUTONOMOUS_TEAM_REPO. Nothing to route." >&2
+  exit 0
+fi
 
 # -----------------------------------------------------------------------
 # Helper: post to team-log
@@ -125,11 +153,11 @@ _check_ci_passed() {
     fi
     [ "${CI_PASSED_RESULT:-yes}" = "yes" ] && return 0 || return 1
   fi
-  if ! check_ci_provenance_gate "$pr" "$_REPO" "$disc"; then
+  if ! check_ci_provenance_gate "$pr" "$_CODE_REPO" "$disc"; then
     return 1
   fi
   local _rc=0
-  check_ci_status "$pr" "$_REPO" || _rc=$?
+  check_ci_status "$pr" "$_CODE_REPO" || _rc=$?
   # rc=2 is the D#1944 stand-down: CI_DISABLED='true', so the required
   # check-runs cannot exist and never will. Returning it verbatim would read
   # as a block and stall every PR in the merging phase. Proceed, but say so
@@ -144,14 +172,44 @@ _check_ci_passed() {
   return "$_rc"
 }
 
+# Sets _SECURITY_TRIGGER_REASON to the callee's stderr, or "" when it said
+# nothing. Read by the merging phase so a block can name the real cause.
+_SECURITY_TRIGGER_REASON=""
+
 _check_security_trigger() {
   local pr="$1"
+  _SECURITY_TRIGGER_REASON=""
   if [ "${SPAWN_AGENT:-}" = "echo" ]; then
-    # In test mode, default to not triggered (tests can override via SECURITY_TRIGGER_RESULT)
+    # In test mode, default to not triggered (tests can override via
+    # SECURITY_TRIGGER_RESULT). SECURITY_TRIGGER_REASON is the same convention
+    # for the callee's stderr: without it the branch below that names the real
+    # cause is unreachable from the suite, which drives this script with
+    # SPAWN_AGENT=echo and never gets past this early return.
+    _SECURITY_TRIGGER_REASON="${SECURITY_TRIGGER_REASON:-}"
     [ "${SECURITY_TRIGGER_RESULT:-no}" = "yes" ] && return 0 || return 1
   fi
-  detect_security_trigger "$pr" 2>/dev/null
-  return $?
+
+  # Capture stderr instead of discarding it.
+  #
+  # detect_security_trigger fails CLOSED on an unresolvable code plane: it
+  # returns 0, "triggered", because this function's contract is 0 = triggered
+  # and the merging phase passes it straight through, so any non-zero value
+  # would read as "no security review needed". That direction is right.
+  #
+  # But the block message the operator then sees says "security trigger
+  # detected in diff", which is the wrong diagnosis — it sends them to read
+  # diffs when the problem is a missing "code_repo" key. The callee already
+  # prints an actionable line saying exactly that; `2>/dev/null` was throwing
+  # it away on the one path where it mattered. Fail-closed-but-silent is
+  # tolerable for a gate. Fail-closed-but-misattributed is not.
+  local _err _rc
+  _err="$(detect_security_trigger "$pr" 2>&1 >/dev/null)"
+  _rc=$?
+  if [ -n "$_err" ]; then
+    _SECURITY_TRIGGER_REASON="$_err"
+    _log "security-trigger PR#${pr}: $_err"
+  fi
+  return "$_rc"
 }
 
 # -----------------------------------------------------------------------
@@ -315,7 +373,7 @@ _write_merge_audit() {
   local pr="$1" passed_nack_check="$2"
   local labels_json="[]"
   if [ -z "${SPAWN_AGENT:-}" ]; then
-    labels_json=$(gh pr view "$pr" --repo "$_REPO" \
+    labels_json=$(gh pr view "$pr" --repo "$_CODE_REPO" \
       --json labels --jq '[.labels[].name]' 2>/dev/null || echo "[]")
   fi
   local ts
@@ -361,7 +419,7 @@ except Exception:
 # -----------------------------------------------------------------------
 _apply_label() {
   local pr="$1" label="$2"
-  gh api -X POST "repos/"$_REPO"/issues/${pr}/labels" \
+  gh api -X POST "repos/"$_CODE_REPO"/issues/${pr}/labels" \
     -f "labels[]=${label}" 2>/dev/null || true
 }
 
@@ -396,7 +454,7 @@ _has_label() {
     # Default: label absent (simulates a PR that doesn't exist on GitHub)
     return 1
   fi
-  gh pr view "$pr" --repo "$_REPO" \
+  gh pr view "$pr" --repo "$_CODE_REPO" \
     --json labels --jq "[.labels[].name] | contains([\"$label\"])" 2>/dev/null \
     | grep -q "true"
 }
@@ -502,7 +560,7 @@ _invalidate_stale_pass_labels() {
     # rule is scoped to `hooks/`; D#2123's panel placed the merge gate
     # outside that rule, so it is not the justification for this.)
     local timeline timeline_rc
-    timeline=$(gh api "repos/${_REPO}/issues/${pr}/timeline" --paginate \
+    timeline=$(gh api "repos/${_CODE_REPO}/issues/${pr}/timeline" --paginate \
       -q '.[] | select(.event=="labeled" or .event=="head_ref_force_pushed" or .event=="committed" or (.event // "" | startswith("base_ref_"))) | "\(.created_at // .committer.date)\t\(.event)\t\(.label.name // "")"' \
       2>/dev/null)
     timeline_rc=$?
@@ -612,7 +670,7 @@ _pr_head_sha() {
     echo "${!v:-deadbeef}"
     return 0
   fi
-  gh pr view "$pr" --repo "$_REPO" \
+  gh pr view "$pr" --repo "$_CODE_REPO" \
     --json headRefOid --jq .headRefOid 2>/dev/null || echo ""
 }
 
@@ -720,7 +778,7 @@ _spawn_debater() {
   if [ "${SPAWN_AGENT:-}" = "echo" ]; then
     raw_diff="${DEBATER_DIFF_MOCK:-}"
   else
-    raw_diff=$(gh pr diff "$pr" --repo "$_REPO" 2>/dev/null || echo "")
+    raw_diff=$(gh pr diff "$pr" --repo "$_CODE_REPO" 2>/dev/null || echo "")
   fi
   local clean_diff
   clean_diff=$(_sanitize_diff "$raw_diff")
@@ -872,7 +930,7 @@ PYEOF
   # Fall back to fresh GraphQL query
   gh api graphql \
     -f query='query {
-      repository(owner:"'"$_REPO_OWNER"'", name:"'"$_REPO_NAME"'") {
+      repository(owner:"'"$_DISCUSSION_OWNER"'", name:"'"$_DISCUSSION_NAME"'") {
         discussions(first:50, states:OPEN) {
           nodes { number title body }
         }
@@ -907,7 +965,7 @@ _get_discussing_discussions() {
   # Always use fresh GraphQL for DISCUSSING — snapshot may lag sub-status transitions
   gh api graphql \
     -f query='query {
-      repository(owner:"'"$_REPO_OWNER"'", name:"'"$_REPO_NAME"'") {
+      repository(owner:"'"$_DISCUSSION_OWNER"'", name:"'"$_DISCUSSION_NAME"'") {
         discussions(first:50, states:OPEN) {
           nodes { number title body }
         }
@@ -1007,7 +1065,7 @@ for d in discs:
 
             SPEC_TASK="You are participating in the consensus panel for Discussion #${P_DISC_NUM} (${P_DISC_TITLE}).
 
-Read the Discussion body at: https://github.com/"$_REPO"/discussions/${P_DISC_NUM}
+Read the Discussion body at: https://github.com/${_DISCUSSION_REPO}/discussions/${P_DISC_NUM}
 
 Post ONE comment on that Discussion (<=300 words) with exactly these sections:
 ### Perspective
@@ -1089,7 +1147,7 @@ Discussion comments. You MUST read those comments before writing the Spec.
 
 Steps:
 1. Fetch all comments on Discussion #${P_DISC_NUM} via:
-   gh api graphql with repository discussion comments query ($_REPO)
+   gh api graphql with repository discussion comments query (${_DISCUSSION_REPO})
 2. Identify comments whose AGENT_OUTPUT envelope has agent: technical-architect, security-expert,
    cost-analyst, product-owner, or performance-expert.
 3. Write a '### Consensus Summary' block in the Discussion body that:
@@ -1100,7 +1158,7 @@ Steps:
 4. Write the Spec as normal.
 5. Flip STATUS to SPEC_READY.
 
-Discussion URL: https://github.com/"$_REPO"/discussions/${P_DISC_NUM}"
+Discussion URL: https://github.com/${_DISCUSSION_REPO}/discussions/${P_DISC_NUM}"
 
         if _spawn \
             --role project-manager \
@@ -1158,7 +1216,7 @@ while IFS=$'\t' read -r DISC_NUM DISC_TITLE; do
     # No entry yet — spawn executor and record intent
     _log "D#$DISC_NUM: no pr_state entry — spawning executor"
 
-    TASK_PROMPT="Implement Discussion #${DISC_NUM} from the spec. Read the spec body from the Discussion (https://github.com/"$_REPO"/discussions/${DISC_NUM}), implement the code changes, run tests and preflight, create a PR, and return the PR number in your AGENT_OUTPUT envelope (pr field)."
+    TASK_PROMPT="Implement Discussion #${DISC_NUM} from the spec. Read the spec body from the Discussion (https://github.com/${_DISCUSSION_REPO}/discussions/${DISC_NUM}), implement the code changes, run tests and preflight, create a PR, and return the PR number in your AGENT_OUTPUT envelope (pr field)."
 
     if _spawn \
         --role executor \
@@ -1208,13 +1266,13 @@ print(entries[0].get('pr', 0) if entries else 0)
         # code-review-needs-fix immediately without spawning a reviewer.
         # In test mode (SPAWN_AGENT=echo), TWO_GATE_PR_BODY_<PR> supplies the body.
         _TWO_GATE_SKIP=false
-        if ! check_two_gate_markers "$PR_NUM" "$_REPO" 2>/dev/null; then
+        if ! check_two_gate_markers "$PR_NUM" "$_CODE_REPO" 2>/dev/null; then
           _log "D#$DISC_NUM PR#$PR_NUM: two-gate check FAILED — $TWO_GATE_FAIL_REASON"
           _apply_label "$PR_NUM" "code-review-needs-fix"
 
           # Post a human-readable comment on the PR (skip in test mode).
           if [ "${SPAWN_AGENT:-}" != "echo" ]; then
-            gh pr comment "$PR_NUM" --repo "$_REPO" \
+            gh pr comment "$PR_NUM" --repo "$_CODE_REPO" \
               --body "Two-Gate markers missing from PR body. Add a \"## Verification\" block with \"Gate 1: ...\" and \"Gate 2: ...\" lines (PASS or \"N/A — <reason>\"). See .claude/agents/executor.md." \
               2>/dev/null || true
           fi
@@ -1263,13 +1321,15 @@ print(entries[0].get('fix_cycle_count', 0) if entries else 0)
           if [ "$FIX_CYCLES" -ge 3 ]; then
             # Too many fix cycles — escalate
             _log "D#$DISC_NUM PR#$PR_NUM: fix_cycle_count=$FIX_CYCLES >= 3 — escalating to needs-boss"
-            gh api -X POST "repos/"$_REPO"/issues/${PR_NUM}/labels" \
+            gh api -X POST "repos/"$_CODE_REPO"/issues/${PR_NUM}/labels" \
               -f "labels[]=needs-boss" 2>/dev/null || true
             python3 "$REPO_ROOT/backend/pr_state.py" advance "$PR_NUM" --to blocked 2>/dev/null || true
           else
             _log "D#$DISC_NUM PR#$PR_NUM: phase=code_review, phased_code_review=true — spawning code-reviewer directly"
 
-            CR_TASK="Review PR #${PR_NUM} for Discussion #${DISC_NUM}. Run bash scripts/run-pr-tests.sh ${PR_NUM}. Discussion: https://github.com/"$_REPO"/discussions/${DISC_NUM} PR: https://github.com/"$_REPO"/pull/${PR_NUM}"
+            CR_TASK="Review PR #${PR_NUM} for Discussion #${DISC_NUM}. Run bash scripts/run-pr-tests.sh ${PR_NUM}."
+            CR_TASK="$CR_TASK Discussion: https://github.com/${_DISCUSSION_REPO}/discussions/${DISC_NUM}"
+            CR_TASK="$CR_TASK PR: https://github.com/${_CODE_REPO}/pull/${PR_NUM}"
 
             CR_OUTPUT=""
             if _spawn \
@@ -1326,7 +1386,9 @@ print('true' if entries and entries[0].get('needs_security_review', False) else 
             _spawn_debater "$PR_NUM" "$DISC_NUM" "code-reviewer" "$DEB_SHA" || true
             if [ "$DEB_NEEDS_SEC" = "true" ] && ! _has_label "$PR_NUM" "security-review-passed"; then
               _log "D#$DISC_NUM PR#$PR_NUM: spawning security-reviewer concurrently with debater (D#858)"
-              SEC_TASK_DEB="Security review PR #${PR_NUM} for Discussion #${DISC_NUM}. Focus on triggered patterns in the diff (auth, secrets, exec, fetch, localStorage, etc.). End with AGENT_OUTPUT envelope (verdict: pass|needs-fix|skip). Discussion: https://github.com/"$_REPO"/discussions/${DISC_NUM} PR: https://github.com/"$_REPO"/pull/${PR_NUM}"
+              SEC_TASK_DEB="Security review PR #${PR_NUM} for Discussion #${DISC_NUM}. Focus on triggered patterns in the diff (auth, secrets, exec, fetch, localStorage, etc.). End with AGENT_OUTPUT envelope (verdict: pass|needs-fix|skip)."
+              SEC_TASK_DEB="$SEC_TASK_DEB Discussion: https://github.com/${_DISCUSSION_REPO}/discussions/${DISC_NUM}"
+              SEC_TASK_DEB="$SEC_TASK_DEB PR: https://github.com/${_CODE_REPO}/pull/${PR_NUM}"
               if _spawn \
                   --role security-reviewer \
                   --discussion "$DISC_NUM" \
@@ -1367,7 +1429,9 @@ print(entries[0].get('fix_cycle_count', 0) if entries else 0)
           else
             _log "D#$DISC_NUM PR#$PR_NUM: phase=security_review — spawning security-reviewer"
 
-            SEC_TASK="Security review PR #${PR_NUM} for Discussion #${DISC_NUM}. Focus on triggered patterns in the diff (auth, secrets, exec, fetch, localStorage, etc.). End with AGENT_OUTPUT envelope (verdict: pass|needs-fix|skip). Discussion: https://github.com/"$_REPO"/discussions/${DISC_NUM} PR: https://github.com/"$_REPO"/pull/${PR_NUM}"
+            SEC_TASK="Security review PR #${PR_NUM} for Discussion #${DISC_NUM}. Focus on triggered patterns in the diff (auth, secrets, exec, fetch, localStorage, etc.). End with AGENT_OUTPUT envelope (verdict: pass|needs-fix|skip)."
+            SEC_TASK="$SEC_TASK Discussion: https://github.com/${_DISCUSSION_REPO}/discussions/${DISC_NUM}"
+            SEC_TASK="$SEC_TASK PR: https://github.com/${_CODE_REPO}/pull/${PR_NUM}"
 
             if _spawn \
                 --role security-reviewer \
@@ -1479,11 +1543,21 @@ print('true' if entries and entries[0].get('needs_security_review', False) else 
         if [ "$CODE_REVIEW_PASSED" = "false" ]; then
           _log "D#$DISC_NUM PR#$PR_NUM: merging blocked — code-review-passed label missing"
         elif [ "$SECURITY_PASSED" = "false" ]; then
-          _log "D#$DISC_NUM PR#$PR_NUM: merging blocked — security-review-passed label missing (security trigger detected in diff)"
+          # Name the real cause when the trigger told us one. An unresolvable
+          # code plane reports "triggered" by design, and calling that "a
+          # security trigger detected in diff" is a wrong diagnosis, not a
+          # vague one.
+          if [ -n "${_SECURITY_TRIGGER_REASON:-}" ]; then
+            _log "D#$DISC_NUM PR#$PR_NUM: merging blocked — security-review-passed label missing (${_SECURITY_TRIGGER_REASON})"
+          else
+            _log "D#$DISC_NUM PR#$PR_NUM: merging blocked — security-review-passed label missing (security trigger detected in diff)"
+          fi
           # Advance back to security_review and spawn a reviewer so the gate can be cleared next iteration.
           python3 "$REPO_ROOT/backend/pr_state.py" advance "$PR_NUM" --to security_review 2>/dev/null || true
 
-          SEC_TASK="Security review PR #${PR_NUM} for Discussion #${DISC_NUM}. Focus on triggered patterns in the diff (auth, secrets, exec, fetch, localStorage, etc.). End with AGENT_OUTPUT envelope (verdict: pass|needs-fix|skip). Discussion: https://github.com/"$_REPO"/discussions/${DISC_NUM} PR: https://github.com/"$_REPO"/pull/${PR_NUM}"
+          SEC_TASK="Security review PR #${PR_NUM} for Discussion #${DISC_NUM}. Focus on triggered patterns in the diff (auth, secrets, exec, fetch, localStorage, etc.). End with AGENT_OUTPUT envelope (verdict: pass|needs-fix|skip)."
+          SEC_TASK="$SEC_TASK Discussion: https://github.com/${_DISCUSSION_REPO}/discussions/${DISC_NUM}"
+          SEC_TASK="$SEC_TASK PR: https://github.com/${_CODE_REPO}/pull/${PR_NUM}"
 
           if _spawn \
               --role security-reviewer \
@@ -1502,7 +1576,7 @@ print('true' if entries and entries[0].get('needs_security_review', False) else 
           # phase above) rather than a new mechanism — no Discussion comment
           # (too noisy per merge event), just the PR comment + durable audit row.
           if [ "${SPAWN_AGENT:-}" != "echo" ]; then
-            gh pr comment "$PR_NUM" --repo "$_REPO" \
+            gh pr comment "$PR_NUM" --repo "$_CODE_REPO" \
               --body "CI-status gate blocked this merge: ${CI_STATUS_FAIL_REASON:-required checks pending or failing}${CI_STATUS_FAILING_CHECKS:+ (failing: $CI_STATUS_FAILING_CHECKS)}${CI_STATUS_RUN_URL:+ — $CI_STATUS_RUN_URL}" \
               2>/dev/null || true
             ci_write_audit "ci_gate_block" "$PR_NUM" "${CI_STATUS_HEAD_SHA:-}" "${CI_STATUS_FAILING_CHECKS:-}" "${CI_STATUS_RUN_URL:-}" "${CI_STATUS_FAIL_REASON:-}"
@@ -1527,12 +1601,12 @@ print('true' if entries and entries[0].get('needs_security_review', False) else 
           _DEP_DELETE_BRANCH=true
           if declare -F pr_dependents_list >/dev/null 2>&1; then
             _DEP_RC=0
-            pr_dependents_list "$PR_NUM" "$_REPO" || _DEP_RC=$?
+            pr_dependents_list "$PR_NUM" "$_CODE_REPO" || _DEP_RC=$?
             if [ "$_DEP_RC" -ne 0 ]; then
               _log "D#$DISC_NUM PR#$PR_NUM: pr-dependents lookup failed (${PR_DEP_REASON:-unknown reason}) — keeping branch as a precaution, merge proceeds"
               _DEP_DELETE_BRANCH=false
             elif [ -n "${PR_DEP_LIST:-}" ]; then
-              _DEP_WARNING=$(pr_dependents_report "$PR_NUM" "$_REPO")
+              _DEP_WARNING=$(pr_dependents_report "$PR_NUM" "$_CODE_REPO")
               _log "D#$DISC_NUM PR#$PR_NUM: $_DEP_WARNING"
               _DEP_DELETE_BRANCH=false
             fi
@@ -1542,7 +1616,7 @@ print('true' if entries and entries[0].get('needs_security_review', False) else 
           fi
 
           MERGE_RC=0
-          _MERGE_ARGS=(--squash --repo "$_REPO")
+          _MERGE_ARGS=(--squash --repo "$_CODE_REPO")
           if [ "$_DEP_DELETE_BRANCH" = "true" ]; then
             _MERGE_ARGS+=(--delete-branch)
           fi

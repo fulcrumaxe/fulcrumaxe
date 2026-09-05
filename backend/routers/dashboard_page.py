@@ -20,7 +20,7 @@ router = APIRouter(tags=["ui"])
 
 @router.get("/dashboard", response_class=HTMLResponse)
 async def get_dashboard() -> HTMLResponse:
-    """Return the fulcrumaxe dashboard HTML page.
+    """Return the autonomous-forever dashboard HTML page.
 
     Delegates to backend.dashboard.get_dashboard_html() — same function
     api.py uses, so the page content is byte-equivalent.
@@ -43,7 +43,7 @@ async def root() -> JSONResponse:
     from backend.api_version import CURRENT_VERSION  # noqa: PLC0415
     return JSONResponse(
         content={
-            "name": "fulcrumaxe",
+            "name": "autonomous-forever",
             "api_version": CURRENT_VERSION,
             "status": "ok",
         },

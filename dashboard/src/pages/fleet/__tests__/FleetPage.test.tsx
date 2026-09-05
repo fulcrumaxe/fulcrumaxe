@@ -32,7 +32,7 @@ import FleetPage from '../../FleetPage'
 const mockJsonRpc = vi.mocked(jsonRpc)
 
 function makeFleetProjectsResponse(projects = [
-  { name: 'fulcrumaxe', dashboard_port: 5173, status: 'ok' },
+  { name: 'autonomous-forever', dashboard_port: 5173, status: 'ok' },
   { name: 'projectb', dashboard_port: 5100, status: 'ok' },
 ]) {
   return { projects, etag: 'abc123' }
@@ -40,12 +40,12 @@ function makeFleetProjectsResponse(projects = [
 
 function makeFleetCostResponse() {
   return {
-    total_24h: 15000,
+    total_today_utc: 15000,
     total_7d: 60000,
     projected_eod: 20000,
     per_project: [
-      { name: 'fulcrumaxe', tokens_24h: 10000, tokens_7d: 40000, projected_eod_tokens: 14000, ok: true },
-      { name: 'projectb', tokens_24h: 5000, tokens_7d: 20000, projected_eod_tokens: 6000, ok: true },
+      { name: 'autonomous-forever', tokens_today_utc: 10000, tokens_7d: 40000, projected_eod_tokens: 14000, ok: true },
+      { name: 'projectb', tokens_today_utc: 5000, tokens_7d: 20000, projected_eod_tokens: 6000, ok: true },
     ],
     etag: 'def456',
   }
@@ -56,7 +56,7 @@ function makeFleetConcurrencyResponse() {
     fleet_total: 3,
     fleet_cap: 8,
     per_project: [
-      { name: 'fulcrumaxe', agents_running: 2, cap: 4, ok: true },
+      { name: 'autonomous-forever', agents_running: 2, cap: 4, ok: true },
       { name: 'projectb', agents_running: 1, cap: 4, ok: true },
     ],
     etag: 'ghi789',
@@ -100,12 +100,12 @@ describe('FleetPage — tile rendering', () => {
 
     await waitFor(() => {
       // getAllByText handles multiple matches (project name appears in toast + table)
-      expect(screen.getAllByText('fulcrumaxe').length).toBeGreaterThan(0)
+      expect(screen.getAllByText('autonomous-forever').length).toBeGreaterThan(0)
       expect(screen.getAllByText('projectb').length).toBeGreaterThan(0)
     })
   })
 
-  it('FleetCostTile shows 24h, 7d, projected EOD numbers', async () => {
+  it('FleetCostTile shows today, 7d, projected EOD numbers', async () => {
     render(<FleetPage />)
 
     await waitFor(() => {
@@ -134,7 +134,7 @@ describe('FleetPage — tile rendering', () => {
 describe('ProjectListTile — error state', () => {
   it('shows broken project with error message in red', async () => {
     const projectsWithError = [
-      { name: 'fulcrumaxe', dashboard_port: 5173, status: 'ok' },
+      { name: 'autonomous-forever', dashboard_port: 5173, status: 'ok' },
       { name: 'broken', status: 'error', error: 'JSON parse error: unexpected token' },
     ]
     mockJsonRpc.mockImplementation((method: string) => {
@@ -185,7 +185,7 @@ describe('NewProjectToast', () => {
     render(<FleetPage />)
 
     await waitFor(() => {
-      // The toast should appear since fulcrumaxe and projectb are new
+      // The toast should appear since autonomous-forever and projectb are new
       expect(screen.getByTestId('new-project-toast')).toBeTruthy()
     })
   })
@@ -194,7 +194,7 @@ describe('NewProjectToast', () => {
     // Pre-populate localStorage with all projects
     localStorageMock.setItem(
       'fleet_known_projects',
-      JSON.stringify(['fulcrumaxe', 'projectb']),
+      JSON.stringify(['autonomous-forever', 'projectb']),
     )
 
     render(<FleetPage />)

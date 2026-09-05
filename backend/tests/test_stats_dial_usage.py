@@ -1,7 +1,7 @@
 """Tests for backend.stats.dial_usage and backend.rpc.stats_dial_usage.
 
 All tests run in an isolated state directory so they never touch the real
-~/.fulcrumaxe-state/ directory.
+~/.autonomous-forever-state/ directory.
 """
 
 from __future__ import annotations

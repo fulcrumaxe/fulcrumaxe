@@ -14,7 +14,7 @@
 #
 # What it does:
 #   1. Reads .autonomous-team/state-symlinks.json for the list of managed paths.
-#   2. Creates $AUTONOMOUS_TEAM_STATE_DIR (default: ~/.fulcrumaxe-state).
+#   2. Creates $AUTONOMOUS_TEAM_STATE_DIR (default: ~/.autonomous-forever-state).
 #   3. For each entry, ensures the in-repo path is a symlink pointing to the
 #      external target, migrating real files with backup when needed.
 
@@ -38,7 +38,7 @@ fi
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-STATE_DIR="${AUTONOMOUS_TEAM_STATE_DIR:-$HOME/.fulcrumaxe-state}"
+STATE_DIR="${AUTONOMOUS_TEAM_STATE_DIR:-$HOME/.autonomous-forever-state}"
 TEAM_DIR="$REPO_ROOT/.autonomous-team"
 MANIFEST="$TEAM_DIR/state-symlinks.json"
 

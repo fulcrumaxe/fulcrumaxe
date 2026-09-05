@@ -78,11 +78,11 @@ def load_worktrees() -> list[dict[str, Any]]:
 
 
 def _state_dir() -> Path:
-    """Return the external state dir (AUTONOMOUS_TEAM_STATE_DIR or ~/.fulcrumaxe-state/)."""
+    """Return the external state dir (AUTONOMOUS_TEAM_STATE_DIR or ~/.autonomous-forever-state/)."""
     env = os.environ.get("AUTONOMOUS_TEAM_STATE_DIR")
     if env:
         return Path(env)
-    return Path.home() / ".fulcrumaxe-state"
+    return Path.home() / ".autonomous-forever-state"
 
 
 # ── Path checker ──────────────────────────────────────────────────────────────

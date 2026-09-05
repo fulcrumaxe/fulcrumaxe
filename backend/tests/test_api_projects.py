@@ -211,11 +211,11 @@ def test_resolver_cli_and_python_import_agree(tmp_path):
 
 def test_resolver_falls_back_to_repo_key_when_project_name_absent(tmp_path):
     """D1: config.json missing 'project_name' used to silently fall back to
-    a hardcoded 'fulcrumaxe' on the write side. The resolver must
+    a hardcoded 'autonomous-forever' on the write side. The resolver must
     derive from 'repo' instead — loudly, not silently to the wrong value."""
     (tmp_path / ".autonomous-team").mkdir()
     (tmp_path / ".autonomous-team" / "config.json").write_text(json.dumps({
-        "repo": "fulcrumaxe/fulcrumaxe",
+        "repo": "autonomous-agent-7/fulcrumaxe",
     }))
 
     from backend.fleet.project_name import resolve_project_name

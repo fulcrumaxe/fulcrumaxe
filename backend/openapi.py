@@ -1,5 +1,5 @@
 """
-OpenAPI 3.0.1 spec generator for the fulcrumaxe REST API.
+OpenAPI 3.0.1 spec generator for the autonomous-forever REST API.
 
 Reads the ROUTES registry from api_routes.py and produces a valid OpenAPI 3.0.1
 JSON document. No new dependencies — the spec is just a Python dict
@@ -58,10 +58,10 @@ _TAG_DESCRIPTIONS: dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 _OPENAPI_VERSION = "3.0.1"
-_API_TITLE = "fulcrumaxe API"
+_API_TITLE = "autonomous-forever API"
 _API_VERSION = "1.0.0"
 _API_DESCRIPTION = (
-    "REST API gateway for the fulcrumaxe backend — budget, registry, "
+    "REST API gateway for the autonomous-forever backend — budget, registry, "
     "control plane, agent cards, KPI, SSE streams, and interactive docs."
 )
 
@@ -285,7 +285,7 @@ def get_docs_html() -> str:
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>fulcrumaxe API — Docs</title>
+  <title>autonomous-forever API — Docs</title>
   <link rel="stylesheet" href="{_SWAGGER_UI_CDN}/swagger-ui.css">
   <link rel="stylesheet" href="{_HLJS_CDN}/styles/github-dark.min.css" id="hljs-theme">
   <style>
@@ -453,7 +453,7 @@ def get_docs_html() -> str:
   <div id="page-wrap">
     <!-- Top bar -->
     <div id="top-bar">
-      <h1>fulcrumaxe API</h1>
+      <h1>autonomous-forever API</h1>
       <button id="theme-toggle" onclick="toggleTheme()">Toggle dark/light</button>
     </div>
 

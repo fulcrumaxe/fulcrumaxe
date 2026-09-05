@@ -31,11 +31,11 @@ Usage::
 
     from backend.fleet.concurrency import register, unregister, count_fleet, fleet_cap
 
-    ok = register("fulcrumaxe", "agent-abc123", "executor")
+    ok = register("autonomous-forever", "agent-abc123", "executor")
     if not ok:
         raise SystemExit("fleet cap exceeded")
     ...
-    unregister("fulcrumaxe", "agent-abc123")
+    unregister("autonomous-forever", "agent-abc123")
 
 CLI (used by pre-spawn-check.sh and post-agent-hook.sh)::
 

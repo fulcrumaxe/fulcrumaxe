@@ -20,7 +20,7 @@
  *   4. already-done      — STATUS:DONE in body → exit 1
  *
  * Decision parity documented (TS unit-tested, bash parity not structurally testable):
- *   - dial-denied: The bash reads dial state from dial_registry.py / ~/.fulcrumaxe-state/
+ *   - dial-denied: The bash reads dial state from dial_registry.py / ~/.autonomous-forever-state/
  *     (runtime state dir, not overrideable in tests without patching Python internals).
  *     The TS pre-spawn-check reads dials from config.json (same as pre-spawn-check.parity.test.ts
  *     already covers). dial-denied parity is inherited from pre-spawn-check parity tests.
@@ -39,7 +39,7 @@
  *   - Dispatcher gate (ROUTE_VIA_DISPATCHER=1): requires backend.orchestrator.dispatch which
  *     needs full Python backend stack. Exercised only in integration tests.
  *   - prior_test_runs_block: requires live `gh api` call + pr-artifacts.sh; skipped in unit tests.
- *   - dial_state snapshot: requires dial_registry.py + ~/.fulcrumaxe-state/; tested
+ *   - dial_state snapshot: requires dial_registry.py + ~/.autonomous-forever-state/; tested
  *     as a no-crash path only (function exits cleanly when registry unavailable).
  *   - env-scrub (collectScrubVars / buildEnvScrubSnippet): pure functions tested directly.
  */

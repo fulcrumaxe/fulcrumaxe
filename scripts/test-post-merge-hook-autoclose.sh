@@ -69,7 +69,7 @@ declare -a DISCUSSIONS=()
 if [[ -n "\$DISCUSSION" ]]; then
   DISCUSSIONS=("\$DISCUSSION")
 else
-  PR_BODY=\$(gh pr view "\$PR" --repo ${REPO:-fulcrumaxe/fulcrumaxe} --json body \\
+  PR_BODY=\$(gh pr view "\$PR" --repo ${REPO:-autonomous-agent-7/autonomous-forever} --json body \\
     --jq '.body' 2>/dev/null || echo "")
 
   RAW_NUMS=\$(echo "\$PR_BODY" \\
@@ -79,7 +79,7 @@ else
 
   for CAND in \$RAW_NUMS; do
     DISC_VALID=\$(gh api graphql \\
-      -f query="query { repository(owner:\"fulcrumaxe\", name:\"fulcrumaxe\") { discussion(number:\$CAND) { id } } }" \\
+      -f query="query { repository(owner:\"autonomous-agent-7\", name:\"autonomous-forever\") { discussion(number:\$CAND) { id } } }" \\
       --jq '.data.repository.discussion.id' 2>/dev/null || echo "")
     if [[ -n "\$DISC_VALID" && "\$DISC_VALID" != "null" ]]; then
       DISCUSSIONS+=("\$CAND")

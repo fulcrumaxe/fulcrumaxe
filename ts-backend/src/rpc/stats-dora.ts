@@ -33,7 +33,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
-import { resolveRepo } from "../config/repo.js";
+import { resolveCodeRepo, resolveRepo } from "../config/repo.js";
 
 // ---------------------------------------------------------------------------
 // Shared path helpers (mirrors misc-batch5.ts / stats-batch3.ts convention)
@@ -61,6 +61,8 @@ function autonomousTeamDir(): string {
 // ---------------------------------------------------------------------------
 
 const _7D_SECONDS = 7 * 24 * 3600;
+// Two planes from one file: merged PRs are code, bug Discussions are not.
+const AF_CODE_REPO = resolveCodeRepo();
 const AF_REPO = resolveRepo();
 
 // ---------------------------------------------------------------------------
@@ -167,7 +169,7 @@ function computeLeadTimeP50(cutoffTs: number): number {
         "pr",
         "list",
         "--repo",
-        AF_REPO,
+        AF_CODE_REPO,
         "--state",
         "merged",
         "--json",

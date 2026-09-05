@@ -21,7 +21,15 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 source "$REPO_ROOT/scripts/lib/repo-resolve.sh"
-REPO="$(_resolve_repo)"
+# The PR diff is a code-plane read. Exit 2 ("sweep failed to run") rather
+# than falling through: `gh pr diff --repo ""` exits 0 against whatever the
+# checkout's origin remote points at, so an empty slug would return a diff
+# for the wrong PR and be scanned as if it were this one.
+CODE_REPO="$(_resolve_code_repo 2>/dev/null || true)"
+if [ -z "$CODE_REPO" ]; then
+  echo "[tui-tester-pre-merge] ERROR: could not resolve the code repo — cannot read the PR diff. Add a \"code_repo\" (or \"repo\") field to .autonomous-team/config.json, or set AUTONOMOUS_TEAM_REPO." >&2
+  exit 2
+fi
 PR=""
 
 while [[ $# -gt 0 ]]; do
@@ -37,7 +45,7 @@ if [[ -z "$PR" ]]; then
 fi
 
 # ── 1. Check if this PR touches dashboard_tui/** ──────────────────────────────
-CHANGED_TUI=$(gh pr diff --name-only "$PR" --repo "$REPO" \
+CHANGED_TUI=$(gh pr diff --name-only "$PR" --repo "$CODE_REPO" \
   2>/dev/null | grep '^dashboard_tui/' || true)
 
 if [[ -z "$CHANGED_TUI" ]]; then

@@ -13,7 +13,7 @@
  * Examples:
  *   /project/projectb/kpi       → "projectb"
  *   /project/projectb/          → "projectb"
- *   /project/fulcrumaxe → "fulcrumaxe"
+ *   /project/autonomous-forever → "autonomous-forever"
  *   /kpi                    → null
  *   /                       → null
  */

@@ -676,7 +676,7 @@ async function stepFleetUnregister(args: PostAgentHookArgs): Promise<void> {
   const root = repoRoot();
 
   // Determine project name from config.json
-  let projectName = "fulcrumaxe";
+  let projectName = "autonomous-forever";
   try {
     const configPath = join(root, ".autonomous-team", "config.json");
     if (existsSync(configPath)) {

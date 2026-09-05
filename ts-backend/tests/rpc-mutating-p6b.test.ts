@@ -830,7 +830,7 @@ describe("Production state files untouched during tests", () => {
   it("dial-registry.json mtime unchanged after dial.set on temp dir", () => {
     const prodRegistryPath = join(
       process.env.AUTONOMOUS_TEAM_STATE_DIR ??
-        join(process.env.HOME ?? "/root", ".fulcrumaxe-state"),
+        join(process.env.HOME ?? "/root", ".autonomous-forever-state"),
       "dial-registry.json"
     );
 
@@ -886,7 +886,7 @@ describe("Production state files untouched during tests", () => {
   it("production state.db mtime unchanged after auth_retry.record on temp db", () => {
     const prodDbPath = join(
       process.env.AUTONOMOUS_TEAM_STATE_DIR ??
-        join(process.env.HOME ?? "/root", ".fulcrumaxe-state"),
+        join(process.env.HOME ?? "/root", ".autonomous-forever-state"),
       "state.db"
     );
 

@@ -1,5 +1,5 @@
 """
-WebSocket handler for the fulcrumaxe API server.
+WebSocket handler for the autonomous-forever API server.
 
 Implements a minimal RFC 6455 WebSocket server using only the Python standard
 library (hashlib, base64, struct). Clients receive all event bus events as JSON

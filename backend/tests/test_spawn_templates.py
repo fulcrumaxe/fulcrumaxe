@@ -24,7 +24,7 @@ from backend.spawn_templates import render, KNOWN_ROLES, REQUIRED_VARS, _REPO  #
 _STUB_VARS = {
     "discussion_number": "99",
     "discussion_title": "Test discussion",
-    "discussion_url": "https://github.com/fulcrumaxe/fulcrumaxe/discussions/99",
+    "discussion_url": "https://github.com/autonomous-agent-7/autonomous-forever/discussions/99",
     "task_brief": "Do the test thing",
     "project_context": "[project context stub]",
     "agent_memory": "[agent memory stub]",
@@ -32,7 +32,7 @@ _STUB_VARS = {
     "pr_number": "55",
     # Extra vars required by secondary roles (docs-writer, incident-commander, etc.)
     "pr_branch": "feature/stub-branch",
-    "pr_url": "https://github.com/fulcrumaxe/fulcrumaxe/pull/55",
+    "pr_url": "https://github.com/autonomous-agent-7/autonomous-forever/pull/55",
     "trigger_type": "circuit_breaker",
     "evidence_json": "{}",
     "release_id": "v0.0.1",
@@ -215,7 +215,7 @@ def test_workflow_runner_resolve_implement_produces_mandatory_appendices() -> No
         {
             "discussion_number": "99",
             "discussion_title": "Test feature",
-            "discussion_url": "https://github.com/fulcrumaxe/fulcrumaxe/discussions/99",
+            "discussion_url": "https://github.com/autonomous-agent-7/autonomous-forever/discussions/99",
             "spec_body": "Do the test thing",
             "project_context": "",
             "agent_memory": "",

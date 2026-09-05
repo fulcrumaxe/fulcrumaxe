@@ -65,7 +65,9 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/lib/repo-resolve.sh"
 # shellcheck source=scripts/lib/worktree-ground-check.sh
 source "$SCRIPT_DIR/lib/worktree-ground-check.sh"
-REPO="$(_resolve_repo)"
+# The PR file list is a code-plane read; an empty slug would silently answer
+# from the checkout's origin remote, so refuse before `gh` runs.
+REPO="$(_require_code_repo "run-pr-tests")" || exit 1
 
 # Suites denylisted from the generic tests/*.sh auto-run rule below (D#2132
 # PR-b, triaged by D#2152). A denylisted file still appears in `routing`,

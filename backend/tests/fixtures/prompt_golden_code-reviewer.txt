@@ -24,7 +24,7 @@ The local `.claude/worktrees/agent-X/` checkout is OFTEN STALE. The PR branch on
 
 ```bash
 # Get the PR's branch name
-BRANCH=$(gh pr view  --repo fulcrumaxe/fulcrumaxe --json headRefName --jq .headRefName)
+BRANCH=$(gh pr view  --repo autonomous-agent-7/autonomous-forever --json headRefName --jq .headRefName)
 # Fetch fresh
 git fetch origin "$BRANCH"
 # Read files via git show, not direct file read:
@@ -91,8 +91,8 @@ round.
 
 After review:
 IMPORTANT — label API: `gh pr edit --add-label` silently no-ops on this repo. Use REST API instead:
-  Apply label:  gh api -X POST repos/fulcrumaxe/fulcrumaxe/issues/{pr_number}/labels -f labels[]="code-review-passed"
-  Remove label: gh api -X DELETE repos/fulcrumaxe/fulcrumaxe/issues/{pr_number}/labels/code-review-needs-fix
+  Apply label:  gh api -X POST repos/autonomous-agent-7/autonomous-forever/issues/{pr_number}/labels -f labels[]="code-review-passed"
+  Remove label: gh api -X DELETE repos/autonomous-agent-7/autonomous-forever/issues/{pr_number}/labels/code-review-needs-fix
   Or source and call: source scripts/lib/gh-label.sh && apply_label {pr_number} code-review-passed
 
 - Apply label 'code-review-passed' (via REST) only when all tests passed (TEST_EXIT=0) and review passes.
@@ -112,7 +112,7 @@ If a tool call returns the same error 3 times in a row, STOP retrying — either
 
    If CLI_TOUCHED=yes AND the Spec body contains a `## Real-world verification` block:
    a. Extract the Spec body from the Discussion:
-        SPEC_BODY=$(gh api graphql -f query='query { repository(owner:"fulcrumaxe", name:"fulcrumaxe") { discussion(number:977) { body } } }' --jq '.data.repository.discussion.body')
+        SPEC_BODY=$(gh api graphql -f query='query { repository(owner:"autonomous-agent-7", name:"autonomous-forever") { discussion(number:977) { body } } }' --jq '.data.repository.discussion.body')
    b. Pipe it to the verification runner:
         VERIFY_JSON=$(echo "$SPEC_BODY" | bash scripts/run-backend-verification.sh --pr )
    c. Embed the raw JSON array verbatim as `feature_verified` in AGENT_OUTPUT.
@@ -142,12 +142,12 @@ sys.path.insert(0, '.')
 from backend.spec_external_docs import check_imports_have_docs
 
 diff = subprocess.check_output(
-    ['gh', 'pr', 'diff', '', '--repo', 'fulcrumaxe/fulcrumaxe'],
+    ['gh', 'pr', 'diff', '', '--repo', 'autonomous-agent-7/autonomous-forever'],
     text=True
 )
 result = subprocess.run(
     ['gh', 'api', 'graphql', '-f',
-     'query={repository(owner:"fulcrumaxe",name:"fulcrumaxe"){discussion(number:977){body}}}'],
+     'query={repository(owner:"autonomous-agent-7",name:"autonomous-forever"){discussion(number:977){body}}}'],
     capture_output=True, text=True
 )
 spec_body = json.loads(result.stdout)['data']['repository']['discussion']['body']

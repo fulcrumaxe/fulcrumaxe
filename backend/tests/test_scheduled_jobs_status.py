@@ -1,7 +1,7 @@
 """
 Behavioral tests for backend/scheduled_jobs_status.py.
 
-All tests are isolated to tmp_path — no real ~/.fulcrumaxe-state/
+All tests are isolated to tmp_path — no real ~/.autonomous-forever-state/
 or .autonomous-team/ directories are touched.
 """
 from __future__ import annotations

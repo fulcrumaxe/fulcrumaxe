@@ -214,7 +214,7 @@ class TestBenignTextPreserved:
         assert redact(line) == line
 
     def test_url_preserved(self) -> None:
-        url = "https://github.com/fulcrumaxe/fulcrumaxe"
+        url = "https://github.com/autonomous-agent-7/autonomous-forever"
         assert redact(url) == url
 
     def test_short_hex_preserved(self) -> None:

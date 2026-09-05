@@ -1,0 +1,239 @@
+.autonomous-team/loop.log
+.autonomous-team/loop.lock
+.autonomous-team/loop-metrics.jsonl
+.autonomous-team/registry.json
+.autonomous-team/.registry.lock
+tui/node_modules/
+tui/dist/
+dashboard/node_modules/
+dashboard/dist/
+__pycache__/
+*.pyc
+
+# tests/lib/repo-root-fixture.sh scratch (D#2267) — a per-run isolated repo
+# root for suites that invoke hooks/*.py as a subprocess. Cleaned up by each
+# suite's own EXIT trap; this only guards against a crash that skips it.
+.repo-root-fixture.*
+saas-service/target/
+dashboard/node_modules/
+dashboard/dist/
+
+# Autonomous team runtime state — live values, never commit
+.autonomous-team/vast-serving.json
+.autonomous-team/vast-training.json
+.autonomous-team/dashboard-token
+.autonomous-team/active-loops.json
+.autonomous-team/codebase-index.json
+
+# Runtime state files that may be real files (pre-setup-state-dir.sh) or
+# symlinks to ~/.autonomous-forever-state/.  Either way, never commit them.
+#
+# No trailing slash on the directory entries, deliberately. A pattern ending in
+# `/` only matches a real directory, and setup-state-dir.sh creates these as
+# symlinks — a symlink to a directory is not a directory as far as gitignore is
+# concerned, so `blackboard/` left the symlink showing up as untracked. The
+# slashless spelling matches both forms.
+.autonomous-team/state.db
+.autonomous-team/state.db-shm
+.autonomous-team/state.db-wal
+.autonomous-team/stats.duckdb
+.autonomous-team/audit.jsonl
+.autonomous-team/circuit-breaker-history.jsonl
+.autonomous-team/external-intake-baselines.json
+.autonomous-team/blackboard
+
+# The same runtime-state files, at the repo root. Every one of these paths is
+# derived from the state dir, and the state dir is whatever
+# AUTONOMOUS_TEAM_STATE_DIR says it is — a relative (or empty) value resolves
+# against the process cwd, which for anything launched from the repo root is
+# right here. That is how a 4.4 MB DuckDB file ended up stageable by
+# `git add -A`, invisible to `git status --untracked-files=no`.
+#
+# Leading slash on every entry so they anchor to the repo root and cannot match
+# a nested path: `blackboard` unanchored would also swallow backend/blackboard.py.
+/state.db
+/state.db-shm
+/state.db-wal
+/stats.duckdb
+/audit.jsonl
+/circuit-breaker-history.jsonl
+/external-intake-baselines.json
+/blackboard
+
+# KPI E2E test screenshots (runtime artifacts, not committed)
+dashboard/e2e/__artifacts__/
+
+# pytest-testmon per-worktree DBs (never commit — one per worktree/branch)
+.testmondata*
+
+# Runtime-generated directories (D#1908 PR 2). Each one carries a tracked
+# .gitkeep so a fresh clone still gets the directory — ignore contents only,
+# never the directory itself.
+.autonomous-team/hook-events/*
+!.autonomous-team/hook-events/.gitkeep
+.autonomous-team/releases/*
+!.autonomous-team/releases/.gitkeep
+.autonomous-team/run-reports/*
+!.autonomous-team/run-reports/.gitkeep
+
+# Dashboard process logs and pidfiles — nothing tracked under either.
+.autonomous-team/dashboard-logs/
+.autonomous-team/*.pid
+
+# Live agent/event feeds, rewritten continuously, never committed.
+.autonomous-team/events-bus.jsonl
+.autonomous-team/agent-feed.jsonl
+.autonomous-team/agent-retros.jsonl
+.autonomous-team/browser-tour-queue.jsonl
+
+# D#2348 phase 2 - this operator's own trail under .autonomous-team/.
+# Everything here lives in the private companion repo
+# fulcrumaxe/fulcrumaxe-internal; the engine keeps only the config contract
+# an adopter's clone actually reads. Patterns are leading-slash anchored so
+# they match .autonomous-team/ at the repo root and nothing nested.
+#
+# NOTE for operators: these paths were tracked until this commit. Pulling it
+# is an ordinary deletion for any checkout whose HEAD still tracks them --
+# untracking kept the files only in the checkout that ran it. Copy aside
+# anything you want to keep BEFORE pulling.
+/.autonomous-team/PLAN-*.md
+/.autonomous-team/agent-profiles.json
+/.autonomous-team/vast-serving.json.example
+
+# Generated runtime trails. Never tracked, but also never ignored until now,
+# so each one showed up as status noise and was one `add .` away from being
+# committed.
+/.autonomous-team/kpi.json
+/.autonomous-team/lessons/
+/.autonomous-team/parity-history.jsonl
+/.autonomous-team/route-decisions.jsonl
+/.autonomous-team/spawn-guard-stats.json
+/.autonomous-team/projects.json
+/.autonomous-team/training-state.json
+
+# The rest of the same set, missed on the first pass. Each is written by
+# something that runs on this operator's box and none has ever been tracked:
+#   orphan-diff-nudge-state.json  scripts/lib/orphan-triage.sh
+#   worktrees.json[.lock]         scripts/lib/worktree-registry.sh + its readers
+#   dashboard-runtime.json        scripts/start-dashboard.sh
+#   needs-tmux-reload             scripts/post-merge-hook.sh
+#   stats/                        scripts/subagent-stop-hook.sh
+#
+# worktrees.json is live registry state that eight files read and write, so it
+# is ignored on the strength of never having been tracked — not because it is
+# disposable. Ignoring it changes nothing about how it is used; it only keeps
+# a `git add -A` from turning one operator's worktree list into repo content.
+/.autonomous-team/orphan-diff-nudge-state.json
+/.autonomous-team/worktrees.json
+/.autonomous-team/worktrees.json.lock
+/.autonomous-team/dashboard-runtime.json
+/.autonomous-team/needs-tmux-reload
+/.autonomous-team/stats/
+
+# Python virtualenv and scratch training data.
+.venv/
+training-data/
+
+# understand-anything plugin data — knowledge graph, tour results, and scratch
+# under tmp/. Machine-generated, per-operator, 76 MB on this checkout, and
+# nothing under it has ever been tracked. It was not ignored, so `git add -A`
+# would take it: on a synced main its ua-tour-results.json carries 14 hits of
+# the forbidden project identifier, which is what run_always_gates' pre-push
+# scan was red on. Once development is public a commit carrying one of those
+# is world-readable immediately and force-push does not recall it.
+#
+# Both spellings, because the plugin picks between them at runtime:
+# resolveUaDirName() returns .understand-anything when that directory already
+# exists and .ua otherwise, so which one appears depends on the checkout's
+# history rather than on anything we control.
+.ua/
+.understand-anything/
+
+# Regenerated by the ts-backend parity test suite.
+ts-backend/parity-report.json
+
+# ---------------------------------------------------------------------------
+# Moved to the private internal repo (D#2348 phase 1).
+#
+# These trees now live in fulcrumaxe/fulcrumaxe-internal, seeded at commit
+# 98d4ad18a4e0d39ff209dc5513603eb99bc73e0b — a full private fork of this repo's
+# entire history with identical commit SHAs, plus a top commit deleting all but
+# the move set. Byte-identical content, verified by blob SHA before this removal.
+#
+# 1551 files move here in phase 1. archive/loop-bootstrap-snapshot-2026-08-17/
+# (416 files) is deliberately RETAINED: it is the audit corpus for
+# open-source/'s classification gate and that gate is its only consumer, so the
+# two are one unit and both move together in phase 3.
+#
+# `git rm --cached` keeps the files on disk only in the checkout that runs it.
+# For anyone whose HEAD still tracks these paths, pulling this commit is an
+# ordinary deletion and git removes all 1551 from their working tree. Copy
+# anything you want to keep aside BEFORE pulling, or clone the internal repo.
+#
+# Ignored so a copy restored locally cannot be re-added by a `git add -A`.
+# Two narrower entries were collapsed into these parents, having become
+# redundant:
+#   docker/gemma4-trainer/build-assets/          -> covered by /docker/
+#   wiki/{Changelog,Project-Status,PR-Index}.md  -> covered by /wiki/
+#
+# EVERY PATTERN IS LEADING-SLASH ANCHORED, and that is load-bearing rather than
+# stylistic. A bare `name/` pattern matches a directory of that name at ANY
+# depth: `templates/` (unanchored) also swallows loop-bootstrap/templates/,
+# which is 6 live tracked files that have nothing to do with this move. Anchored
+# patterns mean "this top-level directory" and nothing else.
+#
+# `archive/` is deliberately NOT here. Ignoring it wholesale would break the
+# Archive Protocol for every future archival: `git mv` still works (it forces
+# the add), but the mandatory archive/<name>-<date>/README.md could not be
+# created — `git add` exits 1 and `git add -A` skips it SILENTLY, so a retired
+# file would land tracked with its README quietly missing. The pre-existing
+# narrow entry for the state-db residue is restored below instead, which is
+# also what keeps backend/tui_tester_helpers.py's
+# archive/tui-tester-quarantine-<date> writer behaving exactly as it did before.
+# ---------------------------------------------------------------------------
+/wiki/
+/dashboard_tui/
+/scripts/training/
+/scripts/serving/
+/scripts/gemma-sandbox/
+/verification-report/
+/docker/
+/systemd/
+/templates/
+/pr-body-p5e.txt
+
+# Moves with dashboard_tui/ because it tests that tree EXCLUSIVELY, and left
+# behind it would not fail — it rglobs dashboard_tui/screens/, and rglob over a
+# missing directory yields nothing, so its single assertion passes over an empty
+# set. Measured: 21 screen files scanned before, 0 after, "1 passed" both times.
+# A guard would make it skip honestly, but the test has no meaning in a tree
+# without the code it inspects, so it goes with it.
+/tests/test_all_datatables_have_row_cursor.py
+
+# D#1908 migration donor databases (state-db residue) — their unique rows are
+# already merged into the live store. Kept on disk (findable, per Archive
+# Protocol) but never committed: 3.5 MB of binaries would otherwise become a
+# permanent second copy of already-recovered data in git history. Restored from
+# where it sat before this PR, now anchored; archive/ itself stays tracked and
+# addable.
+/archive/state-db-residue-*/
+
+# The tier:project memories from the same move. scripts/memory-triage/ itself
+# survives — 22 tier:transferable / tier:hardwire-candidate memories, its
+# MEMORY.md index and apply-tiers.sh all stay tracked — so this is a file list
+# rather than a directory ignore. Selected by frontmatter `tier:`, the way
+# open-source/export.sh does it, never by filename: 8 of these 13 are named
+# feedback_*, so a `project_*` glob would have missed them.
+/scripts/memory-triage/feedback_dashboard_ux_priorities.md
+/scripts/memory-triage/feedback_loop_skill_not_script.md
+/scripts/memory-triage/feedback_never_delete_pod.md
+/scripts/memory-triage/feedback_no_separate_tui.md
+/scripts/memory-triage/feedback_reload_on_claude_md_change.md
+/scripts/memory-triage/feedback_scan_orphan_worktrees.md
+/scripts/memory-triage/feedback_session_2026_05_14_retro.md
+/scripts/memory-triage/feedback_tui_tester_proactive.md
+/scripts/memory-triage/project_gemma_training_2026_04_14.md
+/scripts/memory-triage/project_gemma_training_2026_04_16.md
+/scripts/memory-triage/project_loop_timeline_activity_chart.md
+/scripts/memory-triage/project_training_2026_04_17.md
+/scripts/memory-triage/reference_bayesian_inference_exploration.md

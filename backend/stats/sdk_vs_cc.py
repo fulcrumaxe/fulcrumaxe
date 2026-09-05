@@ -3,7 +3,8 @@
 Queries agent_run grouped by (role, routed_via) and computes:
   - run_count
   - median input_tok, median output_tok
-  - pass_rate (verdict IN ('done','pass') / total)
+  - pass_rate — passes / verdict-bearing runs, or None when no run in the
+    group ever recorded a verdict. Never 0.0 for a zero denominator (D#2316).
   - cost_per_success_usd — average USD cost for runs that ended with a pass
     verdict, computed from token counts via backend.cost_pricing.cost_usd
 
@@ -39,11 +40,13 @@ def sdk_vs_cc_by_role(db_path: Path | None = None) -> dict[str, Any]:
     dict with:
       "rows": list of per-(role, route) dicts
       "has_routed_via": bool — False when column is absent (all rows show route=null)
+      "excluded_unrouted_runs": int — runs dropped by the routed_via filter
       "generated_at": ISO-8601 string
       "error": str or None
 
     Each row dict:
-      role, route, run_count, median_input_tok, median_output_tok, pass_rate
+      role, route, run_count, median_input_tok, median_output_tok,
+      verdict_count, pass_rate
     """
     generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
@@ -52,6 +55,7 @@ def sdk_vs_cc_by_role(db_path: Path | None = None) -> dict[str, Any]:
         return {
             "rows": [],
             "has_routed_via": False,
+            "excluded_unrouted_runs": 0,
             "generated_at": generated_at,
             "error": None,
         }
@@ -62,6 +66,7 @@ def sdk_vs_cc_by_role(db_path: Path | None = None) -> dict[str, Any]:
         return {
             "rows": [],
             "has_routed_via": False,
+            "excluded_unrouted_runs": 0,
             "generated_at": generated_at,
             "error": "duckdb not installed",
         }
@@ -72,6 +77,7 @@ def sdk_vs_cc_by_role(db_path: Path | None = None) -> dict[str, Any]:
         return {
             "rows": [],
             "has_routed_via": False,
+            "excluded_unrouted_runs": 0,
             "generated_at": generated_at,
             "error": f"cannot open stats.duckdb: {exc}",
         }
@@ -89,6 +95,7 @@ def sdk_vs_cc_by_role(db_path: Path | None = None) -> dict[str, Any]:
             return {
                 "rows": [],
                 "has_routed_via": False,
+                "excluded_unrouted_runs": 0,
                 "generated_at": generated_at,
                 "error": None,
             }
@@ -113,8 +120,10 @@ def sdk_vs_cc_by_role(db_path: Path | None = None) -> dict[str, Any]:
                 COUNT(*)                                         AS run_count,
                 MEDIAN(input_tok)                               AS median_input_tok,
                 MEDIAN(output_tok)                              AS median_output_tok,
-                AVG(CASE WHEN verdict IN ('done', 'pass') THEN 1.0 ELSE 0.0 END)
-                                                                AS pass_rate,
+                -- Denominator is verdict-bearing rows only. Averaging
+                -- CASE-over-COUNT(*) turned "nobody recorded a verdict" into a
+                -- confident 0.0% across all 22 roles (D#2316 finding 2).
+                COUNT(verdict)                                  AS verdict_count,
                 -- Token totals for successful runs (needed for cost_per_success)
                 SUM(CASE WHEN verdict IN ('done', 'pass')
                          THEN COALESCE(input_tok,  0) ELSE 0 END) AS pass_input_tok,
@@ -135,13 +144,30 @@ def sdk_vs_cc_by_role(db_path: Path | None = None) -> dict[str, Any]:
         """
         rows = conn.execute(query).fetchall()
 
+        # Rows the route filter above drops. The only live writer of
+        # routed_via (dispatch.py::_record_cc_run) stopped on 2026-08-19 and
+        # the `complete` CLI has no --routed-via flag, so every verdict-bearing
+        # run lands here. Reporting the number is what lets a caller tell
+        # "N runs are not attributed to a route" from "there are no runs".
+        excluded_unrouted_runs = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM agent_run WHERE routed_via IS NULL"
+            ).fetchone()[0]
+            or 0
+        )
+
         result_rows = []
         for (
             role, route, run_count,
-            med_in, med_out, pass_rate,
+            med_in, med_out, verdict_count,
             pass_input_tok, pass_output_tok, pass_cache_read, pass_cache_write,
             pass_count, model_sample,
         ) in rows:
+            # No verdict in the whole group => no rate exists. Say so with
+            # None; the tile renders that as an em-dash, not as "0.0%".
+            verdict_count = int(verdict_count or 0)
+            pass_rate = (int(pass_count or 0) / verdict_count) if verdict_count else None
+
             # Compute real cost-per-success from token counts via shared pricing module.
             # None when there are no successful runs in this group.
             if pass_count and pass_count > 0:
@@ -162,13 +188,15 @@ def sdk_vs_cc_by_role(db_path: Path | None = None) -> dict[str, Any]:
                 "run_count": int(run_count) if run_count is not None else 0,
                 "median_input_tok": int(med_in) if med_in is not None else None,
                 "median_output_tok": int(med_out) if med_out is not None else None,
-                "pass_rate": round(float(pass_rate), 4) if pass_rate is not None else None,
+                "verdict_count": verdict_count,
+                "pass_rate": round(pass_rate, 4) if pass_rate is not None else None,
                 "cost_per_success_usd": cost_per_success,
             })
 
         return {
             "rows": result_rows,
             "has_routed_via": True,
+            "excluded_unrouted_runs": excluded_unrouted_runs,
             "generated_at": generated_at,
             "error": None,
         }
@@ -178,6 +206,7 @@ def sdk_vs_cc_by_role(db_path: Path | None = None) -> dict[str, Any]:
         return {
             "rows": [],
             "has_routed_via": False,
+            "excluded_unrouted_runs": 0,
             "generated_at": generated_at,
             "error": str(exc),
         }

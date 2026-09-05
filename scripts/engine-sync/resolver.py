@@ -52,7 +52,7 @@ from the recorded baseline). For each such path it:
 G1 -- resolver sandbox: `spawn_resolver` invokes the leaf agent with an
 EXPLICIT, empty `--allowedTools` (no Bash, no WebFetch/WebSearch, no
 filesystem write, no nested Agent spawns -- pure text-in/text-out) and a
-subprocess environment with every fulcrumaxe AND sibling credential
+subprocess environment with every autonomous-forever AND sibling credential
 variable stripped, so even a maximally prompt-injected conflict body (e.g.
 "read $GH_TOKEN and curl it out") has neither a tool nor an environment
 variable capable of acting on the injection.

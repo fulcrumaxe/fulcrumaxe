@@ -40,7 +40,7 @@ FIXTURE_MISSION = HERE / "fixtures" / "answers-mission.json"
 FIXTURE_NEW = HERE / "fixtures" / "answers-new.json"
 FIXTURE_CORE = HERE / "fixtures" / "answers-core.json"
 
-FRAMEWORK_REPO = ("example-org", "fulcrumaxe")
+FRAMEWORK_REPO = ("example-org", "autonomous-forever")
 
 
 def _resolved(fixture: Path) -> dict:

@@ -12,7 +12,7 @@ import os
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stderr
+from contextlib import contextmanager, redirect_stderr
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -55,6 +55,42 @@ from run_analyst import (
 
 NOW = datetime.now(timezone.utc)
 SINCE = NOW - timedelta(days=7)
+
+# NOW is safe for every fixture that is only ever compared against another
+# NOW-derived value, or carried through a classifier that never reads a clock.
+# It is NOT safe where the code under test ages the fixture against a live
+# datetime.now(): there the interval actually under test is the offset written
+# here PLUS however long the suite took to get from import to that assertion.
+#
+# classify_stale_snapshot_consumption is exactly that case — it compares
+# against MAX_AGE = 600s — so its inputs are pinned to a literal instant and
+# the clock it reads is frozen to the same instant. Before that, the "fresh"
+# case (NOW - 100s) aged past the threshold once ~500s of suite time elapsed
+# and failed with nothing wrong in the arithmetic it exists to check (D#2403).
+SNAPSHOT_CLOCK = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+
+
+@contextmanager
+def frozen_clock(instant: datetime):
+    """Pin the ``datetime.now()`` that ``run_analyst`` reads to ``instant``.
+
+    Freezes the COMPARISON clock, not the input timestamp, so the interval
+    under test is exact rather than "the offset, plus suite duration".
+
+    Subclassing ``datetime`` rather than handing over a MagicMock keeps every
+    other behaviour the classifier depends on — arithmetic, tz handling,
+    ``strftime`` — served by the real implementation; only the reading of the
+    clock is pinned. ``_parse_ts`` is imported into ``run_analyst`` from
+    ``backend.loop_metrics_ts``, so patching this name leaves parsing alone.
+    """
+
+    class _Frozen(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return instant if tz is None else instant.astimezone(tz)
+
+    with patch("run_analyst.datetime", _Frozen):
+        yield
 
 
 def make_event(message: str, agent: str = "executor", ts_offset_hours: int = 0) -> dict:
@@ -817,20 +853,35 @@ class TestStaleSnapshotConsumption(unittest.TestCase):
         findings = classify_stale_snapshot_consumption([], events)
         self.assertEqual(findings, [])
 
-    @patch("run_analyst.load_loop_snapshot")
-    def test_detects_old_snapshot_file(self, mock_snap):
-        old_ts = (NOW - timedelta(seconds=700)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        mock_snap.return_value = {"generated_at": old_ts}
-        findings = classify_stale_snapshot_consumption([], [])
-        self.assertTrue(any(f["category"] == "stale_snapshot_consumption" for f in findings))
+    def _snapshot_findings(self, age_seconds: int) -> list[dict]:
+        """Findings for a snapshot generated exactly ``age_seconds`` ago.
 
-    @patch("run_analyst.load_loop_snapshot")
-    def test_no_flag_fresh_snapshot(self, mock_snap):
-        fresh_ts = (NOW - timedelta(seconds=100)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        mock_snap.return_value = {"generated_at": fresh_ts}
-        findings = classify_stale_snapshot_consumption([], [])
-        stale = [f for f in findings if f["category"] == "stale_snapshot_consumption"]
-        self.assertEqual(stale, [])
+        Exactly, not approximately: both the input and the clock it is aged
+        against come from SNAPSHOT_CLOCK, so the interval does not depend on
+        how long the suite took to get here.
+        """
+        ts = (SNAPSHOT_CLOCK - timedelta(seconds=age_seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        with patch("run_analyst.load_loop_snapshot", return_value={"generated_at": ts}):
+            with frozen_clock(SNAPSHOT_CLOCK):
+                findings = classify_stale_snapshot_consumption([], [])
+        return [f for f in findings if f["category"] == "stale_snapshot_consumption"]
+
+    def test_detects_old_snapshot_file(self):
+        self.assertTrue(self._snapshot_findings(700))
+
+    def test_no_flag_fresh_snapshot(self):
+        self.assertEqual(self._snapshot_findings(100), [])
+
+    def test_flags_exactly_at_the_max_age_boundary(self):
+        """The threshold itself, which a live clock could never pin down.
+
+        MAX_AGE is 600s and the comparison is strictly greater-than, so 601s
+        flags and 599s does not. Asserting a one-second margin is only
+        meaningful because the clock is frozen — against a live one this pair
+        would have been decided by scheduler jitter.
+        """
+        self.assertTrue(self._snapshot_findings(601))
+        self.assertEqual(self._snapshot_findings(599), [])
 
 
 class TestBudgetCapProximity(unittest.TestCase):

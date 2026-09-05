@@ -494,7 +494,7 @@ class TestBaselineFailOpenTrap:
             "editor": None,
             "edit_count": 0,
         }
-        verdict = gate._resolve_baseline_verdict(meta, "fulcrumaxe/fulcrumaxe#1")
+        verdict = gate._resolve_baseline_verdict(meta, "autonomous-agent-7/fulcrumaxe#1")
         assert verdict == "unknown"
 
         blocked, reason = gate.should_block_spawn(
@@ -514,7 +514,7 @@ class TestBaselineFailOpenTrap:
             "editor": None,
             "edit_count": 0,
         }
-        assert gate._resolve_baseline_verdict(meta, "fulcrumaxe/fulcrumaxe#1") == "unknown"
+        assert gate._resolve_baseline_verdict(meta, "autonomous-agent-7/fulcrumaxe#1") == "unknown"
 
 
 class TestEmptyEditLedgerOnFetchFailure:
@@ -524,7 +524,7 @@ class TestEmptyEditLedgerOnFetchFailure:
 
     def test_fetch_failure_edit_count_zero_is_unknown_not_match(self, tmp_path):
         path = tmp_path / "store.json"
-        key = "fulcrumaxe/fulcrumaxe#2"
+        key = "autonomous-agent-7/fulcrumaxe#2"
         ib.record_baseline(
             key,
             content_sha256="h",
@@ -605,11 +605,11 @@ class TestDismissalComment:
         removed_calls = []
         posted_calls = []
 
-        def _fake_remove(disc_id, label, repo_slug=gate.DEFAULT_REPO_SLUG):
+        def _fake_remove(disc_id, label, repo_slug=gate.DEFAULT_DISCUSSION_REPO_SLUG):
             removed_calls.append((disc_id, label))
             return True
 
-        def _fake_post(disc_id, body, repo_slug=gate.DEFAULT_REPO_SLUG):
+        def _fake_post(disc_id, body, repo_slug=gate.DEFAULT_DISCUSSION_REPO_SLUG):
             posted_calls.append(body)
             return True
 
@@ -617,7 +617,7 @@ class TestDismissalComment:
         monkeypatch.setattr(gate, "post_discussion_comment", _fake_post)
 
         path = tmp_path / "store.json"
-        key = "fulcrumaxe/fulcrumaxe#999"
+        key = "autonomous-agent-7/fulcrumaxe#999"
         ib.record_baseline(
             key,
             content_sha256=ib.content_hash("old title", "old body"),
@@ -639,7 +639,7 @@ class TestDismissalComment:
             "edit_count": 1,
         }
 
-        transition = gate._reconcile_baseline(meta, key, "D_999", gate.DEFAULT_REPO_SLUG, path=path)
+        transition = gate._reconcile_baseline(meta, key, "D_999", gate.DEFAULT_DISCUSSION_REPO_SLUG, path=path)
         assert transition["verdict"] == "drifted"
         assert transition["action"] == "dismissed"
         assert removed_calls == [("D_999", gate.INTAKE_APPROVED_LABEL)]
@@ -664,7 +664,7 @@ class TestDismissalComment:
         # Second check, same drifted content, label already removed by the bot —
         # must not repost.
         meta_after = {**meta, "labels": ["provenance:external"]}
-        transition2 = gate._reconcile_baseline(meta_after, key, "D_999", gate.DEFAULT_REPO_SLUG, path=path)
+        transition2 = gate._reconcile_baseline(meta_after, key, "D_999", gate.DEFAULT_DISCUSSION_REPO_SLUG, path=path)
         assert transition2["action"] in ("none", "dropped")
         assert len(posted_calls) == 1, "an already-dismissed, unchanged Discussion must not repost"
 
@@ -811,7 +811,7 @@ class TestMergeGateRecheckExitCode4:
 
     def _seed_drifted_store(self, tmp_path, monkeypatch, number=1):
         path = tmp_path / "store.json"
-        key = gate._discussion_key(number, gate.DEFAULT_REPO_SLUG)
+        key = gate._discussion_key(number, gate.DEFAULT_DISCUSSION_REPO_SLUG)
         ib.record_baseline(
             key,
             content_sha256=ib.content_hash("old", "old body"),
@@ -860,7 +860,7 @@ class TestAuditTransitions:
         monkeypatch.setattr(audit_trail, "get_audit_trail", lambda *_a, **_kw: _FakeAudit())
 
         path = tmp_path / "store.json"
-        key = "fulcrumaxe/fulcrumaxe#888"
+        key = "autonomous-agent-7/fulcrumaxe#888"
         meta_new = {
             "fetch_ok": True,
             "id": "D_888",
@@ -872,7 +872,7 @@ class TestAuditTransitions:
             "editor": "someone",
             "edit_count": 0,
         }
-        gate._reconcile_baseline(meta_new, key, "D_888", gate.DEFAULT_REPO_SLUG, path=path)
+        gate._reconcile_baseline(meta_new, key, "D_888", gate.DEFAULT_DISCUSSION_REPO_SLUG, path=path)
         assert any(
             e["source"] == "gate" and e["new"] == "recorded" and e["key"] == key and e["actor"] == "someone"
             for e in emitted
@@ -884,7 +884,7 @@ class TestAuditTransitions:
             "last_edited_at": "2026-01-01T00:00:00Z",
             "edit_count": 1,
         }
-        gate._reconcile_baseline(meta_drift, key, "D_888", gate.DEFAULT_REPO_SLUG, path=path)
+        gate._reconcile_baseline(meta_drift, key, "D_888", gate.DEFAULT_DISCUSSION_REPO_SLUG, path=path)
         assert any(e["new"] == "dismissed" and e["key"] == key for e in emitted)
 
 
@@ -941,7 +941,7 @@ class TestLabelRemovalFailureDoesNotAutoApprove:
         def _always_fails_removal(*_a, **_kw):
             return False
 
-        def _fake_post(_id, body, repo_slug=gate.DEFAULT_REPO_SLUG):
+        def _fake_post(_id, body, repo_slug=gate.DEFAULT_DISCUSSION_REPO_SLUG):
             posted_calls.append(body)
             return True
 
@@ -949,13 +949,13 @@ class TestLabelRemovalFailureDoesNotAutoApprove:
         monkeypatch.setattr(gate, "post_discussion_comment", _fake_post)
 
         path = tmp_path / "store.json"
-        key = "fulcrumaxe/fulcrumaxe#1"
+        key = "autonomous-agent-7/fulcrumaxe#1"
         self._seed(path, key)
         meta = self._meta()
 
         # Pass 1 (loop Step-3 scan): edit observed, label removal attempted
         # but fails (network blip / rate limit on the `gh` mutation).
-        t1 = gate._reconcile_baseline(meta, key, "D_1", gate.DEFAULT_REPO_SLUG, path=path)
+        t1 = gate._reconcile_baseline(meta, key, "D_1", gate.DEFAULT_DISCUSSION_REPO_SLUG, path=path)
         assert t1["verdict"] == "drifted"
         assert t1["label_removed"] is False
         assert len(posted_calls) == 1
@@ -977,7 +977,7 @@ class TestLabelRemovalFailureDoesNotAutoApprove:
         )
 
         # Pass 2: next loop iteration, same still-drifted state.
-        t2 = gate._reconcile_baseline(meta, key, "D_1", gate.DEFAULT_REPO_SLUG, path=path)
+        t2 = gate._reconcile_baseline(meta, key, "D_1", gate.DEFAULT_DISCUSSION_REPO_SLUG, path=path)
         assert t2["verdict"] == "drifted"
         assert t2["action"] == "retry_removal", "must retry removal, not re-dismiss"
         assert t2["label_removed"] is False
@@ -990,20 +990,20 @@ class TestLabelRemovalFailureDoesNotAutoApprove:
         monkeypatch.setattr(gate, "post_discussion_comment", lambda *_a, **_kw: True)
 
         path = tmp_path / "store.json"
-        key = "fulcrumaxe/fulcrumaxe#2"
+        key = "autonomous-agent-7/fulcrumaxe#2"
         self._seed(path, key)
         meta = self._meta()
 
-        gate._reconcile_baseline(meta, key, "D_1", gate.DEFAULT_REPO_SLUG, path=path)  # fails
-        gate._reconcile_baseline(meta, key, "D_1", gate.DEFAULT_REPO_SLUG, path=path)  # fails
-        t3 = gate._reconcile_baseline(meta, key, "D_1", gate.DEFAULT_REPO_SLUG, path=path)  # succeeds
+        gate._reconcile_baseline(meta, key, "D_1", gate.DEFAULT_DISCUSSION_REPO_SLUG, path=path)  # fails
+        gate._reconcile_baseline(meta, key, "D_1", gate.DEFAULT_DISCUSSION_REPO_SLUG, path=path)  # fails
+        t3 = gate._reconcile_baseline(meta, key, "D_1", gate.DEFAULT_DISCUSSION_REPO_SLUG, path=path)  # succeeds
         assert t3["label_removed"] is True
         # The row is not dropped in the SAME pass removal succeeds — only
         # once a later pass observes the label is genuinely absent.
         assert ib.get_entry(key, path=path) is not None
 
         meta_after = {**meta, "labels": ["provenance:external"]}
-        t4 = gate._reconcile_baseline(meta_after, key, "D_1", gate.DEFAULT_REPO_SLUG, path=path)
+        t4 = gate._reconcile_baseline(meta_after, key, "D_1", gate.DEFAULT_DISCUSSION_REPO_SLUG, path=path)
         assert t4["action"] == "dropped"
         assert ib.get_entry(key, path=path) is None
 
@@ -1015,21 +1015,21 @@ class TestLabelRemovalFailureDoesNotAutoApprove:
         monkeypatch.setattr(gate, "post_discussion_comment", lambda *_a, **_kw: True)
 
         path = tmp_path / "store.json"
-        key = "fulcrumaxe/fulcrumaxe#3"
+        key = "autonomous-agent-7/fulcrumaxe#3"
         self._seed(path, key)
 
         meta_edit1 = self._meta(title="v1 title", body="v1 body", edit_count=1)
-        t1 = gate._reconcile_baseline(meta_edit1, key, "D_1", gate.DEFAULT_REPO_SLUG, path=path)
+        t1 = gate._reconcile_baseline(meta_edit1, key, "D_1", gate.DEFAULT_DISCUSSION_REPO_SLUG, path=path)
         assert t1["invalidation_count"] == 1
 
         # Same content observed again (removal still failing) — must not bump.
-        t1_retry = gate._reconcile_baseline(meta_edit1, key, "D_1", gate.DEFAULT_REPO_SLUG, path=path)
+        t1_retry = gate._reconcile_baseline(meta_edit1, key, "D_1", gate.DEFAULT_DISCUSSION_REPO_SLUG, path=path)
         assert t1_retry["invalidation_count"] == 1
         assert t1_retry["action"] == "retry_removal"
 
         # A second, distinct edit lands before removal ever succeeds.
         meta_edit2 = self._meta(title="v2 title", body="v2 body", edit_count=2)
-        t2 = gate._reconcile_baseline(meta_edit2, key, "D_1", gate.DEFAULT_REPO_SLUG, path=path)
+        t2 = gate._reconcile_baseline(meta_edit2, key, "D_1", gate.DEFAULT_DISCUSSION_REPO_SLUG, path=path)
         assert t2["invalidation_count"] == 2, "a genuinely new edit must still bump the counter"
         assert t2["action"] == "dismissed"
 
@@ -1056,7 +1056,7 @@ class TestStoreDeletionFailsClosed:
         path = tmp_path / "store.json"
         assert ib._marker_path(path).exists() is False
         ib.record_baseline(
-            "fulcrumaxe/fulcrumaxe#4",
+            "autonomous-agent-7/fulcrumaxe#4",
             content_sha256="h",
             last_edited_at=None,
             edit_count=0,
@@ -1067,7 +1067,7 @@ class TestStoreDeletionFailsClosed:
 
     def test_deleted_after_init_is_unknown_not_absent(self, tmp_path):
         path = tmp_path / "store.json"
-        key = "fulcrumaxe/fulcrumaxe#5"
+        key = "autonomous-agent-7/fulcrumaxe#5"
         ib.record_baseline(
             key, content_sha256="h", last_edited_at=None, edit_count=0, editor="a", path=path
         )
@@ -1081,7 +1081,7 @@ class TestStoreDeletionFailsClosed:
 
     def test_deleted_store_blocks_via_gate_never_auto_approves(self, tmp_path):
         path = tmp_path / "store.json"
-        key = "fulcrumaxe/fulcrumaxe#6"
+        key = "autonomous-agent-7/fulcrumaxe#6"
         ib.record_baseline(
             key,
             content_sha256=ib.content_hash("old", "old body"),
@@ -1133,7 +1133,7 @@ class TestStoreDeletionFailsClosed:
         exists.
         """
         path = tmp_path / "store.json"
-        key = "fulcrumaxe/fulcrumaxe#7"
+        key = "autonomous-agent-7/fulcrumaxe#7"
         ib.record_baseline(
             key,
             content_sha256=ib.content_hash("old", "old body"),
@@ -1197,7 +1197,7 @@ class TestMergeGateReCheckSurvivesSameIterationDrift:
 
         path = tmp_path / "store.json"
         number = 7
-        key = gate._discussion_key(number, gate.DEFAULT_REPO_SLUG)
+        key = gate._discussion_key(number, gate.DEFAULT_DISCUSSION_REPO_SLUG)
         ib.record_baseline(
             key,
             content_sha256=ib.content_hash("old", "old body"),
@@ -1223,7 +1223,7 @@ class TestMergeGateReCheckSurvivesSameIterationDrift:
         # Step 3: the loop's Discussion scan reconciles the drift and
         # dismisses the approval — the SAME reconcile pass that used to also
         # drop the row synchronously.
-        transition = gate._reconcile_baseline(drifted_meta, key, "D_7", gate.DEFAULT_REPO_SLUG, path=path)
+        transition = gate._reconcile_baseline(drifted_meta, key, "D_7", gate.DEFAULT_DISCUSSION_REPO_SLUG, path=path)
         assert transition["verdict"] == "drifted"
         assert transition["action"] == "dismissed"
 
@@ -1424,3 +1424,72 @@ class TestResolveAllowlistIds:
             resolver=lambda _l: {"state": tir.UNKNOWN, "id": None, "created_at": None},
         )
         assert ids == {"U_bot"}
+
+
+# ---------------------------------------------------------------------------
+# D#2348 PR-f2 — the default slug is the Discussion plane, not the code plane
+# ---------------------------------------------------------------------------
+
+
+def _resolve_slug_with_project_json(tmp_path, project_json: dict) -> str:
+    """Import the gate in a fresh interpreter with *project_json* as the
+    state-dir project.json, and return the slug it resolved.
+
+    A subprocess rather than a monkeypatch because the constant is computed at
+    import time from backend._repo, which itself resolves at import time — the
+    only honest way to observe what a real run resolves is a real import with
+    the real config in place.
+    """
+    import os
+    import subprocess
+
+    (tmp_path / "project.json").write_text(json.dumps(project_json))
+    env = {**os.environ, "AUTONOMOUS_TEAM_STATE_DIR": str(tmp_path)}
+    env.pop("AUTONOMOUS_TEAM_REPO", None)  # env override outranks the keys under test
+    code = (
+        "import sys; sys.path.insert(0, %r); "
+        "import external_intake_gate as g; "
+        "print(g.DEFAULT_DISCUSSION_REPO_SLUG)" % str(_REPO_ROOT / "scripts" / "lib")
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(_REPO_ROOT),
+        timeout=60,
+    )
+    assert out.returncode == 0, out.stderr
+    return out.stdout.strip()
+
+
+class TestDefaultSlugIsTheDiscussionPlane:
+    def test_split_planes_resolve_the_discussion_repo(self, tmp_path):
+        # The post-cutover shape: the code plane is the public repo, the
+        # Discussion plane is the private one. Every consumer of this constant
+        # reads or writes a Discussion, so it must follow the Discussion plane.
+        slug = _resolve_slug_with_project_json(
+            tmp_path,
+            {
+                "repo": "example-org/public-code",
+                "code_repo": "example-org/public-code",
+                "discussion_repo": "example-org/private-discussions",
+            },
+        )
+        assert slug == "example-org/private-discussions"
+
+    def test_unsplit_tree_is_unchanged(self, tmp_path):
+        # Inert before the cutover: with no plane keys set, both planes are the
+        # one repo and this resolves exactly what it resolved before.
+        slug = _resolve_slug_with_project_json(tmp_path, {"repo": "example-org/one-repo"})
+        assert slug == "example-org/one-repo"
+
+    def test_code_repo_alone_does_not_move_the_discussion_plane(self, tmp_path):
+        # Setting only code_repo is the step that makes this bug reachable.
+        # discussion_repo falls back through project.json's "repo", so the
+        # Discussion plane must stay put while the code plane moves.
+        slug = _resolve_slug_with_project_json(
+            tmp_path,
+            {"repo": "example-org/private-discussions", "code_repo": "example-org/public-code"},
+        )
+        assert slug == "example-org/private-discussions"

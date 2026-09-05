@@ -97,7 +97,7 @@ function loadRepo(): { owner: string; name: string } {
     } catch { /* ignore */ }
   }
 
-  return { owner: "fulcrumaxe", name: "fulcrumaxe" };
+  return { owner: "autonomous-agent-7", name: "autonomous-forever" };
 }
 
 const _REPO = loadRepo();

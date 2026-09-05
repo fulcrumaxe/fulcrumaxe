@@ -22,7 +22,9 @@ from pathlib import Path
 # Allow running as a script from repo root: `python3 backend/changelog.py`
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from backend._repo import REPO as _REPO_SLUG
+# Two names because this file spends both planes: merged PRs and their
+# /pull/ URLs live with the code, the /discussions/ URL does not.
+from backend._repo import CODE_REPO as _CODE_REPO_SLUG, REPO as _REPO_SLUG
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _CHANGELOG_OUTPUT = _REPO_ROOT / "wiki" / "Changelog.md"
@@ -40,7 +42,7 @@ def load_merged_prs(limit: int = 100) -> list[dict]:
         result = subprocess.run(
             [
                 "gh", "pr", "list",
-                "--repo", _REPO_SLUG,
+                "--repo", _CODE_REPO_SLUG,
                 "--state", "merged",
                 "--json", "number,title,body,mergedAt,author",
                 "--limit", str(limit),
@@ -138,7 +140,7 @@ def generate_changelog(prs: list[dict]) -> str:
             title = pr.get("title") or "(no title)"
             author = (pr.get("author") or {}).get("login", "unknown")
             pr_url = (
-                f"https://github.com/{_REPO_SLUG}/pull/{num}"
+                f"https://github.com/{_CODE_REPO_SLUG}/pull/{num}"
             )
             lines.append(f"- [#{num}]({pr_url}) {title} — @{author}")
         lines.append("")
@@ -185,7 +187,7 @@ def generate_pr_index(prs: list[dict]) -> str:
         title = (pr.get("title", "(no title)") or "").replace("|", "\\|")
         body = pr.get("body", "") or ""
         merged_at = _parse_merge_date(pr.get("mergedAt", ""))
-        pr_url = f"https://github.com/{_REPO_SLUG}/pull/{num}"
+        pr_url = f"https://github.com/{_CODE_REPO_SLUG}/pull/{num}"
 
         disc_num = _extract_discussion_number(body)
         if disc_num:

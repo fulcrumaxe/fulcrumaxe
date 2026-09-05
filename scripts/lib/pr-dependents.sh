@@ -198,7 +198,15 @@ for entry in data:
 }
 
 pr_dependents_report() {
-  local pr="$1" repo="${2:-$(_resolve_repo)}"
+  # Code plane: the default feeds a `gh pr edit` command printed for a human to
+  # run. Both live callers pass "$_CODE_REPO", so the default is latent today —
+  # but a wrong instruction to an operator is worse than a wrong call, because
+  # the operator runs it later, by hand, after the automation has been fixed.
+  local pr="$1" repo="${2:-$(_resolve_code_repo 2>/dev/null || true)}"
+  if [ -z "$repo" ]; then
+    echo "[pr-dependents] ERROR: could not resolve the code repo — refusing to print a retarget command naming an unresolved repo." >&2
+    return 1
+  fi
   [ -z "${PR_DEP_LIST:-}" ] && return 0
 
   echo "[pr-dependents] WARNING: PR #$pr has open PR(s) based on its branch '${PR_DEP_BRANCH:-<unknown>}' — the branch is being KEPT (not deleted) so those PRs are not closed:"

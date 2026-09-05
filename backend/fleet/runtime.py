@@ -9,9 +9,9 @@ Usage::
     projects = discover_running_projects()
     # [
     #   {
-    #     "name": "fulcrumaxe",
-    #     "repo": "fulcrumaxe/fulcrumaxe",
-    #     "state_dir": "<home>/.fulcrumaxe-state",
+    #     "name": "autonomous-forever",
+    #     "repo": "autonomous-agent-7/autonomous-forever",
+    #     "state_dir": "<home>/.autonomous-forever-state",
     #     "ports": {"vite": 5173, "api": 18099, "rpc": 8765, "sse": 8420},
     #     "pids": {"api": 1234, "server": 1235, "sse": 1236, "vite": 1237},
     #     "started_at": "2026-05-18T16:00:00Z",

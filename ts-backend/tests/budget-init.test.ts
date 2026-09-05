@@ -19,7 +19,7 @@
  *
  * Safety invariants (enforced in all tests):
  *  - Every test that writes blackboard state uses a TEMP DIR (via makeTempDb).
- *  - The production blackboard dir (~/.fulcrumaxe-state/blackboard/) is NEVER modified.
+ *  - The production blackboard dir (~/.autonomous-forever-state/blackboard/) is NEVER modified.
  *  - All temp dirs are cleaned up in afterEach/afterAll.
  */
 
@@ -47,7 +47,7 @@ import { join } from "node:path";
 // ---------------------------------------------------------------------------
 const STATE_DIR =
   process.env.AUTONOMOUS_TEAM_STATE_DIR ??
-  join(process.env.HOME ?? "/root", ".fulcrumaxe-state");
+  join(process.env.HOME ?? "/root", ".autonomous-forever-state");
 // SOURCE_DB is now the blackboard directory (not state.db).
 // The name is kept for backward compatibility with the import.
 const SOURCE_DB =
@@ -83,7 +83,7 @@ describe("POST /budget/init — TS handler unit tests", () => {
     savedBbRoot = process.env.AUTONOMOUS_TEAM_BLACKBOARD_ROOT;
     delete process.env.AF_API_AUTH_KEY;
     // Route the handler to a fresh temp copy of the blackboard dir.
-    // Production blackboard (~/.fulcrumaxe-state/blackboard/) is never touched.
+    // Production blackboard (~/.autonomous-forever-state/blackboard/) is never touched.
     tempBbDir = makeTempDb(SOURCE_DB);
     process.env.AUTONOMOUS_TEAM_BLACKBOARD_ROOT = tempBbDir;
   });

@@ -264,7 +264,7 @@ class TestHandPricedRow:
         except ImportError:
             pytest.skip("duckdb not installed")
 
-        db_path = Path.home() / ".fulcrumaxe-state" / "stats.duckdb"
+        db_path = Path.home() / ".autonomous-forever-state" / "stats.duckdb"
         if not db_path.exists():
             pytest.skip(f"stats.duckdb not found at {db_path} on this host/checkout")
 
@@ -378,7 +378,7 @@ class TestModelPricingCompleteness:
     @staticmethod
     def _stats_db_path() -> Path | None:
         env = os.environ.get("STATS_DB_PATH")
-        path = Path(env) if env else Path.home() / ".fulcrumaxe-state" / "stats.duckdb"
+        path = Path(env) if env else Path.home() / ".autonomous-forever-state" / "stats.duckdb"
         return path if path.exists() else None
 
     def test_every_populated_token_class_has_a_rate_key(self):
@@ -386,7 +386,7 @@ class TestModelPricingCompleteness:
         if db_path is None:
             pytest.skip(
                 "stats.duckdb not found (checked $STATS_DB_PATH and "
-                "~/.fulcrumaxe-state/stats.duckdb) — no recorded "
+                "~/.autonomous-forever-state/stats.duckdb) — no recorded "
                 "agent_run data available on this host/checkout"
             )
         try:

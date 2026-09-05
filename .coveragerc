@@ -1,0 +1,28 @@
+[run]
+source = backend
+branch = True
+omit =
+    */test_*
+    */__pycache__/*
+    */tests/*
+    */site-packages/*
+    setup.py
+
+[report]
+fail_under = 90
+show_missing = True
+skip_covered = False
+exclude_lines =
+    pragma: no cover
+    def __repr__
+    raise NotImplementedError
+    if __name__ == .__main__.:
+    pass
+    \.\.\.$
+
+[html]
+directory = htmlcov
+
+[paths]
+source =
+    backend/

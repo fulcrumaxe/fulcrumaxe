@@ -5,7 +5,7 @@ Provides four functions used by spawn-agent.sh and post-agent-hook.sh to adopt
 coordination layer while legacy blackboard continues to receive dual-writes
 during the 14-day deprecation window.
 
-Team name defaults to the repo directory basename ("fulcrumaxe").
+Team name defaults to the repo directory basename ("autonomous-forever").
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from pathlib import Path
 
 TEAMS_DIR = Path(os.environ.get("CLAUDE_TEAMS_DIR", Path.home() / ".claude" / "teams"))
 TASKS_DIR = Path(os.environ.get("CLAUDE_TASKS_DIR", Path.home() / ".claude" / "tasks"))
-DEFAULT_TEAM = "fulcrumaxe"
+DEFAULT_TEAM = "autonomous-forever"
 
 
 # ---------------------------------------------------------------------------

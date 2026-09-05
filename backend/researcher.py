@@ -4,7 +4,7 @@ backend/researcher.py — TTL cache for researcher agent WebFetch results.
 Keyed by URL (MD5 hash for filename safety), stored in the runtime state dir.
 TTL: 15 minutes. CLI: python3 backend/researcher.py get <url> / set <url> <body>
 
-Cache file: ~/.fulcrumaxe-state/researcher-cache.json
+Cache file: ~/.autonomous-forever-state/researcher-cache.json
 (or $AUTONOMOUS_TEAM_STATE_DIR/researcher-cache.json)
 """
 

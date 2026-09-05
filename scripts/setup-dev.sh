@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-command dev environment setup for fulcrumaxe.
+# One-command dev environment setup for autonomous-forever.
 # Checks prerequisites, creates virtualenv, installs deps, initializes DB,
 # copies .env.example → .env, and runs the test suite.
 
@@ -17,7 +17,7 @@ ok()   { echo -e "${GREEN}[OK]${NC} $1"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 fail() { echo -e "${RED}[FAIL]${NC} $1"; exit 1; }
 
-echo "=== fulcrumaxe dev setup ==="
+echo "=== autonomous-forever dev setup ==="
 echo ""
 
 # ── Prerequisites ──────────────────────────────────────────────────────────

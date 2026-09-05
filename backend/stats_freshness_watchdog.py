@@ -72,10 +72,12 @@ def _db_path() -> Path:
 def _query_freshness() -> list[dict[str, Any]]:
     """Run the DuckDB query and return raw rows.
 
-    Returns a list of dicts: {metric_name, last_ts, age_seconds}.
+    Returns a list of dicts: {metric_name, last_ts, age_seconds, monitored}.
     Raises if the DB is missing or query fails — callers handle exceptions.
     """
     import duckdb
+
+    from backend.stats.freshness import is_monitored, to_utc
 
     db_path = _db_path()
     if not db_path.exists():
@@ -95,17 +97,17 @@ def _query_freshness() -> list[dict[str, Any]]:
     for metric_name, last_ts in rows:
         if last_ts is None:
             continue
-        # DuckDB returns TIMESTAMP as a datetime-like object
-        if hasattr(last_ts, "astimezone"):
-            last_ts_aware = last_ts.astimezone(timezone.utc)
-        else:
-            # Naive — assume UTC
-            last_ts_aware = last_ts.replace(tzinfo=timezone.utc)
+        # metric_event.ts is a naive TIMESTAMP already holding UTC wall-clock.
+        # Labelling it UTC is correct; astimezone() on a naive value would
+        # reinterpret it as local and push it into the future — see
+        # backend/stats/freshness.py.
+        last_ts_aware = to_utc(last_ts)
         age = (now - last_ts_aware).total_seconds()
         result.append({
             "metric_name": metric_name,
             "last_ts": last_ts_aware.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "age_seconds": int(age),
+            "monitored": is_monitored(metric_name),
         })
     return result
 
@@ -133,7 +135,7 @@ def check() -> list[dict[str, Any]]:
     Returns every metric row (fresh or stale). Never raises — exceptions are
     caught, logged to stderr, and an empty list is returned.
 
-    Each row: {metric_name, last_ts, age_seconds}
+    Each row: {metric_name, last_ts, age_seconds, monitored}
     """
     result: list[dict[str, Any]] = []
     exc_holder: list[Exception] = []
@@ -166,6 +168,18 @@ def check() -> list[dict[str, Any]]:
     return result
 
 
+def monitored_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Rows whose metric still has a live writer.
+
+    Staleness is only assertable about these. A one-shot marker with no
+    registered writer keeps its real age in the payload but never drives a
+    warning, a Discussion, or the dashboard banner — see
+    ``backend/stats/freshness.is_monitored``. Rows from an older payload with
+    no ``monitored`` key are treated as monitored, which is the safe default.
+    """
+    return [r for r in rows if r.get("monitored", True)]
+
+
 def warn_stale(rows: list[dict[str, Any]], dry_run: bool = False) -> None:
     """Post one team-log warning per (iteration_minute, metric_name) pair.
 
@@ -174,7 +188,7 @@ def warn_stale(rows: list[dict[str, Any]], dry_run: bool = False) -> None:
     now = datetime.now(tz=timezone.utc)
     iteration_minute = now.strftime("%Y-%m-%dT%H:%M")
 
-    stale = [r for r in rows if r["age_seconds"] >= WARN_AGE_SECONDS]
+    stale = [r for r in monitored_rows(rows) if r["age_seconds"] >= WARN_AGE_SECONDS]
     for row in stale:
         key = (iteration_minute, row["metric_name"])
         if key in _warned_this_process:
@@ -199,7 +213,7 @@ def file_bugs(rows: list[dict[str, Any]], dry_run: bool = False) -> list[dict[st
     Returns a list of {metric_name, url, filed} dicts.
     """
     results = []
-    for row in rows:
+    for row in monitored_rows(rows):
         threshold = (
             INTERMITTENT_BUG_AGE_SECONDS
             if row["metric_name"] in INTERMITTENT_METRICS
@@ -390,7 +404,7 @@ def main() -> int:
         return 1
 
     rows = check()
-    stale_warn = [r for r in rows if r["age_seconds"] >= WARN_AGE_SECONDS]
+    stale_warn = [r for r in monitored_rows(rows) if r["age_seconds"] >= WARN_AGE_SECONDS]
 
     if not args.dry_run:
         try:
@@ -424,7 +438,9 @@ def main() -> int:
         print(f"Stats freshness check — {len(rows)} metrics, {len(stale_warn)} stale:")
         for r in rows:
             flag = ""
-            if r["age_seconds"] >= BUG_AGE_SECONDS:
+            if not r.get("monitored", True):
+                flag = " [one-shot / not monitored]"
+            elif r["age_seconds"] >= BUG_AGE_SECONDS:
                 flag = " [BUG-THRESHOLD]"
             elif r["age_seconds"] >= WARN_AGE_SECONDS:
                 flag = " [STALE]"

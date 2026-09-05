@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { jsonRpc } from '../../api/client'
 import { sharedStyles } from './styles'
+import TileFetchError, { isTransportError, TileBackendError } from './TileFetchError'
 
 interface RoleBreakdown {
   role: string
@@ -35,14 +36,24 @@ interface Props {
 
 export default function CostPerOutcomeTile({ refreshSignal }: Props) {
   const [rows, setRows] = useState<CostRow[]>([])
+  const [fetchError, setFetchError] = useState<unknown>(null)
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const loadData = useCallback(async () => {
-    const resp = await jsonRpc<CostPerOutcomeResponse>('stats.cost_per_outcome', {}).catch(
-      () => ({ rows: [] }),
-    )
-    // Server returns sorted desc; slice to top 10 for display
-    setRows((resp.rows ?? []).slice(0, 10))
+    // D#2327: this used to `.catch(() => ({ rows: [] }))`, so a backend
+    // refusal rendered as "No cost data yet" — a claim about data volume
+    // standing in for a server-side failure. That matters more now that
+    // stats.cost_per_outcome declines a project it cannot resolve to a
+    // repo rather than serving the serving checkout's PRs.
+    try {
+      const resp = await jsonRpc<CostPerOutcomeResponse>('stats.cost_per_outcome', {})
+      // Server returns sorted desc; slice to top 10 for display
+      setRows((resp.rows ?? []).slice(0, 10))
+      setFetchError(null)
+    } catch (err) {
+      setRows([])
+      setFetchError(err)
+    }
   }, [])
 
   useEffect(() => {
@@ -56,7 +67,9 @@ export default function CostPerOutcomeTile({ refreshSignal }: Props) {
   return (
     <section style={sharedStyles.section} aria-label="Cost per Outcome (top 10 PRs)">
       <h2 style={sharedStyles.sectionHeading}>Cost per Outcome (top 10 PRs)</h2>
-      {rows.length === 0 ? (
+      {fetchError ? (
+        isTransportError(fetchError) ? <TileFetchError error={fetchError} /> : <TileBackendError error={fetchError} />
+      ) : rows.length === 0 ? (
         <div style={sharedStyles.state} role="status" data-testid="cost-per-outcome-empty">
           No cost data yet. Rows appear after PRs are merged with agent cost records.
         </div>

@@ -1,6 +1,6 @@
 # fulcrumaxe
 
-![CI](https://github.com/fulcrumaxe/fulcrumaxe/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/autonomous-agent-7/fulcrumaxe/actions/workflows/ci.yml/badge.svg)
 
 fulcrumaxe is an autonomous software team that runs in your GitHub repo, turns Discussions into merged PRs, and spends its own idle cycles improving itself. This README is the operating manual — it covers everything from installing prerequisites through what to do when something breaks.
 
@@ -14,9 +14,7 @@ What "self-improving" looks like in practice: when the Discussion queue runs dry
 
 fulcrumaxe is a self-hosted AI development environment built for one developer running their own infrastructure, not a multi-tenant SaaS. You get an operations console (the dashboard), a team of specialized agent roles that coordinate through GitHub Discussions and PRs, and a loop that keeps proposing and shipping improvements without you having to babysit every step. If you want to hand off routine implementation work — bug fixes, small features, docs — while staying the one who decides direction, this is built for you.
 
-This repository is the curated public release of fulcrumaxe. It is produced by `export.sh` in the private engine repo, which copies out only the paths a machine-readable manifest marks as ready to ship — so the public tree is a vetted subset by construction rather than by anyone remembering what to leave out. It is published as a squashed snapshot, so the git history here starts at the export, not at the beginning of the project.
-
-The development record is public, just not as commits: 1,135 merged pull requests and 932 closed discussions, browsable as a live queue at <https://fulcrumaxe.dev/discussions.html>, and the codebase as a graph of 4,811 nodes at <https://fulcrumaxe.dev/understand.html>.
+This repo (`fulcrumaxe`) is the real thing — full internal history, not a mirror or export target. It also holds internal-only material (training tooling, experiments) that doesn't ship publicly. A separate curated export (`open-source/export.sh` + `open-source/MANIFEST.md`) copies only the paths marked ready in the manifest out to the public release.
 
 ## Prerequisites
 
@@ -30,7 +28,7 @@ The development record is public, just not as commits: 1,135 merged pull request
 ### Marketplace install (one command, no clone)
 
 ```
-/plugin marketplace add fulcrumaxe/fulcrumaxe
+/plugin marketplace add autonomous-agent-7/fulcrumaxe
 /plugin install fulcrumaxe@fulcrumaxe
 /coldstart --path /path/to/your/repo --name your-project
 ```
@@ -42,7 +40,7 @@ What this route does **not** change: you still need the [prerequisites](#prerequ
 ### From a clone
 
 ```bash
-git clone https://github.com/fulcrumaxe/fulcrumaxe.git
+git clone https://github.com/autonomous-agent-7/fulcrumaxe.git
 cd fulcrumaxe
 bash scripts/coldstart.sh --path /path/to/your/repo --name your-project --dry-run
 ```
@@ -98,7 +96,7 @@ See [CLAUDE.md](CLAUDE.md) ("Merge Gate Protocol") for the enforcement details, 
 If you installed the standalone kit with `loop-bootstrap/bootstrap.sh` (see [How the loop works](#how-the-loop-works)), re-running it later pulls in fixes and improvements without wiping your customizations — mostly. A fresh clone of the engine gives you the current `loop-bootstrap/bootstrap.sh` — the same way you did the first time (if you installed via the marketplace instead, `/plugin marketplace update fulcrumaxe` refreshes the catalog and updates the installed plugin, including its bundled `loop-bootstrap/bootstrap.sh`, to the latest version on disk):
 
 ```bash
-git clone https://github.com/fulcrumaxe/fulcrumaxe.git /tmp/fulcrumaxe-engine
+git clone https://github.com/autonomous-agent-7/fulcrumaxe.git /tmp/fulcrumaxe-engine
 bash "/tmp/fulcrumaxe-engine/loop-bootstrap/bootstrap.sh" --repo <owner>/<name> /path/to/your-project
 ```
 
@@ -189,7 +187,7 @@ Once loaded, the role shows up in the dashboard's REST API — `GET /plugins` an
 
 ## Configuration and state
 
-Runtime state — the blackboard, session data, metrics, the audit trail — lives **outside the repo**, so a `git worktree` merge can never wipe it. `backend/state_paths.py` is the single source of truth for where; the short version is `$AUTONOMOUS_TEAM_STATE_DIR` if you've set it, otherwise a per-project default derived from the project name (`coldstart.sh` sets this up for you), falling back to `~/.fulcrumaxe-state/` if nothing else applies.
+Runtime state — the blackboard, session data, metrics, the audit trail — lives **outside the repo**, so a `git worktree` merge can never wipe it. `backend/state_paths.py` is the single source of truth for where; the short version is `$AUTONOMOUS_TEAM_STATE_DIR` if you've set it, otherwise a per-project default derived from the project name (`coldstart.sh` sets this up for you), falling back to `~/.autonomous-forever-state/` if nothing else applies.
 
 Two files control project behavior, both under `.autonomous-team/` in the target repo:
 

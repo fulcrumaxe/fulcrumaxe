@@ -50,7 +50,7 @@ describe("resolveSnapshotPath", () => {
 
   test("defaults to the state dir, not /tmp", () => {
     const p = resolveSnapshotPath();
-    expect(p).toBe(join(homedir(), ".fulcrumaxe-state", SNAPSHOT_FILENAME));
+    expect(p).toBe(join(homedir(), ".autonomous-forever-state", SNAPSHOT_FILENAME));
     expect(p.startsWith("/tmp/")).toBe(false);
   });
 

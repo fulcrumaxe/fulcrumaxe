@@ -179,8 +179,18 @@ wtc_load_merged_heads() {
     return 1
   fi
 
+  # Code plane: `gh pr list`. An unresolved plane reports "unavailable" rather
+  # than falling through to `gh pr list --repo ""`, which exits 0 against
+  # whatever repo the checkout's remote names — this cache decides which
+  # worktrees are safe to reclaim, so a merged-branch list from the wrong repo
+  # would delete live work.
   local repo out rc=0
-  repo="$(_resolve_repo)"
+  repo="$(_resolve_code_repo 2>/dev/null || true)"
+  if [[ -z "$repo" ]]; then
+    _WTC_MERGED_HEADS_CACHE=""
+    _WTC_MERGED_HEADS_AVAILABLE=0
+    return 1
+  fi
   out=$(gh pr list --repo "$repo" --state merged --limit 300 --json headRefName --jq '.[].headRefName' 2>/dev/null) || rc=$?
   if [[ $rc -ne 0 ]]; then
     _WTC_MERGED_HEADS_CACHE=""
@@ -228,8 +238,15 @@ wtc_load_all_pr_heads() {
     return 1
   fi
 
+  # Code plane: `gh pr list`. Same empty-plane guard as the merged-heads cache
+  # above — see the comment there for why an empty --repo is not a failure.
   local repo out rc=0
-  repo="$(_resolve_repo)"
+  repo="$(_resolve_code_repo 2>/dev/null || true)"
+  if [[ -z "$repo" ]]; then
+    _WTC_ALL_PR_HEADS_CACHE=""
+    _WTC_ALL_PR_HEADS_AVAILABLE=0
+    return 1
+  fi
   out=$(gh pr list --repo "$repo" --state all --limit 300 --json headRefName --jq '.[].headRefName' 2>/dev/null) || rc=$?
   if [[ $rc -ne 0 ]]; then
     _WTC_ALL_PR_HEADS_CACHE=""
@@ -475,8 +492,8 @@ wtc_differs_from_main() {
 # per half of the claim list this reads:
 #   - The `git diff --name-only -z` half (PR files, ACTIVE-worktree diffs) is
 #     unquoted, so a tracked path containing a space — e.g.
-#     archive/clawcode-2026-08-17/.claw/design/Meta Aesthetics/README.md —
-#     breaks `$1` outright: it would resolve to just "archive/clawcode-2026-08-17/.claw/design/Meta".
+#     archive/design-notes-2026-08-17/.notes/design/Meta Aesthetics/README.md —
+#     breaks `$1` outright: it would resolve to just "archive/design-notes-2026-08-17/.notes/design/Meta".
 #   - The `git status --porcelain -z` half (wtc_dirty_tracked_files) is
 #     rename/copy-aware: a rename claim line's path is its NEW half, already
 #     split out as its own line above. `$1` there breaks for a different

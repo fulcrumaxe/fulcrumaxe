@@ -45,7 +45,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # shellcheck source=scripts/lib/repo-resolve.sh
 source "$SCRIPT_DIR/lib/repo-resolve.sh"
-_REPO="$(_resolve_repo)"
+# Every gh call in this script is PR-side — labels, head SHA, base ref, the
+# merge itself, the dependents lookup, the CI check-runs — so they all take the
+# code slug. The one Discussion-side read is the HG-7 resolution below, which
+# needs both: the PR body lives in the code repo and the Discussion it names
+# lives in the Discussion repo. _DISCUSSION_REPO is legitimately empty in a
+# fork with no private twin; resolve_pr_discussion falls back to the code slug
+# in that case, which is what it did before there were two names for this.
+_CODE_REPO="$(_resolve_code_repo)"
+_DISCUSSION_REPO="$(_resolve_discussion_repo)"
 
 # shellcheck source=scripts/lib/two-gate-check.sh
 source "$SCRIPT_DIR/lib/two-gate-check.sh"
@@ -107,7 +115,7 @@ if [[ "$FORCE_NO_TWO_GATE" == "true" ]]; then
   fi
 
   # Write audit row to <state_dir>/audit.jsonl
-  _AUDIT_DIR="${AUTONOMOUS_TEAM_STATE_DIR:-$HOME/.fulcrumaxe-state}"
+  _AUDIT_DIR="${AUTONOMOUS_TEAM_STATE_DIR:-$HOME/.autonomous-forever-state}"
   _AUDIT_FILE="$_AUDIT_DIR/audit.jsonl"
   _AUDIT_USER="${USER:-unknown}"
   _AUDIT_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date +%Y-%m-%dT%H:%M:%SZ)"
@@ -116,7 +124,7 @@ if [[ "$FORCE_NO_TWO_GATE" == "true" ]]; then
   printf '%s\n' "{\"kind\":\"manual_merge_two_gate_bypass\",\"pr\":$PR,\"user\":\"$_AUDIT_USER\",\"timestamp\":\"$_AUDIT_TS\",\"reason\":\"$_AUDIT_REASON\"}" >> "$_AUDIT_FILE"
   echo "[merge-and-hook] Audit row written: kind=manual_merge_two_gate_bypass pr=$PR" >&2
 else
-  if ! check_two_gate_markers "$PR" "$_REPO"; then
+  if ! check_two_gate_markers "$PR" "$_CODE_REPO"; then
     echo "[merge-and-hook] Two-Gate check FAILED for PR #$PR: $TWO_GATE_FAIL_REASON" >&2
     echo "[merge-and-hook] Add Gate 1 and Gate 2 markers to the PR body, or use --force-no-two-gate to bypass." >&2
     exit 1
@@ -140,7 +148,7 @@ fi
 # "check not applicable", because that just moves the bypass one layer down.
 _RESOLVED_DISC="$DISC"
 if [[ -z "$_RESOLVED_DISC" ]]; then
-  _RESOLVED_DISC="$(resolve_pr_discussion "$PR" "$_REPO" || true)"
+  _RESOLVED_DISC="$(resolve_pr_discussion "$PR" "$_CODE_REPO" "$_DISCUSSION_REPO" || true)"
   if [[ -n "$_RESOLVED_DISC" ]]; then
     echo "[merge-and-hook] Auto-detected Discussion #$_RESOLVED_DISC from PR #$PR body for the HG-7 check." >&2
   fi
@@ -180,7 +188,7 @@ if [[ "$_EXTERNAL_FORCES_SEC" == "true" ]]; then
   else
     echo "[merge-and-hook] Could not confirm Discussion #$_RESOLVED_DISC's provenance label (rc=$_SEC_REQUIRED_RC, GitHub API fetch failed/unknown) — failing closed and treating security-review-passed as required (HG-1)." >&2
   fi
-  _PR_LABELS="$(gh pr view "$PR" --repo "$_REPO" --json labels --jq '.labels[].name' 2>/dev/null || echo "")"
+  _PR_LABELS="$(gh pr view "$PR" --repo "$_CODE_REPO" --json labels --jq '.labels[].name' 2>/dev/null || echo "")"
   if ! grep -qx "security-review-passed" <<<"$_PR_LABELS"; then
     echo "[merge-and-hook] ERROR: PR #$PR traces back to Discussion #$_RESOLVED_DISC but lacks the security-review-passed label. Refusing to merge." >&2
     exit 1
@@ -203,7 +211,7 @@ _CI_AUDIT_WRITTEN=false
 # D#1588 intake-approved human gate has cleared. --force-no-ci has never
 # bypassed this and still does not.
 if [[ "$FORCE_NO_CI" != "true" ]]; then
-  if ! check_ci_provenance_gate "$PR" "$_REPO" "$_RESOLVED_DISC"; then
+  if ! check_ci_provenance_gate "$PR" "$_CODE_REPO" "$_RESOLVED_DISC"; then
     echo "[merge-and-hook] ERROR: CI-status gate refused for PR #$PR: $CI_STATUS_FAIL_REASON" >&2
     ci_write_audit "ci_gate_block" "$PR" "" "" "" "$CI_STATUS_FAIL_REASON"
     exit 1
@@ -222,9 +230,9 @@ if [[ "$FORCE_NO_CI" != "true" ]]; then
 fi
 _CI_RC=0
 if [[ "$FORCE_NO_CI" == "true" ]]; then
-  check_ci_status "$PR" "$_REPO" || _CI_RC=$?
+  check_ci_status "$PR" "$_CODE_REPO" || _CI_RC=$?
 else
-  check_ci_status "$PR" "$_REPO" --wait || _CI_RC=$?
+  check_ci_status "$PR" "$_CODE_REPO" --wait || _CI_RC=$?
 fi
 
 if [[ "$FORCE_NO_CI" == "true" ]]; then
@@ -262,14 +270,14 @@ fi
 # Re-read the current head immediately before merging. If it moved since the
 # CI-gate evaluation, re-run the gate against the new head rather than merging
 # a stale-green result (D#1614 AC-8).
-_CUR_HEAD="$(gh pr view "$PR" --repo "$_REPO" --json headRefOid --jq .headRefOid 2>/dev/null || echo "")"
+_CUR_HEAD="$(gh pr view "$PR" --repo "$_CODE_REPO" --json headRefOid --jq .headRefOid 2>/dev/null || echo "")"
 if [[ -z "$_CUR_HEAD" ]]; then
   echo "[merge-and-hook] ERROR: could not resolve current head SHA for PR #$PR." >&2
   exit 1
 fi
 if [[ -n "$_CI_GREEN_SHA" && "$_CUR_HEAD" != "$_CI_GREEN_SHA" ]]; then
   echo "[merge-and-hook] head moved since CI check ($_CI_GREEN_SHA -> $_CUR_HEAD) — re-gating before merge." >&2
-  if ! check_ci_status "$PR" "$_REPO"; then
+  if ! check_ci_status "$PR" "$_CODE_REPO"; then
     echo "[merge-and-hook] CI-status gate FAILED after re-gate for PR #$PR: $CI_STATUS_FAIL_REASON" >&2
     ci_write_audit "ci_gate_block" "$PR" "$CI_STATUS_HEAD_SHA" "$CI_STATUS_FAILING_CHECKS" "$CI_STATUS_RUN_URL" "$CI_STATUS_FAIL_REASON"
     exit 1
@@ -287,12 +295,12 @@ _MERGE_SHA="${_CI_GREEN_SHA:-$_CUR_HEAD}"
 # top of the file, not a line number that will drift on the next edit).
 _DELETE_BRANCH_MODE="delete"
 _DEP_RC=0
-pr_dependents_list "$PR" "$_REPO" || _DEP_RC=$?
+pr_dependents_list "$PR" "$_CODE_REPO" || _DEP_RC=$?
 if [[ "$_DEP_RC" -ne 0 ]]; then
   echo "[merge-and-hook] pr-dependents lookup failed (${PR_DEP_REASON:-unknown reason}) — keeping branch as a precaution, merge proceeds." >&2
   _DELETE_BRANCH_MODE="keep"
 elif [[ -n "${PR_DEP_LIST:-}" ]]; then
-  pr_dependents_report "$PR" "$_REPO" >&2
+  pr_dependents_report "$PR" "$_CODE_REPO" >&2
   _DELETE_BRANCH_MODE="keep"
 fi
 
@@ -307,18 +315,18 @@ for _MERGE_ATTEMPT in 1 2; do
   # D#1614 409 head-moved retry, which used to abort with exit 9 instead.
   # Do NOT replace this with `set +e`; that would disarm the rest of the file.
   _MRC=0
-  ci_merge_sha_pinned "$PR" "$_REPO" "$_MERGE_SHA" "$_DELETE_BRANCH_MODE" || _MRC=$?
+  ci_merge_sha_pinned "$PR" "$_CODE_REPO" "$_MERGE_SHA" "$_DELETE_BRANCH_MODE" || _MRC=$?
   if [[ "$_MRC" -eq 0 ]]; then
     _MERGE_OK=true
     break
   elif [[ "$_MRC" -eq 9 && "$_MERGE_ATTEMPT" -eq 1 ]]; then
     echo "[merge-and-hook] merge returned a head-moved conflict — re-gating once and retrying: $CI_STATUS_FAIL_REASON" >&2
-    _MERGE_SHA="$(gh pr view "$PR" --repo "$_REPO" --json headRefOid --jq .headRefOid 2>/dev/null || echo "")"
+    _MERGE_SHA="$(gh pr view "$PR" --repo "$_CODE_REPO" --json headRefOid --jq .headRefOid 2>/dev/null || echo "")"
     # rc=2 is the CI_DISABLED stand-down, not a block — the merge was already
     # allowed to proceed without a CI signal above, and a head move does not
     # turn CI back on.
     _REGATE_RC=0
-    check_ci_status "$PR" "$_REPO" || _REGATE_RC=$?
+    check_ci_status "$PR" "$_CODE_REPO" || _REGATE_RC=$?
     if [[ -z "$_MERGE_SHA" || ( "$_REGATE_RC" -ne 0 && "$_REGATE_RC" -ne 2 ) ]]; then
       echo "[merge-and-hook] CI-status gate FAILED after 409 re-gate for PR #$PR: ${CI_STATUS_FAIL_REASON:-could not resolve new head}" >&2
       ci_write_audit "ci_gate_block" "$PR" "${_MERGE_SHA:-}" "$CI_STATUS_FAILING_CHECKS" "$CI_STATUS_RUN_URL" "${CI_STATUS_FAIL_REASON:-head unresolved}"
@@ -330,7 +338,7 @@ for _MERGE_ATTEMPT in 1 2; do
     if [[ "${CI_STATUS_FAIL_KIND:-}" == "conflict" ]]; then
       echo "[merge-and-hook] cause: this branch conflicts with its base and is not mergeable." >&2
       echo "[merge-and-hook] remedy: merge main into the branch and resolve the conflicts, then re-run this script." >&2
-      _BASE_REF="$(gh pr view "$PR" --repo "$_REPO" --json baseRefName --jq .baseRefName 2>/dev/null || true)"
+      _BASE_REF="$(gh pr view "$PR" --repo "$_CODE_REPO" --json baseRefName --jq .baseRefName 2>/dev/null || true)"
       if [[ -z "$_BASE_REF" ]]; then
         _BASE_REF="main"
       fi

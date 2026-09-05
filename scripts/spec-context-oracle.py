@@ -31,6 +31,13 @@ sys.path.insert(0, str(_REPO_ROOT))
 from backend import state_paths as _state_paths  # noqa: E402
 from backend._repo import REPO  # noqa: E402
 
+# GraphQL wants the owner and name halves separately. Two queries below used
+# to spell them out as literals — and, being the pre-rename slug, they kept
+# working only through GitHub's rename redirect, so a wrong target would have
+# resolved silently rather than erroring. Derived from REPO instead so both
+# queries follow whatever backend._repo resolves for this checkout.
+_REPO_OWNER, _REPO_NAME = REPO.split("/", 1)
+
 # ---------------------------------------------------------------------------
 # STATE_DIR / AUDIT_LOG / STATS_DB — resolved at call time (D#1810)
 # ---------------------------------------------------------------------------
@@ -372,7 +379,7 @@ def _get_discussion_title(dnum: int, budget: Budget) -> str:
     try:
         proc = subprocess.run(
             ["gh", "api", "graphql",
-             "-f", f"query=query {{ repository(owner:\"fulcrumaxe\", name:\"fulcrumaxe\") {{ discussion(number:{dnum}) {{ title }} }} }}"],
+             "-f", f"query=query {{ repository(owner:\"{_REPO_OWNER}\", name:\"{_REPO_NAME}\") {{ discussion(number:{dnum}) {{ title }} }} }}"],
             capture_output=True, text=True, timeout=timeout,
             cwd=str(_REPO_ROOT),
         )
@@ -681,7 +688,7 @@ def get_discussion_node_id(discussion: int) -> str | None:
     try:
         result = subprocess.run(
             ["gh", "api", "graphql",
-             "-f", f"query=query {{ repository(owner:\"fulcrumaxe\", name:\"fulcrumaxe\") {{ discussion(number:{discussion}) {{ id }} }} }}"],
+             "-f", f"query=query {{ repository(owner:\"{_REPO_OWNER}\", name:\"{_REPO_NAME}\") {{ discussion(number:{discussion}) {{ id }} }} }}"],
             capture_output=True, text=True, timeout=10,
             cwd=str(_REPO_ROOT),
         )

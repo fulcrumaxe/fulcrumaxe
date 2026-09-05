@@ -1,6 +1,6 @@
 ---
 name: Always use the project's real subagent_types — never general-purpose for project work
-description: Spawning agents for fulcrumaxe work must use executor / code-reviewer / project-manager / security-reviewer — never general-purpose
+description: Spawning agents for autonomous-forever work must use executor / code-reviewer / project-manager / security-reviewer — never general-purpose
 type: feedback
 originSessionId: 85514482-6eda-41bb-baf3-45fb37863d1a
 tier: transferable
@@ -16,7 +16,7 @@ The Agent tool exposes named subagent_types that match CLAUDE.md's role definiti
 - Writing a Spec for a Discussion: `subagent_type="project-manager"`
 - Verifying acceptance criteria: `subagent_type="acceptance-tester"`
 - Open-ended research, codebase exploration with no implementation: `subagent_type="Explore"` (NOT general-purpose)
-- `general-purpose` is reserved for tasks unrelated to fulcrumaxe's protocol (e.g. answering a question about an external library)
+- `general-purpose` is reserved for tasks unrelated to autonomous-forever's protocol (e.g. answering a question about an external library)
 
 When two or more agents will touch the same file in parallel, ALWAYS pass `isolation: "worktree"`. The harness creates a fresh git worktree per agent so backend/api.py edits don't collide. Without it, the second agent's commit fails or overwrites the first.
 

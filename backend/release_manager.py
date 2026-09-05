@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from backend._repo import REPO  # noqa: E402 (after sys.path.insert)
+from backend._repo import CODE_REPO  # noqa: E402 (after sys.path.insert)
 
 _RELEASES_DIR = REPO_ROOT / ".autonomous-team" / "releases"
 _SCHEMA_PATH = REPO_ROOT / ".autonomous-team" / "schemas" / "release.schema.json"
@@ -129,7 +129,7 @@ def compute_dora_snapshot() -> dict:
         result = subprocess.run(
             [
                 "gh", "pr", "list",
-                "--repo", REPO,
+                "--repo", CODE_REPO,
                 "--state", "merged",
                 "--json", "number,createdAt,mergedAt",
                 "--limit", "50",
@@ -250,7 +250,7 @@ def record_release(
             result = subprocess.run(
                 [
                     "gh", "pr", "view", str(pr_num),
-                    "--repo", REPO,
+                    "--repo", CODE_REPO,
                     "--json", "files,labels,mergeCommit,mergedAt",
                 ],
                 capture_output=True, text=True, check=False,

@@ -1,0 +1,6 @@
+{
+  "note": "Files in scripts/ci/ that are deliberately NOT steps in .github/workflows/ci.yml. scripts/ci/guard-registry-check.py fails the build when a file here is in neither this ledger nor the workflow, when an entry has an empty reason, and when an entry names a file that no longer exists. Every reason has to be checkable by a reviewer — 'not a guard' is not a reason.",
+  "exempt": {
+    "clean-install-check.sh": "Local-only developer tool (D#1617, PR #1623): it builds a throwaway venv on a dev host to reproduce what CI already does. The backend (import-smoke) job IS that clean install — it pip-installs only requirements.txt onto a fresh runner and then runs the same scripts/ci/backend-import-smoke.py — so as a CI step this would nest a venv inside an already-clean runner and add the get-pip.py network fetch its ensurepip fallback makes, which nothing else in this workflow needs."
+  }
+}

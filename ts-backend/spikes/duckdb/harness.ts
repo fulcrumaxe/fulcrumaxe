@@ -31,7 +31,7 @@ import process from "process";
 
 const DB_PATH =
   process.env.STATS_DB_PATH ??
-  join(homedir(), ".fulcrumaxe-state", "stats.duckdb");
+  join(homedir(), ".autonomous-forever-state", "stats.duckdb");
 
 const RUNTIME =
   typeof Bun !== "undefined" ? `Bun ${Bun.version}` : `Node ${process.version}`;

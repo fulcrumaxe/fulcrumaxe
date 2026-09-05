@@ -12,7 +12,7 @@ Requires bearer auth.  No explicit RBAC call in the legacy do_DELETE handler
 (it only calls _check_auth, not _check_rbac) — this is preserved: auth is
 checked, RBAC is not separately enforced for DELETE in the legacy handler.
 
-The fulcrumaxe project itself is protected from deletion (legacy 403).
+The autonomous-forever project itself is protected from deletion (legacy 403).
 """
 
 from __future__ import annotations
@@ -35,17 +35,17 @@ router = APIRouter(
     summary="Delete a project",
     description=(
         "Deletes a project by id. "
-        "The fulcrumaxe project cannot be deleted (returns 403). "
+        "The autonomous-forever project cannot be deleted (returns 403). "
         "Returns 404 if project not found. "
         "Requires authentication."
     ),
 )
 def ops_project_delete(pid: str) -> Any:
     """Project delete — mirrors api.py:4063-4087."""
-    if pid == "fulcrumaxe":
+    if pid == "autonomous-forever":
         raise HTTPException(
             status_code=403,
-            detail="cannot delete the fulcrumaxe project",
+            detail="cannot delete the autonomous-forever project",
         )
     if not _delete_project(pid):
         raise HTTPException(status_code=404, detail=f"project {pid!r} not found")

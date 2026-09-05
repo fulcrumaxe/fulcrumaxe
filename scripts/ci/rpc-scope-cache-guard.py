@@ -189,15 +189,19 @@ NON_DISCRIMINABLE: dict[str, str] = {
         "for either fixture to clear it"
     ),
     "stats.loop_idle_ratio": (
-        "stats_writer.loop_idle_ratio_24h() is called by "
-        "stats_loop_idle_ratio.handle() with no metrics_path argument, so "
-        "it defaults to Path(__file__).resolve().parent.parent/"
-        ".autonomous-team/loop-metrics.jsonl — the SERVING CHECKOUT's own "
-        "file, not the requested project's. project has no effect on this "
-        "handler's output today, so this black-box probe cannot observe "
-        "whether the two fixtures differ (they can't, by construction) — "
-        "flagged here rather than silently passed; worth a follow-up look "
-        "given this repo's history with exactly this class of bug"
+        "UNSEEDED HARNESS, not project-blindness (revisited D#2327 PR-a). "
+        "This entry used to record project-blindness: the handler called "
+        "loop_idle_ratio_24h() with no metrics_path, so it read the serving "
+        "checkout's own loop-metrics.jsonl for every project. That is fixed "
+        "— the handler now resolves the requested project's file via "
+        "backend.loop_metrics_path and reads _seed_loop_metrics()'s "
+        "per-fixture row. The two fixtures still answer identically for a "
+        "different reason: loop_idle_ratio_24h() reports ratio=None below a "
+        "5-iteration floor and this harness seeds one row per project, so "
+        "both come back {ratio: None, idle_count: 0, sample_size: 1}. "
+        "Seeding >=5 rows per fixture with differing idle counts would make "
+        "this discriminable; D#2327 PR-b's probe is the right place for "
+        "that, since it needs deliberately-differing seeds anyway"
     ),
     "stats.avg_fix_rounds_per_pr": (
         "stats_writer.avg_fix_rounds_24h() reads merged-PR fix-round "
@@ -212,17 +216,16 @@ NON_DISCRIMINABLE: dict[str, str] = {
         "between fixtures"
     ),
     "stats.weekly_velocity": (
-        "backend.stats.weekly_velocity.weekly_velocity() computes merged-PR "
-        "counts per day from the project's PR history, which this harness's "
-        "gh shim does not model with per-day granularity; both fixtures "
-        "answer with the same all-zero sparkline"
-    ),
-    "stats.dora": (
-        "stats_dora.handle() delegates to analytics_engineer.compute_snapshot "
-        "and explicitly ignores its params argument today (marked "
-        "'reserved for future project-scoping' in the handler itself) — "
-        "project has no effect on this handler's output yet, so this "
-        "probe cannot observe a difference by construction"
+        "UNSEEDED HARNESS, not project-blindness (revisited D#2327 PR-a). "
+        "The handler does resolve each fixture's own repo slug and the gh "
+        "shim does answer per-slug — but weekly_velocity() buckets by each "
+        "row's mergedAt, and the shim's `pr list` rows carry no mergedAt "
+        "field, so every row is skipped and both fixtures answer with the "
+        "same all-zero sparkline. The project-blind path that did exist "
+        "here — weekly_velocity()'s `repo or _REPO` fallback to the serving "
+        "checkout's slug for a project resolving to none — now raises "
+        "UnresolvableProjectError instead, and does not arise in this "
+        "harness because both fixtures declare a repo"
     ),
     "stats.pre_write_burn": (
         "backend.rpc.stats_pre_write_burn reads agent_run's "
@@ -236,10 +239,14 @@ NON_DISCRIMINABLE: dict[str, str] = {
         "fixture project changes what this reports"
     ),
     "stats.cost_per_outcome": (
-        "backend.cost_per_outcome.cost_per_outcome_rows() joins merged-PR "
-        "outcomes with agent spend, keyed off PR-merge history this "
-        "harness's gh shim does not model; both fixtures answer with an "
-        "empty rows list"
+        "UNSEEDED HARNESS, not project-blindness (revisited D#2327 PR-a). "
+        "The merged-PR half now queries each fixture's own repo slug rather "
+        "than backend._repo.REPO, and the gh shim answers per-slug — but "
+        "cost_per_outcome_rows() omits any PR with no cost records, and "
+        "this harness seeds spend against a discussion number with no PR "
+        "attached, so the shim's PR 9001 is dropped for both fixtures and "
+        "both answer with an empty rows list. Seeding PR-keyed spend per "
+        "fixture would make this discriminable"
     ),
     "loop.events": (
         "requires an existing loop_id resolvable via "

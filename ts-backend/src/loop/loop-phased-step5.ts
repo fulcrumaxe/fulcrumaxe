@@ -82,7 +82,7 @@
 import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
-import { resolveRepo } from "../config/repo.js";
+import { resolveCodeRepo, resolveRepo } from "../config/repo.js";
 import { isSnapshotStale, resolveSnapshotPath } from "./snapshot-path.js";
 
 // ---------------------------------------------------------------------------
@@ -106,6 +106,23 @@ const SCRIPTS_DIR = join(REPO_ROOT, "scripts");
 
 // Repo slug helpers (mirrors _REPO, _REPO_OWNER, _REPO_NAME) — sourced from
 // config/repo.ts, the single source of truth for repo-slug resolution.
+// Two planes, and this is the file where the split matters most: it writes
+// the gate labels the merging phase reads back, and it performs the merge. If
+// the labels land on one repo and the gate reads the other, every PR waits
+// forever with every gate satisfied — the deadlock D#2348's PR-j took three
+// review rounds to close, arriving by a later route.
+//
+// _REPO stays the Discussion plane: _REPO_OWNER/_REPO_NAME below feed the
+// discussions GraphQL, and the Discussion links handed to spawned agents are
+// Discussion-plane URLs. _CODE_REPO takes the PR reads, the PR comment, the
+// label writes, the PR permalinks and the merge.
+//
+// Neither can be empty. resolveCodeRepo() falls through resolveRepo() to
+// DEFAULT_REPO, so there is no configuration in which `gh --repo ""` is
+// reachable from here — which is why this file needs no equivalent of the bash
+// side's _require_code_repo guard. That property is asserted in
+// ts-backend/src/config/repo.test.ts rather than assumed here.
+const _CODE_REPO = resolveCodeRepo();
 const _REPO = resolveRepo();
 const _REPO_OWNER = _REPO.split("/")[0]!;
 const _REPO_NAME = _REPO.split("/")[1]!;
@@ -176,7 +193,7 @@ function _spawn(args: string[]): boolean {
 function _applyLabel(pr: number, label: string): void {
   spawnSync(
     "gh",
-    ["api", "-X", "POST", `repos/${_REPO}/issues/${pr}/labels`,
+    ["api", "-X", "POST", `repos/${_CODE_REPO}/issues/${pr}/labels`,
       "-f", `labels[]=${label}`],
     { timeout: 20_000, encoding: "utf-8" }
   );
@@ -198,7 +215,7 @@ export function hasLabel(pr: number, label: string): boolean {
   }
   const r = spawnSync(
     "gh",
-    ["pr", "view", String(pr), "--repo", _REPO,
+    ["pr", "view", String(pr), "--repo", _CODE_REPO,
       "--json", "labels", "--jq",
       `[.labels[].name] | contains(["${label}"])`],
     { timeout: 20_000, encoding: "utf-8" }
@@ -393,7 +410,7 @@ function _writeMergeAudit(pr: number, passedNackCheck: boolean): void {
   if (!_testMode()) {
     const r = spawnSync(
       "gh",
-      ["pr", "view", String(pr), "--repo", _REPO,
+      ["pr", "view", String(pr), "--repo", _CODE_REPO,
         "--json", "labels", "--jq", "[.labels[].name]"],
       { timeout: 20_000, encoding: "utf-8" }
     );
@@ -532,7 +549,7 @@ function _checkTwoGateMarkers(
   } else {
     const r = spawnSync(
       "gh",
-      ["pr", "view", String(pr), "--repo", _REPO, "--json", "body", "--jq", ".body"],
+      ["pr", "view", String(pr), "--repo", _CODE_REPO, "--json", "body", "--jq", ".body"],
       { timeout: 20_000, encoding: "utf-8" }
     );
     body = (r.stdout ?? "").trim();
@@ -564,7 +581,7 @@ function _prHeadSha(pr: number): string {
   }
   const r = spawnSync(
     "gh",
-    ["pr", "view", String(pr), "--repo", _REPO, "--json", "headRefOid", "--jq", ".headRefOid"],
+    ["pr", "view", String(pr), "--repo", _CODE_REPO, "--json", "headRefOid", "--jq", ".headRefOid"],
     { timeout: 20_000, encoding: "utf-8" }
   );
   return (r.stdout ?? "").trim();
@@ -707,7 +724,7 @@ function _spawnDebater(pr: number, disc: number, reviewer: string, sha: string):
   } else {
     const r = spawnSync(
       "gh",
-      ["pr", "diff", String(pr), "--repo", _REPO],
+      ["pr", "diff", String(pr), "--repo", _CODE_REPO],
       { timeout: 30_000, encoding: "utf-8" }
     );
     rawDiff = r.stdout ?? "";
@@ -1187,7 +1204,7 @@ function _phaseB_specReady(codeReviewGate: boolean): void {
             if (!_testMode()) {
               spawnSync(
                 "gh",
-                ["pr", "comment", String(prNum), "--repo", _REPO,
+                ["pr", "comment", String(prNum), "--repo", _CODE_REPO,
                   "--body", 'Two-Gate markers missing from PR body. Add a "## Verification" block with "Gate 1: ..." and "Gate 2: ..." lines (PASS or "N/A — <reason>"). See .claude/agents/executor.md.'],
                 { timeout: 20_000, encoding: "utf-8" }
               );
@@ -1240,14 +1257,14 @@ function _phaseB_specReady(codeReviewGate: boolean): void {
               _log(`D#${discNum} PR#${prNum}: fix_cycle_count=${fixCycles} >= 3 — escalating to needs-boss`);
               spawnSync(
                 "gh",
-                ["api", "-X", "POST", `repos/${_REPO}/issues/${prNum}/labels`,
+                ["api", "-X", "POST", `repos/${_CODE_REPO}/issues/${prNum}/labels`,
                   "-f", "labels[]=needs-boss"],
                 { timeout: 20_000, encoding: "utf-8" }
               );
               _advancePrState(prNum, "blocked");
             } else {
               _log(`D#${discNum} PR#${prNum}: phase=code_review, phased_code_review=true — spawning code-reviewer directly`);
-              const crTask = `Review PR #${prNum} for Discussion #${discNum}. Run bash scripts/run-pr-tests.sh ${prNum}. Discussion: https://github.com/${_REPO}/discussions/${discNum} PR: https://github.com/${_REPO}/pull/${prNum}`;
+              const crTask = `Review PR #${prNum} for Discussion #${discNum}. Run bash scripts/run-pr-tests.sh ${prNum}. Discussion: https://github.com/${_REPO}/discussions/${discNum} PR: https://github.com/${_CODE_REPO}/pull/${prNum}`;
               if (_spawn(["--role", "code-reviewer", "--discussion", String(discNum), "--task-prompt", crTask])) {
                 _log(`D#${discNum} PR#${prNum}: code-reviewer spawned`);
               } else {
@@ -1288,7 +1305,7 @@ function _phaseB_specReady(codeReviewGate: boolean): void {
             _spawnDebater(prNum, discNum, "code-reviewer", debSha);
             if (debNeedsSec && !hasLabel(prNum, "security-review-passed")) {
               _log(`D#${discNum} PR#${prNum}: spawning security-reviewer concurrently with debater (D#858)`);
-              const secTaskDeb = `Security review PR #${prNum} for Discussion #${discNum}. Focus on triggered patterns in the diff (auth, secrets, exec, fetch, localStorage, etc.). End with AGENT_OUTPUT envelope (verdict: pass|needs-fix|skip). Discussion: https://github.com/${_REPO}/discussions/${discNum} PR: https://github.com/${_REPO}/pull/${prNum}`;
+              const secTaskDeb = `Security review PR #${prNum} for Discussion #${discNum}. Focus on triggered patterns in the diff (auth, secrets, exec, fetch, localStorage, etc.). End with AGENT_OUTPUT envelope (verdict: pass|needs-fix|skip). Discussion: https://github.com/${_REPO}/discussions/${discNum} PR: https://github.com/${_CODE_REPO}/pull/${prNum}`;
               if (_spawn(["--role", "security-reviewer", "--discussion", String(discNum), "--task-prompt", secTaskDeb])) {
                 _log(`D#${discNum} PR#${prNum}: security-reviewer spawned concurrently with debater`);
               } else {
@@ -1312,7 +1329,7 @@ function _phaseB_specReady(codeReviewGate: boolean): void {
               _advancePrState(prNum, "blocked");
             } else {
               _log(`D#${discNum} PR#${prNum}: phase=security_review — spawning security-reviewer`);
-              const secTask = `Security review PR #${prNum} for Discussion #${discNum}. Focus on triggered patterns in the diff (auth, secrets, exec, fetch, localStorage, etc.). End with AGENT_OUTPUT envelope (verdict: pass|needs-fix|skip). Discussion: https://github.com/${_REPO}/discussions/${discNum} PR: https://github.com/${_REPO}/pull/${prNum}`;
+              const secTask = `Security review PR #${prNum} for Discussion #${discNum}. Focus on triggered patterns in the diff (auth, secrets, exec, fetch, localStorage, etc.). End with AGENT_OUTPUT envelope (verdict: pass|needs-fix|skip). Discussion: https://github.com/${_REPO}/discussions/${discNum} PR: https://github.com/${_CODE_REPO}/pull/${prNum}`;
               if (_spawn(["--role", "security-reviewer", "--discussion", String(discNum), "--task-prompt", secTask])) {
                 _log(`D#${discNum} PR#${prNum}: security-reviewer spawned`);
               } else {
@@ -1382,7 +1399,7 @@ function _phaseB_specReady(codeReviewGate: boolean): void {
           } else if (!securityPassed) {
             _log(`D#${discNum} PR#${prNum}: merging blocked — security-review-passed label missing (security trigger detected in diff)`);
             _advancePrState(prNum, "security_review");
-            const secTask2 = `Security review PR #${prNum} for Discussion #${discNum}. Focus on triggered patterns in the diff (auth, secrets, exec, fetch, localStorage, etc.). End with AGENT_OUTPUT envelope (verdict: pass|needs-fix|skip). Discussion: https://github.com/${_REPO}/discussions/${discNum} PR: https://github.com/${_REPO}/pull/${prNum}`;
+            const secTask2 = `Security review PR #${prNum} for Discussion #${discNum}. Focus on triggered patterns in the diff (auth, secrets, exec, fetch, localStorage, etc.). End with AGENT_OUTPUT envelope (verdict: pass|needs-fix|skip). Discussion: https://github.com/${_REPO}/discussions/${discNum} PR: https://github.com/${_CODE_REPO}/pull/${prNum}`;
             if (_spawn(["--role", "security-reviewer", "--discussion", String(discNum), "--task-prompt", secTask2])) {
               _log(`D#${discNum} PR#${prNum}: security-reviewer spawned (re-triggered at merge gate)`);
             } else {
@@ -1399,7 +1416,7 @@ function _phaseB_specReady(codeReviewGate: boolean): void {
               String(prNum),
               "--squash",
               "--delete-branch",
-              "--repo", _REPO,
+              "--repo", _CODE_REPO,
             ]);
 
             if (mergeRc === 0) {

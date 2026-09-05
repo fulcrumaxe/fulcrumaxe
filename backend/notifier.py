@@ -419,7 +419,7 @@ class Notifier:
                         "text": (
                             f"{emoji} *{severity.upper()}* — `{event_type}`\n"
                             f"{message}\n"
-                            f"_fulcrumaxe · {_now_iso()}_"
+                            f"_autonomous-forever · {_now_iso()}_"
                         ),
                     },
                 }
@@ -438,7 +438,7 @@ class Notifier:
                     "title": f"{event_type} ({severity})",
                     "description": message,
                     "color": color,
-                    "footer": {"text": f"fulcrumaxe · {_now_iso()}"},
+                    "footer": {"text": f"autonomous-forever · {_now_iso()}"},
                 }
             ]
         }
@@ -456,7 +456,7 @@ class Notifier:
         if not to_addrs:
             raise ValueError("email channel missing to_addrs")
 
-        subject = f"[fulcrumaxe] {severity.upper()}: {event_type}"
+        subject = f"[autonomous-forever] {severity.upper()}: {event_type}"
         body = f"{subject}\n\n{message}\n\nTimestamp: {_now_iso()}\n"
 
         msg = MIMEText(body, "plain")
@@ -550,7 +550,7 @@ class Notifier:
         for ch in self._channels:
             ch_id = ch["id"]
             try:
-                self._dispatch(ch, "test", "info", "Test notification from fulcrumaxe", Event())
+                self._dispatch(ch, "test", "info", "Test notification from autonomous-forever", Event())
                 results.append({"channel_id": ch_id, "success": True, "error": None})
             except Exception as exc:  # noqa: BLE001
                 results.append({"channel_id": ch_id, "success": False, "error": str(exc)})

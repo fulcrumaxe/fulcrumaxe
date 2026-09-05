@@ -72,7 +72,7 @@ function readLoopAgo(): string | null {
 async function readQueueCountsAsync(): Promise<{ active: number; ready: number } | null> {
   try {
     const { stdout } = await execAsync(
-      `gh api graphql --repo fulcrumaxe/fulcrumaxe -f query='query { repository(owner:"fulcrumaxe", name:"fulcrumaxe") { discussions(first:50, states:[OPEN]) { nodes { body } } } }'`,
+      `gh api graphql --repo autonomous-agent-7/autonomous-forever -f query='query { repository(owner:"autonomous-agent-7", name:"autonomous-forever") { discussions(first:50, states:[OPEN]) { nodes { body } } } }'`,
       { timeout: 15000 }
     );
     const result = JSON.parse(stdout) as {

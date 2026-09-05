@@ -4,6 +4,11 @@ response-boundary redaction (D#2239).
 There are THREE independently-implemented "fleet projects" surfaces in this
 codebase, and all three are covered here:
 
+  0. RPC method `fleet.cost` (backend/rpc/fleet_cost.py), also reading
+     resolve_fleet_set() as of D#2317 PR-b -- it used to iterate
+     discover_projects() alone and so never opened the cost_summary.json
+     that is actually being written. state_dir is its internal join key
+     for that file and must not appear in what it hands back.
   1. RPC method `fleet.projects` (backend/rpc/fleet_projects.py), reading
      backend.fleet.fleet_set.resolve_fleet_set() -- the resolved union of
      both fleet-discovery mechanisms (D#2317 PR-a). Bearer-auth'd. Consumed
@@ -52,34 +57,6 @@ import pytest
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_REPO_ROOT))
 
-FAKE_PROJECTS = [
-    {
-        "name": "fulcrumaxe",
-        "state_dir": "/home/user/.fulcrumaxe-state",
-        "dashboard_port": 5173,
-        "version": 1,
-        "repo": "fulcrumaxe/fulcrumaxe",
-        "language": "python",
-        "ports": {"vite": 5173, "api": 18099, "rpc": 18100, "sse": 18101},
-        "ok": True,
-    },
-    {
-        "name": "gatekeep",
-        "state_dir": "/home/user/.gatekeep-state",
-        "dashboard_port": 5102,
-        "version": 1,
-        "repo": "fulcrumaxe/gatekeep",
-        "language": "python",
-        "ok": True,
-    },
-    {
-        "name": "corrupt",
-        "state_dir": "/home/user/.corrupt-state",
-        "ok": False,
-        "error": "JSON parse error: unexpected token",
-    },
-]
-
 FORBIDDEN_KEYS = ("state_dir", "repo", "ports")
 
 # resolve_fleet_set() shape (D#2317 PR-a) -- the four-value measured
@@ -87,11 +64,11 @@ FORBIDDEN_KEYS = ("state_dir", "repo", "ports")
 # report on its own (see backend/fleet/fleet_set.py).
 FAKE_RESOLVED_PROJECTS = [
     {
-        "name": "fulcrumaxe",
-        "state_dir": "/home/user/.fulcrumaxe-state",
+        "name": "autonomous-forever",
+        "state_dir": "/home/user/.autonomous-forever-state",
         "dashboard_port": 5173,
         "version": 1,
-        "repo": "fulcrumaxe/fulcrumaxe",
+        "repo": "autonomous-agent-7/fulcrumaxe",
         "language": "python",
         "ports": {"vite": 5173, "api": 18099, "rpc": 18100, "sse": 18101},
         "pids": {"api": 1234},
@@ -136,9 +113,9 @@ class TestFleetProjectsRedaction:
             result = fleet_projects.handle({})
 
         by_name = {p["name"]: p for p in result["projects"]}
-        assert by_name["fulcrumaxe"]["dashboard_port"] == 5173
-        assert by_name["fulcrumaxe"]["status"] == "ok"
-        assert by_name["fulcrumaxe"]["agents_running"] == 2
+        assert by_name["autonomous-forever"]["dashboard_port"] == 5173
+        assert by_name["autonomous-forever"]["status"] == "ok"
+        assert by_name["autonomous-forever"]["agents_running"] == 2
         assert by_name["gatekeep"]["status"] == "unknown"
         assert by_name["corrupt"]["status"] == "error"
         assert by_name["corrupt"]["error"] == "JSON parse error: unexpected token"
@@ -168,17 +145,20 @@ class TestFleetCostRedaction:
         from backend.rpc import fleet_cost
 
         fake_summary = {
-            "last_7d": [],
+            "tokens_today_utc": None,
+            "tokens_7d": None,
+            "projected_eod_tokens": None,
+            "by_day": [],
         }
 
         with (
-            patch("backend.fleet.discovery.discover_projects", return_value=FAKE_PROJECTS),
+            patch("backend.fleet.fleet_set.resolve_fleet_set", return_value=FAKE_RESOLVED_PROJECTS),
             patch("backend.fleet.cost_summary.read_cost_summary", return_value=fake_summary),
         ):
             result = fleet_cost.handle({})
 
         assert "per_project" in result
-        assert len(result["per_project"]) == len(FAKE_PROJECTS)
+        assert len(result["per_project"]) == len(FAKE_RESOLVED_PROJECTS)
         for record in result["per_project"]:
             assert "state_dir" not in record, f"state_dir leaked in {record!r}"
 
@@ -186,7 +166,7 @@ class TestFleetCostRedaction:
         from backend.rpc import fleet_cost
 
         with (
-            patch("backend.fleet.discovery.discover_projects", return_value=FAKE_PROJECTS),
+            patch("backend.fleet.fleet_set.resolve_fleet_set", return_value=FAKE_RESOLVED_PROJECTS),
             patch(
                 "backend.fleet.cost_summary.read_cost_summary",
                 side_effect=Exception("boom"),
@@ -195,19 +175,20 @@ class TestFleetCostRedaction:
             result = fleet_cost.handle({})
 
         by_name = {p["name"]: p for p in result["per_project"]}
-        # "corrupt" is not ok, so read_cost_summary is never called for it.
+        # "corrupt" has status "error", so read_cost_summary is never
+        # called for it.
         assert by_name["corrupt"]["ok"] is False
         assert "state_dir" not in by_name["corrupt"]
-        # "fulcrumaxe" is ok but read_cost_summary raises here.
-        assert by_name["fulcrumaxe"]["ok"] is False
-        assert "state_dir" not in by_name["fulcrumaxe"]
+        # "autonomous-forever" is ok but read_cost_summary raises here.
+        assert by_name["autonomous-forever"]["ok"] is False
+        assert "state_dir" not in by_name["autonomous-forever"]
 
 
 FAKE_RUNNING_PROJECTS = [
     {
-        "name": "fulcrumaxe",
-        "repo": "fulcrumaxe/fulcrumaxe",
-        "state_dir": "/home/user/.fulcrumaxe-state",
+        "name": "autonomous-forever",
+        "repo": "autonomous-agent-7/fulcrumaxe",
+        "state_dir": "/home/user/.autonomous-forever-state",
         "ports": {"vite": 5173, "api": 18099, "rpc": 18100, "sse": 18101},
         "pids": {"api": 1234, "server": 1235, "sse": 1236, "vite": 1237},
         "started_at": "2026-05-18T16:00:00Z",
@@ -277,8 +258,8 @@ class TestApiFleetProjectsRestRedaction:
             result = api_fleet_projects()
 
         by_name = {p["name"]: p for p in result["projects"]}
-        assert by_name["fulcrumaxe"]["alive"] is True
-        assert by_name["fulcrumaxe"]["ok"] is True
+        assert by_name["autonomous-forever"]["alive"] is True
+        assert by_name["autonomous-forever"]["ok"] is True
         assert by_name["corrupt"]["ok"] is False
         assert by_name["corrupt"]["error"] == "JSON parse error: unexpected token"
 
@@ -366,8 +347,8 @@ class TestApiPyLiveHandlerRedaction:
 
         assert status == 200
         by_name = {p["name"]: p for p in body["projects"]}
-        assert by_name["fulcrumaxe"]["status"] == "ok"
-        assert by_name["fulcrumaxe"]["agents_running"] == 2
+        assert by_name["autonomous-forever"]["status"] == "ok"
+        assert by_name["autonomous-forever"]["agents_running"] == 2
         assert by_name["gatekeep"]["status"] == "unknown"
         assert by_name["corrupt"]["status"] == "error"
         assert by_name["corrupt"]["error"] == "JSON parse error: unexpected token"
@@ -389,4 +370,4 @@ class TestApiPyLiveHandlerRedaction:
         assert status == 200
         rest_names = {p["name"] for p in body["projects"]}
         rpc_names = {p["name"] for p in rpc_result["projects"]}
-        assert rest_names == rpc_names == {"fulcrumaxe", "gatekeep", "corrupt"}
+        assert rest_names == rpc_names == {"autonomous-forever", "gatekeep", "corrupt"}

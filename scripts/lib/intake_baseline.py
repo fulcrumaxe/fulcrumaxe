@@ -10,7 +10,7 @@ an injectable `path` argument so tests use `tmp_path` (never the real store).
 
 Store shape (single JSON file, atomic tmp-file + os.replace()):
 
-    {"version": 1, "baselines": {"fulcrumaxe/fulcrumaxe#1672": {
+    {"version": 1, "baselines": {"autonomous-agent-7/fulcrumaxe#1672": {
         "content_sha256": "...", "observed_last_edited_at": null,
         "observed_edit_count": 0, "observed_editor": null,
         "observed_at": "...", "invalidation_count": 0,

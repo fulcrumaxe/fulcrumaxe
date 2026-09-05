@@ -5,6 +5,8 @@ interface FreshnessRow {
   metric_name: string
   last_ts: string
   age_seconds: number
+  /** False for a one-shot metric with no live writer — see backend/stats/freshness.py. */
+  monitored?: boolean
 }
 
 interface FreshnessResponse {
@@ -65,7 +67,12 @@ export default function StaleBanner() {
       try {
         const data = await jsonRpc<FreshnessResponse>('stats.freshness_list')
         if (!cancelled) {
-          const stale = data.rows.filter(r => r.age_seconds >= data.warn_age_seconds)
+          // A metric nobody writes any more can't be "stale" in a way anyone
+          // can act on. bootstrap_ping sat here asserting 1243h for 51 days,
+          // which is how you train people to ignore the banner.
+          const stale = data.rows.filter(
+            r => r.monitored !== false && r.age_seconds >= data.warn_age_seconds,
+          )
           setStaleRows(stale)
         }
       } catch {

@@ -46,7 +46,7 @@ from backend.agent_retry import (
 def isolated_blackboard(tmp_path):
     """Replace the module-level _bb with a fresh temp-dir Blackboard.
 
-    Guarantees tests never touch ~/.fulcrumaxe-state/ or any real dir.
+    Guarantees tests never touch ~/.autonomous-forever-state/ or any real dir.
     """
     from backend.blackboard import Blackboard
     bb = Blackboard(root=tmp_path / "bb")

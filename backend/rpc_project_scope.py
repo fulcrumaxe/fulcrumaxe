@@ -33,6 +33,37 @@ subprocess that never consults an env var, or genuinely having no
 adopter-project equivalent to serve — and de-anchoring a file path would
 not fix any of them; see each entry's reason string.
 
+Background (D#2327, PR-a)
+--------------------------
+Nineteen entries below shared one justification string — "already wrapped in
+``_with_project_stats_db()``" — that nobody had checked. Being wrapped was
+never the right question. That wrapper scopes by redirecting
+``STATS_DB_PATH``; whether that reaches a handler depends on what the
+handler *reads*. Four of the nineteen read something else:
+
+* ``stats.loop_idle_ratio`` reads ``.autonomous-team/loop-metrics.jsonl``
+  from the serving checkout. Wrapped, and scoped nothing — the worst shape,
+  because the wrapper's presence was what the registry cited as evidence.
+* ``stats.weekly_velocity`` and ``stats.cost_per_outcome`` shell out to
+  ``gh``; both fell back to the *serving* checkout's repo slug.
+* ``stats.dora`` reads module constants built from ``__file__`` at import
+  and shells ``gh`` at a module-level slug. Nothing per-request reaches it.
+
+The first three are now scoped for real, by the mechanism that reaches their
+actual data, and decline (``UnresolvableProjectError``) rather than fall back
+when a named project cannot be resolved. ``stats.dora`` is reclassified
+``UNSCOPABLE``.
+
+Worse than the unaudited prose, briefly: PR #2330 corrected
+``stats.loop_idle_ratio``'s reason to say plainly that it was *not* wrapped
+and was bound to the serving checkout — while leaving the classification
+``SCOPED``. The field a human reads and the field a machine reads disagreed,
+and the machine-read one was the false one. :data:`_DATA_SOURCES` and
+``scripts/ci/rpc-scope-registry-guard.py` exist so that cannot recur
+silently: the guard fails the build on a ``SCOPED`` entry whose own reason
+denies being scoped, and on a ``SCOPED`` entry whose audited data source is
+the serving checkout.
+
 Classification definitions
 ---------------------------
 SCOPED
@@ -320,37 +351,179 @@ _CLASSIFICATIONS: dict[str, tuple[str, str]] = {
                                          "call time; reachable via "
                                          "STATS_DB_PATH"),
 
-    # -- Already wrapped in _with_project_stats_db() (unchanged by this PR) -
-    "stats.summary": (SCOPED, "already wrapped in _with_project_stats_db()"),
-    "stats.series": (SCOPED, "already wrapped in _with_project_stats_db()"),
-    "stats.team_lead_tokens": (SCOPED, "already wrapped in _with_project_stats_db()"),
-    "stats.cost_spike_history": (SCOPED, "already wrapped in _with_project_stats_db()"),
-    "stats.role_success_rate": (SCOPED, "already wrapped in _with_project_stats_db()"),
-    "stats.role_retry_rate": (SCOPED, "already wrapped in _with_project_stats_db()"),
-    "stats.loop_idle_ratio": (SCOPED, "loop_idle_ratio_24h() opens no DuckDB "
-                                       "connection at all -- it reads a "
-                                       "repo-relative JSONL path "
-                                       "(.autonomous-team/loop-metrics.jsonl "
-                                       "next to this checkout), so it is NOT "
-                                       "wrapped in _with_project_stats_db(). "
-                                       "That path resolution is bound to the "
-                                       "serving checkout, not the requested "
-                                       "project -- a D#2309-class bug, filed "
-                                       "separately; this entry only corrects "
-                                       "the prior false claim (D#2315)."),
-    "stats.avg_fix_rounds_per_pr": (SCOPED, "already wrapped in _with_project_stats_db()"),
-    "stats.freshness_list": (SCOPED, "already wrapped in _with_project_stats_db()"),
-    "stats.weekly_velocity": (SCOPED, "already wrapped in _with_project_stats_db()"),
-    "stats.dora": (SCOPED, "already wrapped in _with_project_stats_db()"),
-    "stats.pre_write_burn": (SCOPED, "already wrapped in _with_project_stats_db()"),
-    "stats_duckdb_writers": (SCOPED, "already wrapped in _with_project_stats_db()"),
-    "runs.by_role": (SCOPED, "already wrapped in _with_project_stats_db()"),
-    "runs.percentiles": (SCOPED, "already wrapped in _with_project_stats_db()"),
-    "runs.stuck": (SCOPED, "already wrapped in _with_project_stats_db()"),
-    "runs.roundtrip": (SCOPED, "already wrapped in _with_project_stats_db()"),
-    "runs.active_over_time": (SCOPED, "already wrapped in _with_project_stats_db()"),
-    "runs.recent": (SCOPED, "already wrapped in _with_project_stats_db()"),
-    "stats.cost_per_outcome": (SCOPED, "already wrapped in _with_project_stats_db()"),
+    # -- Audited: wrapper reaches the data (D#2327 PR-a) --------------------
+    # These entries once shared one unverified string ("already wrapped in
+    # _with_project_stats_db()"), 19 of them. Being wrapped is not the
+    # question -- the question is whether the wrapper's STATS_DB_PATH
+    # redirect reaches the data the handler actually reads. Each reason
+    # below now cites the concrete read site that was checked; the
+    # machine-readable form of the same answer is in _DATA_SOURCES.
+    "stats.summary": (SCOPED, "already wrapped in _with_project_stats_db(), "
+                               "and the wrapper reaches its data: "
+                               "stats_reader.summary() -> _open_conn() -> "
+                               "stats_connection.get_read_connection() -> "
+                               "stats_writer._db_path() -> state_paths.STATS_DB "
+                               "(backend/stats_reader.py:28-31, 241)"),
+    "stats.series": (SCOPED, "already wrapped in _with_project_stats_db(), and "
+                              "the wrapper reaches its data: same "
+                              "_open_conn()/STATS_DB path as stats.summary "
+                              "(backend/stats_reader.py:275). D#2327's body "
+                              "marked this one 'appears not to be wrapped' "
+                              "from a bounded window on a long function; read "
+                              "whole, backend/server.py:2196 delegates through "
+                              "the wrapper like the rest"),
+    "stats.team_lead_tokens": (SCOPED, "already wrapped in "
+                                        "_with_project_stats_db(), and the "
+                                        "wrapper reaches its data: "
+                                        "stats_writer.team_lead_tokens_percentiles() "
+                                        "-> _db_path() -> state_paths.STATS_DB "
+                                        "(backend/stats_writer.py:248)"),
+    "stats.cost_spike_history": (SCOPED, "already wrapped in "
+                                          "_with_project_stats_db(), and the "
+                                          "wrapper reaches its data: "
+                                          "stats_writer.cost_spike_history() -> "
+                                          "_db_path() (backend/stats_writer.py:629)"),
+    "stats.role_success_rate": (SCOPED, "already wrapped in "
+                                         "_with_project_stats_db(), and the "
+                                         "wrapper reaches its data: "
+                                         "stats_writer.role_success_rate_24h() "
+                                         "-> _db_path() "
+                                         "(backend/stats_writer.py:461)"),
+    "stats.role_retry_rate": (SCOPED, "already wrapped in "
+                                       "_with_project_stats_db(), and the "
+                                       "wrapper reaches its data: "
+                                       "stats_writer.role_retry_rate_24h() -> "
+                                       "_db_path() (backend/stats_writer.py:405)"),
+    "stats.loop_idle_ratio": (SCOPED, "reads "
+                                       ".autonomous-team/loop-metrics.jsonl, "
+                                       "not DuckDB "
+                                       "(backend/stats_writer.py:534-539), so "
+                                       "the STATS_DB_PATH redirect is beside "
+                                       "the point here. The handler resolves "
+                                       "the requested project's own metrics "
+                                       "file itself via "
+                                       "backend.loop_metrics_path and passes it "
+                                       "to loop_idle_ratio_24h() explicitly "
+                                       "(backend/rpc/stats_loop_idle_ratio.py), "
+                                       "declining with "
+                                       "UnresolvableProjectError when the "
+                                       "project has no reachable metrics file. "
+                                       "SCOPED because the handler scopes "
+                                       "itself -- see the D#2327 PR-a section "
+                                       "of the module docstring for what this "
+                                       "used to do"),
+    "stats.avg_fix_rounds_per_pr": (SCOPED, "already wrapped in "
+                                             "_with_project_stats_db(), and the "
+                                             "wrapper reaches its data: "
+                                             "stats_writer.avg_fix_rounds_24h() "
+                                             "-> _db_path() "
+                                             "(backend/stats_writer.py:689)"),
+    "stats.freshness_list": (SCOPED, "already wrapped in "
+                                      "_with_project_stats_db(), and the "
+                                      "wrapper reaches its data: "
+                                      "stats_freshness_watchdog.check() -> "
+                                      "_query_freshness() -> _db_path() -> "
+                                      "state_paths.STATS_DB "
+                                      "(backend/stats_freshness_watchdog.py:66-69, "
+                                      "80-85). Its module-level REPO import is "
+                                      "used only by warn_stale(), not by "
+                                      "check()"),
+    "stats.weekly_velocity": (SCOPED, "opens no DuckDB connection; it shells "
+                                       "`gh pr list --repo <slug>` "
+                                       "(backend/stats/weekly_velocity.py:55-60), "
+                                       "so the STATS_DB_PATH redirect is beside "
+                                       "the point here. The handler resolves "
+                                       "the requested project's slug itself "
+                                       "(backend/rpc/stats_weekly_velocity.py "
+                                       "_resolve_repo -> state_paths.for_project) "
+                                       "and, since D#2327 PR-a, declines with "
+                                       "UnresolvableProjectError when a named "
+                                       "project resolves to no slug rather than "
+                                       "letting weekly_velocity()'s `repo or "
+                                       "_REPO` default take over "
+                                       "(weekly_velocity.py:144)"),
+    "stats.pre_write_burn": (SCOPED, "already wrapped in "
+                                      "_with_project_stats_db(), and the "
+                                      "wrapper reaches its data: its own "
+                                      "_db_path() -> state_paths.STATS_DB, then "
+                                      "duckdb.connect on that path "
+                                      "(backend/rpc/stats_pre_write_burn.py:15-18, 31)"),
+    "stats_duckdb_writers": (SCOPED, "already wrapped in "
+                                      "_with_project_stats_db(), and the "
+                                      "wrapper reaches its data: "
+                                      "backend/stats/duckdb_writers.py:36-39 "
+                                      "resolves state_paths.STATS_DB at call "
+                                      "time and :132-139 runs lsof against that "
+                                      "redirected path. What it reports is live "
+                                      "OS state about the project's own DB file "
+                                      "(see also D#2326)"),
+    "runs.by_role": (SCOPED, "already wrapped in _with_project_stats_db(), and "
+                              "the wrapper reaches its data: "
+                              "agent_run_reader.by_role() -> _connect() -> "
+                              "_db_path() -> state_paths.STATS_DB "
+                              "(backend/agent_run_reader.py:37-40, 94). The "
+                              "agent_run table lives in the DuckDB the redirect "
+                              "moves, not the state-dir SQLite store -- which "
+                              "settles all six runs.* rows at once"),
+    "runs.percentiles": (SCOPED, "already wrapped in _with_project_stats_db(), "
+                                  "and the wrapper reaches its data: "
+                                  "agent_run_reader.duration_percentiles() -> "
+                                  "_connect() (backend/agent_run_reader.py:162)"),
+    "runs.stuck": (SCOPED, "already wrapped in _with_project_stats_db(), and "
+                            "the wrapper reaches its data: "
+                            "agent_run_reader.stuck_runs() -> _connect() "
+                            "(backend/agent_run_reader.py:239)"),
+    "runs.roundtrip": (SCOPED, "already wrapped in _with_project_stats_db(), "
+                                "and the wrapper reaches its data: "
+                                "agent_run_reader.roundtrip_latency() -> "
+                                "_connect() (backend/agent_run_reader.py:282)"),
+    "runs.active_over_time": (SCOPED, "already wrapped in "
+                                       "_with_project_stats_db(), and the "
+                                       "wrapper reaches its data: "
+                                       "agent_run_reader.concurrent_active() -> "
+                                       "_connect() "
+                                       "(backend/agent_run_reader.py:501)"),
+    "runs.recent": (SCOPED, "already wrapped in _with_project_stats_db(), and "
+                             "the wrapper reaches its data: "
+                             "agent_run_reader._recent() -> _connect() "
+                             "(backend/agent_run_reader.py:344)"),
+    "stats.cost_per_outcome": (SCOPED, "joins two sources: per-PR spend, "
+                                        "which _with_project_stats_db() does "
+                                        "reach via STATS_DB, and a merged-PR "
+                                        "list from `gh pr list --repo <slug>` "
+                                        "(backend/cost_per_outcome.py:42), "
+                                        "which it does not. Since D#2327 PR-a "
+                                        "the handler resolves that slug per "
+                                        "request from state_paths.for_project "
+                                        "and threads it through "
+                                        "cost_per_outcome_rows(repo=...), "
+                                        "declining with "
+                                        "UnresolvableProjectError when a named "
+                                        "project resolves to no slug -- PR "
+                                        "numbers collide across repos, so "
+                                        "mismatching the two halves is not a "
+                                        "harmless empty result"),
+
+    # -- Audited: bound to the serving checkout at import (D#2327 PR-a) -----
+    "stats.dora": (UNSCOPABLE, "was classified SCOPED on the shared 'already "
+                                "wrapped' string; it is wrapped, and the "
+                                "wrapper reaches nothing it reads. "
+                                "analytics_engineer.compute_snapshot() reads "
+                                "_RELEASES_DIR (analytics_engineer.py:49) and "
+                                "kpi_engine.REGISTRY (kpi_engine.py:27), both "
+                                "module constants built from "
+                                "Path(__file__).resolve().parent.parent at "
+                                "import and cached in sys.modules, and "
+                                "_compute_cfr() shells `gh api graphql` at the "
+                                "module-level REPO "
+                                "(analytics_engineer.py:97-102). PR #2312's "
+                                "code-reviewer was right that this handler "
+                                "ignores the project param entirely. Refuse "
+                                "rather than answer a cross-project request "
+                                "with the serving checkout's DORA numbers; "
+                                "de-anchoring analytics_engineer, "
+                                "release_manager and kpi_engine is a separate "
+                                "job"),
 }
 
 
@@ -362,6 +535,89 @@ def classification_for(method: str) -> "tuple[str, str] | None":
 def all_classifications() -> dict[str, tuple[str, str]]:
     """Return a shallow copy of the full classification registry."""
     return dict(_CLASSIFICATIONS)
+
+
+# ---------------------------------------------------------------------------
+# Data-source ledger (D#2327 PR-a)
+# ---------------------------------------------------------------------------
+# A reason string is prose: a human can read it, nothing can check it. That
+# is how nineteen methods came to share one unaudited claim, and how one of
+# them ended up classified SCOPED next to a justification saying it was not
+# scoped. This is the same answer in a form a guard can consume: for each
+# audited method, *what* it reads, which decides whether a per-request
+# override reaches it at all.
+#
+# Deliberately partial. It carries exactly the methods D#2327 PR-a audited
+# first-hand by reading each handler's read path -- not every classified
+# method. data_source_for() returns None for anything else, which a guard
+# should treat as "not audited, must be probed or explicitly ledgered"
+# rather than as a pass. Asserting a value here for a method nobody read
+# would recreate the defect this ledger exists to end.
+
+# The read bottoms out in a DuckDB connection whose path resolves through
+# state_paths.STATS_DB, so _with_project_stats_db()'s STATS_DB_PATH
+# redirect (and _EnvScope's) reaches it.
+DS_STATS_DB = "stats_db"
+
+# The read is a filesystem path resolved per request from the requested
+# project. The env redirect is irrelevant; the handler scopes itself.
+DS_PROJECT_PATH = "project_path"
+
+# The read shells out to GitHub against a repo slug resolved per request
+# from the requested project. Same: the handler scopes itself.
+DS_PROJECT_REPO = "project_repo"
+
+# The read is bound to the serving checkout -- a module constant built from
+# __file__ at import, or a slug resolved once and cached in sys.modules.
+# No per-request override reaches it. A SCOPED classification on one of
+# these is a lie, which is what the consistency guard checks.
+DS_SERVING_CHECKOUT = "serving_checkout"
+
+DATA_SOURCES_REACHED_BY_PROJECT = frozenset(
+    {DS_STATS_DB, DS_PROJECT_PATH, DS_PROJECT_REPO}
+)
+
+_DATA_SOURCES: dict[str, str] = {
+    "stats.summary": DS_STATS_DB,
+    "stats.series": DS_STATS_DB,
+    "stats.team_lead_tokens": DS_STATS_DB,
+    "stats.cost_spike_history": DS_STATS_DB,
+    "stats.role_success_rate": DS_STATS_DB,
+    "stats.role_retry_rate": DS_STATS_DB,
+    "stats.avg_fix_rounds_per_pr": DS_STATS_DB,
+    "stats.freshness_list": DS_STATS_DB,
+    "stats.pre_write_burn": DS_STATS_DB,
+    "stats_duckdb_writers": DS_STATS_DB,
+    "runs.by_role": DS_STATS_DB,
+    "runs.percentiles": DS_STATS_DB,
+    "runs.stuck": DS_STATS_DB,
+    "runs.roundtrip": DS_STATS_DB,
+    "runs.active_over_time": DS_STATS_DB,
+    "runs.recent": DS_STATS_DB,
+    # Reads .autonomous-team/loop-metrics.jsonl, not DuckDB. Was
+    # DS_SERVING_CHECKOUT before D#2327 PR-a resolved the path per project.
+    "stats.loop_idle_ratio": DS_PROJECT_PATH,
+    # Shell out to `gh` against a per-request slug. cost_per_outcome also
+    # reads STATS_DB for the spend half, but the repo slug is the half that
+    # was broken and the half that decides the row set.
+    "stats.weekly_velocity": DS_PROJECT_REPO,
+    "stats.cost_per_outcome": DS_PROJECT_REPO,
+    # Module constants from __file__ plus a module-level REPO slug.
+    "stats.dora": DS_SERVING_CHECKOUT,
+}
+
+
+def data_source_for(method: str) -> "str | None":
+    """Return the audited data source for *method*, or None if unaudited.
+
+    None means "nobody has read this handler's read path", not "safe".
+    """
+    return _DATA_SOURCES.get(method)
+
+
+def all_data_sources() -> dict[str, str]:
+    """Return a shallow copy of the audited data-source ledger."""
+    return dict(_DATA_SOURCES)
 
 
 # ---------------------------------------------------------------------------
@@ -422,7 +678,7 @@ def dispatch_scoped(method: str, params: dict, handler: Callable[[dict], Any]) -
             f"{method!r} has no entry in rpc_project_scope's classification "
             "registry — refusing rather than serving unscoped data"
         )
-    kind, _reason = classification
+    kind, reason = classification
 
     project = (params or {}).get("project") or None
 
@@ -432,11 +688,14 @@ def dispatch_scoped(method: str, params: dict, handler: Callable[[dict], Any]) -
         return handler(params)
 
     if kind == UNSCOPABLE:
+        # Carry the entry's own reason: each UNSCOPABLE method is blocked by
+        # a different mechanism, and the message used to name one specific
+        # follow-up (D#2261 PR-b) for all of them — wrong for every entry
+        # added since (D#2327 PR-a).
         raise UnscopableMethodError(
-            f"{method!r} cannot be scoped to project {project!r} yet — "
-            "de-anchoring it from this checkout is tracked separately "
-            "(D#2261 PR-b); refusing rather than serving this process's own "
-            "data under the requested project's name"
+            f"{method!r} cannot be scoped to project {project!r} — refusing "
+            "rather than serving this process's own data under the "
+            f"requested project's name. Blocker: {reason}"
         )
 
     if kind == SCOPED:

@@ -4,7 +4,7 @@
  * Resolution order, identical to the Python module:
  *   1. SNAPSHOT_PATH              — explicit full path (test override; still wins)
  *   2. AUTONOMOUS_TEAM_STATE_DIR  — the runtime state directory
- *   3. ~/.fulcrumaxe-state/loop-snapshot.json
+ *   3. ~/.autonomous-forever-state/loop-snapshot.json
  *
  * This is a pure mirror rather than a `python3 backend/snapshot_path.py` shell-out
  * so that reading the snapshot does not cost a subprocess. The default string
@@ -26,7 +26,7 @@ export const MAX_AGE_SECONDS = 600;
 
 /** Resolve the state directory (mirrors backend/state_paths.py STATE_DIR). */
 export function stateDir(): string {
-  return process.env["AUTONOMOUS_TEAM_STATE_DIR"] ?? join(homedir(), ".fulcrumaxe-state");
+  return process.env["AUTONOMOUS_TEAM_STATE_DIR"] ?? join(homedir(), ".autonomous-forever-state");
 }
 
 /** Resolve the canonical loop-snapshot path. */

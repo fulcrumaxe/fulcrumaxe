@@ -24,7 +24,7 @@ from pathlib import Path
 # Allow running as a script from repo root: `python3 backend/team_status.py`
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from backend._repo import REPO
+from backend._repo import CODE_REPO
 from backend.snapshot_path import SNAPSHOT_PATH
 from backend.gate_streak import current_streak, render_line as _gate_streak_render_line
 
@@ -204,7 +204,7 @@ def _prs_summary() -> dict:
     """Fetch open PRs and group by gate-label state."""
     rc, out = _run([
         "gh", "pr", "list",
-        "--repo", REPO,
+        "--repo", CODE_REPO,
         "--state", "open",
         "--json", "number,title,labels",
     ])
@@ -244,7 +244,7 @@ def _prs_summary() -> dict:
 
 
 def _team_tasks_summary() -> list[dict]:
-    """Primary: read recent tasks from ~/.claude/tasks/fulcrumaxe/.
+    """Primary: read recent tasks from ~/.claude/tasks/autonomous-forever/.
 
     Falls back to [] on any error — callers use agent-feed.jsonl as fallback.
     """
@@ -510,7 +510,7 @@ def _kpi_summary() -> dict:
 def _recent_merges() -> list[dict]:
     rc, out = _run([
         "gh", "pr", "list",
-        "--repo", REPO,
+        "--repo", CODE_REPO,
         "--state", "merged",
         "--limit", "3",
         "--json", "number,title,mergedAt",
@@ -612,7 +612,7 @@ def _freshness_label(age: float | None) -> str:
 def _human_output(data: dict, stale_message: str | None) -> str:
     lines: list[str] = []
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    lines.append(f"fulcrumaxe team status  —  {now_str}")
+    lines.append(f"autonomous-forever team status  —  {now_str}")
     lines.append("=" * 60)
 
     # Snapshot freshness
@@ -860,7 +860,7 @@ def main() -> None:
     def _once() -> None:
         snapshot, stale_message = _load_snapshot()
         # Best-effort maintenance: prune stale terminal substrate task files.
-        # This keeps ~/.claude/tasks/fulcrumaxe/ from accumulating indefinitely.
+        # This keeps ~/.claude/tasks/autonomous-forever/ from accumulating indefinitely.
         try:
             sys.path.insert(0, str(REPO_ROOT / "backend"))
             from agent_teams_substrate import prune_terminal_substrate_tasks  # noqa: PLC0415

@@ -35,7 +35,7 @@ def _make_span(
         span_id=_new_span_id(),
         parent_span_id="",
         operation_name=operation,
-        service_name="fulcrumaxe",
+        service_name="autonomous-forever",
         start_time_unix_nano=now - 1_000_000,
         end_time_unix_nano=now,
         status=status,

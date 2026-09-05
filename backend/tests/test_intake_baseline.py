@@ -26,7 +26,7 @@ sys.path.insert(0, str(_REPO_ROOT / "scripts" / "lib"))
 
 import intake_baseline as ib  # noqa: E402
 
-_KEY = "fulcrumaxe/fulcrumaxe#1672"
+_KEY = "autonomous-agent-7/fulcrumaxe#1672"
 
 
 def _current(content_sha256: str, last_edited_at=None, edit_count: int = 0) -> dict:
@@ -229,7 +229,7 @@ class TestKeyIsRepoScoped:
         sys.path.insert(0, str(_REPO_ROOT / "scripts" / "lib"))
         import external_intake_gate as gate  # noqa: E402
 
-        assert gate.DEFAULT_REPO_SLUG == "fulcrumaxe/fulcrumaxe"
+        assert gate.DEFAULT_DISCUSSION_REPO_SLUG == "autonomous-agent-7/fulcrumaxe"
 
 
 # ---------------------------------------------------------------------------

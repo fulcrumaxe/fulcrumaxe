@@ -288,7 +288,7 @@ fi
 echo ""
 echo "[cross-check] Discussion count consistency"
 if command -v gh >/dev/null 2>&1; then
-  GH_COUNT=$(gh api graphql -f query='query { repository(owner:"fulcrumaxe", name:"fulcrumaxe") { discussions(first:1) { totalCount } } }' \
+  GH_COUNT=$(gh api graphql -f query='query { repository(owner:"autonomous-agent-7", name:"fulcrumaxe") { discussions(first:1) { totalCount } } }' \
     --jq '.data.repository.discussions.totalCount' 2>/dev/null || echo "")
   if [ -n "$GH_COUNT" ] && [ -n "$REGISTRY" ]; then
     REG_TOTAL=$(echo "$REGISTRY" | python3 -c "

@@ -37,7 +37,7 @@
  *     slot (requires full Python backend.fleet.concurrency module); TS uses DuckDB
  *     counts. Parity is on the DECISION not on registration side-effects.
  *   - Dial check (bash vs TS): DOCUMENTED DIVERGENCE — bash sources dial levels from
- *     `backend/dial_registry.py` which reads `~/.fulcrumaxe-state/dial-registry.json`
+ *     `backend/dial_registry.py` which reads `~/.autonomous-forever-state/dial-registry.json`
  *     (the real runtime state dir, unaffected by AF_CONTROL_PLANE_CONFIG). The TS gate
  *     reads dial levels from `config.json` (the `dials` section, which is the control-plane
  *     fixture). These two sources are always in sync in production (same defaults, dial
@@ -588,7 +588,7 @@ describe("scenario: dial-denied", () => {
 
   it("bash dial check: uses real dial-registry.json (not config.json fixture)", () => {
     // DOCUMENTED DIVERGENCE: bash sources dial levels from backend/dial_registry.py
-    // which reads ~/.fulcrumaxe-state/dial-registry.json — the live runtime
+    // which reads ~/.autonomous-forever-state/dial-registry.json — the live runtime
     // state that CANNOT be overridden by AF_CONTROL_PLANE_CONFIG.
     //
     // The TS gate reads dials from config.json (the control-plane fixture).

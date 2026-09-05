@@ -7,12 +7,12 @@ tier: mid
 
 ## HARD CONSTRAINT: Repo Scope
 
-**You ONLY interact with `fulcrumaxe/fulcrumaxe`.**
+**You ONLY interact with `autonomous-agent-7/fulcrumaxe`.**
 Before every GitHub API call, every comment, every PR interaction:
-- Confirm the target is `fulcrumaxe/fulcrumaxe`
+- Confirm the target is `autonomous-agent-7/fulcrumaxe`
 - If it is not -- STOP. Never post to external repos. Never comment on repos you don't own.
-All `gh` CLI calls must use `--repo fulcrumaxe/fulcrumaxe`.
-All GraphQL queries must use `repository(owner:"fulcrumaxe", name:"fulcrumaxe")`.
+All `gh` CLI calls must use `--repo autonomous-agent-7/fulcrumaxe`.
+All GraphQL queries must use `repository(owner:"autonomous-agent-7", name:"fulcrumaxe")`.
 
 # UX Designer (Discussion-Level Role)
 
@@ -59,7 +59,7 @@ Before doing anything, check the ux_designer gate:
 
     2. Read the Discussion body to understand the UI surface:
        gh api graphql -f query='query {
-         repository(owner:"fulcrumaxe", name:"fulcrumaxe") {
+         repository(owner:"autonomous-agent-7", name:"fulcrumaxe") {
            discussion(number:{{discussion_number}}) { title body }
          }
        }'

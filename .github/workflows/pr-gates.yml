@@ -1,0 +1,95 @@
+name: PR gates
+
+# Two gates for the move to a public development repo (D#2348 PR-h). They
+# live in their own workflow rather than as jobs in ci.yml for one reason
+# that is not organisational: they need a DIFFERENT TRIGGER.
+#
+# Both read something that is not the commit — one reads the PR body, the
+# other reads the PR's diff against its base — and a PR body can be edited
+# after a check has passed, with no new commit and no re-run. On ci.yml's
+# trigger set (opened, synchronize, reopened by default) the link-policy gate
+# would pass on an open, and a violating URL pasted in afterwards would never
+# be looked at again. That is a hole in the one gate whose entire subject is
+# trivially mutable, so it is worth closing rather than documenting.
+#
+# Adding `edited` to ci.yml itself would re-run the whole matrix — three
+# workspace legs, the export audit, the backend job's twelve guards, and
+# preflight — every time somebody fixes a typo in a description. These two
+# jobs take ~18s combined. Splitting them out buys the coverage at roughly a
+# tenth of the cost, and leaves ci.yml's triggers exactly as they were.
+#
+# Deliberately the plain `pull_request` event, never the write-token-exposing
+# variant of that name, so fork PRs get GitHub's default read-only,
+# secret-free token — same reasoning as ci.yml's own header. See D#1537.
+#
+# Neither job is in CI_REQUIRED_CHECKS (scripts/lib/ci-status-check.sh). That
+# array's four names are exact-string matched by the merge gate and adding to
+# it is a separate decision (D#2348 PR-h item 4). These report; they do not
+# block a merge today.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+jobs:
+  pr-link-policy:
+    name: PR link policy
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    # Same kill switch as every job in ci.yml: repo variable CI_DISABLED
+    # stands it down. Change it with scripts/set-ci-kill-switch.sh so the
+    # change is audited.
+    if: vars.CI_DISABLED != 'true'
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # The body is read from the event payload on disk and written to a
+      # file. It is NOT passed through `env:`, which is how this first
+      # shipped and was wrong in the most embarrassing possible way: the
+      # runner prints a step's env block into the log before the step runs,
+      # so a body containing the private slug was published verbatim to a
+      # log — permanently, and precisely on the bodies this gate exists to
+      # catch. Measured in run 33899845562: the raw body landed at
+      # 17:18:23.3167824Z and the script's own careful redaction 36ms later
+      # at .3532574Z. The redaction was correct and arrived after the runner
+      # had already published the thing.
+      #
+      # ::add-mask:: from a preceding step would also work, but it fails
+      # open — it depends on the mask being registered first and on the
+      # literal matching exactly. Reading from $GITHUB_EVENT_PATH means the
+      # body never enters an environment the runner echoes at all. Only the
+      # file PATH goes in `env:`, which is safe to print.
+      - name: PR body link policy
+        env:
+          PR_BODY_FILE: ${{ runner.temp }}/pr-body.txt
+        run: |
+          jq -r '.pull_request.body // ""' "$GITHUB_EVENT_PATH" > "$PR_BODY_FILE"
+          bash scripts/ci/pr-link-policy.sh
+
+  publish-denylist:
+    name: publish denylist
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    if: vars.CI_DISABLED != 'true'
+    timeout-minutes: 5
+    steps:
+      # fetch-depth: 0, not the default 1. This gate diffs the PR head
+      # against the base commit with three-dot syntax, which needs a real
+      # merge base in the object store; a shallow fetch leaves the base ref
+      # either absent or historyless. The script hard-fails rather than
+      # skipping when the base does not resolve, so getting this wrong is a
+      # red check-run and not a silent pass — but the point is to get it
+      # right.
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Publish denylist (added paths)
+        env:
+          PUBLISH_DENYLIST_BASE: ${{ github.event.pull_request.base.sha }}
+        run: bash scripts/ci/publish-denylist.sh

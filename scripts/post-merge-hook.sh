@@ -110,9 +110,30 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # shellcheck source=scripts/lib/repo-resolve.sh
 source "$SCRIPT_DIR/lib/repo-resolve.sh"
-_REPO="$(_resolve_repo)"
-_REPO_OWNER="${_REPO%/*}"
-_REPO_NAME="${_REPO#*/}"
+# Two planes, because this file talks to both harder than anything else in the
+# tree. Everything that names a PR takes the code slug: `gh pr view`, `gh pr
+# list`, the `repos/<slug>/issues/<pr>/timeline` REST read, and the two python
+# heredocs that shell back out to `gh pr`. Everything that names a Discussion
+# takes the Discussion slug: the five `repository(owner:…){discussion(…)}`
+# GraphQL reads below, and the planned-prs label helpers.
+#
+# The label helpers are the one call in this file that is classified by what it
+# does rather than by the flag it carries. planned_prs_label_apply runs
+# `gh label create --repo <owner>/<name>` — a --repo, which everywhere else in
+# this file means the code plane — but the label it creates exists to be applied
+# to a Discussion, so it has to be created in the repo where that Discussion
+# lives. It takes the Discussion slug.
+#
+# _DISCUSSION_OWNER/_DISCUSSION_NAME are named for the plane they serve rather
+# than for the variable they used to be split from: their only consumers are
+# Discussion queries, so calling them _REPO_OWNER/_REPO_NAME after the split
+# would leave the wrong half of the file looking like the default.
+_CODE_REPO="$(_resolve_code_repo)"
+_DISCUSSION_REPO="$(_resolve_discussion_repo)"
+_DISCUSSION_OWNER="${_DISCUSSION_REPO%/*}"
+_DISCUSSION_NAME="${_DISCUSSION_REPO#*/}"
+# shellcheck source=scripts/lib/resolve-pr-discussion.sh
+source "$SCRIPT_DIR/lib/resolve-pr-discussion.sh"
 # shellcheck source=scripts/lib/discussion-close-guard.sh
 source "$SCRIPT_DIR/lib/discussion-close-guard.sh"
 # shellcheck source=scripts/lib/planned-prs-label.sh
@@ -153,7 +174,7 @@ except Exception:
 " 2>/dev/null || echo "0")
     echo "${recorded_true:-0}"
   else
-    title_count=$(gh pr list --repo $_REPO \
+    title_count=$(gh pr list --repo "$_CODE_REPO" \
       --state merged --json number,title \
       --jq "[.[] | select(.title | startswith(\"#${disc}:\"))] | length" \
       2>/dev/null || echo "0")
@@ -193,36 +214,31 @@ if [[ -z "$PR" ]]; then
 fi
 
 # ── Auto-detect discussions from PR body if not provided ─────────────────────
-# Matches (case-insensitive): Closes/Fixes/Resolves followed by D#N or #N.
-# Bare "D#N" or "Discussion #N" with no closing keyword are intentionally excluded
-# to avoid auto-closing Discussions that are only mentioned as related work.
-# Each candidate is validated via GraphQL — Issues/PRs are skipped.
+# The extraction and per-candidate GraphQL validation live in
+# scripts/lib/resolve-pr-discussion.sh, which is also what merge-and-hook.sh's
+# HG-7 check calls. This file used to carry its own byte-level copy of that
+# logic; the copy is what made "fix the shared lib" insufficient, because a fix
+# landed in one place and not the other. The header comment on that file is the
+# contract — including which closing keywords count and why a bare "D#N"
+# mention deliberately does not.
+#
+# --all is what this caller needs and merge-and-hook.sh does not: a PR may close
+# several Discussions at once and this hook closes every one of them, whereas
+# HG-7 wants the single originating Discussion to check provenance against.
+# Measured on the 200 most recently merged PRs of autonomous-agent-7/fulcrumaxe
+# (2026-09-04, operator host): 1 of them — #2224 — names three distinct
+# Discussions, so the plural case is live, not hypothetical.
+#
 # Builds DISCUSSIONS array; DISCUSSION is set to first entry for backward compat.
 declare -a DISCUSSIONS=()
 if [[ -n "$DISCUSSION" ]]; then
   DISCUSSIONS=("$DISCUSSION")
 else
-  PR_BODY=$(gh pr view "$PR" --repo $_REPO --json body \
-    --jq '.body' 2>/dev/null || echo "")
-
-  # Extract all candidate numbers from recognised closing-keyword patterns only
-  RAW_NUMS=$(echo "$PR_BODY" \
-    | grep -oiE '([Cc]loses|[Rr]esolves|[Ff]ixes) (D#|#)[0-9]+' \
-    | grep -oE '[0-9]+' \
-    | sort -u)
-
-  for CAND in $RAW_NUMS; do
-    # Validate: GraphQL returns non-null id only for Discussions (not Issues/PRs)
-    DISC_VALID=$(gh api graphql \
-      -f query="query { repository(owner:\"${_REPO_OWNER}\", name:\"${_REPO_NAME}\") { discussion(number:$CAND) { id } } }" \
-      --jq '.data.repository.discussion.id' 2>/dev/null || echo "")
-    if [[ -n "$DISC_VALID" && "$DISC_VALID" != "null" ]]; then
-      DISCUSSIONS+=("$CAND")
-      echo "[post-merge-hook] Auto-detected Discussion #$CAND from PR #$PR body"
-    else
-      echo "[post-merge-hook] Skipping #$CAND — not a Discussion (Issue/PR or missing)"
-    fi
-  done
+  while IFS= read -r CAND; do
+    [[ -n "$CAND" ]] || continue
+    DISCUSSIONS+=("$CAND")
+    echo "[post-merge-hook] Auto-detected Discussion #$CAND from PR #$PR body"
+  done < <(resolve_pr_discussion "$PR" "$_CODE_REPO" "$_DISCUSSION_REPO" --all || true)
 fi
 
 # First entry used for backward-compat single-Discussion fields
@@ -301,7 +317,7 @@ if ! hook_event_has_step "discussion_close"; then
     # guard.sh does the max-across-body-and-comments resolution, not this
     # hub file.
     DISC_DATA=$(gh api graphql \
-      -f query="query { repository(owner:\"${_REPO_OWNER}\", name:\"${_REPO_NAME}\") { discussion(number:$DISCUSSION) { id body comments(first:100) { pageInfo { hasNextPage } nodes { body } } } } }" \
+      -f query="query { repository(owner:\"${_DISCUSSION_OWNER}\", name:\"${_DISCUSSION_NAME}\") { discussion(number:$DISCUSSION) { id body comments(first:100) { pageInfo { hasNextPage } nodes { body } } } } }" \
       --jq '.data.repository.discussion' 2>/dev/null || echo "")
     DISC_ID=$(echo "$DISC_DATA" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('id',''))" 2>/dev/null || echo "")
     CURRENT_BODY=$(echo "$DISC_DATA" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('body',''))" 2>/dev/null || echo "")
@@ -348,7 +364,7 @@ print('\n'.join(n.get('body', '') for n in nodes))
 
         # needs-planned-prs backstop (D#2272): a closed Discussion must not
         # keep a stale "missing the field" flag on it.
-        planned_prs_label_clear "$_REPO_OWNER" "$_REPO_NAME" "$DISC_ID"
+        planned_prs_label_clear "$_DISCUSSION_OWNER" "$_DISCUSSION_NAME" "$DISC_ID"
 
         # Update Discussion STATUS to DONE — anchored, single-marker write
         # via backend/discussion_status.py's set-status CLI (D#2021 §4).
@@ -391,14 +407,14 @@ print('\n'.join(n.get('body', '') for n in nodes))
       if [[ -n "$DISC_ID" ]]; then
         PLANNED_PRS_LABEL_ACTION=$(planned_prs_label_action "$CLOSE_DECISION")
         case "$PLANNED_PRS_LABEL_ACTION" in
-          apply) planned_prs_label_apply "$_REPO_OWNER" "$_REPO_NAME" "$DISC_ID" ;;
+          apply) planned_prs_label_apply "$_DISCUSSION_OWNER" "$_DISCUSSION_NAME" "$DISC_ID" ;;
           # noop for "hold" — planned_prs WAS declared, nothing missing to flag.
         esac
       fi
 
       if [[ -n "$DISC_ID" ]]; then
         LAST_HOOK_COMMENT=$(gh api graphql \
-          -f query="query { repository(owner:\"${_REPO_OWNER}\", name:\"${_REPO_NAME}\") { discussion(number:$DISCUSSION) { comments(last:1) { nodes { body } } } } }" \
+          -f query="query { repository(owner:\"${_DISCUSSION_OWNER}\", name:\"${_DISCUSSION_NAME}\") { discussion(number:$DISCUSSION) { comments(last:1) { nodes { body } } } } }" \
           --jq '.data.repository.discussion.comments.nodes[0].body' 2>/dev/null || echo "")
         HOLD_COMMENT="PR #${PR} merged. Not closing Discussion #${DISCUSSION}: ${CLOSE_REASON}"
         if [[ "$LAST_HOOK_COMMENT" != "$HOLD_COMMENT" ]]; then
@@ -446,9 +462,17 @@ except Exception:
         if [[ -n "$COST_MD" ]]; then
           ESCAPED_MD=$(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$COST_MD" 2>/dev/null || echo "")
           if [[ -n "$ESCAPED_MD" ]]; then
+            # NOTE: `gh api` has no --repo flag (measured 2026-09-04, gh on the
+            # operator host: `unknown flag: --repo`, rc=1), so this argument has
+            # never been accepted and this cost comment has never posted. It is
+            # classified onto the Discussion plane here — the comment targets a
+            # Discussion — rather than removed, because removing it would start
+            # posting a comment this hook has never posted. That is a behaviour
+            # change, and this PR is a slug split that must stay a no-op. Filed
+            # for a separate fix.
             gh api graphql \
               -f query="mutation { addDiscussionComment(input:{discussionId:\"$DISC_ID\", body:$ESCAPED_MD}) { comment { id } } }" \
-              --repo "$_REPO" \
+              --repo "$_DISCUSSION_REPO" \
               2>/dev/null \
               && echo "[post-merge-hook] Cost comment posted to Discussion #$DISCUSSION (total: \$$COST_TOTAL)" \
               || echo "[post-merge-hook] Warning: cost comment GraphQL mutation failed (non-fatal)" >&2
@@ -491,9 +515,9 @@ if ! hook_event_has_step "completion_block"; then
     if [[ "$WRITE_COMPLETION" == "true" ]]; then
       # Fetch Discussion created_at and PR merged_at to compute actual_hours
       DISC_CREATED_AT=$(gh api graphql \
-        -f query="query { repository(owner:\"${_REPO_OWNER}\", name:\"${_REPO_NAME}\") { discussion(number:${DISCUSSION}) { createdAt } } }" \
+        -f query="query { repository(owner:\"${_DISCUSSION_OWNER}\", name:\"${_DISCUSSION_NAME}\") { discussion(number:${DISCUSSION}) { createdAt } } }" \
         --jq '.data.repository.discussion.createdAt' 2>/dev/null || echo "")
-      PR_MERGED_AT=$(gh pr view "$PR" --repo $_REPO \
+      PR_MERGED_AT=$(gh pr view "$PR" --repo "$_CODE_REPO" \
         --json mergedAt --jq '.mergedAt' 2>/dev/null || echo "")
 
       if [[ -n "$DISC_CREATED_AT" && -n "$PR_MERGED_AT" ]]; then
@@ -711,7 +735,7 @@ fi
 # Operator reads .autonomous-team/needs-tmux-reload and reloads the tmux session.
 # Auto-restart is intentionally out of scope — we only signal, not act.
 if ! hook_event_has_step "tmux_reload_flag"; then
-  CLAUDE_MD_TOUCHED=$(gh pr view "$PR" --repo $_REPO \
+  CLAUDE_MD_TOUCHED=$(gh pr view "$PR" --repo "$_CODE_REPO" \
     --json files --jq '[.files[].path | select(. == "CLAUDE.md")] | length' \
     2>/dev/null || echo "0")
 
@@ -773,7 +797,7 @@ fi
 
 # ── 5. Browser-tour queue — enqueue a tour if this PR touched dashboard/ ────────
 if ! hook_event_has_step "browser_tour_queue"; then
-  CHANGED_DASHBOARD_FILES=$(gh pr view "$PR" --repo $_REPO \
+  CHANGED_DASHBOARD_FILES=$(gh pr view "$PR" --repo "$_CODE_REPO" \
     --json files --jq '[.files[].path | select(startswith("dashboard/"))] | join("\n")' \
     2>/dev/null || echo "")
 
@@ -849,17 +873,17 @@ if ! hook_event_has_step "stats_metrics"; then
   DISC_TAG=""
   if [[ -n "$DISCUSSION" ]]; then
     DISC_TAG=$(gh api graphql \
-      -f query="query { repository(owner:\"${_REPO_OWNER}\", name:\"${_REPO_NAME}\") { discussion(number:${DISCUSSION}) { title } } }" \
+      -f query="query { repository(owner:\"${_DISCUSSION_OWNER}\", name:\"${_DISCUSSION_NAME}\") { discussion(number:${DISCUSSION}) { title } } }" \
       --jq '.data.repository.discussion.title' 2>/dev/null \
       | grep -oP '^\[([A-Za-z]+)\]' | tr -d '[]' || echo "")
   fi
 
   # PR creation time for time_to_merge calculation
-  PR_CREATED_AT=$(gh pr view "$PR" --repo $_REPO \
+  PR_CREATED_AT=$(gh pr view "$PR" --repo "$_CODE_REPO" \
     --json createdAt --jq '.createdAt' 2>/dev/null || echo "")
 
   # Count fix cycles: times code-review-needs-fix was applied before merge
-  FIX_CYCLE_COUNT=$(gh pr view "$PR" --repo $_REPO \
+  FIX_CYCLE_COUNT=$(gh pr view "$PR" --repo "$_CODE_REPO" \
     --json timelineItems \
     --jq '[.timelineItems.nodes[] | select(.label.name == "code-review-needs-fix")] | length' \
     2>/dev/null || echo "0")
@@ -903,7 +927,7 @@ except Exception:
   fi
 
   # pr_file_conflict_score: overlap with PRs merged in previous 6h
-  CONFLICT_SCORE=$(_PMH_PR="$PR" _PMH_REPO="$_REPO" python3 - <<'PYEOF'
+  CONFLICT_SCORE=$(_PMH_PR="$PR" _PMH_REPO="$_CODE_REPO" python3 - <<'PYEOF'
 import subprocess, json, sys, datetime, os
 
 pr = os.environ.get("_PMH_PR", "")
@@ -957,7 +981,7 @@ PYEOF
   SPEC_READY_TS=""
   if [[ -n "$DISCUSSION" ]]; then
     DISC_BODY=$(gh api graphql \
-      -f query="query { repository(owner:\"${_REPO_OWNER}\", name:\"${_REPO_NAME}\") { discussion(number:${DISCUSSION}) { body } } }" \
+      -f query="query { repository(owner:\"${_DISCUSSION_OWNER}\", name:\"${_DISCUSSION_NAME}\") { discussion(number:${DISCUSSION}) { body } } }" \
       --jq '.data.repository.discussion.body' 2>/dev/null || echo "")
     # [^>]* rather than a literal space: BLOCKED-BY: sits between STATUS: and
     # SINCE: on the canonical line (wiki/Discussion-Status-Protocol.md), and
@@ -968,14 +992,14 @@ PYEOF
   fi
 
   # reviewer_acceptance_latency_seconds: PR open -> first code-review-passed label
-  REVIEWER_ACCEPT_TS=$(gh api "repos/$_REPO/issues/${PR}/timeline" \
+  REVIEWER_ACCEPT_TS=$(gh api "repos/$_CODE_REPO/issues/${PR}/timeline" \
     --jq '[.[] | select(.event == "labeled" and .label.name == "code-review-passed")] | first | .created_at' \
     2>/dev/null || echo "")
 
   # acceptance_criteria_pass_rate: parse AC from Discussion spec, check PR body coverage
   AC_PASS_RATE="-1"
   if [[ -n "$DISCUSSION" && -n "${DISC_BODY:-}" ]]; then
-    AC_PASS_RATE=$(_PMH_DISC_BODY="$DISC_BODY" _PMH_PR="$PR" _PMH_REPO="$_REPO" python3 - <<'PYEOF'
+    AC_PASS_RATE=$(_PMH_DISC_BODY="$DISC_BODY" _PMH_PR="$PR" _PMH_REPO="$_CODE_REPO" python3 - <<'PYEOF'
 import os, re, subprocess, json
 
 disc_body = os.environ.get("_PMH_DISC_BODY", "")

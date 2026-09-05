@@ -78,7 +78,7 @@ _vt_ppid() { awk '/^PPid:/ { print $2 }' "/proc/$1/status" 2>/dev/null; }
 _vt_manifest_dir() {
   local sd
   sd="$(python3 "$(_vt_repo_root)/backend/state_paths.py" 2>/dev/null | head -1)"
-  [ -n "$sd" ] || sd="${AUTONOMOUS_TEAM_STATE_DIR:-$HOME/.fulcrumaxe-state}"
+  [ -n "$sd" ] || sd="${AUTONOMOUS_TEAM_STATE_DIR:-$HOME/.autonomous-forever-state}"
   printf '%s/tree-manifests\n' "$sd"
 }
 

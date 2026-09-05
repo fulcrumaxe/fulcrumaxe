@@ -1,5 +1,5 @@
 """
-Unified CLI entry point for all fulcrumaxe backend operations.
+Unified CLI entry point for all autonomous-forever backend operations.
 
 Usage:
     python backend/cli.py <command> [args...]
@@ -242,7 +242,7 @@ def _delegate_serve(argv: list[str]) -> int:
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="af",
-        description="Unified CLI for fulcrumaxe backend operations.",
+        description="Unified CLI for autonomous-forever backend operations.",
     )
     sub = p.add_subparsers(dest="command", metavar="command")
     sub.required = True

@@ -817,7 +817,7 @@ _ARCHIVE_README_TEMPLATE = """\
 The repo-root `state.db` and/or `stats.duckdb` files that D#1908 PR 3's
 `backend/migrate_state_to_dir.py --apply` merged into the live external
 state dir (`$AUTONOMOUS_TEAM_STATE_DIR`, default
-`~/.fulcrumaxe-state/`) on {date}.
+`~/.autonomous-forever-state/`) on {date}.
 
 ## Why removed
 

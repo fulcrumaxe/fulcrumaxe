@@ -8,7 +8,7 @@
 #
 # How it works:
 #   Scans the Claude Code transcript JSONL at
-#   ~/.claude/projects/-home-agent-fulcrumaxe/*.jsonl
+#   ~/.claude/projects/-home-agent-autonomous-forever/*.jsonl
 #   for entries with role=assistant and type=usage that contain
 #   cache_creation_input_tokens. Groups by the first assistant turn
 #   in each session. Reports the median across sessions per role.
@@ -21,7 +21,7 @@ set -euo pipefail
 
 ROLES="executor,code-reviewer,project-manager"
 CSV_OUT=""
-TRANSCRIPT_DIR="$HOME/.claude/projects/-home-agent-fulcrumaxe"
+TRANSCRIPT_DIR="$HOME/.claude/projects/-home-agent-autonomous-forever"
 
 usage() {
   grep '^#' "$0" | sed 's/^# \?//' | head -20

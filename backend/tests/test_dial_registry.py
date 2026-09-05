@@ -2,7 +2,7 @@
 Comprehensive tests for backend.dial_registry.
 
 All tests run in a fresh temporary state directory so they never touch
-the real ~/.fulcrumaxe-state/ directory.
+the real ~/.autonomous-forever-state/ directory.
 """
 
 from __future__ import annotations

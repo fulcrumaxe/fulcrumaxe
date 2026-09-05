@@ -17,12 +17,16 @@ interface SdkVsCcRow {
   run_count: number
   median_input_tok: number | null
   median_output_tok: number | null
+  /** Runs in this group that actually recorded a verdict — pass_rate's denominator. */
+  verdict_count?: number
   pass_rate: number | null
 }
 
 interface SdkVsCcResponse {
   rows: SdkVsCcRow[]
   has_routed_via: boolean
+  /** Runs dropped by the routed_via filter. Not "no runs" — unattributed runs. */
+  excluded_unrouted_runs?: number
   generated_at: string
   error: string | null
 }
@@ -33,6 +37,9 @@ function fmtTok(v: number | null): string {
   return String(v)
 }
 
+// null pass_rate means no run in the group ever recorded a verdict. That is
+// not a 0% pass rate, and rendering it as one is how 22 roles came to report a
+// confident "0.0%" nobody had measured.
 function fmtRate(v: number | null): string {
   if (v === null || v === undefined) return '—'
   return `${(v * 100).toFixed(1)}%`
@@ -76,6 +83,12 @@ export default function SdkVsCcTile({ refreshSignal }: Props) {
 
   const rows: SdkVsCcRow[] = data?.rows ?? []
   const hasData = rows.length > 0
+  const excluded = data?.excluded_unrouted_runs ?? 0
+  const excludedNote =
+    excluded > 0
+      ? `${excluded.toLocaleString()} run${excluded === 1 ? '' : 's'} are not attributed ` +
+        'to a route and are not counted above.'
+      : null
 
   return (
     <section style={sharedStyles.section} data-testid="sdk-vs-cc-tile">
@@ -88,6 +101,7 @@ export default function SdkVsCcTile({ refreshSignal }: Props) {
           {data?.has_routed_via === false
             ? 'No SDK runs recorded yet — routed_via column absent or all runs pre-date D#1331.'
             : 'No SDK runs recorded yet.'}
+          {excludedNote ? <div style={{ marginTop: 6 }}>{excludedNote}</div> : null}
         </div>
       ) : (
         <table style={sharedStyles.table}>
@@ -139,6 +153,10 @@ export default function SdkVsCcTile({ refreshSignal }: Props) {
           </tbody>
         </table>
       )}
+
+      {!loading && hasData && excludedNote ? (
+        <div style={{ ...sharedStyles.state, marginTop: 8 }}>{excludedNote}</div>
+      ) : null}
     </section>
   )
 }

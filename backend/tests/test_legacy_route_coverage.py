@@ -52,7 +52,7 @@ from fastapi.testclient import TestClient
 # Paths used by the runtime parser
 # ---------------------------------------------------------------------------
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent.parent  # fulcrumaxe/
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent  # autonomous-forever/
 _API_PY = _REPO_ROOT / "backend" / "api.py"
 
 # Parser sanity: if we find fewer than this many routes something is broken

@@ -36,7 +36,19 @@ source "$SCRIPT_DIR/lib/repo-resolve.sh"
 # shellcheck source=scripts/lib/ci-status-check.sh
 source "$SCRIPT_DIR/lib/ci-status-check.sh"
 
-_REPO="$(_resolve_repo)"
+# The CODE plane. Actions variables live with CI, and the gate that honours this
+# kill switch reads it from the code plane: merge-and-hook.sh:233 and
+# loop-phased-step5.sh:160 both call `check_ci_status "$PR" "$_CODE_REPO"`,
+# which reaches ci-status-check.sh's _ci_kill_switch_state and reads
+# repos/<code plane>/actions/variables/CI_DISABLED.
+#
+# Resolving the write side through _resolve_repo would put the switch and the
+# gate that honours it on different repos after the cutover. That fails closed
+# — the reader gets a 404, treats it as "not disabled", and CI keeps running —
+# so the visible symptom is CI refusing to stand down rather than a silent
+# bypass. A kill switch that cannot be read is still a kill switch that does not
+# work, and this is the half that has to move.
+_REPO="$(_require_code_repo "set-ci-kill-switch")" || exit 1
 
 NEW_VALUE=""
 REASON=""

@@ -215,7 +215,7 @@ class TestInnovateTickGuardIntegration(unittest.TestCase):
 
     def test_project_loop_run_blocked_by_headless_ua(self) -> None:
         os.environ.pop("AF_ALLOW_TEST_ORIGIN_SPAWNS", None)
-        resp = self._post("/api/projects/fulcrumaxe/loop/run", ua="HeadlessChrome/120")
+        resp = self._post("/api/projects/autonomous-forever/loop/run", ua="HeadlessChrome/120")
         self.assertEqual(resp.status, 403)
 
 

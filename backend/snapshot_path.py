@@ -10,7 +10,7 @@ Resolution order (highest priority first):
    override, used heavily by ``tests/test_merge_gate.sh`` and
    ``tests/test_loop_phased_step5.sh``; it still wins.
 2. ``AUTONOMOUS_TEAM_STATE_DIR``  — via ``backend.state_paths.STATE_DIR``.
-3. ``~/.fulcrumaxe-state/loop-snapshot.json`` — the default.
+3. ``~/.autonomous-forever-state/loop-snapshot.json`` — the default.
 
 Not ``/tmp``: ``backend/state_paths.py`` is the declared home for mutable runtime
 state, and a ``/tmp`` file is a guaranteed cold miss after every reboot.  The

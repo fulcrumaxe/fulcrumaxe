@@ -27,7 +27,7 @@ try:
         r = json.load(f).get('repo', '')
 except Exception:
     r = ''
-print(r or 'fulcrumaxe/fulcrumaxe')
+print(r or 'autonomous-agent-7/fulcrumaxe')
 " 2>/dev/null)
 _PANEL_HELPERS_REPO_OWNER="${_PANEL_HELPERS_REPO%%/*}"
 _PANEL_HELPERS_REPO_NAME="${_PANEL_HELPERS_REPO##*/}"

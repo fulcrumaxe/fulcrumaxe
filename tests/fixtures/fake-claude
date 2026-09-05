@@ -1,0 +1,223 @@
+#!/usr/bin/env bash
+# tests/fixtures/fake-claude — minimal stand-in for the parts of the real
+# `claude` CLI that open-source/checks/plugin-install-gate.sh calls. This
+# is NOT a general-purpose mock; it exists to prove specific properties
+# per tests/test_plugin_install_gate_isolation.sh, toggled by
+# FAKE_CLAUDE_MODE:
+#
+#   compliant (default) honors CLAUDE_CONFIG_DIR for every subcommand, like
+#   a real, well-behaved build (confirmed against real claude 2.1.258 and
+#   2.1.187 by the coordinator). Running the real gate against it MUST
+#   PASS.
+#
+#   noncompliant ignores CLAUDE_CONFIG_DIR entirely and always reads/writes
+#   FAKE_CLAUDE_FIXED_STATE_DIR instead, for every subcommand -- simulating
+#   a hypothetical future claude build that silently stops honoring the
+#   isolation override across the board. Running the real gate against it
+#   MUST FAIL.
+#
+#   noncompliant-install honors CLAUDE_CONFIG_DIR for the marketplace
+#   subcommands (add/list/remove) but ignores it for install/uninstall/
+#   details, which read/write FAKE_CLAUDE_FIXED_STATE_DIR instead --
+#   simulating a build whose marketplace subsystem and plugin-install
+#   subsystem don't uniformly respect the same override. This is the
+#   harder, partially-compliant adversary both reviewers built independently
+#   against round 2; running the real gate against it MUST FAIL too.
+#
+# Supports exactly the subcommands the gate calls: plugin marketplace
+# add/list/remove, plugin install/uninstall (plus their --help), plugin
+# details. Anything else is a usage error -- this is a test fixture, not a
+# CLI, and should stay just big enough to support that comparison.
+
+set -uo pipefail
+
+MODE="${FAKE_CLAUDE_MODE:-compliant}"
+case "$MODE" in
+  compliant)
+    : "${CLAUDE_CONFIG_DIR:?fake-claude: CLAUDE_CONFIG_DIR is not set}"
+    MARKETPLACE_STATE_DIR="$CLAUDE_CONFIG_DIR"
+    INSTALL_STATE_DIR="$CLAUDE_CONFIG_DIR"
+    ;;
+  noncompliant)
+    : "${FAKE_CLAUDE_FIXED_STATE_DIR:?fake-claude: FAKE_CLAUDE_FIXED_STATE_DIR must be set in noncompliant mode}"
+    MARKETPLACE_STATE_DIR="$FAKE_CLAUDE_FIXED_STATE_DIR"
+    INSTALL_STATE_DIR="$FAKE_CLAUDE_FIXED_STATE_DIR"
+    ;;
+  noncompliant-install)
+    : "${CLAUDE_CONFIG_DIR:?fake-claude: CLAUDE_CONFIG_DIR is not set}"
+    : "${FAKE_CLAUDE_FIXED_STATE_DIR:?fake-claude: FAKE_CLAUDE_FIXED_STATE_DIR must be set in noncompliant-install mode}"
+    MARKETPLACE_STATE_DIR="$CLAUDE_CONFIG_DIR"
+    INSTALL_STATE_DIR="$FAKE_CLAUDE_FIXED_STATE_DIR"
+    ;;
+  *)
+    echo "fake-claude: unknown FAKE_CLAUDE_MODE '$MODE' (expected compliant, noncompliant, or noncompliant-install)" >&2
+    exit 89
+    ;;
+esac
+
+MARKETPLACES_FILE="$MARKETPLACE_STATE_DIR/plugins/known_marketplaces.json"
+MARKETPLACE_SOURCES_DIR="$MARKETPLACE_STATE_DIR/plugins/sources"
+INSTALLED_FILE="$INSTALL_STATE_DIR/plugins/installed_plugins.json"
+INSTALL_SOURCES_DIR="$INSTALL_STATE_DIR/plugins/sources"
+mkdir -p "$(dirname "$MARKETPLACES_FILE")" "$MARKETPLACE_SOURCES_DIR" \
+         "$(dirname "$INSTALLED_FILE")" "$INSTALL_SOURCES_DIR"
+
+read_name() {
+  grep -m1 '"name"' "$1" | sed -E 's/.*"name"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/'
+}
+
+if [[ "${1:-}" != "plugin" ]]; then
+  echo "fake-claude: expected 'plugin' as first argument, got: ${1:-}" >&2
+  exit 90
+fi
+shift
+
+case "${1:-}" in
+  marketplace)
+    shift
+    case "${1:-}" in
+      add)
+        src_dir="$2"
+        name="$(read_name "$src_dir/.claude-plugin/marketplace.json")"
+        printf '%s|%s\n' "$name" "$src_dir" > "$MARKETPLACE_SOURCES_DIR/$name.src"
+        # MARKETPLACES_FILE's container and value keys below are not invented:
+        # they match a direct read of a real known_marketplaces.json (host
+        # nixos, three real GitHub-sourced entries, read 2026-09-03; see the
+        # D#2213 PR body for the verbatim dump) -- an object keyed by the bare
+        # marketplace name, whose value carries "source", "installLocation",
+        # and "lastUpdated".
+        #
+        # "source" is DELIBERATELY OMITTED here. The confirmed dump only
+        # covers a GitHub-added marketplace ({"source":"github","repo":...}).
+        # This gate always adds from a LOCAL DIRECTORY
+        # (`plugin marketplace add "$export_dir"`), and no dump of that case
+        # was obtainable: this sandbox blocks any script (this fixture
+        # included) from spawning the real `claude` CLI to produce one, and
+        # a researcher spawn requested from inside worktree isolation is
+        # blocked the same way (single-spawner invariant -- confirmed by
+        # testing both, see the D#2213 PR body). Per D#2213's Spec, an
+        # unconfirmed shape is left out rather than guessed: inventing a
+        # plausible-looking "source" value here would be the exact defect
+        # this fixture is being corrected for, wearing a citation.
+        #
+        # installLocation/lastUpdated are VALUES, not shapes, so they're
+        # safe to synthesise: a real path under this isolated state dir, and
+        # an actual ISO8601 timestamp.
+        install_location="$MARKETPLACE_STATE_DIR/plugins/marketplaces/$name"
+        last_updated="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
+        printf '{"%s":{"installLocation":"%s","lastUpdated":"%s"}}\n' \
+          "$name" "$install_location" "$last_updated" > "$MARKETPLACES_FILE"
+        echo "Adding marketplace...Successfully added marketplace: $name"
+        ;;
+      list)
+        # `list --json`'s shape is independent of the on-disk registry shape
+        # above (D#2213): the real CLI returns a JSON ARRAY from `list` even
+        # though the file on disk is an object keyed by name. This fixture
+        # used to alias the two by cat-ing MARKETPLACES_FILE directly, which
+        # broke the moment the on-disk shape above was corrected to match
+        # reality -- plugin-install-gate.sh's `list --json` parser requires
+        # an array (`jq -e 'type == "array"'`). Rebuilt here from the .src
+        # records `add` already writes, which are unaffected by that fix.
+        entries=()
+        for src_file in "$MARKETPLACE_SOURCES_DIR"/*.src; do
+          [[ -e "$src_file" ]] || continue
+          entry_name="$(basename "$src_file" .src)"
+          entries+=("{\"name\":\"$entry_name\"}")
+        done
+        if [[ ${#entries[@]} -eq 0 ]]; then
+          echo "[]"
+        else
+          (IFS=,; printf '[%s]\n' "${entries[*]}")
+        fi
+        ;;
+      remove)
+        name="$2"
+        rm -f "$MARKETPLACE_SOURCES_DIR/$name.src"
+        # {} is the empty form of the object-keyed container above, not the
+        # old array's []. Written unconditionally rather than dropping a key
+        # from existing JSON: every caller of this fixture (the gate's own
+        # cleanup trap) only ever adds one marketplace before removing it,
+        # so there is never another entry to preserve -- this fixture stays
+        # "just big enough" per its own header rather than growing a JSON
+        # key-removal step for a multi-marketplace case nothing exercises.
+        echo "{}" > "$MARKETPLACES_FILE"
+        echo "Successfully removed marketplace: $name"
+        ;;
+      *)
+        echo "fake-claude: unsupported: plugin marketplace ${1:-}" >&2
+        exit 91
+        ;;
+    esac
+    ;;
+  install)
+    shift
+    if [[ "${1:-}" == "--help" ]]; then
+      echo "Usage: claude plugin install <plugin> [options]"
+      echo "  -y, --yes   Skip confirmation prompt"
+      exit 0
+    fi
+    # Argument is "<plugin>@<marketplace>". The marketplace's source record
+    # always lives under MARKETPLACE_SOURCES_DIR (that's where add put it,
+    # regardless of this mode) -- looking it up there is a read, not a
+    # decision about where THIS step's own writes land. What matters for
+    # the property under test is where install's OWN records go:
+    # INSTALLED_FILE and INSTALL_SOURCES_DIR, both under INSTALL_STATE_DIR.
+    #
+    # INSTALLED_FILE's shape below is not invented: it is the real on-disk
+    # shape a coordinator's hand-install under an isolated HOME dumped from
+    # real claude 2.1.258 -- {"version":2,"plugins":{"plugin@marketplace":
+    # [...]}}, keyed by the SAME compound "plugin@marketplace" string this
+    # script passed to `install`, not the bare plugin name. Getting this
+    # wrong here would make `compliant` mode pass this test suite while the
+    # real gate script still hard-fails against every real build, which is
+    # exactly what happened before this fixture was corrected -- see the
+    # git history on this file.
+    plugin_and_marketplace="$1"
+    inst_plugin_name="${plugin_and_marketplace%%@*}"
+    inst_marketplace_name="${plugin_and_marketplace#*@}"
+    marketplace_src_file="$MARKETPLACE_SOURCES_DIR/$inst_marketplace_name.src"
+    inst_src_dir=""
+    if [[ -f "$marketplace_src_file" ]]; then
+      cp "$marketplace_src_file" "$INSTALL_SOURCES_DIR/$inst_plugin_name.src"
+      inst_src_line="$(cat "$marketplace_src_file")"
+      inst_src_dir="${inst_src_line#*|}"
+    fi
+    printf '{"version":2,"plugins":{"%s":[{"scope":"user","installPath":"%s","version":"0.0.1"}]}}\n' \
+      "$plugin_and_marketplace" "$inst_src_dir" > "$INSTALLED_FILE"
+    echo "Installing plugin...Successfully installed plugin: $1"
+    ;;
+  uninstall)
+    shift
+    if [[ "${1:-}" == "--help" ]]; then
+      echo "Usage: claude plugin uninstall <plugin> [options]"
+      echo "  -y, --yes   Skip confirmation prompt"
+      exit 0
+    fi
+    printf '{"version":2,"plugins":{}}\n' > "$INSTALLED_FILE"
+    echo "Successfully uninstalled plugin: $1"
+    ;;
+  details)
+    shift
+    plugin_arg="${1:-}"
+    plugin_name="${plugin_arg%%@*}"
+    src_file="$INSTALL_SOURCES_DIR/$plugin_name.src"
+    if [[ ! -f "$src_file" ]]; then
+      echo "fake-claude: plugin details: no known source for '$plugin_name'" >&2
+      exit 92
+    fi
+    src_line="$(cat "$src_file")"
+    src_dir="${src_line#*|}"
+    agents=0
+    skills=0
+    [[ -d "$src_dir/agents" ]] && agents="$(find "$src_dir/agents" -maxdepth 1 -name '*.md' | wc -l | tr -d ' ')"
+    [[ -d "$src_dir/commands" ]] && skills="$(find "$src_dir/commands" -maxdepth 1 -name '*.md' | wc -l | tr -d ' ')"
+    echo "$plugin_name"
+    echo "Component inventory"
+    echo "  Skills ($skills)"
+    echo "  Agents ($agents)"
+    ;;
+  *)
+    echo "fake-claude: unsupported invocation: plugin ${*:-}" >&2
+    exit 93
+    ;;
+esac

@@ -109,7 +109,7 @@ describe('ActiveProjectContext', () => {
 
   it('defaults to the primary project when nothing is stored', async () => {
     mockList.mockResolvedValue([
-      makeProject('fulcrumaxe'),
+      makeProject('autonomous-forever'),
       makeProject('gatekeep', true),
     ] as never)
     renderWithProvider()
@@ -121,19 +121,19 @@ describe('ActiveProjectContext', () => {
 
   it('falls back to the first entry when no project is primary', async () => {
     mockList.mockResolvedValue([
-      makeProject('fulcrumaxe'),
+      makeProject('autonomous-forever'),
       makeProject('projectb'),
     ] as never)
     renderWithProvider()
     await waitFor(() =>
-      expect(screen.getByTestId('active-name').textContent).toBe('fulcrumaxe')
+      expect(screen.getByTestId('active-name').textContent).toBe('autonomous-forever')
     )
   })
 
   it('restores activeName from localStorage', async () => {
     localStorageMock.setItem(STORAGE_KEY, 'projectb')
     mockList.mockResolvedValue([
-      makeProject('fulcrumaxe', true),
+      makeProject('autonomous-forever', true),
       makeProject('projectb'),
     ] as never)
     renderWithProvider()
@@ -144,14 +144,14 @@ describe('ActiveProjectContext', () => {
 
   it('setActive persists to localStorage and updates displayed name', async () => {
     mockList.mockResolvedValue([
-      makeProject('fulcrumaxe', true),
+      makeProject('autonomous-forever', true),
       makeProject('projectb'),
     ] as never)
     const user = userEvent.setup()
     renderWithProvider()
 
     await waitFor(() =>
-      expect(screen.getByTestId('active-name').textContent).toBe('fulcrumaxe')
+      expect(screen.getByTestId('active-name').textContent).toBe('autonomous-forever')
     )
 
     await act(async () => {
@@ -164,14 +164,14 @@ describe('ActiveProjectContext', () => {
 
   it('closes open EventSources on project switch', async () => {
     mockList.mockResolvedValue([
-      makeProject('fulcrumaxe', true),
+      makeProject('autonomous-forever', true),
       makeProject('projectb'),
     ] as never)
     const user = userEvent.setup()
     renderWithProvider()
 
     await waitFor(() =>
-      expect(screen.getByTestId('active-name').textContent).toBe('fulcrumaxe')
+      expect(screen.getByTestId('active-name').textContent).toBe('autonomous-forever')
     )
 
     // Register a mock EventSource
@@ -203,14 +203,14 @@ describe('ActiveProjectContext', () => {
   // ---------------------------------------------------------------------------
 
   it('uses a port-scoped localStorage key (af.activeProject.<port>)', async () => {
-    mockList.mockResolvedValue([makeProject('fulcrumaxe', true)] as never)
+    mockList.mockResolvedValue([makeProject('autonomous-forever', true)] as never)
     renderWithProvider()
     await waitFor(() =>
-      expect(screen.getByTestId('active-name').textContent).toBe('fulcrumaxe')
+      expect(screen.getByTestId('active-name').textContent).toBe('autonomous-forever')
     )
     // Port-scoped key must be written; unscoped legacy key must NOT be written
     expect(localStorageMock.getItem('af.activeProject')).toBeNull()
-    expect(localStorageMock.getItem(STORAGE_KEY)).toBe('fulcrumaxe')
+    expect(localStorageMock.getItem(STORAGE_KEY)).toBe('autonomous-forever')
   })
 
   it('port-scoped key isolates projects across ports', async () => {
@@ -221,14 +221,14 @@ describe('ActiveProjectContext', () => {
     localStorageMock.setItem(otherPortKey, 'projectb')
 
     mockList.mockResolvedValue([
-      makeProject('fulcrumaxe', true),
+      makeProject('autonomous-forever', true),
       makeProject('projectb'),
     ] as never)
     renderWithProvider()
 
     // This instance's key (empty port in jsdom) is independent of the 5102 key
     await waitFor(() =>
-      expect(screen.getByTestId('active-name').textContent).toBe('fulcrumaxe')
+      expect(screen.getByTestId('active-name').textContent).toBe('autonomous-forever')
     )
     // The other port's key is untouched
     expect(localStorageMock.getItem(otherPortKey)).toBe('projectb')
@@ -249,7 +249,7 @@ describe('projectNameFromPathname', () => {
   })
 
   it('extracts project name from /project/:name (no trailing slash)', () => {
-    expect(projectNameFromPathname('/project/fulcrumaxe')).toBe('fulcrumaxe')
+    expect(projectNameFromPathname('/project/autonomous-forever')).toBe('autonomous-forever')
   })
 
   it('returns null for paths without /project/ prefix', () => {
@@ -278,11 +278,11 @@ describe('ActiveProjectContext — URL sync', () => {
   })
 
   it('uses URL project name on mount even when localStorage says something else', async () => {
-    // localStorage says "fulcrumaxe"
-    localStorageMock.setItem(STORAGE_KEY, 'fulcrumaxe')
+    // localStorage says "autonomous-forever"
+    localStorageMock.setItem(STORAGE_KEY, 'autonomous-forever')
 
     mockList.mockResolvedValue([
-      makeProject('fulcrumaxe', true),
+      makeProject('autonomous-forever', true),
       makeProject('projectb'),
     ] as never)
 
@@ -307,10 +307,10 @@ describe('ActiveProjectContext — URL sync', () => {
   })
 
   it('falls back to localStorage when URL has no project segment', async () => {
-    localStorageMock.setItem(STORAGE_KEY, 'fulcrumaxe')
+    localStorageMock.setItem(STORAGE_KEY, 'autonomous-forever')
 
     mockList.mockResolvedValue([
-      makeProject('fulcrumaxe', true),
+      makeProject('autonomous-forever', true),
       makeProject('projectb'),
     ] as never)
 
@@ -318,7 +318,7 @@ describe('ActiveProjectContext — URL sync', () => {
     renderWithProvider('/kpi')
 
     await waitFor(() =>
-      expect(screen.getByTestId('active-name').textContent).toBe('fulcrumaxe')
+      expect(screen.getByTestId('active-name').textContent).toBe('autonomous-forever')
     )
   })
 })

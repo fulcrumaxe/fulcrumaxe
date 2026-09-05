@@ -756,8 +756,8 @@ def _team_lead_project_dir() -> Path:
 def _is_team_lead_dir(dir_path: Path) -> bool:
     """Return True if this project directory belongs to the Team Lead session.
 
-    Team Lead transcripts: ~/.claude/projects/-home-agent-fulcrumaxe/*.jsonl
-    Sub-agent transcripts: .../-home-agent-fulcrumaxe--claude-worktrees-agent-*/*.jsonl
+    Team Lead transcripts: ~/.claude/projects/-home-agent-autonomous-forever/*.jsonl
+    Sub-agent transcripts: .../-home-agent-autonomous-forever--claude-worktrees-agent-*/*.jsonl
 
     We match the exact dir name to exclude all worktree variants.
     """
@@ -828,7 +828,7 @@ def team_lead_usage(
 ) -> dict:
     """Return Team Lead session token usage within a time window.
 
-    Reads JSONL files from ~/.claude/projects/-home-agent-fulcrumaxe/
+    Reads JSONL files from ~/.claude/projects/-home-agent-autonomous-forever/
     (the exact project root dir — excludes worktree sub-agent dirs).
 
     Args:

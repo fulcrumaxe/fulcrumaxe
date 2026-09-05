@@ -59,7 +59,7 @@ a
 n/usr/lib/x86_64-linux-gnu/libc.so.6
 f3
 au
-n{FIXTURE_HOME}/.fulcrumaxe-state/stats.duckdb
+n{FIXTURE_HOME}/.autonomous-forever-state/stats.duckdb
 p1002
 cpython3
 fcwd
@@ -67,10 +67,10 @@ a
 n{FIXTURE_HOME}
 fmem
 a
-n{FIXTURE_HOME}/.fulcrumaxe-state/stats.duckdb
+n{FIXTURE_HOME}/.autonomous-forever-state/stats.duckdb
 f5
 ar
-n{FIXTURE_HOME}/.fulcrumaxe-state/stats.duckdb
+n{FIXTURE_HOME}/.autonomous-forever-state/stats.duckdb
 """
 
 

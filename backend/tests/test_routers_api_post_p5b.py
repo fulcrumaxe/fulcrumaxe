@@ -278,8 +278,8 @@ class TestApiLoopRun:
         return {
             "run_id": "run-abc123",
             "started_at": "2026-05-22T10:00:00Z",
-            "log_path": ".autonomous-team/loop-runs/fulcrumaxe/run-abc123.log",
-            "project_id": "fulcrumaxe",
+            "log_path": ".autonomous-team/loop-runs/autonomous-forever/run-abc123.log",
+            "project_id": "autonomous-forever",
         }
 
     def test_headlesschrome_ua_blocked_403(self, monkeypatch):

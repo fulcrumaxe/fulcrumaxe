@@ -15,7 +15,7 @@ import subprocess
 from datetime import datetime, timezone
 
 from backend import agent_feed as _agent_feed
-from backend._repo import REPO as _GH_REPO  # noqa: E402
+from backend._repo import CODE_REPO as _GH_CODE_REPO  # noqa: E402
 from backend.snapshot_path import MAX_AGE_SECONDS, SNAPSHOT_PATH
 
 # ---------------------------------------------------------------------------
@@ -136,7 +136,7 @@ def _count_merged_prs(start_dt: datetime, end_dt: datetime) -> int:
         result = subprocess.run(
             [
                 "gh", "pr", "list",
-                "--repo", _GH_REPO,
+                "--repo", _GH_CODE_REPO,
                 "--state", "merged",
                 "--search", f"merged:>={start_date}",
                 "--json", "number,mergedAt",

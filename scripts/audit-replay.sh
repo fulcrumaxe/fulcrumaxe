@@ -30,7 +30,7 @@ try:
     print(str(STATE_DIR / 'audit.jsonl'))
 except Exception as e:
     # Fallback: use AUTONOMOUS_TEAM_STATE_DIR env var
-    state_dir = os.environ.get('AUTONOMOUS_TEAM_STATE_DIR', os.path.expanduser('~/.fulcrumaxe-state'))
+    state_dir = os.environ.get('AUTONOMOUS_TEAM_STATE_DIR', os.path.expanduser('~/.autonomous-forever-state'))
     print(os.path.join(state_dir, 'audit.jsonl'))
 " 2>/dev/null)
 

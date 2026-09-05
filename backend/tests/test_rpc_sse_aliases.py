@@ -121,7 +121,7 @@ def test_dashboard_returns_html():
     ct = resp.headers.get("content-type", "")
     assert "text/html" in ct, f"Expected text/html, got {ct}"
     # Content sanity check.
-    assert "fulcrumaxe" in resp.text.lower(), "Dashboard HTML missing project name"
+    assert "autonomous-forever" in resp.text.lower(), "Dashboard HTML missing project name"
 
 
 def test_root_returns_json():

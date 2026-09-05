@@ -17,4 +17,4 @@ Docs should live in a `wiki/` directory as flat markdown files that can be direc
 - Use `[[Page-Name]]` wiki-link syntax for internal links
 - Hyphens in filenames (e.g., `Getting-Started.md`, `How-It-Works.md`)
 - Still create a minimal `README.md` at project root pointing to wiki/docs
-- The wiki/ contents should be directly pushable to `github.com/fulcrumaxe/fulcrumaxe.wiki.git`
+- The wiki/ contents should be directly pushable to `github.com/autonomous-agent-7/autonomous-forever.wiki.git`

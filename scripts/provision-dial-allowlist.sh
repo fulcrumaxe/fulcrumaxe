@@ -43,7 +43,7 @@ set -uo pipefail
 
 REPO_SLUG="${1:-}"
 
-STATE_DIR="${AUTONOMOUS_TEAM_STATE_DIR:-$HOME/.fulcrumaxe-state}"
+STATE_DIR="${AUTONOMOUS_TEAM_STATE_DIR:-$HOME/.autonomous-forever-state}"
 mkdir -p "$STATE_DIR"
 
 ALLOWLIST_PATH="$STATE_DIR/dial-directive-allowlist.json"

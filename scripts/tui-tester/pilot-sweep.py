@@ -5,10 +5,10 @@ Runs backend.tui_tester_helpers.run_verification() against the real STATE_DIR
 (mounted read-only via AUTONOMOUS_TEAM_STATE_DIR env override).
 
 Writes per-screen widget-tree JSON under:
-  ~/.fulcrumaxe-state/tui-tester/<run-id>/tab-<key>.tree.json
+  ~/.autonomous-forever-state/tui-tester/<run-id>/tab-<key>.tree.json
 
 Writes summary:
-  ~/.fulcrumaxe-state/tui-tester/<run-id>/findings.json
+  ~/.autonomous-forever-state/tui-tester/<run-id>/findings.json
 
 Shape of findings.json:
   { "verdict": "pass" | "needs-fix" | "fail",
@@ -65,7 +65,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--state-dir",
-        help="Override AUTONOMOUS_TEAM_STATE_DIR (default: ~/.fulcrumaxe-state)",
+        help="Override AUTONOMOUS_TEAM_STATE_DIR (default: ~/.autonomous-forever-state)",
     )
     parser.add_argument(
         "--timeout",

@@ -14,7 +14,7 @@
  *   - loop.list: reads .autonomous-team/active-loops.json
  *   - loop.events / agents.tail: reads .autonomous-team/agent-feed.jsonl
  *   - loop.timeline / loop.iteration_detail: reads .autonomous-team/loop-metrics.jsonl
- *   - loop.iteration_detail: also reads .autonomous-team/loop-runs/fulcrumaxe/
+ *   - loop.iteration_detail: also reads .autonomous-team/loop-runs/autonomous-forever/
  *   - dashboard.gates_snapshot: reads .autonomous-team/config.json
  *
  * Path resolution follows the same env-var order as Python:
@@ -501,8 +501,8 @@ export function handleLoopIterationDetail(params: Record<string, unknown>): unkn
     }
   }
 
-  // Resolve log directory — AF default: .autonomous-team/loop-runs/fulcrumaxe/
-  const logDir = join(repoRoot(), ".autonomous-team", "loop-runs", "fulcrumaxe");
+  // Resolve log directory — AF default: .autonomous-team/loop-runs/autonomous-forever/
+  const logDir = join(repoRoot(), ".autonomous-team", "loop-runs", "autonomous-forever");
 
   // Prefer run_id from metrics row (Bug 3 fix in Python)
   const runId = (metricsRow["run_id"] as string | undefined) ?? null;

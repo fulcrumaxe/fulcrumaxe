@@ -18,7 +18,7 @@ Covers:
     registered_metrics()            — completeness: every declared writer is present
 
 Isolation: STATS_DB_PATH env var is monkeypatched to a tmp_path file.
-The real ~/.fulcrumaxe-state/stats.duckdb is NEVER touched.
+The real ~/.autonomous-forever-state/stats.duckdb is NEVER touched.
 
 Run with:
     python3 -m pytest backend/tests/test_stats_writer.py -v

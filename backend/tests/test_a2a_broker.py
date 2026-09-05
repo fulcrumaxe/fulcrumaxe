@@ -2,7 +2,7 @@
 Behavioral tests for backend/a2a_broker.py.
 
 All tests use a temporary directory for AUTONOMOUS_TEAM_STATE_DIR — the real
-~/.fulcrumaxe-state/a2a/ is never touched. Port 8830 is never bound;
+~/.autonomous-forever-state/a2a/ is never touched. Port 8830 is never bound;
 HTTP end-to-end tests use an ephemeral port 0.
 
 Run with:

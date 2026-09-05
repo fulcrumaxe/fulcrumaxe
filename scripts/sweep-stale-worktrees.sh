@@ -89,7 +89,7 @@ RESOLVED_WORKTREES_DIR="$(python3 -c "import os,sys; print(os.path.realpath(sys.
 
 # Audit trail for real removals (CWE-778) — same convention as
 # scripts/merge-and-hook.sh's audit.jsonl writes.
-_AUDIT_DIR="${AUTONOMOUS_TEAM_STATE_DIR:-$HOME/.fulcrumaxe-state}"
+_AUDIT_DIR="${AUTONOMOUS_TEAM_STATE_DIR:-$HOME/.autonomous-forever-state}"
 _AUDIT_FILE="$_AUDIT_DIR/audit.jsonl"
 
 echo "[sweep-stale-worktrees] threshold=${STALE_THRESHOLD} commits behind origin/main, min-age=${MIN_AGE_SECONDS}s, dry_run=${DRY_RUN}"

@@ -2,7 +2,7 @@
 Behavioral tests for backend/pr_state.py
 
 All tests use a temp-directory-backed Blackboard; the real state directory
-(~/.fulcrumaxe-state/) is never touched.  No network calls are made.
+(~/.autonomous-forever-state/) is never touched.  No network calls are made.
 
 Run with:
     python3 -m pytest backend/tests/test_pr_state.py -v

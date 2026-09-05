@@ -271,7 +271,7 @@ def _write_gh_api_mutation_allow_event(
         state_dir = Path(
             os.environ.get(
                 "AUTONOMOUS_TEAM_STATE_DIR",
-                str(Path.home() / ".fulcrumaxe-state"),
+                str(Path.home() / ".autonomous-forever-state"),
             )
         )
         audit_log = state_dir / "audit.jsonl"
@@ -351,7 +351,7 @@ def _write_archive_protocol_warning_event(
         state_dir = Path(
             os.environ.get(
                 "AUTONOMOUS_TEAM_STATE_DIR",
-                str(Path.home() / ".fulcrumaxe-state"),
+                str(Path.home() / ".autonomous-forever-state"),
             )
         )
         audit_log = state_dir / "audit.jsonl"

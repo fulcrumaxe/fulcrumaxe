@@ -180,11 +180,11 @@ def branch_name_for(engine_version: str | None, seed: bool = False) -> str:
 #
 # Credential isolation (security-review finding, D#1586 Batch B2b fix
 # round -- CWE-668): every subprocess below is invoked with an EXPLICIT
-# env= that has fulcrumaxe's own gh/git credential env vars
+# env= that has autonomous-forever's own gh/git credential env vars
 # stripped. Without this, `gh pr create` in the sibling checkout would
 # silently inherit af's ambient GH_TOKEN/GITHUB_TOKEN (gh prefers an
 # env-var token over any stored credential helper) and open the PR AS
-# fulcrumaxe instead of as the sibling. Structurally incapable of
+# autonomous-forever instead of as the sibling. Structurally incapable of
 # acting as af, not just "documented as never doing so".
 # --------------------------------------------------------------------------
 

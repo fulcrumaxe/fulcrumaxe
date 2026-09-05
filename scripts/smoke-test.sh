@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# smoke-test.sh — full-stack smoke test for fulcrumaxe
+# smoke-test.sh — full-stack smoke test for autonomous-forever
 #
 # Verifies every Python backend module imports, every CLI entry point responds,
 # the API server starts and serves /health, the TUI builds and typechecks, and
@@ -42,7 +42,7 @@ _fail() {
 }
 
 echo "============================================================"
-echo " fulcrumaxe smoke test"
+echo " autonomous-forever smoke test"
 echo " $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 echo "============================================================"
 echo ""

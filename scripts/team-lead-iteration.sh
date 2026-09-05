@@ -29,7 +29,26 @@ if [ -d "$REPO_ROOT/.venv/bin" ]; then
 fi
 
 source "$SCRIPT_DIR/lib/repo-resolve.sh"
+# Two planes. REPO is the Discussion plane and stays that way: the team-log
+# Issue (below) and the discussion URL both want it. CODE_REPO is everything
+# else this script touches — PR reads, PR comments, the gate label writes that
+# loop-phased-step5.sh reads back off the code plane, and the merge.
+#
+# Splitting the label writes off REPO is the point of the change. Leaving them
+# on the Discussion plane while the merge gate reads them from the code plane
+# is the merge-gate deadlock D#2348's PR-j took three review rounds to close,
+# arriving by a fourth route.
+#
+# On the `|| exit 1`, stated plainly rather than implied: this script runs
+# under `set -e`, and _resolve_code_repo falls back to _resolve_repo, so any
+# tree where the code plane is unresolvable is one where the line above has
+# already killed the script. The guard is therefore defence in depth here, not
+# the load-bearing stop — it is the line that stays correct if
+# _resolve_code_repo ever gains a source _resolve_repo does not have, and it
+# costs nothing. It matches this script's documented exit 1 = "fatal error
+# (repo access failed)" either way.
 REPO="$(_resolve_repo)"
+CODE_REPO="$(_require_code_repo "team-lead-iteration")" || exit 1
 
 DRY_RUN=false
 for arg in "$@"; do
@@ -205,7 +224,7 @@ fi
 # Step 4 — Open PR analysis
 # ─────────────────────────────────────────────────────────────────
 log "=== Step 4: Open PR analysis ==="
-OPEN_PRS=$(gh pr list --state open --json number,title,labels --repo "$REPO" 2>/dev/null || echo "[]")
+OPEN_PRS=$(gh pr list --state open --json number,title,labels --repo "$CODE_REPO" 2>/dev/null || echo "[]")
 PR_COUNT=$(echo "$OPEN_PRS" | jq 'length' 2>/dev/null || echo 0)
 log "Open PRs: $PR_COUNT"
 
@@ -318,7 +337,7 @@ for pr_entry in "${NEEDS_REVIEW[@]+"${NEEDS_REVIEW[@]}"}"; do
   log "  Resolving review-pr for PR #$pr_num"
   # Try to extract the real discussion number from the PR body (e.g. "Discussion #42" or "Closes #42").
   # If none is found, omit --input discussion_number entirely — workflow_runner will WARN and fall back.
-  disc_num=$(gh pr view "$pr_num" --repo "$REPO" --json body --jq '.body // ""' 2>/dev/null \
+  disc_num=$(gh pr view "$pr_num" --repo "$CODE_REPO" --json body --jq '.body // ""' 2>/dev/null \
     | grep -oE 'Discussion #[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
   if [[ -n "$disc_num" ]]; then
     _resolve_workflow review-pr \
@@ -430,7 +449,7 @@ for pr_entry in "${NEEDS_MERGE[@]+"${NEEDS_MERGE[@]}"}"; do
       _qg_errors_dir="${REPO_ROOT}/.autonomous-team/hook-events"
       mkdir -p "$_qg_errors_dir"
 
-      gh api -X DELETE "repos/${REPO}/issues/${pr_num}/labels/code-review-passed" >/dev/null 2>&1
+      gh api -X DELETE "repos/${CODE_REPO}/issues/${pr_num}/labels/code-review-passed" >/dev/null 2>&1
       _rc_del=$?
       if [ "$_rc_del" -ne 0 ]; then
         echo "[quality-gate] FAIL pr=#${pr_num} op=delete-label rc=${_rc_del}" >&2
@@ -440,7 +459,7 @@ for pr_entry in "${NEEDS_MERGE[@]+"${NEEDS_MERGE[@]}"}"; do
         _qg_all_ok=false
       fi
 
-      gh api -X POST "repos/${REPO}/issues/${pr_num}/labels" -f labels[]="code-review-needs-fix" >/dev/null 2>&1
+      gh api -X POST "repos/${CODE_REPO}/issues/${pr_num}/labels" -f labels[]="code-review-needs-fix" >/dev/null 2>&1
       _rc_add=$?
       if [ "$_rc_add" -ne 0 ]; then
         echo "[quality-gate] FAIL pr=#${pr_num} op=add-label rc=${_rc_add}" >&2
@@ -455,7 +474,7 @@ for pr_entry in "${NEEDS_MERGE[@]+"${NEEDS_MERGE[@]}"}"; do
 ${QG_DETAIL}
 
 PR requires another fix round before merge."
-      gh pr comment "$pr_num" --body "$_qg_comment_body" --repo "$REPO" 2>/dev/null
+      gh pr comment "$pr_num" --body "$_qg_comment_body" --repo "$CODE_REPO" 2>/dev/null
       _rc_comment=$?
       if [ "$_rc_comment" -ne 0 ]; then
         echo "[quality-gate] FAIL pr=#${pr_num} op=post-comment rc=${_rc_comment}" >&2
@@ -611,7 +630,7 @@ elif [ "$HUMAN_GATE" = "true" ]; then
   for pr_entry in "${NEEDS_MERGE[@]+"${NEEDS_MERGE[@]}"}"; do
     pr_num="${pr_entry%%:*}"
     [ -z "$pr_num" ] && continue
-    dry "gh pr comment $pr_num --body 'All reviews passed. Waiting for @$BOSS to merge.' --repo $REPO"
+    dry "gh pr comment $pr_num --body 'All reviews passed. Waiting for @$BOSS to merge.' --repo $CODE_REPO"
   done
 else
   for pr_entry in "${NEEDS_MERGE[@]+"${NEEDS_MERGE[@]}"}"; do
@@ -620,14 +639,14 @@ else
     [ -z "$pr_num" ] && continue
 
     # Double-check labels before merging
-    LABELS=$(gh pr view "$pr_num" --repo "$REPO" --json labels --jq '[.labels[].name]' 2>/dev/null || echo "[]")
+    LABELS=$(gh pr view "$pr_num" --repo "$CODE_REPO" --json labels --jq '[.labels[].name]' 2>/dev/null || echo "[]")
     has_code_review=$(echo "$LABELS" | jq -r '[.[] | select(. == "code-review-passed")] | length' 2>/dev/null || echo 0)
 
     if [ "$has_code_review" -gt 0 ]; then
       log "Merging PR #$pr_num: $pr_title"
-      dry "gh pr merge $pr_num --squash --delete-branch --repo $REPO"
+      dry "gh pr merge $pr_num --squash --delete-branch --repo $CODE_REPO"
       if [ "$DRY_RUN" = "false" ]; then
-        PR_BODY=$(gh pr view "$pr_num" --repo "$REPO" --json body --jq '.body' 2>/dev/null || echo "")
+        PR_BODY=$(gh pr view "$pr_num" --repo "$CODE_REPO" --json body --jq '.body' 2>/dev/null || echo "")
         DISC_NUM=$(echo "$PR_BODY" | grep -oE 'Closes #([0-9]+)|Discussion #([0-9]+)' | grep -oE '[0-9]+' | head -1 || echo "")
         bash "$SCRIPT_DIR/post-merge-hook.sh" --pr "$pr_num" ${DISC_NUM:+--discussion "$DISC_NUM"}
       fi

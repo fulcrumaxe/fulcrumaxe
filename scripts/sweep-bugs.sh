@@ -134,7 +134,7 @@ run_subsystem() {
 # Sweep 1: Python backend — imports + API module checks
 # ---------------------------------------------------------------------------
 _log "============================================================"
-_log " Bug Sweep: fulcrumaxe"
+_log " Bug Sweep: autonomous-forever"
 _log " Timestamp: $TIMESTAMP"
 _log "============================================================"
 

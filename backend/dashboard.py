@@ -1,5 +1,5 @@
 """
-dashboard.py — HTML page generator for the fulcrumaxe dashboard.
+dashboard.py — HTML page generator for the autonomous-forever dashboard.
 
 Returns a self-contained HTML/CSS/JS page served at GET /dashboard by api.py.
 Zero external dependencies — works offline.
@@ -15,7 +15,7 @@ def get_dashboard_html() -> str:
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>fulcrumaxe dashboard</title>
+  <title>autonomous-forever dashboard</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -245,7 +245,7 @@ def get_dashboard_html() -> str:
 <body>
   <header>
     <div id="conn-dot"></div>
-    <h1>fulcrumaxe dashboard</h1>
+    <h1>autonomous-forever dashboard</h1>
     <span id="conn-label">connecting…</span>
   </header>
 

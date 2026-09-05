@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Load testing script for fulcrumaxe API.
+"""Load testing script for autonomous-forever API.
 
 Uses only stdlib (concurrent.futures + urllib). No external dependencies.
 
@@ -162,7 +162,7 @@ def run_load_test(base_url: str, workers: int, total_requests: int) -> int:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Load test for fulcrumaxe API")
+    parser = argparse.ArgumentParser(description="Load test for autonomous-forever API")
     parser.add_argument("--workers", type=int, default=10, help="Number of concurrent workers (default: 10)")
     parser.add_argument("--requests", type=int, default=100, help="Total number of requests (default: 100)")
     parser.add_argument("--base-url", default="http://localhost:18099", help="API base URL (default: http://localhost:18099)")

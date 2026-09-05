@@ -125,7 +125,7 @@
 #
 # Two literal subpaths are excluded STRUCTURALLY, never via an allowlist
 # entry: `.autonomous-team/blackboard/...` and `.autonomous-team/audit.jsonl`.
-# Both look in-repo but are symlinks into `~/.fulcrumaxe-state/`
+# Both look in-repo but are symlinks into `~/.autonomous-forever-state/`
 # (Team Lead's boundary comment on D#2267, 2026-09-03T10:34:32Z) — they are
 # D#2283's exclusive territory, fixed there via `AUTONOMOUS_TEAM_STATE_DIR`
 # + `tests/lib/blackboard-fixture.sh`, a completely different mechanism than

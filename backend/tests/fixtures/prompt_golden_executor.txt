@@ -57,7 +57,7 @@ Steps:
 
 5b. Link the new PR back to the worktree registry (no-op if not running in a worktree):
      if [[ -n "${WORKTREE_ID:-}" ]]; then
-       PR_NUMBER=$(gh pr view --json number --jq '.number' --repo fulcrumaxe/fulcrumaxe)
+       PR_NUMBER=$(gh pr view --json number --jq '.number' --repo autonomous-agent-7/autonomous-forever)
        bash scripts/lib/worktree-registry.sh set-pr "$WORKTREE_ID" "$PR_NUMBER"
      fi
 6. Report back: "PR #<number> created for Discussion #977."
@@ -332,7 +332,7 @@ Steps:
    worktrees — use $HOME directly instead (D#856):
      # New transcript discovery (D#856) — avoids /tmp/claude-* sandbox block
      AGENT_ID=$(basename "$WORKTREE_PATH" | sed 's/^agent-//')
-     TRANSCRIPT=$(ls -t $HOME/.claude/projects/-home-agent-fulcrumaxe/*/subagents/agent-${AGENT_ID}.jsonl 2>/dev/null | head -1)
+     TRANSCRIPT=$(ls -t $HOME/.claude/projects/-home-agent-autonomous-forever/*/subagents/agent-${AGENT_ID}.jsonl 2>/dev/null | head -1)
      [ -r "$TRANSCRIPT" ] || TRANSCRIPT=""
      if [ -z "$TRANSCRIPT" ]; then
        # Cannot read transcript — emit skip and proceed (shadow mode anyway).

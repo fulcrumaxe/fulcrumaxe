@@ -10,7 +10,7 @@ Request::
 
 Response::
 
-    {"ok": true, "known": ["fulcrumaxe", "projectb"]}
+    {"ok": true, "known": ["autonomous-forever", "projectb"]}
 
 fleet.discovery_known is the read-only counterpart (D#2317 PR-a item 11):
 it never mutates known.json, it just reports the persisted list. Added so
@@ -26,7 +26,7 @@ Request::
 
 Response::
 
-    {"known": ["fulcrumaxe", "projectb"]}
+    {"known": ["autonomous-forever", "projectb"]}
 """
 
 from __future__ import annotations

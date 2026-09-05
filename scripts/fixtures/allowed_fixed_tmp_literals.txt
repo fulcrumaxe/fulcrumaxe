@@ -1,0 +1,25 @@
+# Allowlist for scripts/check-tests-fixed-tmp-paths.sh
+#
+# Format: one entry per line — "<path-relative-to-repo-root>:<literal>:<reason>"
+# <literal> is the exact matched /tmp/... substring (not a line number, not a
+# hash) — one entry covers every occurrence of that literal in that file, so
+# a JSON payload literal repeated many times in the same suite needs only one
+# line here. Blank lines and lines starting with # are ignored.
+#
+# Every entry below is Class C from D#2254's own classification pass: a
+# literal that reads as a real /tmp/ write when scanned as plain text (the
+# lint is textual, not semantic — it does not know it is looking at a quoted
+# JSON test payload or a spoofed env-var value rather than live shell syntax)
+# but is never actually written by the suite it lives in. Re-verify against
+# the file before assuming a stale entry is safe to delete: the SAME literal
+# text is a live defect in a different file (D#2254's whole point).
+
+tests/test_sandbox_hook.sh:/tmp/wt-testid:unused JSON-payload constant (declared, never referenced) — carried only so a future assertion has it ready; nothing in this suite writes here.
+tests/test_sandbox_hook.sh:/tmp/scratch.txt:literal command text inside a tool_input.command JSON string fed to hooks/sandbox.py's classifier — the hook never executes the embedded command, so nothing is written here.
+tests/test_sandbox_hook.sh:/tmp/repro_test.py:literal command text inside a tool_input.command JSON string (a heredoc-authored repro script) fed to the classifier under test — never executed, never written.
+tests/test_sandbox_hook.sh:/tmp/notes.md:literal command text inside a tool_input.command JSON string fed to the classifier under test — never executed, never written.
+tests/test_start_the_day_sync_block.sh:/tmp/totally-bogus-does-not-exist:deliberately nonexistent path used as a spoofed AUTONOMOUS_TEAM_REPO_ROOT value (criterion: refusal holds even when the env var points nowhere) — the test asserts this path is never touched.
+tests/test_state_dir_helper.sh:/tmp/already-set:fake AUTONOMOUS_TEAM_STATE_DIR value exported to prove the helper no-ops when the var is already set — the assertion only echoes it back, never creates it.
+tests/test_env_scrub.sh:/tmp/unit-messaging.sock:fake CLAUDE_CODE_MESSAGING_SOCKET value fed to the env-scrub allowlist unit test — nothing in the test creates or connects to a socket at this path.
+tests/test_dial_bypass_coverage.sh:/tmp/random-redteam-:synthetic "cwd" value fed to the sandbox hook's JSON test payloads — a red-team cwd context for the classifier, never a directory this suite creates.
+tests/test_state_symlinks_in_worktree.sh:/tmp/garbage-state-:dangling symlink TARGET used to prove a stale link gets re-pointed — ln -s never requires the target to exist, and nothing in this suite creates it.

@@ -12,7 +12,7 @@
 
 set -euo pipefail
 
-MEMORY_DIR="$HOME/.claude/projects/-home-agent-fulcrumaxe/memory"
+MEMORY_DIR="$HOME/.claude/projects/-home-agent-autonomous-forever/memory"
 
 if [[ ! -d "$MEMORY_DIR" ]]; then
   echo "WARN: memory dir not found at $MEMORY_DIR — skipping frontmatter updates" >&2

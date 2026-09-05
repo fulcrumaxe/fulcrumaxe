@@ -66,7 +66,7 @@ _WTR_ARCHIVE_DIR="${_WTR_REPO_ROOT}/archive/orphan-diffs"
 _WTR_WORKTREES_DIR="${_WTR_REPO_ROOT}/.claude/worktrees"
 # Same audit.jsonl convention as scripts/merge-and-hook.sh and
 # scripts/sweep-stale-worktrees.sh -- one row per real removal (D#2001 PR2 AC-15).
-_WTR_AUDIT_DIR="${AUTONOMOUS_TEAM_STATE_DIR:-$HOME/.fulcrumaxe-state}"
+_WTR_AUDIT_DIR="${AUTONOMOUS_TEAM_STATE_DIR:-$HOME/.autonomous-forever-state}"
 _WTR_AUDIT_FILE="${_WTR_AUDIT_DIR}/audit.jsonl"
 
 # repo-resolve.sh gives us _resolve_repo() for the open-PR guard below
@@ -317,8 +317,12 @@ _wtr_load_open_pr_branches() {
     return 1
   fi
 
+  # Code plane: `gh pr list`. The empty-plane guard below was already here and
+  # is exactly right — it is what stops `gh pr list --repo ""` from returning
+  # an arbitrary repo's open PRs and having this cache treat those branches as
+  # live. Only the resolver changed.
   local repo rc=0
-  repo="$(_resolve_repo 2>/dev/null || true)"
+  repo="$(_resolve_code_repo 2>/dev/null || true)"
   if [[ -z "$repo" ]]; then
     _WTR_OPEN_PR_BRANCHES_CACHE=""
     _WTR_OPEN_PR_HEAD_SHAS_CACHE=""

@@ -18,13 +18,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # Default retros file — overridable via AF_RETROS_FILE for tests.
-# Uses for_project("fulcrumaxe") to avoid a hardcoded AF path.
+# Uses for_project("autonomous-forever") to avoid a hardcoded AF path.
 def _default_retros_path() -> Path:
     env = os.environ.get("AF_RETROS_FILE")
     if env:
         return Path(env)
     from backend.state_paths import for_project as _fp  # noqa: PLC0415
-    return _fp("fulcrumaxe").state_dir / "agent-retros.jsonl"
+    return _fp("autonomous-forever").state_dir / "agent-retros.jsonl"
 
 _TOP_N_DEFAULT = 20
 

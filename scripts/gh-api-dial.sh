@@ -17,10 +17,10 @@
 #
 # Examples:
 #   # Read — no dial check needed:
-#   bash scripts/gh-api-dial.sh repos/fulcrumaxe/fulcrumaxe/pulls --jq '.[].number'
+#   bash scripts/gh-api-dial.sh repos/autonomous-agent-7/autonomous-forever/pulls --jq '.[].number'
 #
 #   # Mutation — dial registry consulted first:
-#   bash scripts/gh-api-dial.sh repos/fulcrumaxe/fulcrumaxe/issues -X POST -f title="My Issue"
+#   bash scripts/gh-api-dial.sh repos/autonomous-agent-7/autonomous-forever/issues -X POST -f title="My Issue"
 #
 # Phase 2 (not in this PR):
 #   - Emit a per-call audit row to audit.jsonl

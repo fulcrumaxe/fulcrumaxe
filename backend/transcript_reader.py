@@ -4,8 +4,8 @@ Format-isolation layer: classifiers in run_analyst.py consume only TranscriptTur
 named tuples. If the underlying JSONL schema changes, only this module needs updating.
 
 Canonical globs:
-    /tmp/claude-*/-home-agent-fulcrumaxe/*/tasks/*.output  (ephemeral task outputs)
-    ~/.claude/projects/-home-agent-fulcrumaxe/*.jsonl       (persistent archive)
+    /tmp/claude-*/-home-agent-autonomous-forever/*/tasks/*.output  (ephemeral task outputs)
+    ~/.claude/projects/-home-agent-autonomous-forever/*.jsonl       (persistent archive)
 
 Both formats use JSONL: one JSON object per turn/event.  The .output format wraps
 turns in {"type": "message", "message": {...}}.  The persistent .jsonl format

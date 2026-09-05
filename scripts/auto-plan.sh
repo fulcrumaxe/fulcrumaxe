@@ -23,6 +23,10 @@ source "$SCRIPT_DIR/lib/platform-compat.sh"
 REPO="$(_resolve_repo)"
 REPO_OWNER="${REPO%%/*}"
 REPO_NAME="${REPO##*/}"
+# REPO/REPO_OWNER/REPO_NAME above stay on the Discussion plane — every use
+# below them is a discussions GraphQL query. CODE_REPO is separate because
+# the two `gh pr list` calls read PRs, which live with the code.
+CODE_REPO="$(_resolve_code_repo 2>/dev/null || true)"
 
 DATE=$(date '+%Y-%m-%d')
 FORCE=false
@@ -46,12 +50,24 @@ GENERATED_AT=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 
 # ── Data source functions (each writes markdown to stdout, never aborts) ─────
 
+# Emit this section's "unavailable" line and fail when the code plane did not
+# resolve, so no `gh` call is made with an empty --repo. An empty --repo is
+# not an error to gh: it exits 0 after resolving from the checkout's origin
+# remote. Callers use it as `_require_plan_code_repo "<label>" || return`.
+_require_plan_code_repo() {
+  [[ -n "$CODE_REPO" ]] && return 0
+  echo "- (data source unavailable: $1 — could not resolve the code repo; add a \"code_repo\" or \"repo\" field to .autonomous-team/config.json)"
+  echo "[auto-plan] ERROR: could not resolve the code repo — skipping \"$1\" rather than querying whichever repo the checkout points at." >&2
+  return 1
+}
+
 today_merged_prs() {
   local date="$1"
   local yesterday="$2"
   local out
+  _require_plan_code_repo "merged PRs" || return
   out=$(gh pr list \
-    --repo "$REPO" \
+    --repo "$CODE_REPO" \
     --state merged \
     --search "merged:>=${yesterday} merged:<${date}" \
     --json number,title,mergedAt \
@@ -174,8 +190,9 @@ if blocked:
 
 open_prs() {
   local out
+  _require_plan_code_repo "open PRs" || return
   out=$(gh pr list \
-    --repo "$REPO" \
+    --repo "$CODE_REPO" \
     --state open \
     --json number,title,labels \
     --limit 30 \
