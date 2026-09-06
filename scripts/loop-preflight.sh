@@ -155,9 +155,15 @@ else
   add_error "budget.py status failed"
 fi
 
-# Step 4.5: engine-sync inbound alarm (D#2439 slice A) -- registration only; non-blocking here, slice C's C9 flips that.
+# Step 4.5: engine-sync inbound alarm -- registration only. The module owns
+# the decision; this hub only splices its JSON into the summary and, further
+# down, reads the `halt` boolean it already computed. A read that produces
+# nothing falls back to a value that is loud but NOT halting: an alarm that
+# cannot run is not evidence that the sync is broken, and a preflight that
+# stops the loop because a helper script is missing is a worse failure than
+# the drift it was watching for.
 ENGINE_SYNC_JSON=$(bash scripts/engine-sync/inbound/alarm.sh 2>/dev/null)
-[ -z "$ENGINE_SYNC_JSON" ] && ENGINE_SYNC_JSON='{"status":"undecidable","behind":null}'
+[ -z "$ENGINE_SYNC_JSON" ] && ENGINE_SYNC_JSON='{"status":"undecidable","behind":null,"halt":false}'
 
 # Assemble final JSON summary. GATES_JSON/BUDGET_JSON/REGISTRY_JSON/ERRORS are
 # each guaranteed valid JSON by the steps above, so this should never fail —
@@ -236,6 +242,38 @@ fi
 
 if [ "$BUDGET_ALLOWED" = "false" ]; then
   echo "[loop-preflight] budget exhausted — skipping iteration" >&2
+  exit 1
+fi
+
+# Engine-sync staleness: blocking once the alarm's own grace window has run
+# out. One stale observation is loud and does not stop anything; the halt
+# only fires after N consecutive non-sync observations, which is the alarm's
+# decision, not this hub's — read the boolean it already computed rather
+# than re-deriving the rule here.
+#
+# Unlike the two gates above, this one defaults to NOT halting when the read
+# fails. Those gates protect against spending money the project does not
+# have; this one protects against building on a stale base, which is
+# recoverable. Stopping all work because a JSON parse failed would be the
+# larger outage.
+if ENGINE_SYNC_HALT=$(echo "$SUMMARY" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+print('true' if d.get('engine_sync', {}).get('halt') else 'false')
+" 2>/dev/null); then
+  :
+else
+  ENGINE_SYNC_HALT="false"
+fi
+
+if [ "$ENGINE_SYNC_HALT" = "true" ]; then
+  echo "[loop-preflight] engine-sync has not cleared its staleness for $(echo "$SUMMARY" | python3 -c "
+import json, sys
+print(json.load(sys.stdin).get('engine_sync', {}).get('consecutive_failures', '?'))
+" 2>/dev/null) consecutive checks — skipping iteration." >&2
+  echo "[loop-preflight] The engine checkout is behind the code plane and the sync is not closing the gap." >&2
+  echo "[loop-preflight] Merge the open engine-sync PR, or run scripts/engine-sync/inbound/apply_inbound.py to open one." >&2
+  echo "[loop-preflight] To stand the halt down without a code change, raise ENGINE_SYNC_HALT_THRESHOLD." >&2
   exit 1
 fi
 

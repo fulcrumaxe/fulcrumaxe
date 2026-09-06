@@ -203,18 +203,24 @@ def classify_report(
     # alone, means something is wrong upstream of this tool (or the marker
     # is badly stale) -- refuse rather than print a report nobody asked for
     # at this size. ---
-    if cs["touched_path_count"] > max_files or cs["total_insertions"] + cs["total_deletion_lines"] > max_lines:
+    if cs["gated_path_count"] > max_files or cs["total_insertions"] + cs["total_deletion_lines"] > max_lines:
         return {
             "marker": marker,
             "remote_ref": remote_ref,
             "refused": True,
+            # Names the figure it actually compared. `gated_path_count` counts a
+            # rename twice (destination + synthetic source delete), so it can
+            # exceed the ceiling while git's own "files changed" is under it --
+            # saying "N files" without saying which N is how a reader concludes
+            # the tool is miscounting.
             "refusal_reason": (
-                f"change set exceeds ceiling: {cs['touched_path_count']} files "
-                f"(max {max_files}), {cs['total_insertions'] + cs['total_deletion_lines']} "
-                f"lines (max {max_lines})"
+                f"change set exceeds ceiling: {cs['gated_path_count']} gated paths "
+                f"(max {max_files}; {cs['files_changed_count']} files changed by git's count), "
+                f"{cs['total_insertions'] + cs['total_deletion_lines']} lines (max {max_lines})"
             ),
             "commit_count": cs["commit_count"],
-            "touched_path_count": cs["touched_path_count"],
+            "gated_path_count": cs["gated_path_count"],
+            "files_changed_count": cs["files_changed_count"],
         }
 
     # --- Deletion-refusal check: the tree-diff trap this whole module
@@ -249,7 +255,8 @@ def classify_report(
                     f"export surface: {unsafe_deletions}"
                 ),
                 "commit_count": cs["commit_count"],
-                "touched_path_count": cs["touched_path_count"],
+                "gated_path_count": cs["gated_path_count"],
+                "files_changed_count": cs["files_changed_count"],
             }
 
     trust_allowlist = resolve_trust_allowlist()
@@ -403,7 +410,8 @@ def classify_report(
         "refused": False,
         "commit_count": cs["commit_count"],
         "commits": commits_out,
-        "touched_path_count": cs["touched_path_count"],
+        "gated_path_count": cs["gated_path_count"],
+        "files_changed_count": cs["files_changed_count"],
         "file_deletions": cs["file_deletions"],
         "classifications": classifications,
         "buckets": {k: sorted(v) for k, v in buckets.items()},

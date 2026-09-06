@@ -105,6 +105,35 @@ def extract_pr_number(subject: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
+def commit_name_status_detailed(sha: str, repo_dir: Path = REPO_ROOT) -> list[tuple[str, str, bool]]:
+    """[(status, path, synthetic), ...] for one commit -- the same walk as
+    `commit_name_status` below, plus one bit per entry saying whether git
+    reported that path itself or whether this module manufactured the entry.
+
+    Exactly one kind of entry is synthetic: the ("D", old_path) a rename
+    contributes on top of its destination path. Everything git printed is
+    synthetic=False. That bit is what lets a caller report an honest
+    "files changed" figure alongside the (larger) count of paths the gates
+    have to rule on -- see build_changeset's `files_changed_count`. Without
+    it the two numbers are indistinguishable, and the smaller, more
+    intuitive one is the one a reader assumes they are being shown."""
+    raw = _git(["show", "--format=", "--name-status", sha], repo_dir=repo_dir)
+    out: list[tuple[str, str, bool]] = []
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        status = parts[0]
+        if status[0] == "R" and len(parts) == 3:
+            out.append((status, parts[2], False))
+            out.append(("D", parts[1], True))
+        elif status[0] == "C" and len(parts) == 3:
+            out.append((status, parts[2], False))
+        elif len(parts) >= 2:
+            out.append((status, parts[1], False))
+    return out
+
+
 def commit_name_status(sha: str, repo_dir: Path = REPO_ROOT) -> list[tuple[str, str]]:
     """[(status, path), ...] for one commit, via git's own per-commit
     diff-tree (`git show --name-status`), never a two-tree `git diff`.
@@ -117,22 +146,12 @@ def commit_name_status(sha: str, repo_dir: Path = REPO_ROOT) -> list[tuple[str, 
     slip past every deletion-aware check downstream (the ceiling gate's
     out-of-surface-delete refusal in particular) with no "D" status for it
     to ever see. A copy (C###) does NOT get this treatment: the source path
-    still exists after a copy, so it is not a deletion."""
-    raw = _git(["show", "--format=", "--name-status", sha], repo_dir=repo_dir)
-    out: list[tuple[str, str]] = []
-    for line in raw.splitlines():
-        if not line.strip():
-            continue
-        parts = line.split("\t")
-        status = parts[0]
-        if status[0] == "R" and len(parts) == 3:
-            out.append((status, parts[2]))
-            out.append(("D", parts[1]))
-        elif status[0] == "C" and len(parts) == 3:
-            out.append((status, parts[2]))
-        elif len(parts) >= 2:
-            out.append((status, parts[1]))
-    return out
+    still exists after a copy, so it is not a deletion.
+
+    Thin wrapper over commit_name_status_detailed: identical entries, with
+    the synthetic-vs-real bit dropped. Callers that need to report an
+    honest file count want the detailed form."""
+    return [(status, path) for status, path, _synthetic in commit_name_status_detailed(sha, repo_dir=repo_dir)]
 
 
 def commit_numstat(sha: str, repo_dir: Path = REPO_ROOT) -> tuple[int, int]:
@@ -193,10 +212,34 @@ def build_changeset(marker: str, remote_ref: str, repo_dir: Path = REPO_ROOT) ->
     """The full enumerated changeset: every commit from marker to
     remote_ref, and every path any of them touched, with per-path
     attribution back to the commit(s) that touched it. Read-only -- makes
-    no git call that writes anything."""
+    no git call that writes anything.
+
+    TWO path counts come out of here, and they are different numbers on any
+    change set containing a rename:
+
+      gated_path_count    every distinct path a gate has to rule on. A
+                          rename contributes TWO -- its destination, and the
+                          synthetic delete of its source (see
+                          commit_name_status). This is the figure the
+                          ceilings compare against, deliberately: the gates
+                          really do have that much to decide, and counting
+                          the smaller number would let a rename-heavy change
+                          set slip under a ceiling that was sized for the
+                          work involved.
+
+      files_changed_count git's own notion -- distinct paths that appear in
+                          at least one real `--name-status` line, so a
+                          rename counts once. This is what a reader means by
+                          "files changed".
+
+    Both are emitted because either one alone is read as the other. The
+    field formerly called `touched_path_count` was the first of these
+    wearing the second one's name, which is exactly the defect shape this
+    whole channel exists to stop shipping."""
     commits = list_commits(marker, remote_ref, repo_dir=repo_dir)
     commit_infos = []
     touched: dict[str, dict] = {}
+    real_paths: set[str] = set()
     total_insertions = 0
     total_deletions_lines = 0
     file_deletions = 0
@@ -209,10 +252,12 @@ def build_changeset(marker: str, remote_ref: str, repo_dir: Path = REPO_ROOT) ->
         total_deletions_lines += dele
         commit_infos.append({"sha": sha, "subject": subject, "subject_pr_hint": subject_pr_hint})
 
-        for status, path in commit_name_status(sha, repo_dir=repo_dir):
+        for status, path, synthetic in commit_name_status_detailed(sha, repo_dir=repo_dir):
             entry = touched.setdefault(path, {"commits": [], "statuses": []})
             entry["commits"].append(sha)
             entry["statuses"].append(status)
+            if not synthetic:
+                real_paths.add(path)
             if status == "D":
                 file_deletions += 1
 
@@ -222,7 +267,8 @@ def build_changeset(marker: str, remote_ref: str, repo_dir: Path = REPO_ROOT) ->
         "commits": commit_infos,
         "commit_count": len(commits),
         "touched_paths": touched,
-        "touched_path_count": len(touched),
+        "gated_path_count": len(touched),
+        "files_changed_count": len(real_paths),
         "file_deletions": file_deletions,
         "total_insertions": total_insertions,
         "total_deletion_lines": total_deletions_lines,

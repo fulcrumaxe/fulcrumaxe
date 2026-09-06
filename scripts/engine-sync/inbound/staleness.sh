@@ -1,16 +1,23 @@
 #!/usr/bin/env bash
-# staleness.sh -- Slice A of D#2439 (engine-sync inbound).
+# staleness.sh -- is the engine checkout behind the code plane?
 #
-# READ-ONLY. Reports whether the marker ref (the last code-plane commit the
-# inbound sync has processed) is behind the code plane's current `main` tip.
+# Reports whether the marker ref (the last code-plane commit the inbound
+# sync has processed) is behind the code plane's current `main` tip.
 #
-# It never writes anything, never applies a patch, and never spawns an
-# agent. Its only network operation is one `git ls-remote` -- it does NOT
-# fetch objects; it assumes the marker's and the remote tip's commit objects
-# are already present locally (the engine repo already has a `code-plane`
-# remote that gets fetched routinely). If the remote tip's object is not
-# present locally, that is treated the same as an unreachable remote:
-# undecidable, never in-sync.
+# It never writes the working tree, never writes the index, never moves a
+# branch or the marker, never applies a patch, and never spawns an agent.
+#
+# It DOES fetch one ref. That is a deliberate change from the first version,
+# which made a single `git ls-remote` call and nothing else. `ls-remote`
+# returns the remote tip's *name*, not its *object*, so `git rev-list
+# marker..tip` had nothing to walk and the check reported `undecidable` from
+# the moment the code plane moved ahead until something else happened to
+# fetch -- that is, exactly the window right after a merge, when drift has
+# just increased and this check has the most to say. Read-only here means
+# "no side effects on the working tree"; writing a remote-tracking ref and
+# FETCH_HEAD into the object store is not that. The cost is one network
+# round trip per call instead of one, against a ref that is usually already
+# current.
 #
 # Usage:
 #   staleness.sh
@@ -23,6 +30,11 @@
 #                              from this directory instead of the caller's
 #                              cwd -- lets a test point this script at a
 #                              throwaway repo without touching the real one.
+#   ENGINE_SYNC_NO_FETCH       set to 1 to skip the fetch. For a caller that
+#                              has just fetched the same ref itself. It does
+#                              NOT make the check permissive: a remote tip
+#                              whose object is missing locally is still
+#                              undecidable, never in-sync.
 #
 # Exit codes:
 #   0  in-sync      -- marker == remote tip (behind == 0)
@@ -56,6 +68,16 @@ marker_sha="$(git rev-parse --verify -q "${MARKER_REF}^{commit}" 2>/dev/null)"
 if [ -z "$marker_sha" ]; then
   emit "undecidable" "null" ",\"reason\":\"marker ref not resolvable: ${MARKER_REF}\""
   exit 2
+fi
+
+# Bring the one branch this compares against into the local object store.
+# A failure here is deliberately not fatal on its own -- the objects may
+# already be present from an earlier fetch, and the ls-remote below is what
+# decides reachability. What a fetch failure must never do is produce
+# in-sync, and it cannot: the tip still has to resolve locally further down,
+# and if it does not, that path emits undecidable.
+if [ "${ENGINE_SYNC_NO_FETCH:-0}" != "1" ]; then
+  git fetch --quiet --no-tags "$REMOTE" "refs/heads/${REMOTE_BRANCH}" >/dev/null 2>&1 || true
 fi
 
 remote_line="$(git ls-remote --exit-code "$REMOTE" "refs/heads/${REMOTE_BRANCH}" 2>/dev/null)"
