@@ -2,19 +2,21 @@
   "checkout": {
     "clean": false,
     "dirty_paths": [
+      ".autonomous-team/config.json",
       "scripts/lib/pytest_baseline.py",
       "scripts/measure-pytest-baseline.sh",
       "tests/fixtures/pytest_baseline/mismatched/record-a.json",
       "tests/fixtures/pytest_baseline/mismatched/record-b.json",
       "tests/fixtures/pytest_baseline/sample-context.json",
       "tests/fixtures/pytest_baseline/sample-junit.xml",
-      "tests/test_pytest_baseline.sh"
+      "tests/test_pytest_baseline.sh",
+      ".autonomous-team/measurements/"
     ],
     "sha": "02d6be65aefb89a79d0b53b9172a75584c1e8ea4"
   },
   "complete": true,
   "dedup_convention": "junit-structural-v1",
-  "duration_seconds": 836,
+  "duration_seconds": 622,
   "exit_code": 1,
   "host": "nixos",
   "load": {
@@ -23,19 +25,19 @@
     "nproc": 12,
     "samples": [
       {
-        "at": "2026-09-06T06:01:48Z",
-        "five_min": 3.36,
-        "one_min": 3.26
+        "at": "2026-09-06T06:27:32Z",
+        "five_min": 4.06,
+        "one_min": 3.74
       },
       {
-        "at": "2026-09-06T06:08:48Z",
-        "five_min": 4.02,
-        "one_min": 4.29
+        "at": "2026-09-06T06:32:42Z",
+        "five_min": 4.11,
+        "one_min": 4.04
       },
       {
-        "at": "2026-09-06T06:15:44Z",
-        "five_min": 4.47,
-        "one_min": 4.79
+        "at": "2026-09-06T06:37:54Z",
+        "five_min": 4.22,
+        "one_min": 4.23
       }
     ]
   },
@@ -417,6 +419,6 @@
   "path_scope": {
     "argv": "python3 -m pytest tests/ backend/tests/ --ignore=archive/ --ignore=tests/test_next_work.py -q --tb=no -p no:cacheprovider"
   },
-  "state_dir": "/tmp/nix-shell.mKF3aP/tmp.6o95pCkce4",
+  "state_dir": true,
   "timed_out": false
 }

@@ -419,6 +419,6 @@
   "path_scope": {
     "argv": "python3 -m pytest tests/ backend/tests/ --ignore=archive/ --ignore=tests/test_next_work.py -q --tb=no -p no:cacheprovider"
   },
-  "state_dir": "/tmp/nix-shell.mKF3aP/tmp.mZAloT0exN",
+  "state_dir": true,
   "timed_out": false
 }

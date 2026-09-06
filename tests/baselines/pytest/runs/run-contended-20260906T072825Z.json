@@ -16,28 +16,28 @@
   },
   "complete": true,
   "dedup_convention": "junit-structural-v1",
-  "duration_seconds": 608,
+  "duration_seconds": 798,
   "exit_code": 1,
   "host": "nixos",
   "load": {
-    "arm": "idle",
-    "contention_method": "",
+    "arm": "contended",
+    "contention_method": "6 CPU-bound busy-loop spinners ('while :; do :; done'), started before the run and reaped on EXIT",
     "nproc": 12,
     "samples": [
       {
-        "at": "2026-09-06T06:37:54Z",
-        "five_min": 4.22,
-        "one_min": 4.23
+        "at": "2026-09-06T07:15:07Z",
+        "five_min": 10.13,
+        "one_min": 10.22
       },
       {
-        "at": "2026-09-06T06:42:59Z",
-        "five_min": 4.12,
-        "one_min": 4.25
+        "at": "2026-09-06T07:21:47Z",
+        "five_min": 10.36,
+        "one_min": 10.73
       },
       {
-        "at": "2026-09-06T06:48:02Z",
-        "five_min": 4.08,
-        "one_min": 4.08
+        "at": "2026-09-06T07:28:25Z",
+        "five_min": 10.33,
+        "one_min": 10.33
       }
     ]
   },
@@ -419,6 +419,6 @@
   "path_scope": {
     "argv": "python3 -m pytest tests/ backend/tests/ --ignore=archive/ --ignore=tests/test_next_work.py -q --tb=no -p no:cacheprovider"
   },
-  "state_dir": "/tmp/nix-shell.mKF3aP/tmp.SXqHIMzcmo",
+  "state_dir": true,
   "timed_out": false
 }
