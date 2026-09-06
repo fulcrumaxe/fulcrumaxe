@@ -85,9 +85,22 @@ CLI
 
     python3 scripts/lib/pr_intake_gate.py rebaseline-pr <N> [--repo SLUG]
         re-approves the PR at its CURRENT head (D#2421) — the recovery
-        command for a drifted or ceiling-blocked PR. A deliberate local
-        operator action; never triggered by a re-label. Does not clear the
-        invalidation ceiling — see pr_head_baseline.rebaseline()'s docstring.
+        command for a drifted, ceiling-blocked, or unrecorded PR. A
+        deliberate local operator action; never triggered by a re-label.
+
+        Two things this hands the operator, because both are easy to get
+        wrong when running it down a queue after a state-dir loss:
+
+        * It re-approves whatever the author has pushed MOST RECENTLY, which
+          is not necessarily the head anyone reviewed. Compare the returned
+          `head_sha` against the SHA you actually read before trusting it.
+          There is deliberately no bulk form of this command — running it
+          over every open external PR is the bypass the gate exists to stop.
+        * `ok: true` means the baseline was rewritten, not that the PR is
+          now workable. Read `still_blocked` / `still_blocked_reason`: a PR
+          at the invalidation ceiling stays blocked after a successful
+          rebaseline, because the counter is carried forward on purpose (see
+          pr_head_baseline.rebaseline()'s docstring).
 
 HEAD-SHA BASELINE (D#2421)
 ---------------------------
@@ -208,39 +221,66 @@ def fetch_pr_meta(pr: int, repo_slug: str, *, gh=None) -> dict:
     }
 
 
-def intake_approval_actor(pr: int, repo_slug: str, *, gh=None) -> tuple[Optional[str], bool]:
-    """Who applied `intake-approved` to *pr*, per the issue-events timeline.
+def intake_approval_actor(
+    pr: int, repo_slug: str, *, gh=None
+) -> tuple[Optional[str], bool, Optional[str]]:
+    """Who applied `intake-approved` to *pr*, and when, per the issue-events
+    timeline.
 
-    Returns ``(login, read_ok)``. The most recent `labeled` event for that
-    label wins — a re-application by a maintainer after an author's own
-    attempt should count, and the latest event is the one that reflects the
-    current label. ``(None, True)`` means the timeline was read and contains
-    no such event (the label was applied by a path that leaves no event, or
-    was never applied); that is not an approval either.
+    Returns ``(login, read_ok, labeled_at)``. The most recent `labeled` event
+    for that label wins — a re-application by a maintainer after an author's
+    own attempt should count, and the latest event is the one that reflects
+    the current label. ``(None, True, None)`` means the timeline was read and
+    contains no such event (the label was applied by a path that leaves no
+    event, or was never applied); that is not an approval either.
+
+    "Most recent" is decided by ``event["id"]``, GitHub's server-assigned
+    monotonic integer — not by string-comparing `created_at` (D#2421 PR 3).
+    That used to be correct only by two coincidences: GitHub emits fixed-width
+    `...Z` timestamps, and returns issue events oldest-first so `>=` ties
+    resolved to the later one. Both held while the worst case was picking the
+    wrong labeler. `labeled_at` is now load-bearing for a security decision —
+    it gates whether a first observation may auto-baseline at all — so the
+    ordering key has to be one that cannot be spelled two ways.
+
+    Fail closed on anything ambiguous: a matching `labeled` event with no
+    integer `id` gives no usable ordering, and a winner whose `created_at`
+    does not parse gives no usable instant. Both return ``read_ok=False``,
+    which the caller reports as `intake_approval_actor_unreadable`.
     """
     call = gh or _gh
     try:
         events = json.loads(call(["api", "--paginate", f"repos/{repo_slug}/issues/{pr}/events"]) or "[]")
     except Exception:  # noqa: BLE001 — fail closed
-        return None, False
+        return None, False, None
     if not isinstance(events, list):
-        return None, False
+        return None, False, None
 
-    actor: Optional[str] = None
-    stamp = ""
+    winner: Optional[dict] = None
+    winner_id: Optional[int] = None
     for event in events:
         if not isinstance(event, dict) or event.get("event") != "labeled":
             continue
         label = event.get("label") or {}
         if not isinstance(label, dict) or label.get("name") != INTAKE_APPROVED_LABEL:
             continue
-        created = event.get("created_at") or ""
-        if created >= stamp:
-            stamp = created
-            holder = event.get("actor") if isinstance(event.get("actor"), dict) else {}
-            login = holder.get("login")
-            actor = login.strip() if isinstance(login, str) and login.strip() else None
-    return actor, True
+        event_id = event.get("id")
+        if isinstance(event_id, bool) or not isinstance(event_id, int):
+            return None, False, None
+        if winner_id is None or event_id > winner_id:
+            winner_id, winner = event_id, event
+
+    if winner is None:
+        return None, True, None
+
+    created = winner.get("created_at")
+    if pr_head_baseline.parse_labeled_at(created) is None:
+        return None, False, None
+
+    holder = winner.get("actor") if isinstance(winner.get("actor"), dict) else {}
+    login = holder.get("login")
+    actor = login.strip() if isinstance(login, str) and login.strip() else None
+    return actor, True, created
 
 
 def _pr_baseline_key(repo_slug: str, pr: int) -> str:
@@ -304,13 +344,16 @@ def check_pr(
     # D#2421: for an external, labeled PR, the label is only a real approval
     # if BOTH (a) a trusted account applied it (D#2404 AC3) AND (b) the head
     # it approved is still the head we are looking at. (a) needs the
-    # issue-events timeline read that already existed; (b) is new and reads
-    # only the local baseline store — no additional GitHub API call.
+    # issue-events timeline read that already existed; (b) reads only the
+    # local baseline store — no additional GitHub API call. The label's
+    # server-stamped `created_at` rides out of the same timeline read and
+    # bounds the first observation (D#2421 PR 3), so that costs nothing
+    # either: still exactly two GitHub calls per PR per pass.
     baseline_verdict: Optional[str] = None
     approver_blocked_reason: Optional[str] = None
 
     if provenance == PROVENANCE_EXTERNAL and INTAKE_APPROVED_LABEL in set(label_names):
-        actor, read_ok = intake_approval_actor(pr, slug, gh=gh)
+        actor, read_ok, labeled_at = intake_approval_actor(pr, slug, gh=gh)
         if not read_ok:
             approver_blocked_reason = REASON_TIMELINE_UNREADABLE
         elif not is_trusted_author(actor, trust):
@@ -319,7 +362,9 @@ def check_pr(
             key = _pr_baseline_key(slug, pr)
             head_sha = meta.get("head_sha")
             if isinstance(head_sha, str) and head_sha:
-                baseline_verdict = pr_head_baseline.check_and_record(key, head_sha, path=baseline_path)
+                baseline_verdict = pr_head_baseline.check_and_record(
+                    key, head_sha, labeled_at, path=baseline_path
+                )
             else:
                 # No fingerprint to compare against — cannot confirm the
                 # approved head is still current. Fail closed (HG-1), never
@@ -378,6 +423,14 @@ def rebaseline_pr(
     pr_head_baseline.rebaseline()'s docstring for why). Does not clear the
     invalidation ceiling; a PR that has hit it stays blocked with
     ``REASON_CEILING`` after this call.
+
+    ``ok: True`` means "the baseline was rewritten", NOT "the PR is now
+    unblocked", and the two genuinely differ for a ceiling-hit PR. So the
+    result also carries ``still_blocked`` and ``still_blocked_reason``, read
+    from the local store — no extra GitHub call, because operators run this
+    in a loop after a state-dir loss. Without them an operator reads
+    ``ok: true`` and concludes the PR will now be picked up; for a PR at the
+    ceiling it will not be.
     """
     slug = repo_slug or _default_code_repo()
     meta = fetch_pr_meta(pr, slug, gh=gh)
@@ -394,7 +447,24 @@ def rebaseline_pr(
     except Exception as exc:  # noqa: BLE001 — report, never raise past the CLI boundary
         return {"pr": pr, "repo": slug, "ok": False, "reason": "rebaseline_failed", "error": str(exc)[:200]}
 
-    return {"pr": pr, "repo": slug, "ok": True, "head_sha": head_sha}
+    count = pr_head_baseline.invalidation_count(key, path=baseline_path)
+    if count is None:
+        # The row was just written, so an unreadable store here is a genuine
+        # anomaly. Report what the gate will actually say next, not silence.
+        still_blocked, still_reason = True, REASON_HEAD_UNRECORDED
+    elif count >= pr_head_baseline.CEILING:
+        still_blocked, still_reason = True, REASON_CEILING
+    else:
+        still_blocked, still_reason = False, None
+
+    return {
+        "pr": pr,
+        "repo": slug,
+        "ok": True,
+        "head_sha": head_sha,
+        "still_blocked": still_blocked,
+        "still_blocked_reason": still_reason,
+    }
 
 
 def _main(argv: list) -> int:
@@ -405,6 +475,11 @@ def _main(argv: list) -> int:
             "  python3 scripts/lib/pr_intake_gate.py check-pr <N> [--repo SLUG]\n"
             "  python3 scripts/lib/pr_intake_gate.py security-required-pr <N> [--repo SLUG]\n"
             "  python3 scripts/lib/pr_intake_gate.py rebaseline-pr <N> [--repo SLUG]\n"
+            "      Re-approves the PR at its CURRENT head — compare the returned\n"
+            "      head_sha against the SHA you reviewed. `ok: true` means the\n"
+            "      baseline was rewritten, not that the PR is unblocked: read\n"
+            "      still_blocked / still_blocked_reason (a PR at the invalidation\n"
+            "      ceiling stays blocked). No bulk form exists, by design.\n"
         )
         return 2
 

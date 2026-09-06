@@ -43,6 +43,31 @@ _ppg_log() {
   fi
 }
 
+# _ppg_gate_hint <reason> <pr_number>
+#   What a human should actually do about this gated PR. Pure string
+#   selection — it makes no decision, and no PR's classification depends on
+#   it.
+#
+#   It exists because the line used to end "awaiting intake-approved from a
+#   maintainer" for every reason, and that is FALSE for
+#   external_pr_head_unrecorded: such a PR *is* intake-approved, by a trusted
+#   account. What it lacks is a recorded head. That reason was near
+#   unreachable until D#2421 PR 3 bounded the first-observation window, and
+#   is now the routine state-dir-loss state — so the misdirection went from
+#   theoretical to the thing an operator reads first, and the difference is
+#   between running one command and hunting for a maintainer who has already
+#   approved the PR.
+_ppg_gate_hint() {
+  case "$1" in
+    external_pr_head_unrecorded)
+      echo "already approved, but no head is recorded for it — an operator must confirm the CURRENT head is the reviewed one, then run: python3 scripts/lib/pr_intake_gate.py rebaseline-pr $2 --repo <code plane slug>"
+      ;;
+    *)
+      echo "awaiting intake-approved from a maintainer"
+      ;;
+  esac
+}
+
 # pr_pickup_blocked <pr_number>
 #   Exit 0 when automation must NOT touch this PR. Fail closed: an
 #   unparseable or missing verdict blocks, because the failure modes here
@@ -99,7 +124,7 @@ classify_open_prs() {
     if pr_pickup_blocked "$pr_num"; then
       GATED_PRS+=("$pr_num:$pr_title")
       GATED_PR_COUNT=$((GATED_PR_COUNT + 1))
-      _ppg_log "  PR #$pr_num gated: not picked up ($_PR_GATE_REASON) — awaiting intake-approved from a maintainer"
+      _ppg_log "  PR #$pr_num gated: not picked up ($_PR_GATE_REASON) — $(_ppg_gate_hint "$_PR_GATE_REASON" "$pr_num")"
       continue
     fi
 

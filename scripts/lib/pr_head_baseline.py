@@ -73,36 +73,56 @@ drifted head bump the counter once, not ten times.
 
 Never returns "absent". A labeled PR with no stored row is the precise
 condition that reopened the original bug (`should_block_spawn`'s `absent` arm
-maps to "not blocked"), so this module auto-baselines a first observation to
-the current head and reports `"match"` — the caller (`pr_intake_gate.py`)
-therefore only ever receives one of `{"match", "drifted", "unknown", "ceiling"}`.
+maps to "not blocked"), so a first observation never reaches that arm: it
+either auto-baselines to the current head and reports `"match"`, or refuses
+to auto-baseline and reports `"unknown"` (see the next section for which).
+The caller (`pr_intake_gate.py`) therefore only ever receives one of
+`{"match", "drifted", "unknown", "ceiling"}`.
 
-THIS IS A BOUNDED RACE, NOT A VERIFIED HEAD (D#2421 PR 3)
------------------------------------------------------------
-Read the paragraph above precisely: "auto-baselines a first observation to
-the current head" means whatever head is live at the moment the gate first
-observes the label — not necessarily the head a human actually reviewed. If
-the label lands and the author force-pushes before the next poll, the first
-observation records the force-pushed head as "approved" and reports
-`"match"`. The window is bounded by the poll interval between the label
-landing and this module's first look at the PR, but it is not zero, and
-nothing in this module closes it.
+THIS IS A BOUNDED RACE, NOT A VERIFIED HEAD (bounded by D#2421 PR 3)
+--------------------------------------------------------------------
+A first observation is auto-baselined only when the `intake-approved` label
+landed within `FIRST_OBSERVATION_GRACE_SECONDS` of our own clock — GitHub
+stamps the `labeled` event's `created_at` server-side, so that value is not
+forgeable by the PR author. A first observation of a label older (or, by the
+same symmetric comparison, further in the future) than that grace refuses to
+auto-baseline: it writes no row and returns `"unknown"`, which the caller maps
+to `external_pr_head_unrecorded` and a blocked verdict.
 
-Closing it needs a server-stamped timestamp for *when the label was applied*
-compared against our own clock, not against the head's `committer.date` —
-that field is attacker-controlled (a force-pusher sets it to whatever predates
-the label and turns an honest unbaselined pass into a confident false one).
-That comparison, and the operational cost it introduces (a state-dir loss
-fails every already-approved external PR closed until an operator
-re-baselines each one), is D#2421 PR 3's scope, not this module's. Until PR 3
-ships, treat this binding as: a force-push is caught on the *next* poll after
-the first one (see `check_and_record`'s `"drifted"` / `"ceiling"` outcomes),
-never on the first.
+**The residual window is `FIRST_OBSERVATION_GRACE_SECONDS`; it is not zero.**
+An attacker who watches for the label and force-pushes *inside* that grace
+still has the hostile head recorded as the baseline. What D#2421 PR 3 removed
+is the unbounded case: before it, the window was "however long the stored row
+has been missing", which after a state-dir wipe is forever and admits an
+arbitrarily later head. The head this module records is whatever was live when
+the gate first looked, within that margin — nothing here establishes that any
+human read it.
+
+No commit-supplied timestamp participates in that comparison, deliberately.
+`committer.date` and `author.date` are attacker-controlled: a force-pusher
+sets either to a value that predates the label, and a gate that compared
+against them would report a *confident* pass where an honest one reports
+"unrecorded". Only the server-stamped label time and `datetime.now(timezone.utc)`
+are read.
+
+The operational cost is real and falls on the operator. Any loss of the
+runtime state dir empties this store, so every already-approved external PR
+has no row and a label far older than the grace — all of them fail closed at
+once, and each needs an operator to run `pr_intake_gate.py rebaseline-pr <N>`
+after checking that the PR's *current* head is the one they read. There is no
+bulk recovery, on purpose: re-approving every open external PR at whatever
+head it currently holds is the bypass this whole mechanism exists to prevent.
+
+A malformed or missing `FIRST_OBSERVATION_GRACE_SECONDS` resolves to `0`
+(see `_first_observation_grace`), which refuses every first observation. A
+broken configuration blocks; it never widens the window.
 """
 
 from __future__ import annotations
 
+import math
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -115,6 +135,78 @@ import intake_baseline  # noqa: E402  (local import — keeps this module import
 #: independent of the current head — until a human runs the recovery command
 #: (which does not reset this counter; see module docstring).
 CEILING = 3
+
+#: How recently the `intake-approved` label must have been applied for a first
+#: observation to auto-baseline the head that is live at that moment.
+#:
+#: 900s = 15 minutes: one cron poll interval (10 min) plus 50% slack, because
+#: the gate runs at Step 4 of an iteration rather than at its start. Raising
+#: this is not an operational fix — it widens the race window by exactly the
+#: amount it is raised. Lowering it costs operator rebaselines and nothing else.
+#:
+#: A module-level constant on purpose: the value is consumed inside a
+#: fail-closed security decision, so reading it from the control plane or an
+#: environment variable would buy a knob nobody asked for at the price of a new
+#: failure mode ("config unreadable -> what?"). Tests monkeypatch this attribute.
+FIRST_OBSERVATION_GRACE_SECONDS = 900
+
+
+def _first_observation_grace() -> float:
+    """Resolve `FIRST_OBSERVATION_GRACE_SECONDS`, or `0` if it is unusable.
+
+    Zero, never the default: a missing attribute, a string, `None`, a bool,
+    `NaN`, `inf` or a negative value all mean the configuration is broken, and
+    a broken configuration must refuse every first observation rather than
+    silently restore a permissive window. Read through `sys.modules` so a test
+    that *deletes* the attribute reaches this path too.
+    """
+    raw = getattr(sys.modules[__name__], "FIRST_OBSERVATION_GRACE_SECONDS", None)
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return 0.0
+    if not math.isfinite(raw) or raw < 0:
+        return 0.0
+    return float(raw)
+
+
+def parse_labeled_at(value: object) -> Optional[datetime]:
+    """Strictly parse a GitHub event `created_at` into an aware datetime.
+
+    Returns `None` for anything that is not an unambiguous, timezone-aware
+    instant — junk, an empty string, a non-string, or a naive timestamp whose
+    zone we would have to guess. Callers treat `None` as "unreadable", never
+    as "now". GitHub emits `%Y-%m-%dT%H:%M:%SZ`; the trailing `Z` is rewritten
+    because `datetime.fromisoformat` only accepts it from 3.11 on.
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if text[-1] in ("Z", "z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except (ValueError, TypeError):
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
+def _first_observation_is_fresh(labeled_at: object, now: Optional[datetime]) -> bool:
+    """Is *labeled_at* close enough to our own clock to auto-baseline?
+
+    One symmetric `abs(...)` comparison covers both directions: a label too
+    far in the past (the state-dir-loss case, and the case where an approval
+    has been sitting unobserved) and one too far in the future (a clock
+    anomaly). Small forward skew between GitHub's clock and ours is normal and
+    stays inside the grace.
+    """
+    stamped = parse_labeled_at(labeled_at)
+    if stamped is None:
+        return False
+    current = now if now is not None else datetime.now(timezone.utc)
+    if not isinstance(current, datetime) or current.tzinfo is None:
+        return False
+    return abs((current - stamped).total_seconds()) <= _first_observation_grace()
 
 
 def _default_store_path() -> Path:
@@ -150,9 +242,26 @@ def pr_key(repo_slug: str, pr: int) -> str:
     return f"{repo_slug}#{pr}"
 
 
-def check_and_record(key: str, head_sha: str, path: Optional[Path] = None) -> str:
-    """Map *(key, head_sha)* to a verdict in
+def check_and_record(
+    key: str,
+    head_sha: str,
+    labeled_at: object,
+    *,
+    path: Optional[Path] = None,
+    now: Optional[datetime] = None,
+) -> str:
+    """Map *(key, head_sha, labeled_at)* to a verdict in
     ``{"match", "drifted", "unknown", "ceiling"}`` — never ``"absent"``.
+
+    *labeled_at* is the server-stamped `created_at` of the `labeled` event
+    that applied `intake-approved`, and it is **required** rather than
+    defaulted: a default would let a future call site inherit the old
+    permissive first-observation behaviour silently, whereas a missing
+    argument is a `TypeError` at that call site. It is consulted only on a
+    first observation; an existing row is compared by SHA alone.
+
+    *now* is a test seam, defaulting to `datetime.now(timezone.utc)`. It is
+    not a policy knob and no production caller passes it.
 
     A row already at or past the ceiling stays "ceiling" even when the
     current head matches the stored baseline (a rebaseline restores the
@@ -174,6 +283,14 @@ def check_and_record(key: str, head_sha: str, path: Optional[Path] = None) -> st
         # First observation of an approved, labeled PR. Auto-baseline to the
         # current head — this is the fix for the `absent` arm re-opening the
         # bug: should_block_spawn never sees "absent" from this caller.
+        #
+        # But only when the approval is fresh. Auto-baselining an old label
+        # records whatever head is live now as "approved", and the older the
+        # label, the less that head has to do with what a human read. Refusing
+        # returns "unknown" -> external_pr_head_unrecorded -> blocked, and the
+        # operator clears it with rebaseline-pr. Fail closed, never "match".
+        if not _first_observation_is_fresh(labeled_at, now):
+            return "unknown"
         try:
             intake_baseline.record_baseline(
                 key,
@@ -206,6 +323,28 @@ def check_and_record(key: str, head_sha: str, path: Optional[Path] = None) -> st
         intake_baseline.mark_dismissed(key, head_sha, path=p)
 
     return "ceiling" if count >= CEILING else "drifted"
+
+
+def invalidation_count(key: str, path: Optional[Path] = None) -> Optional[int]:
+    """*key*'s stored invalidation count, or `None` when it cannot be read.
+
+    A local store read, zero GitHub calls. `None` covers both "no row" and
+    "the store would not read", which callers report as unrecorded rather
+    than as a count of zero — the distinction matters because `rebaseline_pr`
+    uses this to tell an operator whether the PR they just re-approved is
+    still blocked, and guessing zero there would print a reassuring lie.
+    """
+    p = path or _default_store_path()
+    try:
+        entry = intake_baseline.get_entry(key, path=p)
+    except Exception:  # noqa: BLE001 — an unreadable store is "unknown", not "zero"
+        return None
+    if not isinstance(entry, dict):
+        return None
+    count = entry.get("invalidation_count", 0)
+    if isinstance(count, bool) or not isinstance(count, int):
+        return None
+    return count
 
 
 def rebaseline(key: str, head_sha: str, path: Optional[Path] = None) -> None:

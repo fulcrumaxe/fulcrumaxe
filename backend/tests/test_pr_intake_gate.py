@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -42,7 +43,7 @@ HEAD_D = "d" * 40
 
 
 def _gh_fake(*, author="drive-by", labels=(), events=None, fail_pr=False, fail_events=False,
-             head_sha=HEAD_A, pr=7, record_calls=None):
+             head_sha=HEAD_A, pr=7, record_calls=None, commit_dates=None):
     """A stand-in for the `gh` runner. Returns JSON strings; raises where the
     real one would raise, so fail-closed paths are exercised rather than
     described.
@@ -63,6 +64,13 @@ def _gh_fake(*, author="drive-by", labels=(), events=None, fail_pr=False, fail_e
             body = {"user": user, "labels": [{"name": n} for n in labels]}
             if head_sha is not None:
                 body["head"] = {"sha": head_sha}
+            if commit_dates is not None and "head" in body:
+                # Attacker-controlled fields. Present only so a test can prove
+                # nothing reads them (D#2421 PR 3 AC-7).
+                body["head"]["commit"] = {
+                    "committer": {"date": commit_dates},
+                    "author": {"date": commit_dates},
+                }
             return json.dumps(body)
         if "/events" in joined:
             if fail_events:
@@ -73,10 +81,46 @@ def _gh_fake(*, author="drive-by", labels=(), events=None, fail_pr=False, fail_e
     return _call
 
 
-def _labeled_event(actor, created_at="2026-09-05T10:00:00Z", name="intake-approved"):
+def _label_age(seconds: float) -> str:
+    """A label `created_at` *seconds* older than the real clock.
+
+    D#2421 PR 3 gates the first observation on how recently the label landed,
+    compared against `datetime.now(timezone.utc)`. `check_pr` deliberately has
+    no `now` seam — the Spec's Implementation Notes keep that seam on
+    `check_and_record` and forbid plumbing it out to callers — so these
+    fixtures are built relative to the real clock instead. The offsets used
+    below (60s fresh, 3600s stale, against a 900s grace) sit nowhere near the
+    boundary, so no assertion here can flip on scheduling jitter. The
+    boundary itself is asserted with an injected `now` in
+    test_pr_head_baseline.py.
+    """
+    return (datetime.now(timezone.utc) - timedelta(seconds=seconds)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+
+
+#: Well inside FIRST_OBSERVATION_GRACE_SECONDS (900); every pre-existing test
+#: below wants a first observation that is allowed to auto-baseline.
+FRESH_LABEL = _label_age(60)
+
+
+#: Distinguishes "caller said nothing" from "caller explicitly said None",
+#: which is one of the malformed `created_at` cases AC-4 has to reach.
+_UNSET = object()
+
+
+def _labeled_event(actor, created_at=_UNSET, name="intake-approved", event_id=1001):
+    """A `labeled` timeline event.
+
+    ``id`` is present because D#2421 PR 3 orders these by GitHub's monotonic
+    event id rather than by string-comparing `created_at`, and an event with
+    no integer id is ambiguous enough to fail closed. The real
+    `issues/{n}/events` payload always carries one.
+    """
     return {
+        "id": event_id,
         "event": "labeled",
-        "created_at": created_at,
+        "created_at": FRESH_LABEL if created_at is _UNSET else created_at,
         "label": {"name": name},
         "actor": {"login": actor},
     }
@@ -166,7 +210,10 @@ def test_intake_approved_applied_by_the_pr_author_is_not_an_approval():
 
 
 def test_latest_labeled_event_wins(tmp_path):
-    """A maintainer re-applying after the author's own attempt approves it."""
+    """A maintainer re-applying after the author's own attempt approves it.
+
+    "Latest" is the higher event id since D#2421 PR 3; the timestamps are kept
+    consistent with it so the fixture still reads the way it did."""
     result = gate.check_pr(
         7,
         SLUG,
@@ -174,8 +221,8 @@ def test_latest_labeled_event_wins(tmp_path):
             author="drive-by",
             labels=("intake-approved",),
             events=[
-                _labeled_event("drive-by", "2026-09-05T09:00:00Z"),
-                _labeled_event("example-owner", "2026-09-05T11:00:00Z"),
+                _labeled_event("drive-by", _label_age(7200), event_id=1001),
+                _labeled_event("example-owner", _label_age(60), event_id=1002),
             ],
         ),
         allowlist=TRUST,
@@ -557,3 +604,272 @@ def test_cli_usage_errors_are_not_a_pass():
     assert gate._main(["pr_intake_gate.py", "check-pr"]) == 2
     assert gate._main(["pr_intake_gate.py", "check-pr", "not-a-number"]) == 2
     assert gate._main(["pr_intake_gate.py", "check-pr", "7", "--repo"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# D#2421 PR 3 — the first-observation race, closed by comparing the label's
+# server-stamped time against OUR clock. Never against a commit-supplied one.
+# ---------------------------------------------------------------------------
+
+
+def _fresh_events(actor="example-owner"):
+    return [_labeled_event(actor, _label_age(60))]
+
+
+def _stale_events(actor="example-owner"):
+    return [_labeled_event(actor, _label_age(3600))]
+
+
+def test_pr3_ac1_fresh_first_observation_admits_and_records(tmp_path):
+    """AC-1. A gate that refuses everything is not a fix: the promptly-observed
+    approval still flows, and the head it saw is what gets recorded."""
+    store = tmp_path / "pr-baselines.json"
+    r = gate.check_pr(
+        7, SLUG,
+        gh=_gh_fake(labels=("intake-approved",), events=_fresh_events(), head_sha=HEAD_A),
+        allowlist=TRUST, baseline_path=store,
+    )
+    assert r["blocked"] is False
+    assert r["reason"] == gate.REASON_APPROVED
+
+    entry = intake_baseline.get_entry(f"{SLUG}#7", path=store)
+    assert entry is not None
+    assert entry["content_sha256"] == HEAD_A
+
+
+def test_pr3_ac2_stale_first_observation_blocks_and_records_nothing(tmp_path):
+    """AC-2. Pre-fix this returned blocked=False / external_approved and wrote
+    the row — observed, see the PR description."""
+    store = tmp_path / "pr-baselines.json"
+    r = gate.check_pr(
+        7, SLUG,
+        gh=_gh_fake(labels=("intake-approved",), events=_stale_events(), head_sha=HEAD_A),
+        allowlist=TRUST, baseline_path=store,
+    )
+    assert r["blocked"] is True
+    assert r["reason"] == gate.REASON_HEAD_UNRECORDED
+    assert intake_baseline.get_entry(f"{SLUG}#7", path=store) is None
+
+
+@pytest.mark.parametrize(
+    "created_at",
+    [None, "", "not-a-date", "2026-13-45T99:99:99Z"],
+    ids=["none", "empty", "junk", "impossible-fields"],
+)
+def test_pr3_ac4_unparseable_label_time_blocks_at_the_timeline_layer(tmp_path, created_at):
+    """AC-4's second half. Defence in depth: `check_and_record` refuses an
+    unreadable `labeled_at` on its own (asserted in test_pr_head_baseline.py),
+    AND `intake_approval_actor` refuses to report one at all — so this blocks
+    as an unreadable timeline, one layer earlier, and the two arms are visibly
+    independent."""
+    events = [_labeled_event("example-owner", created_at)]
+
+    actor, read_ok, labeled_at = gate.intake_approval_actor(7, SLUG, gh=_gh_fake(events=events))
+    assert read_ok is False
+    assert actor is None
+    assert labeled_at is None
+
+    r = gate.check_pr(
+        7, SLUG,
+        gh=_gh_fake(labels=("intake-approved",), events=events, head_sha=HEAD_A),
+        allowlist=TRUST, baseline_path=tmp_path / "pr-baselines.json",
+    )
+    assert r["blocked"] is True
+    assert r["reason"] == gate.REASON_TIMELINE_UNREADABLE
+
+
+def test_pr3_ac7_commit_supplied_dates_change_nothing(tmp_path):
+    """AC-7, the differential that proves the bypass was not built.
+
+    The obvious close — "reject a head whose commit date postdates the label" —
+    inverts into a bypass, because `committer.date` is set by whoever pushes.
+    Backdating it to the epoch must therefore be worth exactly nothing: same
+    verdict, same reason, same recorded row."""
+    def _run(store, commit_dates):
+        r = gate.check_pr(
+            7, SLUG,
+            gh=_gh_fake(
+                labels=("intake-approved",), events=_fresh_events(), head_sha=HEAD_A,
+                commit_dates=commit_dates,
+            ),
+            allowlist=TRUST, baseline_path=store,
+        )
+        entry = intake_baseline.get_entry(f"{SLUG}#7", path=store)
+        return (r["blocked"], r["reason"], entry["content_sha256"])
+
+    without = _run(tmp_path / "without.json", None)
+    backdated = _run(tmp_path / "with.json", "1970-01-01T00:00:00Z")
+    assert without == backdated
+
+
+def test_pr3_ac8_winner_is_chosen_by_event_id_not_by_timestamp_string(tmp_path):
+    """AC-8. Two spellings of the same instant: "...Z" sorts above "...+00:00"
+    because 'Z' > '+' at index 19, so string ordering hands the approval to the
+    untrusted actor. Event id — server-assigned and monotonic — does not have
+    two spellings. Pre-fix this picked drive-by and blocked; observed, see the
+    PR description."""
+    events = [
+        {"id": 1001, "event": "labeled", "created_at": "2026-09-06T05:00:00Z",
+         "label": {"name": "intake-approved"}, "actor": {"login": "drive-by"}},
+        {"id": 1002, "event": "labeled", "created_at": "2026-09-06T05:00:00+00:00",
+         "label": {"name": "intake-approved"}, "actor": {"login": "example-owner"}},
+    ]
+
+    actor, read_ok, labeled_at = gate.intake_approval_actor(7, SLUG, gh=_gh_fake(events=events))
+    assert read_ok is True
+    assert actor == "example-owner"
+    assert labeled_at == "2026-09-06T05:00:00+00:00"
+
+    r = gate.check_pr(
+        7, SLUG,
+        gh=_gh_fake(labels=("intake-approved",), events=events, head_sha=HEAD_A),
+        allowlist=TRUST, baseline_path=tmp_path / "pr-baselines.json",
+    )
+    assert r["reason"] != gate.REASON_UNTRUSTED_APPROVER
+
+
+def test_pr3_ac8_event_ordering_is_not_list_order(tmp_path):
+    """The id has to be read, not merely present: hand the events back
+    newest-first and the trusted maintainer must still win."""
+    events = [
+        {"id": 1002, "event": "labeled", "created_at": _label_age(60),
+         "label": {"name": "intake-approved"}, "actor": {"login": "example-owner"}},
+        {"id": 1001, "event": "labeled", "created_at": _label_age(7200),
+         "label": {"name": "intake-approved"}, "actor": {"login": "drive-by"}},
+    ]
+    actor, read_ok, _ = gate.intake_approval_actor(7, SLUG, gh=_gh_fake(events=events))
+    assert (actor, read_ok) == ("example-owner", True)
+
+
+@pytest.mark.parametrize("event_id", [None, "1001", 10.5, True], ids=["missing", "string", "float", "bool"])
+def test_pr3_ac8_unusable_event_id_fails_closed(event_id):
+    """AC-8's second half. Without an integer id there is no ordering, so
+    there is no answer to "which application is the current one" — and a gate
+    with no answer says no. `True` is here because `isinstance(True, int)`."""
+    event = {"event": "labeled", "created_at": _label_age(60),
+             "label": {"name": "intake-approved"}, "actor": {"login": "example-owner"}}
+    if event_id is not None:
+        event["id"] = event_id
+
+    actor, read_ok, labeled_at = gate.intake_approval_actor(7, SLUG, gh=_gh_fake(events=[event]))
+    assert read_ok is False
+    assert actor is None
+    assert labeled_at is None
+
+
+def test_pr3_ac9_rebaseline_reports_a_still_blocked_pr(tmp_path):
+    """AC-9. `ok: true` used to be the whole answer, and for a ceiling-hit PR
+    it is a misleading one — the counter is carried forward on purpose, so the
+    PR stays blocked. Pre-fix output is in the PR description."""
+    store = tmp_path / "pr-baselines.json"
+    for head in (HEAD_A, HEAD_B, HEAD_C, HEAD_D):
+        gate.check_pr(
+            7, SLUG,
+            gh=_gh_fake(labels=("intake-approved",), events=_fresh_events(), head_sha=head),
+            allowlist=TRUST, baseline_path=store,
+        )
+
+    calls: list = []
+    rb = gate.rebaseline_pr(
+        7, SLUG,
+        gh=_gh_fake(labels=("intake-approved",), events=_fresh_events(), head_sha=HEAD_D,
+                    record_calls=calls),
+        baseline_path=store,
+    )
+    assert rb["ok"] is True
+    assert rb["head_sha"] == HEAD_D
+    assert rb["still_blocked"] is True
+    assert rb["still_blocked_reason"] == gate.REASON_CEILING
+
+    # The still-blocked determination is a local store read. Operators run
+    # this down a queue after a state-dir loss; it must not cost a call.
+    assert calls == [["api", f"repos/{SLUG}/pulls/7"]]
+
+    # And the report matches reality rather than replacing it.
+    after = gate.check_pr(
+        7, SLUG,
+        gh=_gh_fake(labels=("intake-approved",), events=_fresh_events(), head_sha=HEAD_D),
+        allowlist=TRUST, baseline_path=store,
+    )
+    assert after["blocked"] is True
+    assert after["reason"] == gate.REASON_CEILING
+
+
+def test_pr3_ac9_rebaseline_below_the_ceiling_reports_not_blocked(tmp_path):
+    """AC-9's contrasting case — a report that always says "still blocked"
+    would be as useless as one that always says "ok"."""
+    store = tmp_path / "pr-baselines.json"
+    gate.check_pr(
+        7, SLUG,
+        gh=_gh_fake(labels=("intake-approved",), events=_fresh_events(), head_sha=HEAD_A),
+        allowlist=TRUST, baseline_path=store,
+    )
+    gh_b = _gh_fake(labels=("intake-approved",), events=_fresh_events(), head_sha=HEAD_B)
+    assert gate.check_pr(7, SLUG, gh=gh_b, allowlist=TRUST, baseline_path=store)["blocked"] is True
+
+    rb = gate.rebaseline_pr(7, SLUG, gh=gh_b, baseline_path=store)
+    assert rb["ok"] is True
+    assert rb["still_blocked"] is False
+    assert rb["still_blocked_reason"] is None
+
+    after = gate.check_pr(7, SLUG, gh=gh_b, allowlist=TRUST, baseline_path=store)
+    assert after["blocked"] is False
+    assert after["reason"] == gate.REASON_APPROVED
+
+
+def test_pr3_ac9_rebaseline_recovers_the_unrecorded_state(tmp_path):
+    """The operational path this PR actually creates: a state-dir loss leaves
+    an approved PR with no row and a label far older than the grace, so it
+    fails closed — and one rebaseline is what clears it."""
+    store = tmp_path / "pr-baselines.json"
+    gh = _gh_fake(labels=("intake-approved",), events=_stale_events(), head_sha=HEAD_A)
+
+    before = gate.check_pr(7, SLUG, gh=gh, allowlist=TRUST, baseline_path=store)
+    assert before["reason"] == gate.REASON_HEAD_UNRECORDED
+
+    rb = gate.rebaseline_pr(7, SLUG, gh=gh, baseline_path=store)
+    assert rb["still_blocked"] is False
+
+    after = gate.check_pr(7, SLUG, gh=gh, allowlist=TRUST, baseline_path=store)
+    assert after["blocked"] is False
+    assert after["reason"] == gate.REASON_APPROVED
+
+
+@pytest.mark.parametrize("events_factory", [_fresh_events, _stale_events], ids=["fresh", "stale"])
+def test_pr3_ac10_exactly_two_api_calls_in_both_freshness_cases(tmp_path, events_factory):
+    """AC-10. `created_at` rides out of the timeline read the gate already
+    made, so bounding the window costs nothing — the same two calls as before,
+    in the admitting case and the refusing one alike."""
+    calls: list = []
+    gate.check_pr(
+        7, SLUG,
+        gh=_gh_fake(labels=("intake-approved",), events=events_factory(), head_sha=HEAD_A,
+                    record_calls=calls),
+        allowlist=TRUST, baseline_path=tmp_path / "pr-baselines.json",
+    )
+    assert calls == [
+        ["api", f"repos/{SLUG}/pulls/7"],
+        ["api", "--paginate", f"repos/{SLUG}/issues/7/events"],
+    ]
+
+
+def test_pr3_ac14_security_required_stays_true_for_the_new_outcomes(tmp_path):
+    """AC-14. Merge-side protection is keyed on provenance alone and none of
+    PR 3's new refusals may move it."""
+    store = tmp_path / "pr-baselines.json"
+    stale = gate.check_pr(
+        7, SLUG,
+        gh=_gh_fake(labels=("intake-approved",), events=_stale_events(), head_sha=HEAD_A),
+        allowlist=TRUST, baseline_path=store,
+    )
+    assert stale["reason"] == gate.REASON_HEAD_UNRECORDED
+    assert stale["security_required"] is True
+
+    unreadable = gate.check_pr(
+        7, SLUG,
+        gh=_gh_fake(labels=("intake-approved",),
+                    events=[_labeled_event("example-owner", "not-a-date")], head_sha=HEAD_A),
+        allowlist=TRUST, baseline_path=store,
+    )
+    assert unreadable["reason"] == gate.REASON_TIMELINE_UNREADABLE
+    assert unreadable["security_required"] is True

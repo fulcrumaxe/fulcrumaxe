@@ -52,6 +52,16 @@ export GH_CALL_LOG="$FIXTURE_ROOT/gh-calls.log"
 # 1xx = ours (the case that runs daily). 2xx = a stranger's (D#2404).
 # 3xx = a stranger's, approved, head-baseline tracked (D#2421).
 # PR numbers absent from this file (4xx/5xx below) exercise fail-closed paths.
+#
+# D#2421 PR 3: every `labeled` event now carries an integer `id` — the gate
+# orders by it rather than by string-comparing `created_at`, and an event
+# without one fails closed — and its `created_at` is a placeholder resolved
+# against the real clock just below. Freshness is what decides whether a FIRST
+# observation may auto-baseline at all, so a hardcoded date would silently
+# turn every approved fixture into the stale case the day after it was
+# written.
+#   __FRESH__ — 60s old, well inside the 900s grace
+#   __STALE__ — 2h old, well outside it (PR #303)
 export PR_FIXTURES="$FIXTURE_ROOT/prs.json"
 cat > "$PR_FIXTURES" <<'JSON'
 {
@@ -63,24 +73,44 @@ cat > "$PR_FIXTURES" <<'JSON'
   "201": {"author": "drive-by-stranger", "labels": [], "head_sha": "sha-201"},
   "202": {"author": "drive-by-stranger", "labels": ["provenance:internal", "code-review-passed"], "head_sha": "sha-202"},
   "203": {"author": "drive-by-stranger", "labels": ["intake-approved"], "head_sha": "sha-203",
-          "events": [{"event": "labeled", "created_at": "2026-09-05T10:00:00Z",
+          "events": [{"id": 1001, "event": "labeled", "created_at": "__FRESH__",
                       "label": {"name": "intake-approved"},
                       "actor": {"login": "drive-by-stranger"}}]},
   "204": {"author": "drive-by-stranger", "labels": ["intake-approved"], "head_sha": "sha-204-v1",
-          "events": [{"event": "labeled", "created_at": "2026-09-05T10:00:00Z",
+          "events": [{"id": 1001, "event": "labeled", "created_at": "__FRESH__",
                       "label": {"name": "intake-approved"},
                       "actor": {"login": "fixture-bot"}}]},
 
   "301": {"author": "drive-by-stranger", "labels": ["intake-approved"], "head_sha": "sha-301-drifted",
-          "events": [{"event": "labeled", "created_at": "2026-09-05T10:00:00Z",
+          "events": [{"id": 1001, "event": "labeled", "created_at": "__FRESH__",
                       "label": {"name": "intake-approved"},
                       "actor": {"login": "fixture-bot"}}]},
   "302": {"author": "drive-by-stranger", "labels": ["intake-approved"], "head_sha": "sha-302-v1",
-          "events": [{"event": "labeled", "created_at": "2026-09-05T10:00:00Z",
+          "events": [{"id": 1001, "event": "labeled", "created_at": "__FRESH__",
+                      "label": {"name": "intake-approved"},
+                      "actor": {"login": "fixture-bot"}}]},
+  "303": {"author": "drive-by-stranger", "labels": ["intake-approved"], "head_sha": "sha-303",
+          "events": [{"id": 1001, "event": "labeled", "created_at": "__STALE__",
                       "label": {"name": "intake-approved"},
                       "actor": {"login": "fixture-bot"}}]}
 }
 JSON
+
+python3 - "$PR_FIXTURES" <<'PY'
+import sys
+from datetime import datetime, timedelta, timezone
+
+path = sys.argv[1]
+now = datetime.now(timezone.utc)
+
+
+def stamp(seconds):
+    return (now - timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+text = open(path).read().replace("__FRESH__", stamp(60)).replace("__STALE__", stamp(7200))
+open(path, "w").write(text)
+PY
 
 OPEN_PRS='[
   {"number":101,"title":"ours, unreviewed","labels":[]},
@@ -480,6 +510,113 @@ if echo "$BASELINE_DOCSTRING" | grep -qiE "SHA that was actually approved"; then
 else
   pass "D#2421 AC-7: docstring no longer asserts the recorded head was actually approved"
 fi
+
+# ═════════════════════════════════════════════════════════════════════════
+# D#2421 PR 3 — the first-observation race, closed against our own clock
+# ═════════════════════════════════════════════════════════════════════════
+
+# ── PR 3 AC-2 / Gate 2 — a stale first observation is dropped from all four
+#    work arrays, driven through the real classify_open_prs against a real
+#    on-disk store under the scratch AUTONOMOUS_TEAM_STATE_DIR ─────────────
+# PR #303 is approved by a trusted maintainer, but the label landed two hours
+# ago and no baseline row exists — the state-dir-loss shape. Before PR 3 the
+# gate auto-baselined whatever head gh reported and admitted it.
+OPEN_303='[{"number":303,"title":"stranger, approved long ago, no recorded head","labels":[{"name":"intake-approved"}]}]'
+GATE_OUTPUT_303=$(classify_open_prs "$OPEN_303" 2>&1)
+classify_open_prs "$OPEN_303" >/dev/null 2>&1
+
+if _picked_up 303; then
+  fail "D#2421 PR 3 AC-2: PR #303 (stale first observation) reached a work array"
+else
+  pass "D#2421 PR 3 AC-2: PR #303 (stale first observation) is not picked up"
+fi
+if _in_array 303 "${GATED_PRS[@]+"${GATED_PRS[@]}"}"; then
+  pass "D#2421 PR 3 AC-2: PR #303 recorded in GATED_PRS"
+else
+  fail "D#2421 PR 3 AC-2: PR #303 missing from GATED_PRS"
+fi
+if echo "$GATE_OUTPUT_303" | grep -q "external_pr_head_unrecorded"; then
+  pass "D#2421 PR 3 AC-2: reason is external_pr_head_unrecorded"
+else
+  fail "D#2421 PR 3 AC-2: expected external_pr_head_unrecorded, got: $GATE_OUTPUT_303"
+fi
+
+# Refusing must actually not write. A row here would mean the hostile-head
+# window was left open and only the verdict string changed.
+AC2_ROW=$(python3 - "$REPO_ROOT" <<'PY'
+import sys
+sys.path.insert(0, f"{sys.argv[1]}/scripts/lib")
+import pr_head_baseline
+from backend._repo import CODE_REPO  # noqa: E402
+print(pr_head_baseline.invalidation_count(pr_head_baseline.pr_key(CODE_REPO, 303)))
+PY
+)
+if [ "$AC2_ROW" = "None" ]; then
+  pass "D#2421 PR 3 AC-2: no baseline row was written for the refused first observation"
+else
+  fail "D#2421 PR 3 AC-2: a baseline row was written anyway (invalidation_count=$AC2_ROW)"
+fi
+
+# ── PR 3 AC-12 — the gated-PR log line names the right recovery ────────────
+# PR 3 creates this misdirection: external_pr_head_unrecorded was near
+# unreachable before it and is the routine state-dir-loss reason after it,
+# and "awaiting intake-approved from a maintainer" is false for it — that PR
+# *is* approved.
+if echo "$GATE_OUTPUT_303" | grep -q "awaiting intake-approved"; then
+  fail "D#2421 PR 3 AC-12: the unrecorded-head line still says 'awaiting intake-approved'"
+else
+  pass "D#2421 PR 3 AC-12: the unrecorded-head line no longer claims the PR needs approving"
+fi
+if echo "$GATE_OUTPUT_303" | grep -q "rebaseline-pr 303"; then
+  pass "D#2421 PR 3 AC-12: the unrecorded-head line names rebaseline-pr as the recovery"
+else
+  fail "D#2421 PR 3 AC-12: no rebaseline-pr recovery in: $GATE_OUTPUT_303"
+fi
+
+# The other direction: one reason changing must not flatten the other. PR
+# #201 is a genuinely un-approved stranger's PR and still needs a maintainer.
+GATE_OUTPUT_201=$(classify_open_prs '[{"number":201,"title":"stranger, plain","labels":[]}]' 2>&1)
+if echo "$GATE_OUTPUT_201" | grep -q "external_awaiting_intake_approval" \
+   && echo "$GATE_OUTPUT_201" | grep -q "awaiting intake-approved from a maintainer"; then
+  pass "D#2421 PR 3 AC-12: a genuinely un-approved PR still says it awaits a maintainer"
+else
+  fail "D#2421 PR 3 AC-12: the maintainer-approval wording was flattened: $GATE_OUTPUT_201"
+fi
+
+# ── PR 3 AC-11 — the docstring describes the new state without overclaiming
+#    in either direction ─────────────────────────────────────────────────────
+BASELINE_DOCSTRING=$(python3 -c "import ast; print(ast.get_docstring(ast.parse(open('$REPO_ROOT/scripts/lib/pr_head_baseline.py').read())))")
+if echo "$BASELINE_DOCSTRING" | grep -q "FIRST_OBSERVATION_GRACE_SECONDS"; then
+  pass "D#2421 PR 3 AC-11: docstring names the constant that bounds the window"
+else
+  fail "D#2421 PR 3 AC-11: docstring does not name FIRST_OBSERVATION_GRACE_SECONDS"
+fi
+if echo "$BASELINE_DOCSTRING" | tr '\n' ' ' | grep -qi "residual window is [^.]*not zero"; then
+  pass "D#2421 PR 3 AC-11: docstring says the residual window is not zero"
+else
+  fail "D#2421 PR 3 AC-11: docstring does not say the residual window is non-zero"
+fi
+if echo "$BASELINE_DOCSTRING" | grep -qi "state dir"; then
+  pass "D#2421 PR 3 AC-11: docstring names the state-dir-loss cost"
+else
+  fail "D#2421 PR 3 AC-11: docstring does not name the state-dir-loss cost"
+fi
+# The mechanical negative: no sentence may claim the recorded head was read
+# by a human. This is the failure this PR is most likely to commit — fixing
+# an overclaim by overclaiming in the opposite direction.
+OVERCLAIM_RE="(head|sha|commit)[^.]{0,60}(was|is|has been) (actually |genuinely )?(reviewed|approved|verified)"
+if echo "$BASELINE_DOCSTRING" | tr '\n' ' ' | grep -qiE "$OVERCLAIM_RE"; then
+  fail "D#2421 PR 3 AC-11: docstring asserts the recorded head was reviewed/approved/verified: $(echo "$BASELINE_DOCSTRING" | tr '\n' ' ' | grep -oiE "$OVERCLAIM_RE" | head -3)"
+else
+  pass "D#2421 PR 3 AC-11: docstring makes no claim that the recorded head was reviewed"
+fi
+
+# AC-13 (no new invocation site for check_pr / rebaseline_pr, and the five
+# not-modified files byte-identical) is a property of the DIFF, not of a run,
+# so it is asserted against `git diff` in the PR description rather than
+# here. A grep from inside the suite matches the module's own CLI help and
+# pr-pickup-gate.sh's header comment as readily as a real caller, which is
+# the kind of check D#2377 says proves nothing.
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
