@@ -175,8 +175,19 @@ export default function ProjectDashboardPage() {
                     <span className="queue-stat-label">Active</span>
                   </div>
                   <div className="queue-stat">
-                    <span className="queue-stat-value">{queue.totalToday}</span>
-                    <span className="queue-stat-label">Today</span>
+                    {queue.totalToday.count === null ? (
+                      <span className="queue-stat-value queue-stat-value--unknown">
+                        unknown
+                      </span>
+                    ) : (
+                      <span className="queue-stat-value">{queue.totalToday.count}</span>
+                    )}
+                    <span className="queue-stat-label">
+                      Runs today ({queue.totalToday.source})
+                    </span>
+                    {queue.totalToday.reason !== undefined && (
+                      <span className="queue-stat-reason">{queue.totalToday.reason}</span>
+                    )}
                   </div>
                 </div>
               </Card>

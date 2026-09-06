@@ -281,6 +281,9 @@ html, body, #root {
 .queue-stat { display: flex; flex-direction: column; align-items: center; }
 .queue-stat-value { font-size: var(--font-size-xl); font-weight: 700; color: var(--color-text-primary); }
 .queue-stat-label { font-size: var(--font-size-sm); color: var(--color-text-secondary); }
+/* Unknown reads as absent-answer, not as a value — it must not look like a number. */
+.queue-stat-value--unknown { font-size: var(--font-size-base); font-weight: 500; color: var(--color-text-secondary); }
+.queue-stat-reason { font-size: var(--font-size-sm); color: var(--color-text-secondary); text-align: center; max-width: 22ch; }
 
 /* Loop health */
 .loop-last-run, .loop-duration { font-size: var(--font-size-sm); color: var(--color-text-secondary); margin-top: var(--space-2); }

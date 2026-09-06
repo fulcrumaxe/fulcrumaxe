@@ -64,7 +64,11 @@ const mockKpiNullAccuracy = {
 const mockQueue = {
   pending: [],
   active: [],
-  totalToday: 5,
+  totalToday: {
+    count: 5,
+    source: 'agent_run',
+    newestTs: '2026-04-10T10:00:00Z',
+  },
 }
 
 const mockLoop = {
@@ -131,6 +135,38 @@ describe('ProjectDashboardPage', () => {
     await waitFor(() => {
       expect(screen.getByText('Spawn Queue')).toBeInTheDocument()
     })
+  })
+
+  it('renders the run count and names the source it counted', async () => {
+    renderPage()
+    await waitFor(() => {
+      expect(screen.getByText('5')).toBeInTheDocument()
+    })
+    expect(screen.getByText('Runs today (agent_run)')).toBeInTheDocument()
+  })
+
+  it('renders "unknown" and the reason when the count could not be established', async () => {
+    // The condition observed on the operator host: the source stopped emitting
+    // hours ago. A number here would be indistinguishable from a quiet day.
+    vi.mocked(clientModule.spawnQueueApi.status).mockResolvedValue({
+      ...mockQueue,
+      totalToday: {
+        count: null,
+        source: 'agent_run',
+        newestTs: '2026-09-05T22:42:00Z',
+        reason: 'stale — newest recorded run is 17h00m old (threshold 3h00m)',
+      },
+    })
+    renderPage()
+    await waitFor(() => {
+      expect(screen.getByText('unknown')).toBeInTheDocument()
+    })
+    expect(
+      screen.getByText('stale — newest recorded run is 17h00m old (threshold 3h00m)')
+    ).toBeInTheDocument()
+    // The tile must show no number at all — a 0 here would read as "a quiet day".
+    const tile = screen.getByText('Runs today (agent_run)').closest('.queue-stat')
+    expect(tile?.querySelector('.queue-stat-value')?.textContent).toBe('unknown')
   })
 
   it('renders loop health card', async () => {

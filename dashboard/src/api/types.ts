@@ -126,10 +126,24 @@ export interface SpawnQueueItem {
   createdAt: string
 }
 
+/**
+ * Runs recorded today, or an explicit unknown.
+ *
+ * `count` is null exactly when `reason` is set — the source was stale or could
+ * not be read, and the backend refuses to answer with a number that would be
+ * indistinguishable from a genuinely quiet day.
+ */
+export interface SpawnTotalToday {
+  count: number | null
+  source: string
+  newestTs: string | null
+  reason?: string
+}
+
 export interface SpawnQueueStatus {
   pending: SpawnQueueItem[]
   active: SpawnQueueItem[]
-  totalToday: number
+  totalToday: SpawnTotalToday
 }
 
 export interface Session {

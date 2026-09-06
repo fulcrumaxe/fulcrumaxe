@@ -1093,45 +1093,24 @@ def _spawn_queue_status() -> dict:
                 "status": "active",
                 "createdAt": str(item.get("enqueued_at") or ""),
             })
-    # totalToday: count spawn events from agent-feed.jsonl (primary source) and
-    # fall back to audit.jsonl.  agent-feed.jsonl is authoritative because
-    # scripts/post-agent-hook.sh writes a spawn_attempt event for every spawn.
-    total_today = 0
-    from datetime import date as _date_sq  # noqa: PLC0415
-    today = _date_sq.today().isoformat()
+    # totalToday: runs recorded for the current UTC day, read from agent_run —
+    # the one store that sees both spawn lanes. It answers with an explicit
+    # unknown (count=None plus a reason) when its source is stale or unreadable,
+    # rather than with a number that cannot be told apart from a quiet day.
+    #
+    # This used to count spawn-typed rows in agent-feed.jsonl, on the stated
+    # premise that a spawn_attempt event is written "for every spawn". That
+    # premise is false: only pre-spawn-check.sh writes those rows and only
+    # spawn-agent.sh calls it, so the Agent() lane was invisible. See
+    # backend/stats/spawn_total_today.py for the measurements and for the gap
+    # the replacement source still has.
+    from backend.stats.spawn_total_today import total_today as _total_today  # noqa: PLC0415
 
-    feed_path = _REPO_ROOT / ".autonomous-team" / "agent-feed.jsonl"
-    if feed_path.exists():
-        try:
-            with feed_path.open() as fh:
-                for line in fh:
-                    if today not in line:
-                        continue
-                    if "spawn" not in line.lower():
-                        continue
-                    try:
-                        rec = json.loads(line)
-                    except Exception:
-                        continue
-                    etype = rec.get("event_type") or ""
-                    if "spawn" in etype.lower():
-                        total_today += 1
-        except Exception:
-            pass
-
-    # Fall back: scan audit.jsonl if agent-feed gave nothing
-    if total_today == 0:
-        audit = _audit_path()
-        if audit.exists():
-            try:
-                with audit.open() as f:
-                    for line in f:
-                        if today in line and "spawn" in line:
-                            total_today += 1
-            except Exception:
-                pass
-
-    return {"pending": pending, "active": active, "totalToday": total_today}
+    return {
+        "pending": pending,
+        "active": active,
+        "totalToday": _total_today().to_dict(),
+    }
 
 
 def _spawn_blocks_list(limit: int = 10) -> list[dict]:
