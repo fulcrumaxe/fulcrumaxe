@@ -247,6 +247,15 @@ def intake_approval_actor(
     integer `id` gives no usable ordering, and a winner whose `created_at`
     does not parse gives no usable instant. Both return ``read_ok=False``,
     which the caller reports as `intake_approval_actor_unreadable`.
+
+    The assumption, recorded because it is an assumption and not a contract:
+    GitHub's event ids are monotonic within one issue's timeline. That holds
+    in practice but is not documented, so it is worth knowing which way it
+    fails. Picking the wrong winner yields a staler `created_at`, and a staler
+    `created_at` refuses — every failure mode is restrictive except one: an
+    older *trusted* labeler outranking a newer untrusted one. That requires
+    the untrusted party to already hold label permission, and it is the same
+    answer the previous string ordering gave, so it is not a regression.
     """
     call = gh or _gh
     try:

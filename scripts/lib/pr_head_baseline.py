@@ -113,9 +113,14 @@ after checking that the PR's *current* head is the one they read. There is no
 bulk recovery, on purpose: re-approving every open external PR at whatever
 head it currently holds is the bypass this whole mechanism exists to prevent.
 
-A malformed or missing `FIRST_OBSERVATION_GRACE_SECONDS` resolves to `0`
-(see `_first_observation_grace`), which refuses every first observation. A
-broken configuration blocks; it never widens the window.
+A malformed or missing `FIRST_OBSERVATION_GRACE_SECONDS` resolves to `0` (see
+`_first_observation_grace`). A broken configuration blocks; it never widens the
+window. Precisely: the comparison becomes `abs(now - labeled_at) <= 0`, so a
+label stamped at exactly our clock's instant would still admit — unreachable in
+practice, since `now` carries microseconds and GitHub's `created_at` is
+second-resolution. Stated that way rather than as "refuses everything" because
+a docstring in this module claiming slightly more than the code does is the
+whole reason this section exists.
 """
 
 from __future__ import annotations

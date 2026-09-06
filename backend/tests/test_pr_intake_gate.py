@@ -678,28 +678,57 @@ def test_pr3_ac4_unparseable_label_time_blocks_at_the_timeline_layer(tmp_path, c
     assert r["reason"] == gate.REASON_TIMELINE_UNREADABLE
 
 
-def test_pr3_ac7_commit_supplied_dates_change_nothing(tmp_path):
+@pytest.mark.parametrize(
+    "events_factory,expected",
+    [
+        (_fresh_events, (False, gate.REASON_APPROVED, HEAD_A)),
+        (_stale_events, (True, gate.REASON_HEAD_UNRECORDED, None)),
+    ],
+    ids=["fresh", "stale"],
+)
+def test_pr3_ac7_commit_supplied_dates_change_nothing(tmp_path, events_factory, expected):
     """AC-7, the differential that proves the bypass was not built.
 
     The obvious close — "reject a head whose commit date postdates the label" —
     inverts into a bypass, because `committer.date` is set by whoever pushes.
     Backdating it to the epoch must therefore be worth exactly nothing: same
-    verdict, same reason, same recorded row."""
+    verdict, same reason, same recorded row.
+
+    **Both arms, and the stale one is the one that matters.** On the fresh arm
+    the freshness check admits regardless, so a commit-date comparison can have
+    no observable effect there — a fresh-only differential agrees with itself
+    no matter what the code does. The bypass can only manifest where a refusal
+    is available to overturn, which is the stale arm. Measured: with this test
+    running fresh-only, a build that pulled `head.commit.committer.date`
+    through `fetch_pr_meta` and admitted a stale first observation whose commit
+    date predates the label passed all 84 tests in this file and
+    test_pr_head_baseline.py, this assertion included, while an independent
+    stale-arm probe showed it writing the hostile head into the store as the
+    approved baseline.
+
+    The absolute `expected` tuple is asserted alongside the differential on
+    purpose: equality alone tells you the two runs agree, not what they agree
+    on, so a failure would say "these differ" rather than naming which arm
+    moved and in which direction."""
     def _run(store, commit_dates):
         r = gate.check_pr(
             7, SLUG,
             gh=_gh_fake(
-                labels=("intake-approved",), events=_fresh_events(), head_sha=HEAD_A,
+                labels=("intake-approved",), events=events_factory(), head_sha=HEAD_A,
                 commit_dates=commit_dates,
             ),
             allowlist=TRUST, baseline_path=store,
         )
         entry = intake_baseline.get_entry(f"{SLUG}#7", path=store)
-        return (r["blocked"], r["reason"], entry["content_sha256"])
+        # None, not a KeyError: on the refusing arm there is deliberately no
+        # row, and "no row" is part of what this differential compares.
+        return (r["blocked"], r["reason"], entry["content_sha256"] if entry else None)
 
     without = _run(tmp_path / "without.json", None)
     backdated = _run(tmp_path / "with.json", "1970-01-01T00:00:00Z")
-    assert without == backdated
+
+    assert without == expected
+    assert backdated == expected
 
 
 def test_pr3_ac8_winner_is_chosen_by_event_id_not_by_timestamp_string(tmp_path):

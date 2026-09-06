@@ -604,11 +604,51 @@ fi
 # The mechanical negative: no sentence may claim the recorded head was read
 # by a human. This is the failure this PR is most likely to commit — fixing
 # an overclaim by overclaiming in the opposite direction.
-OVERCLAIM_RE="(head|sha|commit)[^.]{0,60}(was|is|has been) (actually |genuinely )?(reviewed|approved|verified)"
-if echo "$BASELINE_DOCSTRING" | tr '\n' ' ' | grep -qiE "$OVERCLAIM_RE"; then
-  fail "D#2421 PR 3 AC-11: docstring asserts the recorded head was reviewed/approved/verified: $(echo "$BASELINE_DOCSTRING" | tr '\n' ' ' | grep -oiE "$OVERCLAIM_RE" | head -3)"
+# A tripwire, not a proof. The substance of AC-11 is asserted by review; this
+# catches a future edit that reintroduces the overclaim in the shape overclaims
+# usually take. It looks in both voices — passive puts the noun first ("the
+# recorded head was reviewed"), active reverses it ("a human reviewed the
+# recorded head"), and a pattern that knows only the first reports "clean" on
+# the second.
+#
+# It also has to skip disclaimers, and that is not a detail. This module's own
+# opening sentence warns the reader not to treat a verdict "as proof that a
+# human reviewed the recorded commit" — the exact words of the claim, in the
+# service of denying it. A voice-only pattern flags that, i.e. it fires on the
+# correct prose and would be silenced by weakening it. So a sentence carrying a
+# negation marker is skipped.
+#
+# The limit, stated rather than discovered later: a real overclaim that happens
+# to contain "not" elsewhere in the same sentence slips through. Prose cannot be
+# parsed for intent by a regex, which is why the Spec puts the substance on the
+# reviewer and leaves this as the supporting negative.
+OVERCLAIM_CHECK=$(python3 - "$REPO_ROOT/scripts/lib/pr_head_baseline.py" <<'PY'
+import ast, re, sys
+
+doc = ast.get_docstring(ast.parse(open(sys.argv[1]).read())) or ""
+passive = re.compile(
+    r"(head|sha|commit)[^.]{0,60}(was|is|has been|are|were) "
+    r"(actually |genuinely |already )?(reviewed|approved|verified)", re.I)
+active = re.compile(
+    r"(reviewed|approved|verified)[^.]{0,60}"
+    r"(recorded|stored|baselined|approved) (head|sha|commit)", re.I)
+negation = re.compile(
+    r"\b(not|never|nothing|no|cannot|can't|don't|do not|rather than|without)\b", re.I)
+
+hits = []
+for sentence in re.split(r"(?<=[.!?])\s+", doc.replace("\n", " ")):
+    if negation.search(sentence):
+        continue
+    m = passive.search(sentence) or active.search(sentence)
+    if m:
+        hits.append(m.group(0).strip())
+print(" | ".join(hits[:3]))
+PY
+)
+if [ -n "$OVERCLAIM_CHECK" ]; then
+  fail "D#2421 PR 3 AC-11: docstring asserts the recorded head was reviewed/approved/verified: $OVERCLAIM_CHECK"
 else
-  pass "D#2421 PR 3 AC-11: docstring makes no claim that the recorded head was reviewed"
+  pass "D#2421 PR 3 AC-11: docstring makes no claim that the recorded head was reviewed, in either voice"
 fi
 
 # AC-13 (no new invocation site for check_pr / rebaseline_pr, and the five
