@@ -228,34 +228,15 @@ OPEN_PRS=$(gh pr list --state open --json number,title,labels --repo "$CODE_REPO
 PR_COUNT=$(echo "$OPEN_PRS" | jq 'length' 2>/dev/null || echo 0)
 log "Open PRs: $PR_COUNT"
 
-NEEDS_REVIEW=()
-NEEDS_MERGE=()
-NEEDS_FIX=()
-NEEDS_SECURITY_REVIEW=()
-
-if [ "$PR_COUNT" -gt 0 ]; then
-  while IFS=$'\t' read -r pr_num pr_title labels_json; do
-    has_code_review=$(echo "$labels_json" | jq -r 'map(select(.name == "code-review-passed")) | length' 2>/dev/null || echo 0)
-    has_needs_fix=$(echo "$labels_json" | jq -r 'map(select(.name | test("needs-fix|code-review-needs-fix"))) | length' 2>/dev/null || echo 0)
-    has_security_triggered=$(echo "$labels_json" | jq -r 'map(select(.name == "security-review-triggered")) | length' 2>/dev/null || echo 0)
-    has_security_passed=$(echo "$labels_json" | jq -r 'map(select(.name == "security-review-passed")) | length' 2>/dev/null || echo 0)
-
-    if [ "$has_needs_fix" -gt 0 ]; then
-      NEEDS_FIX+=("$pr_num:$pr_title")
-      log "  PR #$pr_num needs-fix: $pr_title"
-    elif [ "$has_code_review" -gt 0 ]; then
-      if [ "$has_security_triggered" -gt 0 ] && [ "$has_security_passed" -eq 0 ]; then
-        NEEDS_SECURITY_REVIEW+=("$pr_num:$pr_title")
-        log "  PR #$pr_num awaiting security review: $pr_title"
-      else
-        NEEDS_MERGE+=("$pr_num:$pr_title")
-        log "  PR #$pr_num ready to merge: $pr_title"
-      fi
-    else
-      NEEDS_REVIEW+=("$pr_num:$pr_title")
-      log "  PR #$pr_num needs code review: $pr_title"
-    fi
-  done < <(echo "$OPEN_PRS" | jq -r '.[] | "\(.number)\t\(.title)\t\(.labels|tojson)"' 2>/dev/null)
+# The listing above has no author, draft or fork filter — it cannot have one,
+# because listing is a read and GitHub will happily list a stranger's PR.
+# classify_open_prs applies the author gate (D#2404) before a PR reaches any of
+# the four arrays below, which is what keeps a gated PR out of the Step 5 spawn
+# recommendations and out of Step 5.3's label writes.
+source "$SCRIPT_DIR/lib/pr-pickup-gate.sh"
+classify_open_prs "$OPEN_PRS"
+if [ "${GATED_PR_COUNT:-0}" -gt 0 ]; then
+  log "Gated PRs (inert to automation until a maintainer applies intake-approved): $GATED_PR_COUNT"
 fi
 
 # ─────────────────────────────────────────────────────────────────

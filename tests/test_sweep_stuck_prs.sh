@@ -50,6 +50,23 @@ setup() {
 {"repo": "test-owner/test-repo"}
 JSON
 
+  # D#2421 (porting D#2404's sweeper gate): the sweeper now runs the PR author
+  # gate before enqueuing a respawn. SYMLINK rather than copy: the module
+  # resolves its own repo root from Path(__file__).resolve(), which follows
+  # the link back to the real checkout, so its imports (external_intake_gate,
+  # pr_head_baseline, backend._repo, ...) resolve without copying half the
+  # tree into the fixture. Only the shell script under test runs from $TEST_DIR.
+  ln -sf "$REPO_ROOT/scripts/lib/pr_intake_gate.py" "$TEST_DIR/scripts/lib/"
+
+  # Scratch state dir — the allowlist cache and PR head-baseline store this
+  # module writes must not land in the operator's real one, and must be
+  # empty at the start of every test.
+  export AUTONOMOUS_TEAM_STATE_DIR="$TEST_DIR/state"
+  mkdir -p "$AUTONOMOUS_TEAM_STATE_DIR"
+  # The one login the fixture treats as trusted. Overriding it makes the
+  # trust decision independent of whatever real config the checkout carries.
+  export AUTONOMOUS_TEAM_BOT_ACCOUNT="fixture-bot"
+
   # stub rotate-team-log.sh — just echo the comment
   mkdir -p "$TEST_DIR/scripts"
   cat > "$TEST_DIR/scripts/rotate-team-log.sh" <<'SH'
@@ -78,7 +95,13 @@ install_gh_mock() {
   mkdir -p "$TEST_DIR/bin"
   cat > "$TEST_DIR/bin/gh" <<GHEOF
 #!/usr/bin/env bash
-# Minimal gh mock for sweep-stuck-prs tests
+# Minimal gh mock for sweep-stuck-prs tests.
+#
+# The REST endpoints below are also read by scripts/lib/pr_intake_gate.py
+# (author, labels, label-application timeline) since D#2421 wires its gate
+# into this sweeper. They answer from environment variables so a single mock
+# covers every case; defaults are the trusted-author, no-comments shape every
+# pre-gate test in this suite assumed.
 args="\$*"
 
 if echo "\$args" | grep -q "pr list"; then
@@ -88,6 +111,22 @@ fi
 
 if echo "\$args" | grep -q "pr view"; then
   echo '$pr_view_json'
+  exit 0
+fi
+
+if echo "\$args" | grep -q "collaborators"; then
+  echo '[]'
+  exit 0
+fi
+
+if echo "\$args" | grep -qE "issues/[0-9]+/events"; then
+  echo "\${MOCK_LABEL_EVENTS:-[]}"
+  exit 0
+fi
+
+if echo "\$args" | grep -qE "pulls/[0-9]+\$"; then
+  printf '{"user":{"login":"%s","id":1},"labels":%s}\n' \
+    "\${MOCK_PR_AUTHOR:-fixture-bot}" "\${MOCK_PR_LABELS:-[]}"
   exit 0
 fi
 
@@ -309,6 +348,64 @@ test_recent_pr_not_stuck() {
   teardown
 }
 
+# ── Test 6 (D#2421, porting D#2404): a stuck PR from outside the trust set
+#    gets no respawn ──────────────────────────────────────────────────────────
+#
+# The sweeper's respawn IS an agent spawn. Asserting the gate helper returns
+# True would prove nothing about that; this drives the real sweeper and checks
+# that spawn_queue.py was never invoked (D#2377).
+
+test_untrusted_author_pr_is_not_respawned() {
+  setup
+
+  local old_time
+  old_time=$(date -u -d "60 minutes ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || \
+             date -u -v-60M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || \
+             echo "2026-05-10T05:00:00Z")
+
+  local pr_list='[{"number":77,"updatedAt":"'"$old_time"'","labels":[{"name":"code-review-needs-fix"}]}]'
+  install_gh_mock "$pr_list" '{"body":"stuck PR","headRefName":"x","comments":[]}'
+
+  export MOCK_PR_AUTHOR="drive-by-stranger"
+
+  ENQUEUE_MARKER="$TEST_DIR/unexpected-enqueue.txt"
+  cat > "$TEST_DIR/backend/spawn_queue.py" <<PY
+#!/usr/bin/env python3
+import sys
+if sys.argv[1:] and sys.argv[1] == "enqueue":
+    with open("$ENQUEUE_MARKER", "w") as f:
+        f.write("enqueue called!\n")
+    print("enqueued")
+sys.exit(0)
+PY
+
+  output=$(DRY_RUN="" bash "$TEST_DIR/scripts/sweep-stuck-prs.sh" 2>/dev/null)
+
+  if [ -f "$ENQUEUE_MARKER" ]; then
+    fail "untrusted_author: executor respawn was enqueued for a PR from outside the trust set"
+  else
+    pass "untrusted_author: no executor respawn enqueued"
+  fi
+
+  if echo "$output" | grep -q "gated"; then
+    pass "untrusted_author: gate decision is visible in the sweeper output"
+  else
+    fail "untrusted_author: expected a 'gated' line, got: '$output'"
+  fi
+
+  # No respawn counter bump either — a gated PR is waiting on a human, not
+  # stuck, and counting it would eventually apply needs-boss to a stranger's PR.
+  count=$(python3 -c "import json; d=json.load(open('$RESPAWNS_FILE')); print(d.get('77',{}).get('count',0))" 2>/dev/null || echo "?")
+  if [ "$count" = "0" ]; then
+    pass "untrusted_author: respawn counter untouched"
+  else
+    fail "untrusted_author: expected counter=0 for gated PR #77, got '$count'"
+  fi
+
+  unset MOCK_PR_AUTHOR
+  teardown
+}
+
 # ── Run all tests ─────────────────────────────────────────────────────────────
 
 echo "=== test_sweep_stuck_prs.sh ==="
@@ -318,6 +415,7 @@ test_one_stuck_pr_first_encounter
 test_second_encounter_increments_counter
 test_third_encounter_escalates
 test_recent_pr_not_stuck
+test_untrusted_author_pr_is_not_respawned
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

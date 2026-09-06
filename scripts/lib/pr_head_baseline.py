@@ -1,6 +1,10 @@
 """scripts/lib/pr_head_baseline.py — bind `intake-approved` on a pull request
-to the commit SHA that was actually approved, not just to the PR number
-(D#2421).
+to a commit SHA, not just to the PR number (D#2421).
+
+The binding is a bounded race, not a verified head: see the section below
+titled "THIS IS A BOUNDED RACE, NOT A VERIFIED HEAD" before treating any
+verdict this module returns as proof that a human reviewed the recorded
+commit.
 
 WHY THIS EXISTS
 ---------------
@@ -72,6 +76,28 @@ condition that reopened the original bug (`should_block_spawn`'s `absent` arm
 maps to "not blocked"), so this module auto-baselines a first observation to
 the current head and reports `"match"` — the caller (`pr_intake_gate.py`)
 therefore only ever receives one of `{"match", "drifted", "unknown", "ceiling"}`.
+
+THIS IS A BOUNDED RACE, NOT A VERIFIED HEAD (D#2421 PR 3)
+-----------------------------------------------------------
+Read the paragraph above precisely: "auto-baselines a first observation to
+the current head" means whatever head is live at the moment the gate first
+observes the label — not necessarily the head a human actually reviewed. If
+the label lands and the author force-pushes before the next poll, the first
+observation records the force-pushed head as "approved" and reports
+`"match"`. The window is bounded by the poll interval between the label
+landing and this module's first look at the PR, but it is not zero, and
+nothing in this module closes it.
+
+Closing it needs a server-stamped timestamp for *when the label was applied*
+compared against our own clock, not against the head's `committer.date` —
+that field is attacker-controlled (a force-pusher sets it to whatever predates
+the label and turns an honest unbaselined pass into a confident false one).
+That comparison, and the operational cost it introduces (a state-dir loss
+fails every already-approved external PR closed until an operator
+re-baselines each one), is D#2421 PR 3's scope, not this module's. Until PR 3
+ships, treat this binding as: a force-push is caught on the *next* poll after
+the first one (see `check_and_record`'s `"drifted"` / `"ceiling"` outcomes),
+never on the first.
 """
 
 from __future__ import annotations
