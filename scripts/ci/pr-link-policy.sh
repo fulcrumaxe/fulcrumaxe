@@ -57,7 +57,8 @@
 #      defect (SKIP-on-missing-input) this cutover has already shipped three
 #      times.
 #
-# HOST MATCHING IS EXACT, NOT A SUBDOMAIN WILDCARD
+# HOST MATCHING IS EXACT AND SCHEME-AGNOSTIC — NOT A SUBDOMAIN WILDCARD AND
+# NOT A BARE SUBSTRING
 #
 # Only the host "github.com" (a leading "www." is tolerated) is treated as a
 # repo URL. "*.github.com" is deliberately NOT matched: docs.github.com/en/...
@@ -65,9 +66,28 @@
 # false positive on a PR about CI, and false positives are how a guardrail
 # gets routed around.
 #
-# Known gap, accepted rather than silently dropped: the old substring match
-# (`github.com/$OWNER`) also caught gist.github.com/<owner>/... links; exact
-# host matching does not. Same tradeoff scripts/ci/publish-denylist.sh makes
+# The match does not require a URL scheme, because the exact case this gate
+# exists to catch doesn't carry one: "Context: github.com/some-private-org/
+# enginerepo/discussions/2438" (D#2438's own motivating example). A pattern
+# that required "https?://" would pass that clean. But dropping the scheme
+# requirement and grepping for the bare substring "github.com/" reopens a
+# DIFFERENT false positive: "notgithub.com/someowner" and "mygithub.com/
+# someowner" both contain that substring. The fix that closes the scheme gap
+# without reopening the substring gap is to extract the FULL contiguous
+# hostname-like token around any "github.com" occurrence (greedy on both
+# sides — "notgithub.com" and "docs.github.com" both extract in full, not
+# just their "github.com" tail) and require that whole token to equal
+# "github.com" or "www.github.com" exactly, case-insensitively, before an
+# owner check ever runs on it. A token that differs by even one leading or
+# trailing character is a different host and is never treated as a GitHub
+# URL — scheme or no scheme. See has_foreign_owner_url() for the two-step
+# implementation (POSIX/bash regex has no lookbehind to anchor this in one
+# pattern).
+#
+# Known gap, accepted rather than silently dropped: this still does not
+# match a github.com *subdomain* — gist.github.com/<owner>/... included —
+# because its full hostname token differs from "github.com" the same way
+# "docs.github.com" does. Same tradeoff scripts/ci/publish-denylist.sh makes
 # for its rename blind spot — a realistic false positive costs more than a
 # false negative nobody here produces. Not gold-plated into a subdomain
 # allowlist to close it.
@@ -146,34 +166,55 @@ fi
 # `#N`, which is an Issue reference and is not what this rule is about.
 CLOSES_RE='([Cc]loses|[Rr]esolves|[Ff]ixes) D#[0-9]+'
 
-# Rule 2's pattern: a github.com (or www.github.com) URL, host matched
-# exactly — not *.github.com — followed by the owner segment, terminated by
-# "/", whitespace, ")", "]", ">", '"', or end of line. Markdown link syntax
-# and plain URLs both take this shape.
-GITHUB_URL_RE='https?://(www\.)?github\.com/[^]/[:space:])>"]+'
+# Rule 2's pattern is scheme-agnostic on purpose: D#2438's own motivating
+# example ("Context: github.com/some-private-org/enginerepo/discussions/2438")
+# has no "https://" at all, and the old denylist was a bare substring match
+# that caught it regardless of scheme. A pattern that required a scheme would
+# pass that exact case clean — a real hole, not a theoretical one.
+#
+# The fix is NOT to drop the host anchor and grep for the substring
+# "github.com/" — that reopens the false-positive this design exists to
+# avoid: "notgithub.com/someowner" and "mygithub.com/someowner" both contain
+# "github.com/someowner" as a substring, and under an allowlist a substring
+# hit on an unrelated host is a false positive that blocks a legitimate PR.
+#
+# So the match is done in two steps instead of one regex: grep extracts the
+# FULL contiguous hostname-like token surrounding any "github.com" occurrence
+# — greedy on both sides, so "notgithub.com" extracts as "notgithub.com" in
+# full and "docs.github.com" extracts as "docs.github.com" in full, not just
+# the "github.com" tail — and only THEN is that whole token compared for
+# exact (case-insensitive) equality against "github.com" or "www.github.com".
+# A token that differs by so much as one leading or trailing character, on
+# either side, is a different host and is never treated as a GitHub URL at
+# all — no owner check runs on it, scheme or no scheme. This is what anchors
+# the host without needing lookbehind, which POSIX/bash regex doesn't have.
+GITHUB_HOST_TOKEN_RE='[A-Za-z0-9.-]*github\.com[A-Za-z0-9.-]*(/[^]/[:space:])>"]*)?'
 
 has_closes_ref() { printf '%s' "$1" | grep -Eq "$CLOSES_RE"; }
 
-# Extracts every github.com/<segment> match and compares <segment>
-# case-insensitively against the resolved code-plane owner. Returns success
-# (0) the moment any match names a different owner — that is a foreign-owner
-# URL and rule 2 fails the body.
+# Extracts every hostname-token(/owner-segment)? candidate touching
+# "github.com" and, for each one whose FULL token is exactly "github.com" or
+# "www.github.com", compares the owner segment case-insensitively against the
+# resolved code-plane owner. Returns success (0) the moment any candidate
+# names a real GitHub host with a different owner — that is a foreign-owner
+# URL and rule 2 fails the body. A bare "github.com" mention with no "/"
+# after it (no owner segment at all) is not flagged: rule 2 is about a link
+# to a specific repo, and there is no repo named here to be foreign or not.
 has_foreign_owner_url() {
-  local body="$1" match segment owner_lc restore_nocasematch=0
+  local body="$1" candidate host host_lc segment owner_lc
   owner_lc="${OWNER,,}"
-  shopt -q nocasematch || restore_nocasematch=1
-  shopt -s nocasematch
-  while IFS= read -r match; do
-    [[ -z "$match" ]] && continue
-    if [[ "$match" =~ ^https?://(www\.)?github\.com/(.+)$ ]]; then
-      segment="${BASH_REMATCH[2]}"
-      if [[ "${segment,,}" != "$owner_lc" ]]; then
-        [[ $restore_nocasematch -eq 1 ]] && shopt -u nocasematch
+  while IFS= read -r candidate; do
+    [[ -z "$candidate" ]] && continue
+    if [[ "$candidate" =~ ^([A-Za-z0-9.-]+)(/(.+))?$ ]]; then
+      host="${BASH_REMATCH[1]}"
+      segment="${BASH_REMATCH[3]}"
+      host_lc="${host,,}"
+      if [[ "$host_lc" == "github.com" || "$host_lc" == "www.github.com" ]] \
+        && [[ -n "$segment" && "${segment,,}" != "$owner_lc" ]]; then
         return 0
       fi
     fi
-  done < <(printf '%s' "$body" | grep -oiE "$GITHUB_URL_RE")
-  [[ $restore_nocasematch -eq 1 ]] && shopt -u nocasematch
+  done < <(printf '%s' "$body" | grep -oiE "$GITHUB_HOST_TOKEN_RE")
   return 1
 }
 
@@ -216,6 +257,25 @@ self_test() {
     && { echo "SELF-TEST FAIL: foreign-owner rule fired on the code plane's own repo" >&2; bad=1; }
   has_foreign_owner_url "See https://docs.github.com/en/actions/security-guides/encrypted-secrets" \
     && { echo "SELF-TEST FAIL: foreign-owner rule false-positived on a GitHub documentation host" >&2; bad=1; }
+  # A bare (scheme-less) foreign-owner mention must still be caught — this is
+  # D#2438's own motivating example, and the specific bug a fix-round found:
+  # a scheme-anchored pattern passes it clean.
+  has_foreign_owner_url "Context: github.com/$foreign_owner/enginerepo/discussions/2438" \
+    || { echo "SELF-TEST FAIL: foreign-owner rule missed a scheme-less github.com mention" >&2; bad=1; }
+  # And a bare mention of our OWN repo, no scheme, must still pass.
+  has_foreign_owner_url "Context: github.com/$OWNER/somerepo" \
+    && { echo "SELF-TEST FAIL: foreign-owner rule fired on a scheme-less mention of the code plane's own repo" >&2; bad=1; }
+  # The trap the naive fix (dropping the scheme and grepping the substring
+  # "github.com/") falls into: a host that merely CONTAINS "github.com" as a
+  # tail is not github.com and must not be flagged, with or without a scheme.
+  has_foreign_owner_url "see notgithub.com/$foreign_owner/repo" \
+    && { echo "SELF-TEST FAIL: foreign-owner rule false-positived on notgithub.com (substring trap)" >&2; bad=1; }
+  has_foreign_owner_url "see https://mygithub.com/$foreign_owner/repo" \
+    && { echo "SELF-TEST FAIL: foreign-owner rule false-positived on mygithub.com (substring trap)" >&2; bad=1; }
+  # A bare host mention with no path/owner at all is not a link to any repo,
+  # foreign or otherwise, and must not be flagged.
+  has_foreign_owner_url "See github.com for more info, no link here." \
+    && { echo "SELF-TEST FAIL: foreign-owner rule fired on a bare host mention with no owner segment" >&2; bad=1; }
 
   if [[ $bad -ne 0 ]]; then
     echo "FAIL: pr-link-policy self-test failed — the matchers no longer discriminate, so their verdict on the real body means nothing" >&2

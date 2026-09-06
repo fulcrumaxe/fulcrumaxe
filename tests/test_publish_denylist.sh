@@ -338,6 +338,84 @@ else
   pass "a docs.github.com URL is not parsed as a foreign owner"
 fi
 
+# --- 9b. A fix-round bug: rule 2 required a URL scheme, so D#2438's own -----
+# motivating example — a bare "github.com/<owner>/..." mention with no
+# "https://" — passed clean. Every case below is watched to fail against a
+# scheme-required implementation before being trusted against the fix, per
+# D#1984: a negative case nobody has seen go red has not been shown to work.
+# The naive fix (drop the scheme, grep the bare substring "github.com/") is
+# ALSO covered here and must not pass: it reopens a false positive on hosts
+# like notgithub.com/mygithub.com that merely contain that substring.
+
+# The bug itself: a bare, scheme-less foreign-owner mention must fail.
+out="$(run_link "Closes D#2348
+
+Context: github.com/some-foreign-org/enginerepo/discussions/2348")"
+rc=$?
+if [[ $rc -eq 0 ]]; then
+  fail "a bare (scheme-less) foreign-owner github.com mention must fail — this is D#2438's own motivating example, and it must not pass clean"
+else
+  pass "a bare (scheme-less) foreign-owner github.com mention fails"
+fi
+
+# The already-working direction, kept as a regression check: a schemed
+# foreign-owner URL must still fail after the scheme-agnostic fix.
+out="$(run_link "Closes D#2348
+
+https://github.com/some-foreign-org/x")"
+rc=$?
+if [[ $rc -eq 0 ]]; then
+  fail "a schemed foreign-owner URL must still fail after the scheme-agnostic fix"
+else
+  pass "a schemed foreign-owner URL still fails"
+fi
+
+# The trap the naive fix falls into: a host that merely CONTAINS
+# "github.com" as a tail — bare or schemed — is a different host and must
+# PASS, not be flagged as a foreign-owner link.
+out="$(run_link "Closes D#2348
+
+notgithub.com/some-foreign-org/repo")"
+rc=$?
+if [[ $rc -ne 0 ]]; then
+  fail "a bare notgithub.com mention must pass (it is not github.com), got $rc: $out"
+else
+  pass "a bare notgithub.com mention passes — not a github.com host"
+fi
+
+out="$(run_link "Closes D#2348
+
+https://mygithub.com/some-foreign-org/repo")"
+rc=$?
+if [[ $rc -ne 0 ]]; then
+  fail "a schemed mygithub.com URL must pass (it is not github.com), got $rc: $out"
+else
+  pass "a schemed mygithub.com URL passes — not a github.com host"
+fi
+
+# The code plane's own repo, bare (no scheme), must also pass.
+out="$(run_link "Closes D#2348
+
+Supersedes github.com/$FIXTURE_OWNER/somerepo/pull/4")"
+rc=$?
+if [[ $rc -ne 0 ]]; then
+  fail "a bare (scheme-less) URL into the code plane's own repo should pass, got $rc: $out"
+else
+  pass "a bare (scheme-less) URL into the code plane's own repo passes"
+fi
+
+# A bare host mention with no path at all names no repo, foreign or not, and
+# must pass.
+out="$(run_link "Closes D#2348
+
+We use github.com for hosting our code.")"
+rc=$?
+if [[ $rc -ne 0 ]]; then
+  fail "a bare github.com mention with no owner segment should pass, got $rc: $out"
+else
+  pass "a bare github.com mention with no owner segment passes"
+fi
+
 # --- 10. Missing and Issue-only references fail ----------------------------
 out="$(run_link "Just a description with no reference.")"
 rc=$?
