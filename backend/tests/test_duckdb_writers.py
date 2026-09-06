@@ -158,7 +158,7 @@ def test_get_duckdb_writers_lsof_not_found(tmp_path, monkeypatch):
     )
 
     with patch("subprocess.run", side_effect=FileNotFoundError("lsof not found")):
-        rows, warning = get_duckdb_writers()
+        rows, warning, meta = get_duckdb_writers(proc_root=str(tmp_path / "no-proc"))
 
     assert rows == []
     assert warning is not None
@@ -179,7 +179,7 @@ def test_get_duckdb_writers_timeout(tmp_path, monkeypatch):
         "subprocess.run",
         side_effect=subprocess.TimeoutExpired(cmd=["lsof"], timeout=5),
     ):
-        rows, warning = get_duckdb_writers()
+        rows, warning, meta = get_duckdb_writers(proc_root=str(tmp_path / "no-proc"))
 
     assert rows == []
     assert warning is not None
@@ -195,7 +195,7 @@ def test_get_duckdb_writers_db_missing(tmp_path, monkeypatch):
         lambda: missing_db,
     )
 
-    rows, warning = get_duckdb_writers()
+    rows, warning, meta = get_duckdb_writers()
     assert rows == []
     assert warning is None
 
@@ -229,7 +229,7 @@ def test_get_duckdb_writers_writer_fd_mode_populated(tmp_path, monkeypatch):
     mock_result.stdout = fake_lsof_output
 
     with patch("subprocess.run", return_value=mock_result):
-        rows, warning = get_duckdb_writers()
+        rows, warning, meta = get_duckdb_writers(proc_root=str(tmp_path / "no-proc"))
 
     assert warning is None
     assert len(rows) == 1
