@@ -291,9 +291,22 @@ class TestComputeIdleRate(unittest.TestCase):
             return compute_idle_rate(metrics)
 
     def test_empty_returns_none_stats(self):
-        """AC-14: empty list → last_24h_pct/all_time_pct None, total_iterations==0."""
+        """AC-14: empty list → last_24h_pct/all_time_pct None, total_iterations==0.
+
+        malformed_lines joined the return dict when compute_idle_rate stopped
+        dating unreadable rows to now; with no rows at all there is nothing to
+        skip, so it is 0.
+        """
         result = self._call([])
-        self.assertEqual(result, {"last_24h_pct": None, "all_time_pct": None, "total_iterations": 0})
+        self.assertEqual(
+            result,
+            {
+                "last_24h_pct": None,
+                "all_time_pct": None,
+                "total_iterations": 0,
+                "malformed_lines": 0,
+            },
+        )
 
     def test_all_time_pct_exact(self):
         """AC-15: 2 of 4 idle → all_time_pct==50.0, total_iterations==4."""

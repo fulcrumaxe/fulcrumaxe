@@ -48,11 +48,21 @@ Run from the repo root:
 
     python3 scripts/ci/loop-idle-ratio-timestamp-guard.py
 
+A fourth reader was added later (D#2331): `backend/kpi_engine.compute_idle_rate`
+carried the same missing guard one line away from a second, worse bug -- it
+substituted the *current time* for any timestamp it could not parse
+(`(_parse_iso(...) or _now_utc()) >= cutoff`), so a row whose age was unknown
+was counted as maximally recent and `last_24h_pct` was inflated by precisely
+the rows with the least evidence behind them. The two are entangled: fixing
+the parse alone makes the substitution worse, because a row that used to be
+dropped before parsing now reaches the `or _now_utc()`. Both fixes are probed
+together below.
+
 Exit 0: the shared parser is in place and this fixture proves it matters,
-        across all three affected readers.
-Exit 1: any reader still raises, mis-counts, leaks a non-string, or is
-        silent about a skip -- or defeating a fix produced no observable
-        difference.
+        across all four affected readers.
+Exit 1: any reader still raises, mis-counts, leaks a non-string, dates an
+        unreadable row to now, or is silent about a skip -- or defeating a fix
+        produced no observable difference.
 """
 
 from __future__ import annotations
@@ -248,8 +258,191 @@ def check_health_monitor(fixture_path: Path) -> list[str]:
     return failures
 
 
+def _write_kpi_fixture(path: Path, *, good_rows: int, good_age_hours: float, bad: list) -> None:
+    """Write a loop-metrics fixture for the kpi_engine checks.
+
+    *good_rows* rows carrying real ISO timestamps (``datetime.isoformat()``
+    form, i.e. a "+00:00" offset -- the shape the existing
+    backend/tests/test_kpi_engine.py fixtures use), aged *good_age_hours* back
+    from now, alternating idle True/False. Then one row per entry in *bad*,
+    each carrying that raw value under "timestamp" and ``idle: true``.
+
+    Ages are relative to now, never literals, so the 24h cutoff can't make this
+    guard pass vacuously as the fixture ages.
+    """
+    now = datetime.now(timezone.utc)
+    lines = []
+    for i in range(good_rows):
+        ts = (now - timedelta(hours=good_age_hours) - timedelta(minutes=10 * i)).isoformat()
+        lines.append(json.dumps({"timestamp": ts, "idle": i % 2 == 0}))
+    for raw in bad:
+        lines.append(json.dumps({"timestamp": raw, "idle": True}))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _prefix_idle_rate(kpi_engine, metrics: list) -> dict:
+    """The pre-D#2331 body of compute_idle_rate, verbatim in behaviour.
+
+    Used as the canary: run over the SAME fixture as the real function, it must
+    produce an observably different answer, otherwise the fixture proves
+    nothing about whether the fix is present (the D#1984 trap).
+    """
+    def _naive_parse(ts):
+        if not ts:
+            return None
+        try:
+            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+
+    if not metrics:
+        return {"last_24h_pct": None, "all_time_pct": None, "total_iterations": 0}
+    now = kpi_engine._now_utc()
+    cutoff = now - timedelta(hours=24)
+    recent = [m for m in metrics if (_naive_parse(m.get("timestamp")) or now) >= cutoff]
+
+    def _pct(rows):
+        if not rows:
+            return None
+        return round(sum(1 for r in rows if r.get("idle") is True) / len(rows) * 100, 1)
+
+    return {"last_24h_pct": _pct(recent), "all_time_pct": _pct(metrics), "total_iterations": len(metrics)}
+
+
+def _load_and_compute(kpi_engine, fixture_path: Path):
+    """Drive the real loader and the real compute_idle_rate over a real file.
+
+    Not a stub returning what we expect: kpi_engine.METRICS is pointed at the
+    fixture and load_loop_metrics() reads it off disk, exactly as
+    compute_all() does.
+    """
+    orig = kpi_engine.METRICS
+    kpi_engine.METRICS = fixture_path
+    try:
+        rows = kpi_engine.load_loop_metrics()
+        stderr_buf = io.StringIO()
+        with contextlib.redirect_stderr(stderr_buf):
+            result = kpi_engine.compute_idle_rate(rows)
+        return rows, result, stderr_buf.getvalue()
+    finally:
+        kpi_engine.METRICS = orig
+
+
+def check_kpi_idle_rate(tmp_dir: Path, kpi_engine) -> list[str]:
+    """D#2331: kpi_engine.compute_idle_rate excludes rows it cannot date,
+    says how many it excluded, and never dates one to now."""
+    failures: list[str] = []
+
+    # --- Fixture 1: 8 readable rows inside the window (4 idle) plus two
+    # unreadable ones -- an epoch int and a malformed string.
+    f1 = tmp_dir / "kpi-mixed.jsonl"
+    _write_kpi_fixture(f1, good_rows=8, good_age_hours=0, bad=[1784925063, "not-a-timestamp"])
+
+    try:
+        rows, result, stderr_text = _load_and_compute(kpi_engine, f1)
+    except Exception as exc:  # noqa: BLE001 -- report ANY exception
+        failures.append(
+            f"compute_idle_rate raised {type(exc).__name__}: {exc!r} on the mixed "
+            f"fixture (expected: no raise)"
+        )
+        return failures
+
+    print(f"  compute_idle_rate(8 good + 2 unreadable) = {result}")
+
+    if len(rows) != 10:
+        failures.append(f"fixture 1: expected 10 rows off disk, loader returned {len(rows)}")
+    if result.get("malformed_lines") != 2:
+        failures.append(
+            f"fixture 1: malformed_lines expected 2 (the epoch int and the bad "
+            f"string), got {result.get('malformed_lines')!r}"
+        )
+    if result.get("last_24h_pct") != 50.0:
+        failures.append(
+            f"fixture 1: last_24h_pct expected 50.0 (4 idle of the 8 readable "
+            f"rows -- the 2 unreadable ones must not be in the window), got "
+            f"{result.get('last_24h_pct')!r}"
+        )
+    if result.get("total_iterations") != 10:
+        failures.append(
+            f"fixture 1: total_iterations expected 10 (all-time counts need no "
+            f"timestamp), got {result.get('total_iterations')!r}"
+        )
+    if "skipping malformed row" not in stderr_text:
+        failures.append(
+            f"fixture 1: expected a stderr diagnostic for each skipped row (skip "
+            f"must be loud) -- stderr was {stderr_text!r}"
+        )
+    else:
+        print("  stderr diagnostics present for the skipped rows")
+
+    # Canary for finding 1: the pre-fix body raises on the epoch int, so this
+    # fixture discriminates a fixed implementation from the original crash.
+    raised = False
+    try:
+        _prefix_idle_rate(kpi_engine, rows)
+    except AttributeError:
+        raised = True
+    if not raised:
+        failures.append(
+            "canary 1: the pre-fix compute_idle_rate body did NOT raise on this "
+            "fixture -- it cannot discriminate a fixed implementation from the "
+            "original crash"
+        )
+    else:
+        print("  canary 1: pre-fix body reproduces the AttributeError, as expected")
+
+    # --- Fixture 2: the window contains nothing readable. Eight readable rows,
+    # all older than 24h, plus one unreadable string row. The ONLY row the
+    # pre-fix code put in the window is the one it could not date.
+    f2 = tmp_dir / "kpi-window-unreadable.jsonl"
+    _write_kpi_fixture(f2, good_rows=8, good_age_hours=48, bad=["not-a-timestamp"])
+
+    try:
+        rows2, result2, _ = _load_and_compute(kpi_engine, f2)
+    except Exception as exc:  # noqa: BLE001
+        failures.append(
+            f"compute_idle_rate raised {type(exc).__name__}: {exc!r} on the "
+            f"empty-window fixture (expected: no raise)"
+        )
+        return failures
+
+    print(f"  compute_idle_rate(nothing readable in window) = {result2}")
+
+    if result2.get("last_24h_pct") is not None:
+        failures.append(
+            f"fixture 2: last_24h_pct expected None (nothing readable in the "
+            f"window -- a confident number here is the whole defect), got "
+            f"{result2.get('last_24h_pct')!r}"
+        )
+    if result2.get("malformed_lines") != 1:
+        failures.append(
+            f"fixture 2: malformed_lines expected 1, got "
+            f"{result2.get('malformed_lines')!r}"
+        )
+
+    # Canary for finding 2: over the SAME fixture, the pre-fix body dates the
+    # unreadable row to now and reports a confident 100% idle.
+    prefix_result = _prefix_idle_rate(kpi_engine, rows2)
+    if prefix_result.get("last_24h_pct") != 100.0:
+        failures.append(
+            f"canary 2: the pre-fix body was expected to inflate last_24h_pct to "
+            f"100.0 on this fixture (dating the unreadable row to now), but "
+            f"returned {prefix_result.get('last_24h_pct')!r} -- the fixture no "
+            f"longer demonstrates the bug it guards against"
+        )
+    else:
+        print(
+            "  canary 2: pre-fix body reports last_24h_pct=100.0 on the same "
+            "fixture (unreadable row dated to now), as expected"
+        )
+
+    return failures
+
+
 def main() -> int:
     sys.path.insert(0, str(REPO_ROOT))
+    import backend.kpi_engine as kpi_engine  # noqa: PLC0415
     import backend.loop_metrics_ts as loop_metrics_ts  # noqa: PLC0415
     from backend.stats_writer import loop_idle_ratio_24h  # noqa: PLC0415
 
@@ -267,6 +460,9 @@ def main() -> int:
 
         print("health_monitor:")
         all_failures += check_health_monitor(fixture_path)
+
+        print("kpi_engine.compute_idle_rate:")
+        all_failures += check_kpi_idle_rate(Path(tmp), kpi_engine)
 
     if all_failures:
         print("\nFAIL loop-idle-ratio-timestamp-guard:")
