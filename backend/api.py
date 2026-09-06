@@ -903,7 +903,11 @@ def _project_sub_endpoint(sub: str, project_id: str = "") -> dict | list | None:
         kpi = _get_project_kpi(project_id)
         velocity = (kpi.get("velocity") or {}).get("last_24h") or 0
         cycle = (kpi.get("pr_cycle_time") or {}).get("mean_hours") or 0.0
-        idle = (kpi.get("idle_rate") or {}).get("last_24h_pct") or 0.0
+        # `or 0.0` would report a confident "0% idle" whenever the 24h window
+        # holds nothing this can date — the same substitution that used to make
+        # the underlying figure wrong. Pass null through instead, as
+        # estimationAccuracy below already does for its own "not enough data".
+        raw_idle = (kpi.get("idle_rate") or {}).get("last_24h_pct")
         estimation = kpi.get("estimation") or {}
         # accuracy is None when total_measured < min_samples — pass null to frontend
         raw_accuracy = estimation.get("accuracy")
@@ -918,7 +922,8 @@ def _project_sub_endpoint(sub: str, project_id: str = "") -> dict | list | None:
             "estimationAccuracySampleCount": total_measured,
             "estimationAccuracyMinSamples": min_samples,
             "period": "last_24h",
-            "idleRatePct": round(float(idle), 1),
+            "idleRatePct": round(float(raw_idle), 1) if raw_idle is not None else None,
+            "idleRateUnreadableRows": int((kpi.get("idle_rate") or {}).get("malformed_lines") or 0),
         }
 
     if sub == "kpi/velocity":

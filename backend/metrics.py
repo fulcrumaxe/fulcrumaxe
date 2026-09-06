@@ -131,6 +131,15 @@ def generate_prometheus_metrics() -> str:
             "All-time loop idle rate as a percentage",
             idle_rate.get("all_time_pct"),
         )
+        # Exported alongside the rate rather than left in the return dict: this
+        # is the surface you'd want to alert from when loop-metrics rows start
+        # arriving with timestamps nothing can read. all_time_pct itself is
+        # unaffected by them — it needs no timestamp — but the 24h figure is.
+        lines += _gauge_lines(
+            "af_idle_rate_malformed_rows",
+            "Loop-metrics rows excluded from the 24h idle window because their timestamp could not be read",
+            idle_rate.get("malformed_lines"),
+        )
     except Exception:  # noqa: BLE001
         logger.warning("metrics: KPI subsystem unavailable — omitting KPI metrics")
 

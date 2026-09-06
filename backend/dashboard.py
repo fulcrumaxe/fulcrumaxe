@@ -413,8 +413,18 @@ def get_dashboard_html() -> str:
       setText('kpi-velocity', v.all_time_per_day != null ? v.all_time_per_day + '/day' : '--');
       const cycle = ct.mean_hours;
       setText('kpi-cycle', cycle != null ? cycle.toFixed(1) + 'h' : '--');
-      const idle = ir.all_time_pct;
-      setText('kpi-idle', idle != null ? idle.toFixed(1) + '%' : '--');
+      // Idle rate reads in three states, and the difference matters: a
+      // percentage, "unknown" when nothing in the window could be dated, and a
+      // percentage plus how many rows were left out because their timestamp
+      // could not be read. Rows with an unreadable timestamp used to be counted
+      // as happening now, which quietly inflated the 24h figure.
+      const p24 = ir.last_24h_pct;
+      const pAll = ir.all_time_pct;
+      const unreadable = ir.malformed_lines || 0;
+      let idleText = '24h ' + (p24 != null ? p24.toFixed(1) + '%' : 'unknown')
+                   + ' · all-time ' + (pAll != null ? pAll.toFixed(1) + '%' : 'unknown');
+      if (unreadable > 0) idleText += ' · ' + unreadable + ' rows unreadable';
+      setText('kpi-idle', idleText);
     }
 
     function updateAgents(data) {

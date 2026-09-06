@@ -15,6 +15,18 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from statistics import mean, median
 
+# main() below inserts the repo root on sys.path so `python backend/kpi_engine.py`
+# works, but that runs too late for a module-level `backend.*` import. Same shim
+# backend/health_monitor.py uses, for the same reason.
+if __name__ == "__main__" and __package__ is None:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from backend.loop_metrics_ts import (  # noqa: E402 (after the sys.path shim)
+    parse_loop_metrics_ts,
+    report_skipped_row,
+    row_ts,
+)
+
 # Regex for the <!-- COMPLETION --> ... <!-- /COMPLETION --> block written by
 # post-merge-hook.sh.  Parses plain "key: value" lines (no leading dash).
 _COMPLETION_BLOCK_RE = re.compile(
@@ -63,14 +75,17 @@ def load_loop_metrics() -> list[dict]:
     return records
 
 
-def _parse_iso(ts: str | None) -> datetime | None:
-    if not ts:
-        return None
-    try:
-        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-    except ValueError:
-        return None
+def _parse_iso(ts: object) -> datetime | None:
+    """Parse one ISO-8601 timestamp value, returning None when it can't be read.
+
+    Delegates to the shared parser rather than keeping a private copy, so this
+    module agrees with every other reader of the same data about which values
+    are readable. Notably it returns None for a non-string (a raw epoch int, for
+    instance) instead of raising AttributeError, which is what the old private
+    body did — it caught ValueError only, so `ts.replace(...)` on an int went
+    straight past the handler.
+    """
+    return parse_loop_metrics_ts(ts)
 
 
 def _now_utc() -> datetime:
@@ -167,17 +182,61 @@ def compute_estimation_accuracy(discussions: list[dict]) -> dict:
 
 
 def compute_idle_rate(metrics: list[dict]) -> dict:
+    """Idle percentage over the last 24h and over all time.
+
+    A row whose timestamp cannot be read is **excluded** from the 24h window and
+    counted in ``malformed_lines`` — never dated to the current time. The old
+    code substituted "now" for an unreadable timestamp, which meant the rows we
+    knew least about were the ones counted as most recent, and ``last_24h_pct``
+    was inflated by exactly those rows with no way for a reader to tell.
+
+    ``all_time_pct`` and ``total_iterations`` are unaffected: neither needs a
+    timestamp, so an unreadable row still counts toward both.
+
+    Returns ``{"last_24h_pct", "all_time_pct", "total_iterations",
+    "malformed_lines"}``. ``last_24h_pct`` is None when the window holds no
+    readable row — "cannot compute", which is not the same as 0% idle.
+    """
     if not metrics:
-        return {"last_24h_pct": None, "all_time_pct": None, "total_iterations": 0}
+        return {
+            "last_24h_pct": None,
+            "all_time_pct": None,
+            "total_iterations": 0,
+            "malformed_lines": 0,
+        }
     cutoff = _now_utc() - timedelta(hours=24)
-    recent = [m for m in metrics if (_parse_iso(m.get("timestamp")) or _now_utc()) >= cutoff]
+    recent: list[dict] = []
+    malformed_lines = 0
+    for m in metrics:
+        raw_ts = row_ts(m)
+        if raw_ts is None:
+            # No timestamp field at all — a normal shape, not a malformed one.
+            # It still can't be placed in the window, so it stays out of it.
+            continue
+        ts = _parse_iso(raw_ts)
+        if ts is None:
+            # Present but unreadable (a raw epoch int, say). Skip it loudly and
+            # count it, so the percentage below can say what it left out.
+            # lineno is None deliberately: load_loop_metrics() drops blank and
+            # unparseable lines, so this list index is not the file line number
+            # and claiming otherwise would point a reader at the wrong row.
+            report_skipped_row(METRICS.name, None, raw_ts, prefix="kpi_engine")
+            malformed_lines += 1
+            continue
+        if ts >= cutoff:
+            recent.append(m)
 
     def _pct(rows: list[dict]) -> float | None:
         if not rows:
             return None
         return round(sum(1 for r in rows if r.get("idle") is True) / len(rows) * 100, 1)
 
-    return {"last_24h_pct": _pct(recent), "all_time_pct": _pct(metrics), "total_iterations": len(metrics)}
+    return {
+        "last_24h_pct": _pct(recent),
+        "all_time_pct": _pct(metrics),
+        "total_iterations": len(metrics),
+        "malformed_lines": malformed_lines,
+    }
 
 
 def compute_pr_cycle_time(discussions: list[dict]) -> dict:
@@ -347,7 +406,16 @@ def show() -> None:
             print("    Estimation bias         : no data")
 
     print("\n  IDLE RATE")
-    print(f"    Last 24h                : {_fmt(ir.get('last_24h_pct'), '%')}")
+    # Three distinct states, because "0%" and "we could not work it out" are
+    # very different readings of the same line.
+    last_24h = ir.get("last_24h_pct")
+    unreadable = ir.get("malformed_lines") or 0
+    if last_24h is None:
+        print("    Last 24h                : unknown (no readable timestamps in window)")
+    else:
+        print(f"    Last 24h                : {last_24h}%")
+    if unreadable:
+        print(f"    Rows unreadable         : {unreadable} (excluded from the 24h window)")
     print(f"    All-time                : {_fmt(ir.get('all_time_pct'), '%')}")
     print(f"    Total loop iterations   : {_fmt(ir.get('total_iterations'))}")
 
