@@ -172,7 +172,14 @@ auto_pull_recover_modified() {
   fi
 
   local stash_out stash_rc
-  stash_out=$(git -C "$repo_root" stash push -m "$stash_msg" -- "${candidates[@]}" 2>&1) && stash_rc=0 || stash_rc=$?
+  # LC_ALL=C: the success check on the next line gates on git's English
+  # "Saved working directory" text. This one does not fail safe — under a
+  # translated locale the stash push *succeeds*, the grep does not match, and
+  # the function returns "declined" without setting AUTO_PULL_STASH_REF. The
+  # operator's edits have been moved into a stash that nothing names, while the
+  # caller is told nothing happened. Measured: under LANGUAGE=de git says
+  # "Arbeitsverzeichnis und Index-Status ... gespeichert."
+  stash_out=$(LC_ALL=C git -C "$repo_root" stash push -m "$stash_msg" -- "${candidates[@]}" 2>&1) && stash_rc=0 || stash_rc=$?
   if [[ $stash_rc -ne 0 ]] || ! printf '%s' "$stash_out" | grep -q "^Saved working directory"; then
     AUTO_PULL_STASH_SUMMARY="declined: 'git stash push' over the colliding path(s) did not report success (${stash_out})"
     _apsr_log "$AUTO_PULL_STASH_SUMMARY"

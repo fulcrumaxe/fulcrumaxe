@@ -103,7 +103,14 @@ auto_pull_step() {
     git -C "$repo_root" worktree prune 2>/dev/null || true
 
     # Fetch first; handle "no such ref was fetched" — symptom of parent on orphan branch
-    FETCH_OUT=$(git -C "$repo_root" fetch origin main 2>&1) && FETCH_RC=0 || FETCH_RC=$?
+    #
+    # LC_ALL=C for the same reason the two pulls below carry it: the grep on the
+    # next line gates on git's English error text. Under a translated locale the
+    # match silently stops firing, and the branch it guards is the destructive
+    # `checkout -B main origin/main` that recovers a parent stranded on an orphan
+    # branch — so the repo stays stranded and nothing says so. Measured: under
+    # LANGUAGE=de this fetch says "Konnte Remote-Referenz main nicht finden."
+    FETCH_OUT=$(LC_ALL=C git -C "$repo_root" fetch origin main 2>&1) && FETCH_RC=0 || FETCH_RC=$?
     if [[ $FETCH_RC -ne 0 ]]; then
       if echo "$FETCH_OUT" | grep -q "no such ref was fetched\|couldn't find remote ref"; then
         RECOVERY_MSG="[$(date +%H:%M)] post-merge-hook: fetch origin main failed ('no such ref') — forcing reset to origin/main"
