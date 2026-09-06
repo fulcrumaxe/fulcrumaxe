@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 # tests/test_guard_registry_check.sh — exercises scripts/ci/guard-registry-check.py
-# against fixture repo trees (D#2339 PR-a).
+# against fixture repo trees (D#2339 PR-a, repointed at the runner by PR-b).
 #
 # The checker resolves its repo root from __file__, so each case builds a
 # throwaway tree (scripts/ci/ + .github/workflows/ci.yml) and runs the real
 # checker source with __file__ pointed into that tree. Running it that way
 # rather than copying the file in keeps the checker out of its own subject
-# set, which is what lets case 6 present a genuinely empty scripts/ci/.
+# set, which is what lets the empty case present a genuinely empty scripts/ci/.
+# Each fixture also gets a real copy of scripts/ci/run-guards.sh, because the
+# checker asks the runner what it discovers rather than reimplementing its
+# discovery — a reimplementation that drifted would reconcile against a set
+# nothing actually runs.
 # No state dir, no network, no stubs. The last case runs the checker on the
 # real tree the way .github/workflows/ci.yml runs it.
 #
@@ -17,16 +21,19 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 CHECKER="$REPO_ROOT/scripts/ci/guard-registry-check.py"
+RUNNER="$REPO_ROOT/scripts/ci/run-guards.sh"
 
 PASS=0
 FAIL=0
 pass() { echo "  PASS: $1"; PASS=$((PASS + 1)); }
 fail() { echo "  FAIL: $1 -- $2"; FAIL=$((FAIL + 1)); }
 
-if [ ! -f "$CHECKER" ]; then
-  echo "FAIL: checker not found: $CHECKER" >&2
-  exit 1
-fi
+for f in "$CHECKER" "$RUNNER"; do
+  if [ ! -f "$f" ]; then
+    echo "FAIL: not found: $f" >&2
+    exit 1
+  fi
+done
 
 TMPROOT="$(mktemp -d)"
 trap 'rm -rf "$TMPROOT"' EXIT
@@ -43,16 +50,38 @@ with open(src) as fh:
 exec(code, {"__name__": "__main__", "__file__": fake_path})
 PY
 
-# make_tree <name> — build $TMPROOT/<name> with scripts/ci/ and .github/workflows/.
+# make_tree <name> — build $TMPROOT/<name> with scripts/ci/ (carrying a real
+# run-guards.sh) and .github/workflows/.
 make_tree() {
   local root="$TMPROOT/$1"
   mkdir -p "$root/scripts/ci" "$root/.github/workflows"
+  cp "$RUNNER" "$root/scripts/ci/run-guards.sh"
   echo "$root"
 }
 
-# workflow <root> <guard-file...> — a minimal workflow whose run: lines
-# reference the given scripts/ci files.
+# workflow <root> [extra-run-target...] — a minimal workflow that runs the
+# guard runner, plus a `run:` line for each named own-step file.
 workflow() {
+  local root="$1"; shift
+  {
+    echo "jobs:"
+    echo "  backend:"
+    echo "    name: backend (import-smoke)"
+    echo "    steps:"
+    echo "      - name: Behavioral guards"
+    echo "        run: bash scripts/ci/run-guards.sh"
+    local p
+    for p in "$@"; do
+      echo "      - name: step for $p"
+      echo "        run: python3 scripts/ci/$p"
+    done
+  } > "$root/.github/workflows/ci.yml"
+}
+
+# workflow_without_runner <root> [extra-run-target...] — the same, minus the
+# runner step. This is the post-PR-b shape of a dropped guard: there is no
+# per-guard step left to lose, only the one step that runs all of them.
+workflow_without_runner() {
   local root="$1"; shift
   {
     echo "jobs:"
@@ -64,6 +93,8 @@ workflow() {
       echo "      - name: step for $p"
       echo "        run: python3 scripts/ci/$p"
     done
+    echo "      - name: something else"
+    echo "        run: true"
   } > "$root/.github/workflows/ci.yml"
 }
 
@@ -97,78 +128,107 @@ expect() {
 
 echo "== guard-registry-check =="
 
-# 1. Happy path: one wired guard, one ledgered non-guard.
+# 1. Happy path: a guard the runner picks up, an own-step guard the workflow
+#    invokes directly, and a ledgered non-guard nothing runs.
 R="$(make_tree happy)"
-touch "$R/scripts/ci/alpha-guard.py" "$R/scripts/ci/local-tool.sh"
-workflow "$R" alpha-guard.py
-ledger "$R" '{"exempt": {"local-tool.sh": "run by hand on a dev host, never in CI"}}'
-expect "wired + ledgered reconciles clean" 0 "PASS  alpha-guard.py" "$(run_checker "$R")"
+touch "$R/scripts/ci/alpha-guard.py" "$R/scripts/ci/own-guard.py" "$R/scripts/ci/local-tool.sh"
+workflow "$R" own-guard.py
+ledger "$R" '{"exempt": {"local-tool.sh": "run by hand on a dev host, never in CI"}, "own_step": {"own-guard.py": "needs a PR event payload the runner cannot give it"}}'
+expect "runner-discovered + own_step + exempt reconciles clean" 0 "PASS  alpha-guard.py  run by run-guards.sh" "$(run_checker "$R")"
 
-# 2. A file in neither the workflow nor the ledger — the dropped-guard case
-#    this check exists for.
-R="$(make_tree unwired)"
-touch "$R/scripts/ci/alpha-guard.py" "$R/scripts/ci/orphan-guard.py"
-workflow "$R" alpha-guard.py
-ledger "$R" '{"exempt": {}}'
-expect "unwired, unledgered file fails and is named" 1 "orphan-guard.py" "$(run_checker "$R")"
+# 2. The post-PR-b dropped-guard case: the runner step is gone from the
+#    workflow, so every guard it discovers gates nothing.
+R="$(make_tree runner_unwired)"
+touch "$R/scripts/ci/alpha-guard.py"
+workflow_without_runner "$R"
+ledger "$R" '{"exempt": {}, "own_step": {}}'
+expect "an unwired runner fails and is named" 1 "run-guards.sh is the guard runner but is referenced by none of" "$(run_checker "$R")"
 
-# 3. A blank reason is not a decision.
+# 3. An own_step entry no workflow actually references is a claim the build
+#    can check, and does.
+R="$(make_tree own_step_lies)"
+touch "$R/scripts/ci/alpha-guard.py"
+workflow "$R"
+ledger "$R" '{"exempt": {}, "own_step": {"alpha-guard.py": "claims a workflow runs this directly"}}'
+expect "an own_step entry nothing references fails" 1 "it runs nowhere and gates nothing" "$(run_checker "$R")"
+
+# 4. An exempt entry that IS referenced is stale in the other direction.
+R="$(make_tree exempt_lies)"
+touch "$R/scripts/ci/alpha-guard.py"
+workflow "$R" alpha-guard.py
+ledger "$R" '{"exempt": {"alpha-guard.py": "claims nothing runs this"}, "own_step": {}}'
+expect "an exempt entry a workflow does reference fails" 1 "one of the two is stale" "$(run_checker "$R")"
+
+# 5. A blank reason is not a decision.
 R="$(make_tree blank_reason)"
 touch "$R/scripts/ci/local-tool.sh"
 workflow "$R"
-ledger "$R" '{"exempt": {"local-tool.sh": "   "}}'
+ledger "$R" '{"exempt": {"local-tool.sh": "   "}, "own_step": {}}'
 expect "blank ledger reason fails" 1 "empty or non-string reason" "$(run_checker "$R")"
 
-# 4. A ledger entry naming a file that no longer exists is stale.
+# 6. A ledger entry naming a file that no longer exists is stale.
 R="$(make_tree stale)"
 touch "$R/scripts/ci/alpha-guard.py"
-workflow "$R" alpha-guard.py
-ledger "$R" '{"exempt": {"deleted-tool.sh": "a real-looking reason"}}'
+workflow "$R"
+ledger "$R" '{"exempt": {"deleted-tool.sh": "a real-looking reason"}, "own_step": {}}'
 expect "stale ledger entry fails and is named" 1 "deleted-tool.sh" "$(run_checker "$R")"
 
-# 5. Wired AND ledgered means one of the two is stale.
-R="$(make_tree both)"
+# 7. One file cannot be both exempt and own_step.
+R="$(make_tree both_sections)"
 touch "$R/scripts/ci/alpha-guard.py"
 workflow "$R" alpha-guard.py
-ledger "$R" '{"exempt": {"alpha-guard.py": "supposedly not a CI step"}}'
-expect "wired and ledgered at once fails" 1 "one of the two is stale" "$(run_checker "$R")"
+ledger "$R" '{"exempt": {"alpha-guard.py": "r1"}, "own_step": {"alpha-guard.py": "r2"}}'
+expect "a file in both ledger sections fails" 1 "it cannot be both" "$(run_checker "$R")"
 
-# 6. Discovering nothing is a failure, not a pass — the item that keeps this
+# 8. Discovering nothing is a failure, not a pass — the item that keeps this
 #    check from becoming the thing it guards against.
 R="$(make_tree empty)"
+rm -f "$R/scripts/ci/run-guards.sh"
 workflow "$R"
-ledger "$R" '{"exempt": {}}'
+ledger "$R" '{"exempt": {}, "own_step": {}}'
 expect "empty scripts/ci/ fails rather than reporting all-clear" 1 "discovered zero files" "$(run_checker "$R")"
 
-# 7. A guard named only in a YAML comment is not wired.
+# 9. A guard named only in a YAML comment is not wired. Same rule as before
+#    PR-b, applied now to the runner and to own-step files.
 R="$(make_tree comment_only)"
-touch "$R/scripts/ci/alpha-guard.py"
+touch "$R/scripts/ci/own-guard.py"
 workflow "$R"
-printf '      # see scripts/ci/alpha-guard.py for why\n' >> "$R/.github/workflows/ci.yml"
-ledger "$R" '{"exempt": {}}'
-expect "a comment mention does not count as wired" 1 "alpha-guard.py" "$(run_checker "$R")"
+printf '      # see scripts/ci/own-guard.py for why\n' >> "$R/.github/workflows/ci.yml"
+ledger "$R" '{"exempt": {}, "own_step": {"own-guard.py": "supposedly its own step"}}'
+expect "a comment mention does not count as wired" 1 "own-guard.py" "$(run_checker "$R")"
 
-# 8. Discovery is a directory listing, not a mode-bit filter.
+# 10. Discovery is a directory listing, not a mode-bit filter.
 R="$(make_tree modebit)"
 touch "$R/scripts/ci/no-x-bit-guard.py"
 chmod 644 "$R/scripts/ci/no-x-bit-guard.py"
-workflow "$R" no-x-bit-guard.py
-ledger "$R" '{"exempt": {}}'
+workflow "$R"
+ledger "$R" '{"exempt": {}, "own_step": {}}'
 expect "a non-executable file is still discovered" 0 "no-x-bit-guard.py" "$(run_checker "$R")"
 expect "--list includes the non-executable file" 0 "no-x-bit-guard.py" "$(run_checker "$R" --list)"
-expect "--list reports a count" 0 "count: 1" "$(run_checker "$R" --list)"
+expect "--list counts the runner too" 0 "count: 2" "$(run_checker "$R" --list)"
 
-# 9. A missing or malformed ledger is a hard failure, not an empty exemption set.
+# 11. A missing or malformed ledger is a hard failure, not an empty exemption set.
 R="$(make_tree no_ledger)"
 touch "$R/scripts/ci/alpha-guard.py"
-workflow "$R" alpha-guard.py
+workflow "$R"
 expect "missing ledger fails" 1 "guard-ledger.json is missing" "$(run_checker "$R")"
-ledger "$R" '{"exempt": {}, "typo_key": 1}'
+ledger "$R" '{"exempt": {}, "own_step": {}, "typo_key": 1}'
 expect "unknown top-level ledger key fails" 1 "unknown top-level key" "$(run_checker "$R")"
-ledger "$R" '{"note": "no exempt object here"}'
+ledger "$R" '{"note": "no exempt object here", "own_step": {}}'
 expect "ledger without an exempt object fails" 1 "missing its required 'exempt' object" "$(run_checker "$R")"
+ledger "$R" '{"exempt": {}}'
+expect "ledger without an own_step object fails" 1 "missing its required 'own_step' object" "$(run_checker "$R")"
 
-# 10. The real tree, run the way ci.yml runs it.
+# 12. If the runner cannot be asked what it runs, the checker must say so
+#     rather than reconcile against an empty set and report all-clear.
+R="$(make_tree runner_broken)"
+touch "$R/scripts/ci/alpha-guard.py"
+printf '#!/usr/bin/env bash\nexit 9\n' > "$R/scripts/ci/run-guards.sh"
+workflow "$R"
+ledger "$R" '{"exempt": {}, "own_step": {}}'
+expect "an unusable runner fails the check" 1 "--list exited 9" "$(run_checker "$R")"
+
+# 13. The real tree, run the way ci.yml runs it.
 expect "the real repo reconciles clean" 0 "guard-registry-check: OK" "$(run_checker "$REPO_ROOT")"
 
 echo ""
