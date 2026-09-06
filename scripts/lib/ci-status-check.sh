@@ -62,11 +62,13 @@
 #      the ci_gate_stood_down row is written without the required set being
 #      read. A name added here therefore cannot make the gate impossible to
 #      stand down.
-#   2. A never-registered check reads as absent, not as pending-forever:
-#      _CI_EVAL_PY puts it in `missing` and prints STATUS=fail. That is a hard
-#      block rather than a hang — loud, and diagnosable from the run — but it
-#      does mean the job carrying this name must register a check-run on every
-#      head it gates, on every repository this gate runs against.
+#   2. A check that does not produce a green result is a hard block rather
+#      than a hang — loud, and diagnosable from the run — in both of its
+#      shapes: never registered at all lands in `missing`, and registered with
+#      `conclusion: skipped` lands in `did_not_run` (D#1987). Both print
+#      STATUS=fail. So the job carrying this name must actually RUN and
+#      SUCCEED on every head it gates, on every repository this gate runs
+#      against — not merely register something.
 #
 # D#1989 added "open-source export audit" and D#2456 took it back out, and the
 # reason is property 2 read the other way round. Property 2 was satisfied by
@@ -77,7 +79,7 @@
 # verifying steps skipped. So the required list carried a fifth name whose
 # green was guaranteed and meant nothing.
 #
-# Note that is NOT the hole D#1987 closed a few commits earlier, and the two
+# Note that was NOT the hole D#1987 closed a few commits earlier, and the two
 # must not be conflated: D#1987 catches a check-run whose *conclusion* is
 # `skipped`. This job's conclusion was `success` — skipped steps, successful
 # job — so it was never in reach of that fix and the accept-set tightening
@@ -86,15 +88,22 @@
 # A required name that can never block is not a harmless one. It reads to
 # every later reader as a verified property, and that is the more expensive
 # failure: a missing check is a gap and invites a look, a missing check with a
-# green tick does not. Rather than leave it required-but-hollow, ci.yml's
-# export-audit job now carries that repository condition on the job's own
-# `if:`, so where it does not apply GitHub registers no check-run at all —
-# absent, which is the honest state — and this array no longer names it.
+# green tick does not. So ci.yml's export-audit job now carries that
+# repository condition on the job's own `if:` instead of on its steps.
 #
-# Those two edits are ONE change and must never be split. Absent job plus
-# still-required name is property 2 firing exactly as designed: STATUS=fail on
-# every head, i.e. a repo-wide merge outage. tests/test_ci_status_check.sh
-# CS-17 and CS-21 pin both halves.
+# What that produces, measured on run 34067010184 rather than assumed: the job
+# is skipped and GitHub registers a check-run for it with `conclusion:
+# skipped`. Not absent — the change was planned expecting absent, and absent
+# is not what GitHub does for a job-level `if:` here. `skipped` is still the
+# honest answer where `success` was the dishonest one, and it is now inside
+# D#1987's reach rather than outside it.
+#
+# Which is exactly why the two edits are ONE change and must never be split.
+# Leave the name in this array while that job skips and every head here lands
+# in `did_not_run`: STATUS=skipped, exit 1, a repo-wide merge outage.
+# tests/test_ci_status_check.sh CS-17 and CS-21 pin both halves, and CS-21
+# covers both the skipped shape (what actually happens) and the absent shape
+# (what was predicted, and what a later deletion of the job would produce).
 CI_REQUIRED_CHECKS=("tui" "dashboard" "ts-backend" "backend (import-smoke)")
 
 # ── Gate streak markers (D#2271 PR-a) ───────────────────────────────────────

@@ -164,19 +164,30 @@ jobs:
     # guaranteed and meant nothing — a false assurance, which is worse than an
     # absent check, because a gap invites a look and a green tick does not.
     #
-    # Hoisting the same comparison to the job's own `if:` makes the honest
-    # state observable: where the condition is false GitHub registers no
-    # check-run for this job at all. Absent, not green. The merge gate's
-    # required list no longer names it (scripts/lib/ci-status-check.sh) — the
-    # two halves of that change had to land together, because an absent
-    # required check fails closed, so job-absent plus name-still-required is a
-    # repo-wide merge outage.
+    # Hoisting the same comparison to the job's own `if:` changes what the
+    # check-run says. MEASURED, run 34067010184 on the public plane, rather
+    # than assumed: the job does not run, and GitHub still registers a
+    # check-run for it, with `conclusion: skipped`. Not absent — skipped. The
+    # planning for this change predicted absent, and that prediction was
+    # wrong; the distinction matters enough to write down, because two things
+    # downstream turn on it.
     #
-    # Note this is a different mechanism from the one D#1987 closed a few
-    # commits earlier, and neither substitutes for the other: D#1987 stops a
-    # check-run whose CONCLUSION is `skipped` from reading as green. A job
-    # whose steps all skip concludes `success`, not `skipped`, so it was never
-    # in reach of that fix.
+    # What it buys is still the point: the check no longer says `success`. A
+    # step-skipped job concludes `success` and is indistinguishable from one
+    # that verified something; a job-skipped job concludes `skipped` and is
+    # distinguishable by anyone reading the checks list or the API.
+    #
+    # First thing that turns on it: this is now squarely in reach of the fix
+    # D#1987 landed a few commits earlier, where a required check whose
+    # CONCLUSION is `skipped` stops reading as green and becomes a hard block.
+    # Before this change it was NOT in reach of that fix — the conclusion was
+    # `success`, so the accept-set tightening could never have caught it, and
+    # the two must not be conflated on that account.
+    #
+    # Second: it is why the required-list edit had to land in this same
+    # commit. Post-D#1987, leaving "open-source export audit" in
+    # CI_REQUIRED_CHECKS while this job skips is STATUS=skipped on every head
+    # here — a repo-wide merge outage. The two edits are one change.
     #
     # The slug is spelled out here rather than read from the job's `env:`
     # block below, because it cannot be read from there: the `env` context is
@@ -309,8 +320,8 @@ jobs:
       # excluded from what this workflow itself ships to adopters, and a
       # rename of either script on THIS repo has to be loud (D#1989). That
       # repository guard is the job's own `if:` since D#2456 -- same question,
-      # asked once, and asked early enough that no check-run is registered
-      # where the answer is no.
+      # asked once, and asked early enough that the check-run says `skipped`
+      # rather than `success` where the answer is no.
       - name: BOOTSTRAP_PATHS subset check
         run: python3 open-source/checks/bootstrap_subset.py
 

@@ -871,10 +871,19 @@ export CI_KILL_SWITCH_OVERRIDE=HTTP_404
 # the required-list entry that made it visible. So 21a pins where the condition
 # lives, and 21b/21c run the same fixture on each side of the array edit.
 #
-# Distinct from CS-18: there the check-run exists and its conclusion is
-# `skipped`. Here there is no check-run at all. An absent required check has
-# always been a hard block (`missing` -> STATUS=fail), which is exactly why
-# these two edits cannot be sequenced.
+# Two shapes are covered, because the change was planned around a prediction
+# that turned out to be wrong and the correction is worth keeping visible:
+#
+#   21b/21c — the audit check-run is registered with `conclusion: skipped`.
+#             This is what a job-level `if:` actually produces here, measured
+#             on run 34067010184. It lands in `did_not_run` (D#1987).
+#   21d/21e — no audit check-run at all. This is what the change was planned
+#             expecting, and it is what deleting the job outright would give.
+#             It lands in `missing`.
+#
+# Both are a hard block while the name is required, and neither is once it is
+# not. The prediction being wrong changed which bucket does the blocking; it
+# did not change the reason the two edits cannot be sequenced.
 # ═══════════════════════════════════════════════════════════════════════════
 echo ""
 echo "=== CS-21a: the export-audit repository guard is job-level, not step-level ==="
@@ -902,43 +911,71 @@ for p in problems:
 sys.exit(1 if problems else 0)
 PYEOF
 then
-  echo "  PASS: export-audit is guarded once, on the job, so no check-run is registered elsewhere"; PASS=$((PASS + 1))
+  echo "  PASS: export-audit is guarded once, on the job, so its check-run says skipped and not success elsewhere"; PASS=$((PASS + 1))
 else
   echo "  FAIL: export-audit's repository guard is not where the required-list edit assumes"; FAIL=$((FAIL + 1))
 fi
 
-# The check-run set a code-plane head really produces once the job is absent:
-# the required names, and no export-audit entry at all.
+# What a head here really produces once the job's `if:` is false: the required
+# names green, and the audit check-run registered as `skipped`. Copied from the
+# observed shape of run 34067010184, not imagined.
+SKIPPED_AUDIT_RUN='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"','"$(_gha 'backend (import-smoke)' success)"','"$(_gha 'open-source export audit' skipped)"']'
+# The shape the change was planned around, and the shape deleting the job would
+# give: no audit check-run at all.
 NO_AUDIT_RUN='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"','"$(_gha 'backend (import-smoke)' success)"']'
 
+# _cs21_required_still_has_audit <pr> — run the gate with the pre-D#2456
+# required set restored. Not a hypothetical: this is the state the repo would
+# be in had only the workflow half landed.
+_cs21_old_required() {
+  (
+    source "$CI_LIB"
+    CI_REQUIRED_CHECKS=("tui" "dashboard" "ts-backend" "backend (import-smoke)" "open-source export audit")
+    check_ci_status "$1" "test-owner/test-repo"
+    rc=$?
+    echo "RC:$rc"
+    echo "STATE:${CI_STATUS_STATE:-}"
+    echo "REASON:${CI_STATUS_FAIL_REASON:-}"
+    exit "$rc"
+  )
+}
+
 echo ""
-echo "=== CS-21b: absent job + name still required -> blocked (the outage this avoids) ==="
-export CI_STATUS_OVERRIDE_20191="$NO_AUDIT_RUN"
+echo "=== CS-21b: skipped audit check-run + name still required -> blocked ==="
+export CI_STATUS_OVERRIDE_20191="$SKIPPED_AUDIT_RUN"
 export CI_STATUS_HEAD_SHA_20191="deadbeef91"
-OUT=$(
-  source "$CI_LIB"
-  # The pre-D#2456 required set, restored locally. Not a hypothetical: this is
-  # the state the repo would be in had only the workflow half landed.
-  CI_REQUIRED_CHECKS=("tui" "dashboard" "ts-backend" "backend (import-smoke)" "open-source export audit")
-  check_ci_status 20191 "test-owner/test-repo"
-  rc=$?
-  echo "RC:$rc"
-  echo "STATE:${CI_STATUS_STATE:-}"
-  echo "REASON:${CI_STATUS_FAIL_REASON:-}"
-  exit "$rc"
-); RC=$?
+OUT=$(_cs21_old_required 20191); RC=$?
 assert_exit_1 "CS-21b: half the change blocks every merge, as designed" "$RC"
-assert_contains "CS-21b: reason names the check that is not there" "open-source export audit" "$OUT"
+assert_contains "CS-21b: STATE is the did-not-run token, not fail" "STATE:skipped" "$OUT"
+assert_contains "CS-21b: reason names the check that did not run" "open-source export audit" "$OUT"
 unset CI_STATUS_OVERRIDE_20191 CI_STATUS_HEAD_SHA_20191
 
 echo ""
-echo "=== CS-21c: absent job + name removed -> the same head merges ==="
-export CI_STATUS_OVERRIDE_20192="$NO_AUDIT_RUN"
+echo "=== CS-21c: skipped audit check-run + name removed -> the same head merges ==="
+export CI_STATUS_OVERRIDE_20192="$SKIPPED_AUDIT_RUN"
 export CI_STATUS_HEAD_SHA_20192="deadbeef92"
 OUT=$(_run_status 20192); RC=$?
-assert_exit_0 "CS-21c: with both halves landed, an absent audit check-run is not a block" "$RC"
+assert_exit_0 "CS-21c: with both halves landed, a skipped audit check-run is not a block" "$RC"
 assert_contains "CS-21c: STATE is pass" "STATE:pass" "$OUT"
 unset CI_STATUS_OVERRIDE_20192 CI_STATUS_HEAD_SHA_20192
+
+echo ""
+echo "=== CS-21d: absent audit check-run + name still required -> blocked ==="
+export CI_STATUS_OVERRIDE_20193="$NO_AUDIT_RUN"
+export CI_STATUS_HEAD_SHA_20193="deadbeef93"
+OUT=$(_cs21_old_required 20193); RC=$?
+assert_exit_1 "CS-21d: the absent shape blocks too, by a different bucket" "$RC"
+assert_contains "CS-21d: reason names the check that is not there" "open-source export audit" "$OUT"
+unset CI_STATUS_OVERRIDE_20193 CI_STATUS_HEAD_SHA_20193
+
+echo ""
+echo "=== CS-21e: absent audit check-run + name removed -> the same head merges ==="
+export CI_STATUS_OVERRIDE_20194="$NO_AUDIT_RUN"
+export CI_STATUS_HEAD_SHA_20194="deadbeef94"
+OUT=$(_run_status 20194); RC=$?
+assert_exit_0 "CS-21e: an absent audit check-run is not a block either" "$RC"
+assert_contains "CS-21e: STATE is pass" "STATE:pass" "$OUT"
+unset CI_STATUS_OVERRIDE_20194 CI_STATUS_HEAD_SHA_20194
 
 # -----------------------------------------------------------------------
 # Summary
