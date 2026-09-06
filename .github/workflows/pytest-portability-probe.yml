@@ -1,0 +1,138 @@
+name: pytest portability probe
+
+# One-off, manually-dispatched measurement of the full Python suite on a
+# GitHub-hosted runner. It gates nothing and it is required by nothing.
+#
+# Why it is its own workflow file rather than a job in ci.yml: every job in
+# ci.yml publishes a check-run name onto every pull request, and the merge
+# gate (scripts/lib/ci-status-check.sh) reads those names. Adding this as a
+# ci.yml job would put a new, long, non-required check-run on every PR in the
+# repository, which is exactly the change this measurement exists to inform
+# rather than pre-empt. A separate file with a `workflow_dispatch`-only
+# trigger publishes no check-run anywhere.
+#
+# Why it exists at all: every failing-test count this project has cited was
+# measured on one developer host — 12 vCPU, NixOS. A GitHub runner is 2 vCPU,
+# and the suite is IO/sleep-bound rather than CPU-bound, so the runner is a
+# different regime and not merely a slower one. Two numbers are unknown and
+# both are load-bearing for the eventual gate: how long the suite takes there,
+# and whether the failing set is the same set. Neither is predictable from a
+# local run, so it is measured instead.
+#
+# Dispatched twice, deliberately. Six recorded runs on the developer host
+# produced a byte-identical failing set every time; one run here cannot tell
+# us whether that determinism survives a different host, and two runs against
+# the same sha can. Two dispatches, not a loop — this is a measurement, not a
+# monitor.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: pytest full suite (ubuntu-latest)
+
+    # Pinned, not `vars.CI_RUNNER || 'ubuntu-latest'` like ci.yml's jobs. The
+    # runner label is the independent variable of this experiment: a
+    # self-hosted override would silently answer a different question than the
+    # one asked, and the answer would still look like a valid measurement.
+    runs-on: ubuntu-latest
+
+    # Kill switch, same semantics as ci.yml's jobs: repo variable
+    # CI_DISABLED=true stands this down and consumes zero billable minutes.
+    # It needs no new handling in the merge gate — this workflow contributes
+    # no check-run to any pull request, so there is nothing for
+    # CI_REQUIRED_CHECKS to read whether the switch is on or off.
+    if: vars.CI_DISABLED != 'true'
+
+    # The suite's cap below is 3600s. This is that plus room for checkout and
+    # dependency install, so the job's own bound never fires before the
+    # measured run's does — a job killed by GitHub produces no record at all,
+    # whereas a run killed by the inner `timeout` still writes one with
+    # complete=false, which is the difference between a null result and no
+    # result.
+    timeout-minutes: 75
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -r requirements.txt
+
+      # Recorded in the log on purpose. pytest was undeclared until recently
+      # and arrived transitively at whatever version resolution happened to
+      # pick, which is what made every previous count non-portable. If the two
+      # dispatches ever disagree, the first thing to rule out is that they
+      # resolved different versions of the thing doing the measuring.
+      - name: Record the measuring environment
+        run: |
+          python3 --version
+          python3 -m pytest --version
+          echo "nproc: $(nproc)"
+          echo "runner: ${{ runner.os }} / ${{ runner.arch }}"
+          echo "sha: ${{ github.sha }}"
+
+      # The existing measurement harness, unchanged in what it measures. It
+      # owns the exact pytest argv the committed baseline was recorded under
+      # (an argv mismatch makes the two sets formally incomparable, and the
+      # record differ refuses to compare them rather than quietly merging
+      # them), the per-command scratch AUTONOMOUS_TEAM_STATE_DIR, the
+      # timeout --kill-after wrapper, and the record it emits.
+      #
+      # --cap-seconds raises the arm's 1800s cap, which was chosen against a
+      # 12-vCPU host and is a guess rather than a bound on a 2-vCPU one.
+      # --junit-out keeps the raw junit-xml so it can be uploaded alongside
+      # the record; without it the harness deletes its scratch copy.
+      - name: Measure the full suite
+        run: |
+          bash scripts/measure-pytest-baseline.sh \
+            --arm idle \
+            --out "$RUNNER_TEMP/probe/records" \
+            --junit-out "$RUNNER_TEMP/probe/junit.xml" \
+            --cap-seconds 3600
+
+      - name: Summarise the record
+        run: |
+          python3 - "$RUNNER_TEMP/probe/records" <<'PY'
+          import json, pathlib, sys
+
+          records = sorted(pathlib.Path(sys.argv[1]).glob("*.json"))
+          if not records:
+              sys.exit("no record was written")
+          record = json.loads(records[-1].read_text())
+          bad = sorted(
+              o["node_id"]
+              for o in record["outcomes"]
+              if o["outcome"] in {"failure", "error"}
+          )
+          print(f"complete:          {record['complete']}")
+          print(f"timed_out:         {record.get('timed_out')}")
+          print(f"exit_code:         {record['exit_code']}")
+          print(f"duration_seconds:  {record['duration_seconds']}")
+          print(f"host:              {record['host']}")
+          print(f"nproc:             {record['load']['nproc']}")
+          print(f"argv:              {record['path_scope']['argv']}")
+          print(f"bad (failure+error): {len(bad)}")
+          for node_id in bad:
+              print(f"  {node_id}")
+          PY
+
+      - name: Upload junit-xml and record
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-portability-probe-${{ github.run_id }}
+          path: ${{ runner.temp }}/probe/
+          if-no-files-found: error
+          retention-days: 30
