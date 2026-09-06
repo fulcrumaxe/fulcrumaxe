@@ -14,9 +14,9 @@ instead of a silent write to production.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -187,61 +187,106 @@ class TestCallTimeResolution:
 # back.
 _PR3_FORBIDDEN_FILES: set[str] = set()
 
-_CONST_IMPORT_RE = re.compile(
-    r"^from\s+(backend\.)?state_paths\s+import\s+"
-    r"(STATE_DIR|STATS_DB|STATE_DB|AUDIT_LOG|CIRCUIT_BREAKER_HISTORY|"
-    r"BLACKBOARD_DIR|EXTERNAL_INTAKE_BASELINES|PARITY_HISTORY)\b"
-)
+# The patterns, the scan set and the enumeration all live in
+# scripts/ci/state-paths-freeze-guard.py, which is the copy CI actually runs
+# (via scripts/ci/run-guards.sh, inside `backend (import-smoke)`). Nothing
+# below restates any of them as a literal: a test that re-writes another
+# module's rules in its own words keeps passing while the two drift apart, and
+# the drift is invisible because both sides are green. The hyphenated filename
+# is not importable by name, so it is loaded by path — the same shape
+# tests/test_audit_repo_plane.py and tests/test_cross_file_detector.py use for
+# their scripts.
+_GUARD_PATH = _REPO_ROOT / "scripts" / "ci" / "state-paths-freeze-guard.py"
 
-_DB_PY_FREEZE_RE = re.compile(r"^_?[A-Z_]+\s*=\s*_?[a-z_]+\(\)\s*$")
+
+def _load_guard():
+    spec = importlib.util.spec_from_file_location("state_paths_freeze_guard", _GUARD_PATH)
+    assert spec and spec.loader, f"cannot load {_GUARD_PATH}"
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
-def _iter_source_files():
-    for pattern in ("*.py", "*.sh"):
-        for path in _REPO_ROOT.rglob(pattern):
-            rel = path.relative_to(_REPO_ROOT)
-            parts = rel.parts
-            if not parts:
-                continue
-            if parts[0] in ("archive", "tests", ".git"):
-                continue
-            if "tests" in parts:
-                continue
-            if ".claude" in parts:
-                continue
-            yield path, rel
+guard = _load_guard()
+
+
+def _init_repo(root: Path) -> None:
+    subprocess.run(["git", "-C", str(root), "init", "-q"], check=True)
+
+
+def _stage(root: Path, rel: str, text: str) -> None:
+    path = root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    subprocess.run(["git", "-C", str(root), "add", "--", rel], check=True)
 
 
 class TestNoModuleLevelFreeze:
     def test_ac5_no_module_level_state_paths_constant_import(self):
-        """AC-5 (import half): grep the tree (excluding archive/ and tests)
-        for `^from (backend\\.)?state_paths import <CONST>` — zero matches.
-        This is the enumeration guarantee: it is why AC-1 ships in the same
-        PR rather than trusting a hand-built file list."""
-        offenders = []
-        for path, rel in _iter_source_files():
-            try:
-                text = path.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
-                continue
-            for lineno, line in enumerate(text.splitlines(), start=1):
-                if _CONST_IMPORT_RE.match(line):
-                    offenders.append(f"{rel}:{lineno}: {line.strip()}")
-        assert offenders == [], "module-level state_paths constant import(s):\n" + "\n".join(offenders)
+        """AC-5 (import half): no tracked, in-scope source file imports a
+        state_paths constant by value at module level."""
+        _, import_offenders, _ = guard.scan(_REPO_ROOT)
+        assert import_offenders == [], (
+            "module-level state_paths constant import(s):\n" + "\n".join(import_offenders)
+        )
 
     def test_ac5_no_module_level_freeze_in_db_py(self):
         """AC-5 (db.py half): no `_?[A-Z_]+ *= *_?[a-z_]+\\(\\)` pattern
         survives in backend/db.py. This is the one sanctioned D#1810
-        crossing into db.py (line 46 on main: `_DB_PATH =
-        _resolve_db_path()`) — it is the only instance of this pattern in
-        the tree, and it must not come back."""
-        db_py = _REPO_ROOT / "backend" / "db.py"
-        offenders = [
-            f"backend/db.py:{i}: {line.strip()}"
-            for i, line in enumerate(db_py.read_text(encoding="utf-8").splitlines(), start=1)
-            if _DB_PY_FREEZE_RE.match(line)
-        ]
-        assert offenders == [], offenders
+        crossing into db.py (`_DB_PATH = _resolve_db_path()`) and it must
+        not come back."""
+        _, _, freeze_offenders = guard.scan(_REPO_ROOT)
+        assert freeze_offenders == [], freeze_offenders
+
+    def test_scan_reads_the_index_not_the_working_tree(self, tmp_path):
+        """The defect this replaced: an untracked file on the checkout was
+        read as repo content, so local debris failed the check on a repo that
+        was clean. Staged offender reported, untracked offender not — the
+        pair is what separates enumerating from git from an exclusion list
+        for whichever directory happened to hold the debris."""
+        _init_repo(tmp_path)
+        _stage(tmp_path, "backend/db.py", "def _resolve_db_path():\n    return None\n")
+        _stage(tmp_path, "backend/staged.py", "from backend.state_paths import STATS_DB\n")
+        (tmp_path / "backend" / "untracked.py").write_text(
+            "from backend.state_paths import STATS_DB\n", encoding="utf-8"
+        )
+
+        _, import_offenders, _ = guard.scan(tmp_path)
+
+        assert import_offenders == ["backend/staged.py:1: from backend.state_paths import STATS_DB"]
+
+    def test_scan_of_an_empty_index_raises(self, tmp_path):
+        """Zero files scanned must never report zero offenders — a guard that
+        can enumerate nothing has to stop, not pass. `match=` is load-bearing:
+        scan() has three separate refusals and a bare `raises` here passed
+        against a build with this one deleted, because a later refusal fired
+        instead and the test could not tell the difference."""
+        _init_repo(tmp_path)
+        with pytest.raises(guard.EmptyScanError, match="empty index"):
+            guard.scan_files(tmp_path)
+
+    def test_scan_of_an_index_with_no_source_files_raises(self, tmp_path):
+        """A non-empty index that contains nothing this guard reads is the
+        same failure wearing a disguise — still zero files scanned."""
+        _init_repo(tmp_path)
+        _stage(tmp_path, "README.md", "# fixture\n")
+        with pytest.raises(guard.EmptyScanError, match="in-scope"):
+            guard.scan_files(tmp_path)
+
+    def test_scan_without_a_tracked_db_py_raises(self, tmp_path):
+        """The db.py half has its own way of scanning nothing: the file it
+        reads is named by a constant, so a rename would leave that half
+        silently checking a path that no longer exists."""
+        _init_repo(tmp_path)
+        _stage(tmp_path, "backend/other.py", "x = 1\n")
+        with pytest.raises(guard.EmptyScanError, match="db.py"):
+            guard.scan(tmp_path)
+
+    def test_db_py_freeze_pattern_still_matches_the_shape_it_bans(self):
+        """The regex is the guard's, not a copy — this pins what it matches,
+        so a change that silently narrows it fails here."""
+        assert guard.DB_PY_FREEZE_RE.match("_DB_PATH = _resolve_db_path()")
+        assert guard.BANNED_IMPORT_RE.match("from backend.state_paths import STATS_DB")
 
     def test_ac4_no_pr3_forbidden_file_in_diff(self):
         """AC-4: git diff --name-only origin/main...HEAD must not contain a
