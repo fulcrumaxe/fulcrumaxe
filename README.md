@@ -1,6 +1,6 @@
 # fulcrumaxe
 
-![CI](https://github.com/autonomous-agent-7/fulcrumaxe/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/fulcrumaxe/fulcrumaxe/actions/workflows/ci.yml/badge.svg)
 
 fulcrumaxe is an autonomous software team that runs in your GitHub repo, turns Discussions into merged PRs, and spends its own idle cycles improving itself. This README is the operating manual — it covers everything from installing prerequisites through what to do when something breaks.
 
@@ -14,7 +14,9 @@ What "self-improving" looks like in practice: when the Discussion queue runs dry
 
 fulcrumaxe is a self-hosted AI development environment built for one developer running their own infrastructure, not a multi-tenant SaaS. You get an operations console (the dashboard), a team of specialized agent roles that coordinate through GitHub Discussions and PRs, and a loop that keeps proposing and shipping improvements without you having to babysit every step. If you want to hand off routine implementation work — bug fixes, small features, docs — while staying the one who decides direction, this is built for you.
 
-This repo (`fulcrumaxe`) is the real thing — full internal history, not a mirror or export target. It also holds internal-only material (training tooling, experiments) that doesn't ship publicly. A separate curated export (`open-source/export.sh` + `open-source/MANIFEST.md`) copies only the paths marked ready in the manifest out to the public release.
+This repo is where development happens. Commits, pull requests, CI and code review all land here — it isn't a mirror, and nothing gets generated into it by an export step from somewhere else.
+
+What it is not is the full historical record. The history here starts at the seed commit, so `git log` and `git blame` won't reach behind it. The team keeps a private repo that holds the development history from before the seed, along with its Discussion queue and live operating state; that repo stays the archive, and some internal-only material (training tooling, experiments) stays there with it.
 
 ## Prerequisites
 
@@ -28,7 +30,7 @@ This repo (`fulcrumaxe`) is the real thing — full internal history, not a mirr
 ### Marketplace install (one command, no clone)
 
 ```
-/plugin marketplace add autonomous-agent-7/fulcrumaxe
+/plugin marketplace add fulcrumaxe/fulcrumaxe
 /plugin install fulcrumaxe@fulcrumaxe
 /coldstart --path /path/to/your/repo --name your-project
 ```
@@ -40,7 +42,7 @@ What this route does **not** change: you still need the [prerequisites](#prerequ
 ### From a clone
 
 ```bash
-git clone https://github.com/autonomous-agent-7/fulcrumaxe.git
+git clone https://github.com/fulcrumaxe/fulcrumaxe.git
 cd fulcrumaxe
 bash scripts/coldstart.sh --path /path/to/your/repo --name your-project --dry-run
 ```
@@ -96,7 +98,7 @@ See [CLAUDE.md](CLAUDE.md) ("Merge Gate Protocol") for the enforcement details, 
 If you installed the standalone kit with `loop-bootstrap/bootstrap.sh` (see [How the loop works](#how-the-loop-works)), re-running it later pulls in fixes and improvements without wiping your customizations — mostly. A fresh clone of the engine gives you the current `loop-bootstrap/bootstrap.sh` — the same way you did the first time (if you installed via the marketplace instead, `/plugin marketplace update fulcrumaxe` refreshes the catalog and updates the installed plugin, including its bundled `loop-bootstrap/bootstrap.sh`, to the latest version on disk):
 
 ```bash
-git clone https://github.com/autonomous-agent-7/fulcrumaxe.git /tmp/fulcrumaxe-engine
+git clone https://github.com/fulcrumaxe/fulcrumaxe.git /tmp/fulcrumaxe-engine
 bash "/tmp/fulcrumaxe-engine/loop-bootstrap/bootstrap.sh" --repo <owner>/<name> /path/to/your-project
 ```
 
