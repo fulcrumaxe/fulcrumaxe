@@ -49,6 +49,7 @@ from hooks.sandbox_rules import (  # noqa: E402
     is_worktree,
 )
 from hooks.background_rules import classify_background  # noqa: E402
+from hooks.payload_shape import record_payload_shape  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Telemetry
@@ -427,6 +428,15 @@ def main() -> None:
         # If we can't parse the input, allow (fail open) but log the parse error.
         sys.stderr.write(f"[sandbox] WARNING: could not parse hook input: {exc}\n")
         sys.exit(0)
+
+    # 1b. Record the payload's shape once per distinct key set (D#2324). This
+    #     sits above every tier branch on purpose: the question it exists to
+    #     answer is what Claude Code hands this hook, which is the same
+    #     question whether the call is about to be allowed, blocked, or
+    #     deferred to a sibling team. See hooks/payload_shape.py — it observes,
+    #     it cannot raise, and its return value is deliberately ignored because
+    #     nothing it finds should change what happens next.
+    record_payload_shape(payload, _TELEMETRY_DIR)
 
     tool_name: str = payload.get("tool_name", "")
     tool_input: dict = payload.get("tool_input", {})
