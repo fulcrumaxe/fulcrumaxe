@@ -1,0 +1,25 @@
+{
+  "host": "test-host",
+  "path_scope": {
+    "argv": "python3 -m pytest tests/ backend/tests/ --ignore=archive/ -q --tb=no -p no:cacheprovider"
+  },
+  "dedup_convention": "junit-structural-v1",
+  "checkout": {"sha": "bbbb", "clean": true, "dirty_paths": []},
+  "load": {
+    "samples": [
+      {"at": "2026-09-06T00:00:00Z", "one_min": 3.1, "five_min": 3.3},
+      {"at": "2026-09-06T00:06:40Z", "one_min": 3.4, "five_min": 3.3},
+      {"at": "2026-09-06T00:13:20Z", "one_min": 3.2, "five_min": 3.2}
+    ],
+    "nproc": 12,
+    "arm": "idle",
+    "contention_method": ""
+  },
+  "other_pytest_running": false,
+  "state_dir": "/tmp/pytest-baseline-scratch-b",
+  "duration_seconds": 810,
+  "complete": true,
+  "exit_code": 1,
+  "timed_out": false,
+  "outcomes": []
+}

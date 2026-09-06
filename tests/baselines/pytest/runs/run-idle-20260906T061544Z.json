@@ -1,0 +1,422 @@
+{
+  "checkout": {
+    "clean": false,
+    "dirty_paths": [
+      "scripts/lib/pytest_baseline.py",
+      "scripts/measure-pytest-baseline.sh",
+      "tests/fixtures/pytest_baseline/mismatched/record-a.json",
+      "tests/fixtures/pytest_baseline/mismatched/record-b.json",
+      "tests/fixtures/pytest_baseline/sample-context.json",
+      "tests/fixtures/pytest_baseline/sample-junit.xml",
+      "tests/test_pytest_baseline.sh"
+    ],
+    "sha": "02d6be65aefb89a79d0b53b9172a75584c1e8ea4"
+  },
+  "complete": true,
+  "dedup_convention": "junit-structural-v1",
+  "duration_seconds": 836,
+  "exit_code": 1,
+  "host": "nixos",
+  "load": {
+    "arm": "idle",
+    "contention_method": "",
+    "nproc": 12,
+    "samples": [
+      {
+        "at": "2026-09-06T06:01:48Z",
+        "five_min": 3.36,
+        "one_min": 3.26
+      },
+      {
+        "at": "2026-09-06T06:08:48Z",
+        "five_min": 4.02,
+        "one_min": 4.29
+      },
+      {
+        "at": "2026-09-06T06:15:44Z",
+        "five_min": 4.47,
+        "one_min": 4.79
+      }
+    ]
+  },
+  "other_pytest_running": false,
+  "outcomes": [
+    {
+      "node_id": "tests.backend.test_project_status::test_active_agents_uses_fleet_count_not_catalog",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "tests.backend.test_project_status::test_active_and_available_are_independent",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "tests.test_audit_dashboard_tiles.TestAuditTilesIntegration::test_no_tile_has_unknown_rpc_in_scoped_dirs",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "tests.test_data_layer_duckdb_readers.TestGetActiveAgentsBuckets::test_returns_list_of_dicts",
+      "outcome": "error"
+    },
+    {
+      "node_id": "tests.test_data_layer_duckdb_readers.TestGetActiveAgentsBuckets::test_bucket_keys_present",
+      "outcome": "error"
+    },
+    {
+      "node_id": "tests.test_data_layer_duckdb_readers.TestGetActiveAgentsBuckets::test_nonzero_count_when_open_run_active",
+      "outcome": "error"
+    },
+    {
+      "node_id": "tests.test_data_layer_duckdb_readers.TestGetDurationPercentiles::test_returns_list",
+      "outcome": "error"
+    },
+    {
+      "node_id": "tests.test_data_layer_duckdb_readers.TestGetDurationPercentiles::test_has_executor_and_reviewer_rows",
+      "outcome": "error"
+    },
+    {
+      "node_id": "tests.test_data_layer_duckdb_readers.TestGetDurationPercentiles::test_row_keys",
+      "outcome": "error"
+    },
+    {
+      "node_id": "tests.test_data_layer_duckdb_readers.TestGetDurationPercentiles::test_executor_p50_ms_reasonable",
+      "outcome": "error"
+    },
+    {
+      "node_id": "tests.test_data_layer_duckdb_readers.TestGetDurationPercentiles::test_n_counts_only_completed",
+      "outcome": "error"
+    },
+    {
+      "node_id": "tests.test_data_layer_duckdb_readers.TestGetStuckRunsFromReports::test_returns_list",
+      "outcome": "error"
+    },
+    {
+      "node_id": "tests.test_data_layer_duckdb_readers.TestGetStuckRunsFromReports::test_includes_stuck_run",
+      "outcome": "error"
+    },
+    {
+      "node_id": "tests.test_data_layer_duckdb_readers.TestGetStuckRunsFromReports::test_excludes_completed_runs",
+      "outcome": "error"
+    },
+    {
+      "node_id": "tests.test_data_layer_duckdb_readers.TestGetStuckRunsFromReports::test_age_min_field_present",
+      "outcome": "error"
+    },
+    {
+      "node_id": "tests.test_data_layer_duckdb_readers.TestGetStuckRunsFromReports::test_age_min_approx_40",
+      "outcome": "error"
+    },
+    {
+      "node_id": "tests.test_data_layer_duckdb_readers.TestGetStuckRunsFromReports::test_fresh_run_excluded_by_threshold",
+      "outcome": "error"
+    },
+    {
+      "node_id": "tests.test_data_layer_duckdb_readers.TestGetRunDetail::test_returns_dict",
+      "outcome": "error"
+    },
+    {
+      "node_id": "tests.test_data_layer_duckdb_readers.TestGetRunDetail::test_correct_agent_id",
+      "outcome": "error"
+    },
+    {
+      "node_id": "tests.test_data_layer_duckdb_readers.TestGetRunDetail::test_has_expected_fields",
+      "outcome": "error"
+    },
+    {
+      "node_id": "tests.test_data_layer_duckdb_readers.TestGetRunDetail::test_unknown_agent_returns_empty",
+      "outcome": "error"
+    },
+    {
+      "node_id": "tests.test_data_layer_duckdb_readers.TestGetRunDetail::test_stuck_run_detail",
+      "outcome": "error"
+    },
+    {
+      "node_id": "tests.test_gate_label_drift::test_applied_labels_extraction_nonempty_and_exact_count",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "tests.test_loop_health_watchdog::test_a_three_trailing_failures_sets_banner",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "tests.test_loop_health_watchdog::test_b_one_success_after_failures_clears_banner",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "tests.test_loop_health_watchdog::test_c_two_failures_below_threshold_no_banner",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "tests.test_loop_health_watchdog::test_missing_log_exits_cleanly",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "tests.test_loop_health_watchdog::test_empty_log_exits_cleanly",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "tests.test_loop_health_watchdog::test_d_stale_failures_suppressed",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "tests.test_loop_health_watchdog::test_e_fresh_failures_still_alert",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "tests.test_no_planted_spawn_ids::test_no_planted_canonical_ids_in_tracked_files",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "tests.test_transcript_tailer.TestSpawnCap::test_capped_at_20",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "tests.test_transcript_tailer.TestSpawnCap::test_returns_newest_first",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "tests.test_transcript_tailer.TestSpawnCap::test_empty_when_no_files",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "tests.test_transcript_tailer.TestSpawnCap::test_custom_max_spawns",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "backend.tests.test_api_projects::test_dashboard_config_reads_state_dir_first",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "backend.tests.test_api_projects::test_dashboard_config_fallback_to_repo_side",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "backend.tests.test_blackboard::test_write_and_read",
+      "outcome": "error"
+    },
+    {
+      "node_id": "backend.tests.test_blackboard::test_read_missing_key",
+      "outcome": "error"
+    },
+    {
+      "node_id": "backend.tests.test_blackboard::test_read_entry_returns_metadata",
+      "outcome": "error"
+    },
+    {
+      "node_id": "backend.tests.test_blackboard::test_write_increments_version",
+      "outcome": "error"
+    },
+    {
+      "node_id": "backend.tests.test_blackboard::test_cas_success",
+      "outcome": "error"
+    },
+    {
+      "node_id": "backend.tests.test_blackboard::test_cas_version_conflict",
+      "outcome": "error"
+    },
+    {
+      "node_id": "backend.tests.test_blackboard::test_cas_missing_key",
+      "outcome": "error"
+    },
+    {
+      "node_id": "backend.tests.test_blackboard::test_delete_existing_key",
+      "outcome": "error"
+    },
+    {
+      "node_id": "backend.tests.test_blackboard::test_delete_missing_key",
+      "outcome": "error"
+    },
+    {
+      "node_id": "backend.tests.test_blackboard::test_list_keys_empty",
+      "outcome": "error"
+    },
+    {
+      "node_id": "backend.tests.test_blackboard::test_list_keys_with_prefix",
+      "outcome": "error"
+    },
+    {
+      "node_id": "backend.tests.test_blackboard::test_key_validation_rejects_dotdot",
+      "outcome": "error"
+    },
+    {
+      "node_id": "backend.tests.test_blackboard::test_key_validation_rejects_absolute",
+      "outcome": "error"
+    },
+    {
+      "node_id": "backend.tests.test_blackboard::test_concurrent_writes",
+      "outcome": "error"
+    },
+    {
+      "node_id": "backend.tests.test_context_manager::test_load_empty",
+      "outcome": "error"
+    },
+    {
+      "node_id": "backend.tests.test_context_manager::test_add_goal_and_load",
+      "outcome": "error"
+    },
+    {
+      "node_id": "backend.tests.test_context_manager::test_add_decision_with_rationale",
+      "outcome": "error"
+    },
+    {
+      "node_id": "backend.tests.test_context_manager::test_add_milestone_and_mark_done",
+      "outcome": "error"
+    },
+    {
+      "node_id": "backend.tests.test_context_manager::test_mark_done_nonexistent",
+      "outcome": "error"
+    },
+    {
+      "node_id": "backend.tests.test_context_manager::test_add_banned",
+      "outcome": "error"
+    },
+    {
+      "node_id": "backend.tests.test_context_manager::test_add_stack_deduplicates",
+      "outcome": "error"
+    },
+    {
+      "node_id": "backend.tests.test_context_manager::test_format_for_prompt_includes_sections",
+      "outcome": "error"
+    },
+    {
+      "node_id": "backend.tests.test_context_manager::test_format_for_prompt_truncates",
+      "outcome": "error"
+    },
+    {
+      "node_id": "backend.tests.test_executor_template_pr_categories::test_template_contains_pr_categories_python_oneliner[loop-bootstrap-snapshot]",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "backend.tests.test_executor_template_pr_categories::test_template_contains_label_flag_instruction[loop-bootstrap-snapshot]",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "backend.tests.test_executor_template_pr_categories::test_template_contains_category_guide[loop-bootstrap-snapshot]",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "backend.tests.test_executor_template_pr_categories::test_template_says_skip_when_empty[loop-bootstrap-snapshot]",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "backend.tests.test_executor_template_pr_categories::test_templates_are_in_sync",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "backend.tests.test_legacy_route_coverage::test_proxy_only_matches_constant",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "backend.tests.test_legacy_route_coverage::test_fastapi_has_rpc_route",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "backend.tests.test_mcp_tools.TestGrepToolHandler::test_grep_finds_pattern",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "backend.tests.test_mcp_tools.TestGrepToolHandler::test_grep_no_match",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "backend.tests.test_migrate_orphan_worktree_rate_unit.TestMigrateOrphanWorktreeRateUnit::test_fixes_ratio_rows_to_count",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "backend.tests.test_migrate_orphan_worktree_rate_unit.TestMigrateOrphanWorktreeRateUnit::test_skips_already_correct_rows",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "backend.tests.test_migrate_orphan_worktree_rate_unit.TestMigrateOrphanWorktreeRateUnit::test_idempotent",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "backend.tests.test_migrate_orphan_worktree_rate_unit.TestMigrateOrphanWorktreeRateUnit::test_dry_run_does_not_mutate",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "backend.tests.test_migrate_orphan_worktree_rate_unit.TestMigrateOrphanWorktreeRateUnit::test_does_not_touch_other_metrics",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "backend.tests.test_migrate_orphan_worktree_rate_unit.TestMigrateOrphanWorktreeRateUnit::test_handles_empty_db",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "backend.tests.test_pr_list_rpc.TestPrListCaching::test_cache_populated_after_call",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "backend.tests.test_routers_rpc.TestDispatchParity::test_missing_params_defaults_to_empty_dict",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "backend.tests.test_routers_rpc.TestEnvelopeErrors::test_handler_exception_returns_minus_32000",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "backend.tests.test_routers_rpc.TestEnvelopeErrors::test_handler_exception_custom_rpc_code",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "backend.tests.test_routers_rpc::test_rpc_route_registered",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "backend.tests.test_routers_spawn_queue_get.TestRouteRegistration::test_spawn_queue_registered",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "backend.tests.test_routers_spawn_queue_get.TestRouteRegistration::test_spawn_queue_pending_registered",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "backend.tests.test_routers_spawn_queue_get.TestRouteRegistration::test_spawn_queue_active_registered",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "backend.tests.test_routers_spawn_queue_get.TestRouteRegistration::test_spawn_blocks_registered",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "backend.tests.test_routers_traces_get::test_traces_routes_are_registered_natively",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "backend.tests.test_routers_traces_get::test_traces_stats_not_duplicated",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "backend.tests.test_server::test_dispatcher_processes_single_request",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "backend.tests.test_spawn_templates::test_acceptance_tester_render_contains_pr_checkout_guidance",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "backend.tests.test_spawn_templates::test_acceptance_tester_render_warns_against_testing_main",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "backend.tests.test_spec_external_docs_grammar.TestWholeTreeDifferential::test_old_vs_new_over_live_tree",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "backend.tests.test_spec_external_docs_grammar.TestNoTruePositiveLost::test_each_true_positive_still_reported_from_live_tree",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "backend.tests.test_tool_proxy_sandbox.TestRunBashSandboxBlocking::test_allows_benign_in_cwd_command",
+      "outcome": "failure"
+    },
+    {
+      "node_id": "backend.tests.test_trigger::test_main_fallback_exec_guard_missing_binary",
+      "outcome": "failure"
+    }
+  ],
+  "path_scope": {
+    "argv": "python3 -m pytest tests/ backend/tests/ --ignore=archive/ --ignore=tests/test_next_work.py -q --tb=no -p no:cacheprovider"
+  },
+  "state_dir": true,
+  "timed_out": false
+}
