@@ -22,10 +22,27 @@ whose ``started_at`` is older than 60 s (to avoid racing with mid-fork spawns).
 The original 2-hour ``started_at``-based reap is kept as a backstop for legacy
 rows where ``pid = 0``.
 
-Fleet cap default is 8 — sourced from CLAUDE.md memory
-``feedback_concurrency_caps.md``: "max 4 executors + max 4 other agents = 8
-total; bottleneck is state.db/GH API/preflight, not subscription quota."
-The value is overridden by ``~/.autonomous-fleet-state/config.json``.
+What the fleet cap covers
+-------------------------
+``fleet_cap`` is a limit on ONE of the two lanes that register here: the
+``spawn-agent.sh`` lane, which reaches ``register()`` through
+``scripts/pre-spawn-check.sh``.  It does NOT cover ``Agent()``-tool spawns.
+Those register under ``AGENT_TOOL_ID_PREFIX`` (see the comment on that
+constant below for why) and are excluded from every cap-check ``COUNT(*)``
+in this module -- so however many of them exist, they neither consume a
+slot nor get denied one.
+
+That exclusion is deliberate and load-bearing: a single consensus panel is
+5 specialists + researcher + PM, up to 7 rows, before an executor asks for
+anything.  Counting them would block routine work (D#2314 S2).  D#2323 is
+the follow-up that made the *reported* numbers say this too, rather than
+leaving the cap looking like a fleet-wide total it never was.
+
+Default is 8 — sourced from CLAUDE.md memory ``feedback_concurrency_caps.md``:
+"max 4 executors + max 4 other agents = 8 total; bottleneck is state.db/GH
+API/preflight, not subscription quota."  Read that as a budget for the
+spawn-agent.sh lane, not for every agent on the host.  The value is
+overridden by ``~/.autonomous-fleet-state/config.json``.
 
 Usage::
 
@@ -112,7 +129,15 @@ AGENT_TOOL_ID_PREFIX = "agent-tool-"
 # ── Init ──────────────────────────────────────────────────────────────────────
 
 def _ensure_fleet_state_dir() -> None:
-    """Create ~/.autonomous-fleet-state/ and seed config.json on first run."""
+    """Create ~/.autonomous-fleet-state/ and seed config.json on first run.
+
+    The seeded ``fleet_cap`` governs the ``spawn-agent.sh`` lane only; it does
+    not cover ``Agent()``-tool spawns, which register under
+    ``AGENT_TOOL_ID_PREFIX`` and are excluded from every cap check in this
+    module. See "What the fleet cap covers" in the module docstring. The file
+    itself is JSON and cannot carry that note inline, so this is where an
+    operator reading the seeding site finds it (D#2323).
+    """
     FLEET_STATE_DIR.mkdir(parents=True, exist_ok=True)
 
     if not FLEET_CONFIG_PATH.exists():
