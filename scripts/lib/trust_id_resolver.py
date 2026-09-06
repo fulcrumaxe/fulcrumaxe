@@ -148,13 +148,23 @@ def resolve_login_to_id(login: str, *, timeout: int = 15, run: Optional[Callable
 # ---------------------------------------------------------------------------
 
 
-def fetch_collaborator_ids(repo_slug: str) -> set:
+def fetch_collaborator_ids(repo_slug: str) -> Optional[set]:
     """Return the set of node IDs for push/admin collaborators on *repo_slug*.
 
     Same endpoint external_intake_gate._fetch_collaborators() already calls;
     this only selects a different field (node_id instead of login) from a
     payload measured to carry both — zero net-new API round-trips relative
     to the existing collaborator fetch.
+
+    Fail-closed at the CALL SITE, not here (D#2423): a failed fetch —
+    non-zero exit, an unparseable/non-list payload, or a subprocess-level
+    raise — returns None. It never raises, and it never returns an empty set
+    for a failure: an empty set means "genuinely no push/admin
+    collaborators", and conflating that with "the fetch failed" is exactly
+    the defect this return type exists to close. Callers must not treat
+    None as "nobody is trusted" either — resolve_allowlist_ids() always
+    unions in the bot/boss/maintainer_allowlist base regardless of what this
+    function returns.
     """
     try:
         result = subprocess.run(
@@ -164,10 +174,10 @@ def fetch_collaborator_ids(repo_slug: str) -> set:
             timeout=15,
         )
         if result.returncode != 0:
-            return set()
+            return None
         data = json.loads(result.stdout)
         if not isinstance(data, list):
-            return set()
+            return None
         ids = set()
         for entry in data:
             if not isinstance(entry, dict):
@@ -178,8 +188,8 @@ def fetch_collaborator_ids(repo_slug: str) -> set:
                 if node_id:
                     ids.add(node_id)
         return ids
-    except Exception:  # noqa: BLE001 — fail closed: no extra trust from a broken fetch
-        return set()
+    except Exception:  # noqa: BLE001 — any subprocess-level failure is a fetch failure, not an empty result
+        return None
 
 
 # ---------------------------------------------------------------------------

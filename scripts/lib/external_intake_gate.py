@@ -266,13 +266,18 @@ def _write_collaborator_cache(cache_path: Path, collaborators: set) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _fetch_collaborators(repo_slug: str = DEFAULT_DISCUSSION_REPO_SLUG) -> set:
+def _fetch_collaborators(repo_slug: str = DEFAULT_DISCUSSION_REPO_SLUG) -> Optional[set]:
     """Return the set of GitHub logins with push or admin permission on *repo_slug*.
 
-    Fail-closed: any error (network, auth, parse) returns an EMPTY set rather than
-    raising. Callers must never treat an empty result as "nobody is trusted" —
-    resolve_allowlist() always unions in the bot/boss/maintainer_allowlist base
-    regardless of what this function returns.
+    Fail-closed at the CALL SITE, not here (D#2423): a failed fetch — non-zero
+    exit, an unparseable/non-list payload, or a subprocess-level raise —
+    returns None. It never raises, and it never returns an empty set for a
+    failure: an empty set means "genuinely no push/admin collaborators", and
+    conflating that with "the fetch failed" let a transient `gh` failure write
+    a poisoned cache indistinguishable from a real empty result. Callers must
+    not treat None as "nobody is trusted" either — resolve_allowlist() always
+    unions in the bot/boss/maintainer_allowlist base regardless of what this
+    function returns.
     """
     try:
         result = subprocess.run(
@@ -282,10 +287,10 @@ def _fetch_collaborators(repo_slug: str = DEFAULT_DISCUSSION_REPO_SLUG) -> set:
             timeout=15,
         )
         if result.returncode != 0:
-            return set()
+            return None
         data = json.loads(result.stdout)
         if not isinstance(data, list):
-            return set()
+            return None
         logins = set()
         for entry in data:
             if not isinstance(entry, dict):
@@ -296,8 +301,8 @@ def _fetch_collaborators(repo_slug: str = DEFAULT_DISCUSSION_REPO_SLUG) -> set:
                 if login:
                     logins.add(login)
         return logins
-    except Exception:  # noqa: BLE001
-        return set()
+    except Exception:  # noqa: BLE001 — any subprocess-level failure is a fetch failure, not an empty result
+        return None
 
 
 def resolve_allowlist(
@@ -344,13 +349,19 @@ def resolve_allowlist(
             # Test-double fetchers commonly take no args — retry bare.
             try:
                 collaborators = fetcher()
-            except Exception:  # noqa: BLE001
-                collaborators = set()
+            except Exception:  # noqa: BLE001 — a raise here is also a fetch failure, not a genuine empty
+                collaborators = None
         except Exception:  # noqa: BLE001 — fail closed: no extra trust from a broken resolver
-            collaborators = set()
-        if not isinstance(collaborators, set):
-            collaborators = set(collaborators or [])
-        _write_collaborator_cache(cpath, collaborators)
+            collaborators = None
+        # D#2423: None (fetch failed) must be checked BEFORE the set(x or [])
+        # coercion below — set(None or []) is set(), which would silently
+        # re-introduce the poisoned-cache defect this sentinel exists to fix.
+        if collaborators is None:
+            collaborators = set()  # fail-closed for THIS call only; do not cache
+        else:
+            if not isinstance(collaborators, set):
+                collaborators = set(collaborators or [])
+            _write_collaborator_cache(cpath, collaborators)
 
     return collaborators | base
 
@@ -402,11 +413,17 @@ def resolve_allowlist_ids(
         fetcher = collaborator_id_fetcher or trust_id_resolver.fetch_collaborator_ids
         try:
             collaborator_ids = fetcher(repo_slug)
-        except Exception:  # noqa: BLE001 — fail closed: no extra trust from a broken fetch
-            collaborator_ids = set()
-        if not isinstance(collaborator_ids, set):
-            collaborator_ids = set(collaborator_ids or [])
-        trust_id_resolver.write_id_cache(icpath, collaborator_ids)
+        except Exception:  # noqa: BLE001 — a raise here is also a fetch failure, not a genuine empty
+            collaborator_ids = None
+        # D#2423: None (fetch failed) must be checked BEFORE the set(x or [])
+        # coercion below — set(None or []) is set(), which would silently
+        # re-introduce the poisoned-cache defect this sentinel exists to fix.
+        if collaborator_ids is None:
+            collaborator_ids = set()  # fail-closed for THIS call only; do not cache
+        else:
+            if not isinstance(collaborator_ids, set):
+                collaborator_ids = set(collaborator_ids or [])
+            trust_id_resolver.write_id_cache(icpath, collaborator_ids)
     ids |= collaborator_ids
 
     # 2. Bot — availability-critical (external_intake_gate.py:15-20: every

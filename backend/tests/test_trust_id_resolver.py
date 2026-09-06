@@ -19,6 +19,7 @@ panel against ``gh api graphql``.
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -143,6 +144,49 @@ class TestIdCache:
             json.dumps({"schema": 1, "cached_at": time.time() - tir.CACHE_TTL_SECONDS - 10, "ids": ["U_stale"]})
         )
         assert tir.read_id_cache(cache_path) is None
+
+
+# ---------------------------------------------------------------------------
+# D#2423 AC-5 — fetch_collaborator_ids() is the load-bearing edit: the live
+# ID path's own fetch boundary, independent of external_intake_gate.py's
+# _fetch_collaborators(). All three failure returns must fail closed to
+# None, distinguishable from a genuine empty result, without ever raising.
+# ---------------------------------------------------------------------------
+
+
+class TestFetchCollaboratorIdsFailClosed:
+    def test_nonzero_exit_is_none(self, monkeypatch):
+        monkeypatch.setattr(subprocess, "run", lambda *_a, **_kw: _FakeResult(1, ""))
+        assert tir.fetch_collaborator_ids("owner/repo") is None
+
+    def test_non_list_payload_is_none(self, monkeypatch):
+        monkeypatch.setattr(
+            subprocess, "run", lambda *_a, **_kw: _FakeResult(0, json.dumps({"message": "Not Found"}))
+        )
+        assert tir.fetch_collaborator_ids("owner/repo") is None
+
+    def test_raised_subprocess_failure_is_none_not_a_raise(self, monkeypatch):
+        def _raise(*_a, **_kw):
+            raise subprocess.TimeoutExpired(cmd="gh", timeout=15)
+
+        monkeypatch.setattr(subprocess, "run", _raise)
+        assert tir.fetch_collaborator_ids("owner/repo") is None
+
+    def test_genuine_empty_is_a_real_set_not_none(self, monkeypatch):
+        monkeypatch.setattr(subprocess, "run", lambda *_a, **_kw: _FakeResult(0, "[]"))
+        result = tir.fetch_collaborator_ids("owner/repo")
+        assert result == set()
+        assert result is not None
+
+    def test_successful_fetch_returns_pushadmin_node_ids_only(self, monkeypatch):
+        payload = json.dumps(
+            [
+                {"node_id": "NODE_A", "permissions": {"push": True}},
+                {"node_id": "NODE_B", "permissions": {"push": False, "admin": False}},
+            ]
+        )
+        monkeypatch.setattr(subprocess, "run", lambda *_a, **_kw: _FakeResult(0, payload))
+        assert tir.fetch_collaborator_ids("owner/repo") == {"NODE_A"}
 
 
 # ---------------------------------------------------------------------------
