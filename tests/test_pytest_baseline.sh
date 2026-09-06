@@ -168,6 +168,38 @@ else
   fail "contended-arm run produced a record"
 fi
 
+
+# ── D#1900 PR 1: dedup_convention/outcome_kinds rename ─────────────────────
+# analysis.json and the six run records used the SAME key, "dedup_convention",
+# for two different vocabularies (capture-time "junit-structural-v1" vs.
+# diff-time "failure+error"). build_analysis's output field is renamed to
+# "outcome_kinds"; the record-side field, read by _check_fixed_terms, is
+# untouched.
+echo "-- D#1900 PR 1: analysis output uses outcome_kinds, not dedup_convention --"
+ANALYSIS_OUT=$(python3 "$LIB" diff --records "$REPO_ROOT/tests/baselines/pytest/runs")
+RC=$?
+assert_exit "diff over the committed baseline runs exits 0" 0 "$RC"
+
+echo "$ANALYSIS_OUT" > "$SCRATCH/analysis-regen.json"
+python3 - "$SCRATCH/analysis-regen.json" <<'PYEOF'
+import json, sys
+analysis = json.load(open(sys.argv[1]))
+sys.exit(0 if "outcome_kinds" in analysis and "dedup_convention" not in analysis else 1)
+PYEOF
+assert_exit "analysis top level has outcome_kinds and not dedup_convention" 0 "$?"
+
+echo "-- D#1900 PR 1: record-side dedup_convention is untouched by the rename --"
+python3 - "$SCRATCH/sample-record.json" <<'PYEOF'
+import json, sys
+record = json.load(open(sys.argv[1]))
+sys.exit(0 if record.get("dedup_convention") == "junit-structural-v1" else 1)
+PYEOF
+assert_exit "record dedup_convention is still the capture-side constant" 0 "$?"
+
+echo "-- D#1900 PR 1: committed analysis.json reproduces byte-for-byte from the six records --"
+diff -q "$REPO_ROOT/tests/baselines/pytest/analysis.json" "$SCRATCH/analysis-regen.json" >/dev/null 2>&1
+assert_exit "committed analysis.json == diff --records tests/baselines/pytest/runs" 0 "$?"
+
 echo ""
 echo "pytest_baseline contract tests: $PASS passed, $FAIL failed"
 if [ "$FAIL" -eq 0 ]; then

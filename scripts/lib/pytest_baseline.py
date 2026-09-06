@@ -236,7 +236,7 @@ def build_analysis(records: List[Dict[str, Any]], dedup_convention: str) -> Dict
     duration_correlation = _duration_correlation(all_complete, sorted(symmetric_difference))
 
     return {
-        "dedup_convention": dedup_convention,
+        "outcome_kinds": dedup_convention,
         "idle": idle_stats,
         "contended": contended_stats,
         "load_sensitive": {

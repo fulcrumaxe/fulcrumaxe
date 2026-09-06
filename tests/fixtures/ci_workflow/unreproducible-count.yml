@@ -1,0 +1,260 @@
+name: CI
+
+# Lint, typecheck, build, and test the three JS/TS workspaces on every PR —
+# internal and fork-originated. Deliberately triggered on the standard
+# `pull_request` event only (the write-token-exposing variant of that event
+# name is a footgun for fork PRs and must never be used here) so fork PRs
+# get GitHub's default read-only, secret-free token. See D#1537.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: ${{ matrix.workspace }}
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    # Kill switch: set repo variable CI_DISABLED=true to skip this job and
+    # consume zero billable minutes. A job-level `if:` is evaluated BEFORE
+    # matrix expansion, so a skipped matrix job does NOT produce one
+    # check-run per leg — GitHub registers a single placeholder named for the
+    # unexpanded `${{ matrix.workspace }}` expression, and the per-leg names
+    # (tui, dashboard, ts-backend) never appear at all. The merge gate does
+    # not rely on those check-runs while the switch is on: it reads this same
+    # variable and stands down explicitly, writing a ci_gate_stood_down audit
+    # row (see scripts/lib/ci-status-check.sh, D#1944). Change the variable
+    # with scripts/set-ci-kill-switch.sh so the change is audited.
+    if: vars.CI_DISABLED != 'true'
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        workspace: [tui, dashboard, ts-backend]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # --- npm workspaces (tui, dashboard) ---
+      - name: Setup Node
+        if: matrix.workspace != 'ts-backend'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: ${{ matrix.workspace }}/package-lock.json
+
+      - name: Install dependencies (npm)
+        if: matrix.workspace != 'ts-backend'
+        working-directory: ${{ matrix.workspace }}
+        run: npm ci || (echo "npm ci failed, retrying once..." && sleep 5 && npm ci)
+
+      - name: Lint
+        if: matrix.workspace != 'ts-backend'
+        working-directory: ${{ matrix.workspace }}
+        run: npm run lint
+
+      - name: Typecheck
+        if: matrix.workspace != 'ts-backend'
+        working-directory: ${{ matrix.workspace }}
+        run: npm run typecheck
+
+      - name: Build
+        if: matrix.workspace != 'ts-backend'
+        working-directory: ${{ matrix.workspace }}
+        run: npm run build
+
+      # D#1897: this used to override the committed vitest config via CLI
+      # flags because the committed default (pool.forks.singleFork=true) was
+      # believed to OOM on the full suite. That diagnosis was wrong — the
+      # real OOM cause (single-fork V8 heap accumulating across ~40 jsdom
+      # test files) is now fixed at the source in dashboard/vitest.config.ts,
+      # which is bounded to maxForks:2 by default. CI now runs the exact same
+      # `npm run test` a contributor runs locally — no flags, nothing to
+      # drift out of sync.
+      - name: Test
+        if: matrix.workspace == 'dashboard'
+        working-directory: dashboard
+        run: npm run test
+
+      # --- bun workspace (ts-backend) ---
+      - name: Setup Bun
+        if: matrix.workspace == 'ts-backend'
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache bun dependencies
+        if: matrix.workspace == 'ts-backend'
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('ts-backend/bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Install dependencies (bun)
+        if: matrix.workspace == 'ts-backend'
+        working-directory: ts-backend
+        run: bun install || (echo "bun install failed, retrying once..." && sleep 5 && bun install)
+
+      # ts-backend's parity test suite shells out to the real Python scripts
+      # in backend/ (e.g. backend/agent_run_tracker.py, backend/orchestrator/
+      # dispatch.py) to compare TS output against Python's actual behavior.
+      # Those scripts import duckdb/anthropic — without this step the imports
+      # fail, the (non-fatal, swallowed) errors produce empty/zero results,
+      # and the parity assertions fail even though nothing is actually wrong
+      # on either side. See D#1575.
+      - name: Setup Python
+        if: matrix.workspace == 'ts-backend'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Python dependencies
+        if: matrix.workspace == 'ts-backend'
+        run: pip install -r requirements.txt
+
+      - name: Typecheck
+        if: matrix.workspace == 'ts-backend'
+        working-directory: ts-backend
+        run: bun run typecheck
+
+      - name: Lint
+        if: matrix.workspace == 'ts-backend'
+        working-directory: ts-backend
+        run: bun run lint
+
+      - name: Build
+        if: matrix.workspace == 'ts-backend'
+        working-directory: ts-backend
+        run: bun run build
+
+      - name: Test
+        if: matrix.workspace == 'ts-backend'
+        working-directory: ts-backend
+        run: bun run test
+
+  export-audit:
+    name: open-source export audit
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    # Kill switch: set repo variable CI_DISABLED=true to skip this job and
+    # consume zero billable minutes. A job-level `if:` is evaluated BEFORE
+    # matrix expansion, so a skipped matrix job does NOT produce one
+    # check-run per leg — GitHub registers a single placeholder named for the
+    # unexpanded `${{ matrix.workspace }}` expression, and the per-leg names
+    # (tui, dashboard, ts-backend) never appear at all. The merge gate does
+    # not rely on those check-runs while the switch is on: it reads this same
+    # variable and stands down explicitly, writing a ci_gate_stood_down audit
+    # row (see scripts/lib/ci-status-check.sh, D#1944). Change the variable
+    # with scripts/set-ci-kill-switch.sh so the change is audited.
+    if: vars.CI_DISABLED != 'true'
+    # No secrets are used anywhere in this job. export.sh and
+    # verify-export.sh themselves rsync into a local mktemp -d and never
+    # touch the network -- but the claude CLI install step below does (a
+    # public `npm install`, no credentials involved). This job is still
+    # safe to run unconditionally on fork PRs: that property comes from the
+    # absence of secrets, not from the absence of network traffic. See
+    # D#1607, D#2212.
+    #
+    # Worst-case budget: plugin-install-gate.sh's own `timeout` wrappers sum
+    # to 480s (8 min) if every step runs to its cap, plus the CLI install
+    # and the other nine verify-export.sh checks. 5 minutes doesn't leave
+    # room for that; 15 does. See PR #2212's body for the actual measured
+    # duration on this repo's runner.
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # D#1847 removed open-source/ from what this workflow itself ships in
+      # an export, so on an adopter's checked-out tree this script no longer
+      # exists — a plain `run:` here would be a permanently red check on
+      # every adopter's first push (exit 127, not a real failure). Guard on
+      # the checked-out tree rather than dropping the job outright, so it
+      # still runs unconditionally on this repo, where open-source/ does
+      # exist. hashFiles() has to come after Checkout — evaluated any
+      # earlier the workspace is empty and this would always read as absent.
+      #
+      # D#2212: Node + the claude CLI are provisioned here, guarded by the
+      # same hashFiles() check, so an adopter's checked-out tree (no
+      # open-source/) never pays for either -- installing a CLI they will
+      # never use on every one of their pushes would be rude (D#1847).
+      #
+      # Node 22, not the "20" build-test uses above: @anthropic-ai/claude-
+      # code's package.json declares engines.node >=22. A first pass at
+      # this step used "20" and installed anyway (npm only warns,
+      # EBADENGINE isn't fatal) -- but shipping a step that runs on an
+      # engine it declares unsupported is exactly the kind of thing that
+      # breaks silently on some future patch release. Checked against the
+      # real run.
+      - name: Setup Node
+        if: hashFiles('open-source/verify-export.sh') != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # Pinned to an exact version, not a floating tag -- version drift
+      # between claude builds is already real and already bit us: PR #2209
+      # hardcoded a `-y` flag that only one of two builds on the
+      # coordinator's host supported, and misreported the resulting
+      # argument-parse failure as a manifest defect (it now feature-detects
+      # instead, see detect_yes_flag() in
+      # open-source/checks/plugin-install-gate.sh). 2.1.258 is one of the
+      # two builds that script's own header documents as verified to honor
+      # CLAUDE_CONFIG_DIR isolation end to end (the other is 2.1.187) --
+      # chosen over npm's newest published build (2.1.259 as of this PR)
+      # specifically so this step runs a build the gate has actually been
+      # checked against, not whatever ships next.
+      - name: Install claude CLI
+        if: hashFiles('open-source/verify-export.sh') != ''
+        run: npm install -g @anthropic-ai/claude-code@2.1.258
+
+      - name: Run verify-export.sh
+        if: hashFiles('open-source/verify-export.sh') != ''
+        env:
+          # Step-level only -- deliberately not job- or workflow-level. This
+          # turns a SKIP into a hard FAIL (D#2210 round 4's opt-in default),
+          # and broadening its scope would leak into contexts where a
+          # script invoking the real CLI from inside itself is the D#439
+          # recursion gap that default exists to close. See
+          # open-source/verify-export.sh:496-588.
+          REQUIRE_PLUGIN_INSTALL_GATE: 1
+        run: bash open-source/verify-export.sh
+
+      # D#1890: loop-bootstrap/'s payload is now derived from BOOTSTRAP_PATHS
+      # rather than hand-maintained — these two checks are what keep that
+      # true instead of merely asserted. Same fork-safety reasoning as
+      # verify-export.sh above: guarded on the checked-out tree because
+      # open-source/ and loop-bootstrap/ are both excluded from what this
+      # workflow itself ships to adopters.
+      - name: BOOTSTRAP_PATHS subset check
+        if: hashFiles('open-source/checks/bootstrap_subset.py') != ''
+        run: python3 open-source/checks/bootstrap_subset.py
+
+      - name: Bootstrap file classification coverage check
+        if: hashFiles('open-source/checks/verify_classification.py') != ''
+        run: python3 open-source/checks/verify_classification.py
+
+  # Import-smoke gate for backend/ itself (D#1608). Deliberately NOT the full
+  # backend/tests suite — that suite is known red on main (D#1477 umbrella,
+  # ~151 failures from the unreconciled D#1411 FastAPI migration) and would
+  # make this job permanently red. Once D#1477 restores backend test health,
+  # a follow-on Spec can add a real pytest gate here. Until then this job
+  # catches the cheap, common case: a fork PR that breaks a Python import.
+  backend:
+    name: backend (import-smoke)
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    # Kill switch: set repo variable CI_DISABLED=true to skip this job and
+    # consume zero billable minutes. A job-level `if:` is evaluated BEFORE
+    # matrix expansion, so a skipped matrix job does NOT produce one
+    # check-run per leg — GitHub registers a single placeholder named for the
+    # unexpanded `${{ matrix.workspace }}` expression, and the per-leg names
+    # (tui, dashboard, ts-backend) never appear at all. The merge gate does
+    # not rely on those check-runs while the switch is on: it reads this same
+    # variable and stands down explicitly, writing a ci_gate_stood_down audit

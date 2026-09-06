@@ -242,10 +242,9 @@ jobs:
         run: python3 open-source/checks/verify_classification.py
 
   # Import-smoke gate for backend/ itself (D#1608). Deliberately NOT the full
-  # backend/tests suite — that suite is known red on main (D#1477 umbrella,
-  # ~151 failures from the unreconciled D#1411 FastAPI migration) and would
-  # make this job permanently red. Once D#1477 restores backend test health,
-  # a follow-on Spec can add a real pytest gate here. Until then this job
+  # backend/tests suite — this job only confirms Python modules import
+  # without throwing; it does not run the tests and cannot tell you whether
+  # they pass. D#1900 tracks adding a real pytest gate. Until then this job
   # catches the cheap, common case: a fork PR that breaks a Python import.
   backend:
     name: backend (import-smoke)

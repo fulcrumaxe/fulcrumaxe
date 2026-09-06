@@ -31,15 +31,6 @@ uvicorn[standard]>=0.44.0
 pydantic>=2.12.5
 httpx>=0.28.1
 # Test dependencies
-# pytest itself was never declared here — it arrived ambient/transitive via
-# pytest-testmon, unpinned, which made every count this project has ever
-# cited about the Python suite non-portable (D#1900 PR 1). Pinned to the
-# version actually resolved on the measuring host (D#1900's Consensus
-# Summary, Theo's finding 2): pytest 9.1.1. xdist (3.8.0, likewise
-# transitive today) is deliberately left undeclared — see D#1900 Spec PR 1
-# item 2: PRs 3 and 4 must not acquire a parallelism dependency by accident,
-# since xdist changes the failing set rather than merely the runtime.
-pytest>=9.1.1
 pytest-testmon>=2.2.0
 pytest-picked>=0.5.1
 # pytest.ini sets asyncio_mode = auto (needed for every @pytest.mark.asyncio
