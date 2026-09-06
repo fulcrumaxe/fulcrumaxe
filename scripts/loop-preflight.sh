@@ -155,6 +155,10 @@ else
   add_error "budget.py status failed"
 fi
 
+# Step 4.5: engine-sync inbound alarm (D#2439 slice A) -- registration only; non-blocking here, slice C's C9 flips that.
+ENGINE_SYNC_JSON=$(bash scripts/engine-sync/inbound/alarm.sh 2>/dev/null)
+[ -z "$ENGINE_SYNC_JSON" ] && ENGINE_SYNC_JSON='{"status":"undecidable","behind":null}'
+
 # Assemble final JSON summary. GATES_JSON/BUDGET_JSON/REGISTRY_JSON/ERRORS are
 # each guaranteed valid JSON by the steps above, so this should never fail —
 # but if it somehow does, fall back to a summary that reads as BLOCKING
@@ -167,8 +171,9 @@ print(json.dumps({
     'budget':    json.loads(sys.argv[3]),
     'registry':  json.loads(sys.argv[4]),
     'errors':    json.loads(sys.argv[5]),
+    'engine_sync': json.loads(sys.argv[6]),
 }, indent=2))
-" "$TIMESTAMP" "$GATES_JSON" "$BUDGET_JSON" "$REGISTRY_JSON" "$ERRORS" 2>/dev/null)
+" "$TIMESTAMP" "$GATES_JSON" "$BUDGET_JSON" "$REGISTRY_JSON" "$ERRORS" "$ENGINE_SYNC_JSON" 2>/dev/null)
 
 if [ -z "$SUMMARY" ]; then
   add_error "summary assembly failed — falling back to a blocking summary"

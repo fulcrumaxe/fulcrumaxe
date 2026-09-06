@@ -24,12 +24,15 @@ since GPG key material should never be committed even as a fixture.
 from __future__ import annotations
 
 import hashlib
+import importlib
 import importlib.util
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 MODULE_DIR = Path(__file__).resolve().parents[1]
@@ -39,6 +42,19 @@ spec = importlib.util.spec_from_file_location("engine_sync_fetch", MODULE_PATH)
 fetch_mod = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
 spec.loader.exec_module(fetch_mod)
+
+# D#2439 A6: nine of this file's tests build a throwaway GPG keyring
+# (FetchFixture._gen_key runs `gpg --batch --gen-key`). On a host with no
+# `gpg` binary that fails with FileNotFoundError before any assertion runs
+# -- an environment gap, not a rotted test: these would pass on a host that
+# has gpg. Gating on shutil.which("gpg") (recomputed on every import/reload,
+# see GpgSkipPredicateTest below) means the skip lifts automatically on a
+# host that has gpg, instead of staying permanently green-by-omission here.
+_GPG_AVAILABLE = shutil.which("gpg") is not None
+_GPG_SKIP_REASON = (
+    "gpg not installed on this host (shutil.which('gpg') is None) -- "
+    "environment-gated, not rotted; see D#2439 A6"
+)
 
 
 def _sha256(content: str) -> str:
@@ -180,6 +196,7 @@ class HelpTest(unittest.TestCase):
         self.assertEqual(ctx.exception.code, 0)
 
 
+@unittest.skipUnless(_GPG_AVAILABLE, _GPG_SKIP_REASON)
 class SignedTagFetchTest(unittest.TestCase):
     """(2) A valid-signature fixture verifies end to end: signature valid,
     tag resolves to SHA, blobs readable, exit 0."""
@@ -199,6 +216,7 @@ class SignedTagFetchTest(unittest.TestCase):
             fx.close()
 
 
+@unittest.skipUnless(_GPG_AVAILABLE, _GPG_SKIP_REASON)
 class SignatureChainFailsClosedTest(unittest.TestCase):
     """(3) G5 -- three fixtures each abort with non-zero exit, zero files
     written, and leave the remote's git status byte-identical."""
@@ -265,6 +283,7 @@ class SignatureChainFailsClosedTest(unittest.TestCase):
             fx.close()
 
 
+@unittest.skipUnless(_GPG_AVAILABLE, _GPG_SKIP_REASON)
 class KeyPinningTest(unittest.TestCase):
     """(4) G6 -- a presented key whose fingerprint != pinned aborts (covered
     directly by the wrong-key-signature fixture above); additionally a
@@ -295,6 +314,7 @@ class KeyPinningTest(unittest.TestCase):
             fx.close()
 
 
+@unittest.skipUnless(_GPG_AVAILABLE, _GPG_SKIP_REASON)
 class BaseBlobRetrievalTest(unittest.TestCase):
     """(5) Base-blob retrieval: baseline (from applied.json.engine_version)
     and target both fetched+verified in one call; base content is retrievable
@@ -416,6 +436,56 @@ class PytestRunnerSelfCheckTest(unittest.TestCase):
     def test_fetch_module_importable(self):
         self.assertTrue(hasattr(fetch_mod, "run_fetch"))
         self.assertTrue(hasattr(fetch_mod, "main"))
+
+
+class GpgSkipPredicateTest(unittest.TestCase):
+    """D#2439 A6 negative -- the skip predicate gating the four gpg-dependent
+    classes above (SignedTagFetchTest, SignatureChainFailsClosedTest,
+    KeyPinningTest, BaseBlobRetrievalTest) must be recomputed from
+    shutil.which("gpg") each time this module loads, not hardcoded to a
+    constant. A hardcoded constant could never turn itself off on a host
+    that actually has gpg installed -- these tests would go permanently
+    dormant there instead of running for real.
+
+    Proven behaviorally, per D#2377 (grepping the source for the string
+    "shutil.which" satisfies nothing): reload this module with shutil.which
+    mocked to report "absent" and then "present", and read back the
+    __unittest_skip__ attribute unittest.skipUnless sets directly on the
+    class at decoration time -- if it flips with the mock, the predicate
+    is live; if it doesn't, it's a constant.
+    """
+
+    def test_skip_predicate_tracks_gpg_presence_not_a_constant(self):
+        this_module = sys.modules[__name__]
+        gated_class_names = [
+            "SignedTagFetchTest",
+            "SignatureChainFailsClosedTest",
+            "KeyPinningTest",
+            "BaseBlobRetrievalTest",
+        ]
+        try:
+            with unittest.mock.patch("shutil.which", return_value=None):
+                reloaded_absent = importlib.reload(this_module)
+                for name in gated_class_names:
+                    cls = getattr(reloaded_absent, name)
+                    self.assertTrue(
+                        getattr(cls, "__unittest_skip__", False),
+                        f"{name} should be skipped when shutil.which('gpg') is None",
+                    )
+
+            with unittest.mock.patch("shutil.which", return_value="/usr/bin/gpg"):
+                reloaded_present = importlib.reload(this_module)
+                for name in gated_class_names:
+                    cls = getattr(reloaded_present, name)
+                    self.assertFalse(
+                        getattr(cls, "__unittest_skip__", False),
+                        f"{name} is still skipped when shutil.which('gpg') reports a path -- "
+                        "the predicate is a hardcoded constant, not gpg-presence",
+                    )
+        finally:
+            # Leave the module in its real, un-mocked state for any test
+            # collected after this one in the same process.
+            importlib.reload(this_module)
 
 
 if __name__ == "__main__":
