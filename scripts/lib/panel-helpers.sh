@@ -141,22 +141,96 @@ print(set_status(body, '$new_status'), end='')
 # post_specialist_comment DISC_ID ROLE BODY
 # Posts a Discussion comment as the specialist, signed with their role.
 # DISC_ID is the GraphQL node ID (from the Discussion query).
+#
+# Refuses to post a body whose AGENT_OUTPUT envelope "agent" field does not
+# equal ROLE — exits non-zero, posts nothing, writes the reason to stderr.
+# This is the item-1 envelope-in-comment contract enforced mechanically
+# instead of relying on template instruction alone (D#1924 PR-b item 13).
+#
+# After a successful write, re-reads the created comment by its returned
+# node ID and compares the fetched body to what was sent (item 14). This is
+# a diagnostic, not the correctness fix for D#1810 — panel_gate_decide in
+# scripts/lib/panel-quorum.sh is that fix. Read-back exists so a retry that
+# posted a stale or wrong body becomes visible here instead of passing
+# silently; see D#1924's Spec for why the duplicate-vs-loss question is
+# left open rather than resolved by this check.
+#
+# On success, echoes the verified comment ID on stdout and returns 0. On any
+# failure (envelope/role mismatch, post failure, read-back query failure, or
+# a body mismatch) returns non-zero with NO stdout, and writes the sent ID,
+# the read-back ID, and a one-line summary to stderr.
 # ---------------------------------------------------------------------------
 post_specialist_comment() {
   local disc_id="$1"
   local role="$2"
   local body="$3"
 
-  gh api graphql \
+  local envelope_agent
+  envelope_agent=$(python3 -c "
+import sys, re
+m = re.search(r'\"agent\"\s*:\s*\"([^\"]+)\"', sys.stdin.read())
+print(m.group(1) if m else '')
+" <<<"$body" 2>/dev/null)
+
+  if [ "$envelope_agent" != "$role" ]; then
+    echo "post_specialist_comment: refusing to post — envelope agent '${envelope_agent:-<none>}' does not match role '$role'" >&2
+    return 1
+  fi
+
+  local mutation_result sent_id
+  mutation_result=$(gh api graphql \
     -f query='mutation($id:ID!, $body:String!) {
       addDiscussionComment(input:{discussionId:$id, body:$body}) {
         comment { id }
       }
     }' \
     -f id="$disc_id" \
-    -f body="$body" \
-    >/dev/null 2>&1 || return 1
+    -f body="$body" 2>/dev/null) || {
+    echo "post_specialist_comment: mutation failed for role '$role'" >&2
+    return 1
+  }
 
+  sent_id=$(python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    print(d['data']['addDiscussionComment']['comment']['id'])
+except Exception:
+    pass
+" <<<"$mutation_result" 2>/dev/null)
+
+  if [ -z "$sent_id" ]; then
+    echo "post_specialist_comment: mutation returned no comment id for role '$role'" >&2
+    return 1
+  fi
+
+  local readback_result readback_body
+  readback_result=$(gh api graphql -f query="
+    query {
+      node(id: \"$sent_id\") {
+        ... on DiscussionComment { body }
+      }
+    }
+  " 2>/dev/null) || {
+    echo "post_specialist_comment: read-back query failed — sent id=$sent_id" >&2
+    return 1
+  }
+
+  readback_body=$(python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    print(d.get('data') and d['data'].get('node') and d['data']['node'].get('body') or '')
+except Exception:
+    print('')
+" <<<"$readback_result" 2>/dev/null)
+
+  if [ "$readback_body" != "$body" ]; then
+    echo "post_specialist_comment: MISMATCH — sent id=$sent_id read-back id=$sent_id — sent ${#body} chars, read back ${#readback_body} chars" >&2
+    return 1
+  fi
+
+  echo "$sent_id"
   return 0
 }
 

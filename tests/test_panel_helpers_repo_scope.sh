@@ -299,7 +299,9 @@ OUT_OK=$(AF_CONTROL_PLANE_CONFIG="$CFG_OK" REPO_ROOT="$REPO_ROOT" \
 RC_OK=$?
 
 assert_exit_0 "step5 exits 0 on a genuine zero-comment panel" "$RC_OK"
-assert_contains "genuine zero still logs the normal waiting-for-comments line" "waiting for specialist comments (0/" "$OUT_OK"
+# D#1924 PR-b: the gate now names missing roles instead of printing only
+# ACTUAL/EXPECTED (item 12) — updated to match, same behavior asserted.
+assert_contains "genuine zero still logs a waiting line naming the missing roles" "waiting for specialist roles (" "$OUT_OK"
 assert_not_contains "genuine zero does NOT log a WARNING" "WARNING" "$OUT_OK"
 
 rm -f "$CFG_OK"
