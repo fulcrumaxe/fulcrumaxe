@@ -53,11 +53,13 @@ function makeFleetCostResponse() {
 
 function makeFleetConcurrencyResponse() {
   return {
-    fleet_total: 3,
+    available: true,
     fleet_cap: 8,
+    capped_agents: 3,
+    uncapped_agents: 5,
     per_project: [
-      { name: 'autonomous-forever', agents_running: 2, cap: 4, ok: true },
-      { name: 'projectb', agents_running: 1, cap: 4, ok: true },
+      { name: 'autonomous-forever', capped_agents: 2, uncapped_agents: 5, cap: 4, ok: true },
+      { name: 'projectb', capped_agents: 1, uncapped_agents: 0, cap: 4, ok: true },
     ],
     etag: 'ghi789',
   }

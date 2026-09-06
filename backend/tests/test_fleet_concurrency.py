@@ -100,6 +100,63 @@ def test_count_project_capped_excludes_agent_tool_rows():
     assert m.count_project("proj") == 3  # unchanged for other, observational consumers
 
 
+# ── the two lanes are countable apart, fleet-wide (D#2323) ──────────────────
+#
+# fleet_cap governs one of the two populations. Before these existed, the only
+# fleet-wide count was count_fleet(), which spans both -- so the Fleet page had
+# nothing to render against the cap except a number the cap does not govern.
+
+def test_count_fleet_capped_excludes_agent_tool_rows():
+    m = _mod()
+    m.register("proj", "spawn-1", "executor")
+    m.register("other", "spawn-2", "executor")
+    for i in range(4):
+        m.register("proj", f"{m.AGENT_TOOL_ID_PREFIX}{i}", "specialist")
+
+    assert m.count_fleet_capped() == 2        # both projects, spawn lane only
+    assert m.count_fleet_observational() == 4
+    assert m.count_fleet() == 6               # unchanged: still every row
+
+
+def test_the_two_fleet_wide_lanes_partition_count_fleet():
+    m = _mod()
+    m.register("proj", "spawn-1", "executor")
+    m.register("proj", f"{m.AGENT_TOOL_ID_PREFIX}a", "specialist")
+    assert m.count_fleet_capped() + m.count_fleet_observational() == m.count_fleet()
+
+
+def test_count_project_observational_is_the_complement_within_a_project():
+    m = _mod()
+    m.register("proj", "spawn-1", "executor")
+    m.register("proj", f"{m.AGENT_TOOL_ID_PREFIX}a", "specialist")
+    m.register("proj", f"{m.AGENT_TOOL_ID_PREFIX}b", "specialist")
+    m.register("other", f"{m.AGENT_TOOL_ID_PREFIX}c", "specialist")
+
+    assert m.count_project_observational("proj") == 2
+    assert (m.count_project_capped("proj") + m.count_project_observational("proj")
+            == m.count_project("proj") == 3)
+
+
+def test_capped_fleet_count_matches_the_population_register_denies_on():
+    """The cap check inside register() and count_fleet_capped() must agree.
+
+    Two numbers that are supposed to describe the same population is exactly
+    the pairing D#2323 was filed about, so it is asserted rather than assumed.
+    """
+    m = _mod()
+    import json
+    m.FLEET_CONFIG_PATH.write_text(json.dumps({"fleet_cap": 2}))
+    for i in range(6):
+        m.register("proj", f"{m.AGENT_TOOL_ID_PREFIX}{i}", "specialist")
+    assert m.register("proj", "spawn-1", "executor") is True
+    assert m.count_fleet_capped() == 1
+    assert m.register("proj", "spawn-2", "executor") is True
+    assert m.count_fleet_capped() == 2
+    # count_fleet_capped() now reads the cap, and register() denies.
+    assert m.count_fleet_capped() == m.fleet_cap()
+    assert m.register("proj", "spawn-3", "executor") is False
+
+
 # ── agent-tool- rows have no age-based reaping (D#2314 N1) ──────────────────
 #
 # An earlier version of this module shipped sweep_stale_agent_tool_rows(), an

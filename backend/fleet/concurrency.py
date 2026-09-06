@@ -178,10 +178,54 @@ def fleet_cap() -> int:
 
 
 def count_fleet() -> int:
-    """Return total registered agents across all projects."""
+    """Return total registered agents across all projects.
+
+    This is *every* row, including the ``agent-tool-`` rows that no cap
+    governs (see ``AGENT_TOOL_ID_PREFIX`` above).  It is therefore not the
+    number to display against ``fleet_cap()`` -- use ``count_fleet_capped()``
+    for that, and ``count_fleet_observational()`` for the remainder.  D#2323:
+    the Fleet page used to render ``count_fleet()`` "of ``fleet_cap()``",
+    which on the operator host read "21 of 8" -- a ratio between two numbers
+    that do not describe the same population.
+    """
     conn = _open_db()
     try:
         row = conn.execute("SELECT COUNT(*) FROM agents").fetchone()
+        return int(row[0]) if row else 0
+    finally:
+        conn.close()
+
+
+def count_fleet_capped() -> int:
+    """Fleet-wide count of the rows ``fleet_cap()`` actually governs.
+
+    Same population as ``register()``'s fleet-wide cap check: everything
+    except the ``agent-tool-`` prefix.  Added for D#2323 so a caller that
+    wants to display a number *against the cap* has one that means that.
+    """
+    conn = _open_db()
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM agents WHERE agent_id NOT LIKE ?",
+            (f"{AGENT_TOOL_ID_PREFIX}%",)
+        ).fetchone()
+        return int(row[0]) if row else 0
+    finally:
+        conn.close()
+
+
+def count_fleet_observational() -> int:
+    """Fleet-wide count of the ``agent-tool-`` rows no cap governs (D#2323).
+
+    The complement of ``count_fleet_capped()``:
+    ``count_fleet_capped() + count_fleet_observational() == count_fleet()``.
+    """
+    conn = _open_db()
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM agents WHERE agent_id LIKE ?",
+            (f"{AGENT_TOOL_ID_PREFIX}%",)
+        ).fetchone()
         return int(row[0]) if row else 0
     finally:
         conn.close()
@@ -208,13 +252,33 @@ def count_project_capped(project_name: str) -> int:
     spawn-agent.sh-lane concurrency slot -- a busy consensus panel (5
     specialists + researcher + PM) can put up to 7 such rows against a
     default cap of 8. ``scripts/pre-spawn-check.sh``'s per-project cap check
-    calls this; ``count_project()`` itself is unchanged for other,
-    purely-observational consumers (e.g. the Fleet page RPC).
+    calls this, and (since D#2323) so does the Fleet page RPC for anything it
+    renders against a cap. ``count_project()`` itself is unchanged for the
+    consumers that want every row regardless of lane -- today that is
+    ``backend/fleet/fleet_set.py``'s ``agents_running`` lookup.
     """
     conn = _open_db()
     try:
         row = conn.execute(
             "SELECT COUNT(*) FROM agents WHERE project_name = ? AND agent_id NOT LIKE ?",
+            (project_name, f"{AGENT_TOOL_ID_PREFIX}%")
+        ).fetchone()
+        return int(row[0]) if row else 0
+    finally:
+        conn.close()
+
+
+def count_project_observational(project_name: str) -> int:
+    """Per-project count of the ``agent-tool-`` rows no cap governs (D#2323).
+
+    The complement of ``count_project_capped()`` within one project:
+    ``count_project_capped(p) + count_project_observational(p) ==
+    count_project(p)``.
+    """
+    conn = _open_db()
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM agents WHERE project_name = ? AND agent_id LIKE ?",
             (project_name, f"{AGENT_TOOL_ID_PREFIX}%")
         ).fetchone()
         return int(row[0]) if row else 0
