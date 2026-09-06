@@ -577,6 +577,24 @@ jobs:
       - name: update-apply guard
         run: python3 scripts/ci/update-apply-guard.py
 
+      # D#2325 PR-b: every `python3 -m backend...` under scripts/ has to be
+      # anchored to its own repo root. `-m` resolves the package from the
+      # process's working directory, and two live call sites were anchored to
+      # nothing. One failed loudly from cron's cwd. The other is SOURCED by
+      # post-agent-hook.sh, and because `backend` is a namespace package with
+      # no __init__.py it did not fail from an executor worktree — it imported
+      # the finishing agent's own branch instead, with no exception to catch
+      # and no exit code to check. A static scan catches both shapes because
+      # they share one signature: no anchor anywhere in the file. Exemptions
+      # live in scripts/ci/backend-module-cwd-exempt.json with a per-entry
+      # reason, and a stale entry there fails this step too.
+      #
+      # Same naming caveat as every guard above: this job's name is
+      # string-matched by CI_REQUIRED_CHECKS in scripts/lib/ci-status-check.sh
+      # — add steps here freely, do not rename the job.
+      - name: backend module cwd guard
+        run: python3 scripts/ci/backend-module-cwd-guard.py
+
       # No ruff/flake8 config exists in the repo today (checked
       # pyproject.toml / setup.cfg) — Python lint is intentionally omitted
       # rather than adding new lint config as part of this Spec.
