@@ -19,8 +19,9 @@ order. Two shapes defeat it and both are banned here:
 Why this is a guard and not only a test
 ---------------------------------------
 The invariant had exactly one defender, a pytest case, and CI runs no pytest —
-the four required checks are `tui`, `dashboard`, `ts-backend` and
-`backend (import-smoke)`, none of which invokes it. So the invariant was
+on the code plane's `main` as of 2026-09-06 the four required checks are `tui`,
+`dashboard`, `ts-backend` and `backend (import-smoke)`, none of which invokes
+pytest at all (the count is branch protection's, not a survey). So the invariant was
 defended by nothing on any merge. As a file in `scripts/ci/` it is discovered by
 `scripts/ci/run-guards.sh` by directory listing and runs inside
 `backend (import-smoke)` on every PR. No workflow YAML references it by name,
@@ -31,8 +32,9 @@ Why the subject set is the git index
 ------------------------------------
 The pytest case this replaces enumerated candidates with `Path.rglob`, a walk of
 the working tree. Untracked debris on a checkout therefore counted as repo
-source: four untracked `loop-bootstrap/backend-snapshot/*.py` files turned it red
-on an operator host while the same tree extracted from `main` was green. A check
+source: four untracked `loop-bootstrap/backend-snapshot/*.py` files, present on
+one operator host and tracked in neither plane, turned it red there while the
+same commit of the code plane's `main` was green in a clean checkout. A check
 whose verdict depends on which machine ran it is not a check, and this one cost
 real time — it read as "the fix did not land" and sent its reader hunting a third
 freeze that did not exist.
@@ -40,14 +42,31 @@ freeze that did not exist.
 `git ls-files` is the definition of "in the repo" every other consumer here uses,
 and it resolves the class rather than the instance: runtime debris is untracked,
 so it is out of scope by construction and no exclusion list has to grow to keep
-it that way. The INDEX, not HEAD, is the boundary — a freeze is caught the moment
-it is staged, which is the moment it becomes source. `tests/test_no_planted_
-spawn_ids.py` records the same reasoning for the same reasons.
+it that way. The INDEX, not HEAD, is the boundary, so a file is in scope from the
+moment it is staged rather than from the moment it is committed.
+`tests/test_no_planted_spawn_ids.py` records the same reasoning.
 
-The index decides WHICH files are read; each one is then read from the working
-tree, not from its staged blob. So a tracked file with an uncommitted local edit
-is judged on the edit — which is what a developer running this before committing
-expects — while a file git does not track is not judged at all.
+What the index decides, and what it does not
+--------------------------------------------
+The index decides WHICH files are read. Each one is then read from the WORKING
+TREE, not from its staged blob. Existence and content therefore come from
+different places, and only the first of the two is index-driven:
+
+  - a file git does not track is not read at all, however it looks on disk
+  - a tracked file missing from the working tree is a refusal, not a skip
+  - a tracked file's CONTENT is whatever is on disk right now
+
+The third line is a real gap, stated rather than papered over: stage an offender,
+then edit the working-tree copy clean, and this guard passes while the staged
+blob — what `git commit` would write — still carries the freeze. So "caught the
+moment it is staged" would be an over-claim; what is true is that a file becomes
+*eligible* the moment it is staged.
+
+That is the deliberate trade. Reading blobs out of the index would close the gap
+and would also stop the guard from judging the edit a developer just made and has
+not staged, which is the case it is actually run in. CI is unaffected either way:
+a runner checks out a commit, so index and working tree agree there by
+construction.
 
 Scanning nothing is a failure, not a pass
 -----------------------------------------
@@ -63,20 +82,31 @@ set, for the same reason.
 Enumerating a file is not reading it, and the count printed is the count READ.
 An earlier revision of this guard skipped an unreadable file with a bare
 `continue` and printed the enumerated total, so a tracked file whose working-tree
-copy was missing left the total unmoved and the verdict green — measured: the
-same staged offender reported `604 scanned / FAIL / exit=1` with the file on
-disk and `604 scanned / PASS / exit=0` with it deleted, while the offending blob
-sat in the index and was what `git commit` would have written. It degraded all
-the way down: every working-tree copy removed still printed the full total and
-passed, having read nothing.
+copy was missing left the total unmoved and the verdict green.
 
-An unreadable tracked file is therefore FATAL here, not skipped. The guard cannot
-say anything about a file it did not read, and this repo's dominant defect is a
-check reporting success it never measured. The cost of that choice is a checkout
-where the index and the working tree legitimately disagree — a sparse or partial
-checkout materialises a fraction of what `git ls-files` lists — which now gets a
-loud FAIL naming the files. That is the honest answer for such a checkout ("I
-cannot judge these"), and CI checks out in full, so the required path is
+Measured on a scratch checkout of the code plane's `main` on one operator host
+(Linux, CPython 3.12), 604 tracked in-scope files with one staged offender among
+them — the same index both times, the only difference being whether that file
+existed on disk:
+
+    present on disk    604 scanned    FAIL    exit=1
+    deleted from disk  604 scanned    PASS    exit=0
+
+The offending blob sat in the index throughout and was what `git commit` would
+have written. It degraded all the way down, not by one file: with every
+working-tree copy removed, the same build still printed the full enumerated total
+and passed, having read nothing. The counts above are that host's tree on that
+day; a different checkout gives different totals and the same shape.
+
+An unreadable tracked file is therefore FATAL here, not skipped, and not warned
+about either: a warning puts a number in a log and hopes somebody reads it, which
+is the mechanism that let the defect above through in the first place. The guard
+cannot say anything about a file it did not read, and this repo's dominant defect
+is a check reporting success it never measured. The cost of that choice is a
+checkout where the index and the working tree legitimately disagree — a sparse or
+partial checkout materialises a fraction of what `git ls-files` lists — which now
+gets a loud FAIL naming the files. That is the honest answer for such a checkout
+("I cannot judge these"), and CI checks out in full, so the required path is
 unaffected.
 
 Usage
