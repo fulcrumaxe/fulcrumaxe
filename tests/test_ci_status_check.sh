@@ -93,7 +93,7 @@ assert_not_contains() {
 
 _gha() { printf '{"name":"%s","status":"completed","conclusion":"%s","app":{"slug":"github-actions"},"html_url":"%s"}' "$1" "$2" "${3:-}"; }
 
-ALL_GREEN='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"','"$(_gha 'backend (import-smoke)' success)"']'
+ALL_GREEN='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"','"$(_gha 'backend (import-smoke)' success)"','"$(_gha 'open-source export audit' success)"']'
 
 # -----------------------------------------------------------------------
 # CS-1 (AC-1): lib exists, exposes check_ci_status, sourced not inlined
@@ -168,7 +168,7 @@ unset CI_STATUS_OVERRIDE_20001 CI_STATUS_HEAD_SHA_20001
 # -----------------------------------------------------------------------
 echo ""
 echo "=== CS-3: backend (import-smoke) fails -> blocked ==="
-BAD='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"','"$(_gha 'backend (import-smoke)' failure 'https://github.com/x/y/actions/runs/1')"']'
+BAD='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"','"$(_gha 'backend (import-smoke)' failure 'https://github.com/x/y/actions/runs/1')"','"$(_gha 'open-source export audit' success)"']'
 export CI_STATUS_OVERRIDE_20002="$BAD"
 export CI_STATUS_HEAD_SHA_20002="deadbeef02"
 OUT=$(_run_status 20002); RC=$?
@@ -182,7 +182,7 @@ unset CI_STATUS_OVERRIDE_20002 CI_STATUS_HEAD_SHA_20002
 # -----------------------------------------------------------------------
 echo ""
 echo "=== CS-4: required check absent (job deleted) -> blocked ==="
-MISSING='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"']'
+MISSING='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"','"$(_gha 'open-source export audit' success)"']'
 export CI_STATUS_OVERRIDE_20003="$MISSING"
 export CI_STATUS_HEAD_SHA_20003="deadbeef03"
 OUT=$(_run_status 20003); RC=$?
@@ -198,7 +198,7 @@ echo ""
 echo "=== CS-5: spoofed third-party check-run not honored ==="
 SPOOF_NAME="backend (import-smoke)"
 SPOOFED='{"name":"'"$SPOOF_NAME"'","status":"completed","conclusion":"success","app":{"slug":"some-third-party-app"},"html_url":""}'
-FAKE_GREEN='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"','"$SPOOFED"']'
+FAKE_GREEN='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"','"$SPOOFED"','"$(_gha 'open-source export audit' success)"']'
 export CI_STATUS_OVERRIDE_20004="$FAKE_GREEN"
 export CI_STATUS_HEAD_SHA_20004="deadbeef04"
 OUT=$(_run_status 20004); RC=$?
@@ -219,7 +219,7 @@ unset CI_STATUS_OVERRIDE_20005 CI_STATUS_HEAD_SHA_20005
 
 echo ""
 echo "=== CS-6b: a required check still in-progress (status != completed) -> blocked ==="
-PENDING_RUN='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"',{"name":"backend (import-smoke)","status":"in_progress","conclusion":null,"app":{"slug":"github-actions"},"html_url":""}]'
+PENDING_RUN='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"',{"name":"backend (import-smoke)","status":"in_progress","conclusion":null,"app":{"slug":"github-actions"},"html_url":""},'"$(_gha 'open-source export audit' success)"']'
 export CI_STATUS_OVERRIDE_20006="$PENDING_RUN"
 export CI_STATUS_HEAD_SHA_20006="deadbeef06"
 OUT=$(_run_status 20006); RC=$?
@@ -356,9 +356,10 @@ rm -f "$AUDIT_TMP2"
 # ═══════════════════════════════════════════════════════════════════════════
 
 # A set missing exactly the three matrix names — the live shape of this bug.
-MISSING_MATRIX='['"$(_gha 'backend (import-smoke)' success)"']'
-# All four present and skipped — what "fixing the matrix names" would produce.
-ALL_SKIPPED='['"$(_gha tui skipped)"','"$(_gha dashboard skipped)"','"$(_gha ts-backend skipped)"','"$(_gha 'backend (import-smoke)' skipped)"']'
+# The two non-matrix required checks register normally, so both are present.
+MISSING_MATRIX='['"$(_gha 'backend (import-smoke)' success)"','"$(_gha 'open-source export audit' success)"']'
+# All five present and skipped — what "fixing the matrix names" would produce.
+ALL_SKIPPED='['"$(_gha tui skipped)"','"$(_gha dashboard skipped)"','"$(_gha ts-backend skipped)"','"$(_gha 'backend (import-smoke)' skipped)"','"$(_gha 'open-source export audit' skipped)"']'
 
 # -----------------------------------------------------------------------
 # CS-12 (AC-1): `disabled` is a distinct status with its own exit code, and
@@ -559,24 +560,33 @@ assert_not_contains "CS-16: STATE is not disabled (only the variable can do that
 unset CI_STATUS_OVERRIDE_20151 CI_STATUS_HEAD_SHA_20151
 
 # -----------------------------------------------------------------------
-# CS-17 (AC-11): this change must not touch what the gate requires. The four
-# required names and the accept set are out of scope by design — widening
-# either one is what would turn the block into a silent pass.
+# CS-17 (AC-11): pin the required set exactly. Widening it unannounced is
+# what would turn a real block into a silent pass, so the set is spelled out
+# here and any change to it has to come through this assertion.
+#
+# D#1989 changed the expected value from four names to five, deliberately:
+# "open-source export audit" was added to CI_REQUIRED_CHECKS in the same
+# change that made that job able to fail at all. The assertion is updated,
+# not relaxed and not deleted — it still requires an exact, ordered match, so
+# the next unannounced edit to the array still fails right here. The two
+# safety properties that made the addition legal (kill-switch precedence, and
+# absent-reads-as-fail rather than pending-forever) are written out above the
+# array itself.
 # -----------------------------------------------------------------------
 echo ""
-echo "=== CS-17: required check names and accept set are unchanged ==="
+echo "=== CS-17: required check names and accept set are exactly as pinned ==="
 (
   source "$CI_LIB"
-  expected=("tui" "dashboard" "ts-backend" "backend (import-smoke)")
-  if [ "${#CI_REQUIRED_CHECKS[@]}" -eq 4 ] && [ "${CI_REQUIRED_CHECKS[*]}" = "${expected[*]}" ]; then
+  expected=("tui" "dashboard" "ts-backend" "backend (import-smoke)" "open-source export audit")
+  if [ "${#CI_REQUIRED_CHECKS[@]}" -eq 5 ] && [ "${CI_REQUIRED_CHECKS[*]}" = "${expected[*]}" ]; then
     exit 0
   fi
   exit 1
 )
 if [ $? -eq 0 ]; then
-  echo "  PASS: CI_REQUIRED_CHECKS is byte-identical to its pre-change value"; PASS=$((PASS + 1))
+  echo "  PASS: CI_REQUIRED_CHECKS matches the pinned five-name set exactly"; PASS=$((PASS + 1))
 else
-  echo "  FAIL: CI_REQUIRED_CHECKS changed"; FAIL=$((FAIL + 1))
+  echo "  FAIL: CI_REQUIRED_CHECKS is not the pinned set"; FAIL=$((FAIL + 1))
 fi
 if grep -qF 'not in ("success", "skipped")' "$CI_LIB"; then
   echo "  PASS: the conclusion accept set is untouched (out of scope here)"; PASS=$((PASS + 1))
