@@ -82,6 +82,13 @@ convenience.**
 | Code, branches, PRs, PR reviews, PR comments, PR labels, CI runs | **code plane** | `_resolve_code_repo` (sh) / `backend._repo.CODE_REPO` (py) | `autonomous-agent-7/fulcrumaxe` today; `fulcrumaxe/fulcrumaxe` after the cutover |
 | Discussions, Issues, the team log, external intake | **Discussion plane** | literal `autonomous-agent-7/fulcrumaxe` | private, permanently |
 
+**One enumerated exception, and only one:** the sync-back PR that
+`scripts/engine-sync/inbound/apply_inbound.py` opens goes to the **engine**
+repo, because its entire purpose is to write the engine — a PR that opened
+where code PRs open could not do the one thing it exists for. Nothing else
+in that row moves; this is a named carve-out, not a loosening of "PRs go to
+the code plane."
+
 **Name the plane, never the slug.** The code plane's value is config, not a
 constant: it moves to `fulcrumaxe/fulcrumaxe` when `code_repo` is set in
 `.autonomous-team/config.json`, and it is the private repo until then. Anything

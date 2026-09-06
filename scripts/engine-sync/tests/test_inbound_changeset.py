@@ -93,7 +93,10 @@ def test_build_changeset_two_commits_eleven_paths_no_deletions(scratch_repo):
 
     cs = changeset.build_changeset(seed, "HEAD", repo_dir=scratch_repo)
     assert cs["commit_count"] == 2
-    assert cs["touched_path_count"] == 11
+    # No renames here, so the two path counts agree -- which is the point of
+    # asserting both: they diverge only where a rename is involved.
+    assert cs["gated_path_count"] == 11
+    assert cs["files_changed_count"] == 11
     assert cs["file_deletions"] == 0
     assert len([p for p in cs["touched_paths"] if p.startswith("pr3/")]) == 7
     assert len([p for p in cs["touched_paths"] if p.startswith("pr2/")]) == 4
@@ -138,6 +141,16 @@ def test_rename_reports_old_path_as_deleted_too(scratch_repo):
     assert "old.txt" in cs["touched_paths"]
     assert "D" in cs["touched_paths"]["old.txt"]["statuses"]
     assert cs["file_deletions"] >= 1
+
+    # The honest-headline half. A rename is ONE file changed by git's own
+    # count, but TWO paths the gates must rule on. Emitting only the larger
+    # figure under a name a reader hears as "files changed" is the defect
+    # this asserts against: the two numbers must both be present AND must
+    # differ here, so a future change that collapses them back into one is
+    # a test failure rather than a silently misleading report.
+    assert cs["gated_path_count"] == 2, cs["touched_paths"]
+    assert cs["files_changed_count"] == 1, cs["touched_paths"]
+    assert cs["gated_path_count"] != cs["files_changed_count"]
 
 
 def test_copy_does_not_report_source_as_deleted(scratch_repo):

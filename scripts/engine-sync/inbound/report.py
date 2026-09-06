@@ -151,6 +151,8 @@ def classify_report(
     resolve_surface_patterns=None,
     resolve_sensitive_prefixes=None,
     resolve_prs_for_commit=None,
+    extra_paths: dict | None = None,
+    known_commit_trust: dict | None = None,
 ) -> dict:
     """The full pipeline. Injectable seams (resolve_trust_allowlist,
     resolve_pr_author, is_trusted_author, resolve_surface_patterns,
@@ -203,18 +205,24 @@ def classify_report(
     # alone, means something is wrong upstream of this tool (or the marker
     # is badly stale) -- refuse rather than print a report nobody asked for
     # at this size. ---
-    if cs["touched_path_count"] > max_files or cs["total_insertions"] + cs["total_deletion_lines"] > max_lines:
+    if cs["gated_path_count"] > max_files or cs["total_insertions"] + cs["total_deletion_lines"] > max_lines:
         return {
             "marker": marker,
             "remote_ref": remote_ref,
             "refused": True,
+            # Names the figure it actually compared. `gated_path_count` counts a
+            # rename twice (destination + synthetic source delete), so it can
+            # exceed the ceiling while git's own "files changed" is under it --
+            # saying "N files" without saying which N is how a reader concludes
+            # the tool is miscounting.
             "refusal_reason": (
-                f"change set exceeds ceiling: {cs['touched_path_count']} files "
-                f"(max {max_files}), {cs['total_insertions'] + cs['total_deletion_lines']} "
-                f"lines (max {max_lines})"
+                f"change set exceeds ceiling: {cs['gated_path_count']} gated paths "
+                f"(max {max_files}; {cs['files_changed_count']} files changed by git's count), "
+                f"{cs['total_insertions'] + cs['total_deletion_lines']} lines (max {max_lines})"
             ),
             "commit_count": cs["commit_count"],
-            "touched_path_count": cs["touched_path_count"],
+            "gated_path_count": cs["gated_path_count"],
+            "files_changed_count": cs["files_changed_count"],
         }
 
     # --- Deletion-refusal check: the tree-diff trap this whole module
@@ -249,7 +257,8 @@ def classify_report(
                     f"export surface: {unsafe_deletions}"
                 ),
                 "commit_count": cs["commit_count"],
-                "touched_path_count": cs["touched_path_count"],
+                "gated_path_count": cs["gated_path_count"],
+                "files_changed_count": cs["files_changed_count"],
             }
 
     trust_allowlist = resolve_trust_allowlist()
@@ -260,7 +269,13 @@ def classify_report(
     # The subject's own `(#N)` hint, if present, is consulted only as a
     # must-agree cross-check: a subject claiming a PR the API does not
     # confirm is refused, not trusted either way.
-    commit_trust: dict[str, tuple[bool, str]] = {}
+    # Seeded from the caller's cache of already-resolved provenance. Carried-
+    # forward paths (extra_paths) reference commits that are no longer in this
+    # run's enumeration, and re-resolving them would mean a GitHub round trip
+    # per carried commit on every single run, forever. A commit's author never
+    # changes, so the verdict is cacheable; the loop below still overwrites any
+    # sha it resolves itself, so a cached entry can never shadow a fresh one.
+    commit_trust: dict[str, tuple[bool, str]] = dict(known_commit_trust or {})
     commits_out = []
     for c in cs["commits"]:
         sha = c["sha"]
@@ -288,6 +303,29 @@ def classify_report(
                 trusted, reason = gate.check_provenance(author, trust_allowlist, is_trusted_author=is_trusted_author)
         commit_trust[sha] = (trusted, reason)
         commits_out.append({**c, "resolved_pr": resolved_pr, "author": author, "trusted": trusted})
+
+    # Carried-forward paths: withheld by an earlier run, not applied, and
+    # therefore still owed. They re-enter here so the SAME classifier rules on
+    # them -- a second implementation for "re-check the ones we skipped" is
+    # exactly the pair of code paths that eventually disagree.
+    #
+    # Merged AFTER both refusal checks above and non-destructively:
+    #   * after the ceiling, because a carried path is not newly-arrived work
+    #     and counting it would let a growing backlog refuse every run until
+    #     the channel disables itself;
+    #   * after the deletion check, so a status recorded in an older run can
+    #     never re-trigger a refusal about a deletion already ruled on;
+    #   * non-destructively, so a path that is BOTH carried forward and touched
+    #     again by a new commit keeps this run's fresh enumeration.
+    carried_forward: set[str] = set()
+    for remote_path, info in (extra_paths or {}).items():
+        if remote_path in cs["touched_paths"]:
+            continue
+        cs["touched_paths"][remote_path] = {
+            "commits": list(info.get("commits", [])),
+            "statuses": list(info.get("statuses", [])),
+        }
+        carried_forward.add(remote_path)
 
     surface_patterns = resolve_surface_patterns()
     sensitive_prefixes = resolve_sensitive_prefixes()
@@ -325,7 +363,14 @@ def classify_report(
         # Gate 1: provenance. Fails closed if ANY touching commit is
         # untrusted -- a path is only as trustworthy as its least-trusted
         # contributor.
-        untrusted_reasons = [commit_trust[sha][1] for sha in touching_commits if not commit_trust[sha][0]]
+        # .get, not [] -- a carried-forward path can name a commit this run
+        # never enumerated and whose cached verdict is missing. Unknown
+        # provenance is untrusted provenance; it must never be an exception
+        # that aborts the whole report, and never a pass.
+        _unknown = (False, "provenance unknown for this commit (not resolved in this run, no cached verdict)")
+        untrusted_reasons = [
+            commit_trust.get(sha, _unknown)[1] for sha in touching_commits if not commit_trust.get(sha, _unknown)[0]
+        ]
         if untrusted_reasons:
             classifications[remote_path] = {
                 "status": gate.CAT_QUARANTINED,
@@ -397,13 +442,19 @@ def classify_report(
         }
         buckets.setdefault(status, []).append(remote_path)
 
+    for remote_path in carried_forward:
+        if remote_path in classifications:
+            classifications[remote_path]["carried_forward"] = True
+
     return {
         "marker": marker,
         "remote_ref": remote_ref,
         "refused": False,
+        "carried_forward": sorted(carried_forward),
         "commit_count": cs["commit_count"],
         "commits": commits_out,
-        "touched_path_count": cs["touched_path_count"],
+        "gated_path_count": cs["gated_path_count"],
+        "files_changed_count": cs["files_changed_count"],
         "file_deletions": cs["file_deletions"],
         "classifications": classifications,
         "buckets": {k: sorted(v) for k, v in buckets.items()},
