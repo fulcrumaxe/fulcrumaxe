@@ -1,0 +1,278 @@
+#!/usr/bin/env python3
+"""scripts/engine-sync/inbound/report.py -- D#2439 Slice B: the read-only
+classify report CLI.
+
+Given the marker ref (`refs/synced/code-plane` by default) and the code
+plane's current `main` tip, this classifies every changed path into one of:
+
+  clean-apply / local-patch / already-applied / conflict / rejected /
+  integrity-fail          (pull.classify_against_baseline's own vocabulary)
+
+  plus three gate outcomes that stop a path before it ever reaches that
+  table: quarantined:untrusted-provenance, rejected:out-of-surface,
+  rejected:path-unsafe, needs-human-approval, and one purely-informational
+  bucket: generated (an export-generated path with no engine-side source).
+
+APPLIES NOTHING. WRITES NOTHING to the working tree, the index, or
+`refs/synced/code-plane`. The only network call this tool makes is one
+`git fetch` of the code-plane remote's tracked branch (see
+changeset.ensure_remote_fetched's docstring for why, and why that is not a
+fix to Slice A's staleness.sh) and, per touched commit, one `gh api
+repos/<repo>/pulls/<N>` read to resolve that PR's GitHub-authenticated
+author (via pr_intake_gate.fetch_pr_meta -- never a second gh call path,
+never commit metadata).
+
+Refuses (nonzero exit, no partial report of a write-set) when the computed
+change set exceeds the file/line ceiling, or would need to report a path
+delete outside the export surface -- the tree-diff trap, B2's "single most
+important test in the Spec." Any other outcome -- including every path
+rejected or quarantined -- is a *successful* report and exits 0: the tool's
+job is to classify and print, not to have an opinion about what it finds.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+_INBOUND_DIR = Path(__file__).resolve().parent
+_ENGINE_SYNC_DIR = _INBOUND_DIR.parent
+REPO_ROOT = _ENGINE_SYNC_DIR.parent.parent
+
+for _p in (str(_INBOUND_DIR), str(_ENGINE_SYNC_DIR), str(REPO_ROOT), str(REPO_ROOT / "scripts" / "lib")):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+import changeset  # noqa: E402
+import gate  # noqa: E402
+import pull  # noqa: E402
+
+DEFAULT_MAX_FILES = 50
+DEFAULT_MAX_LINES = 500
+
+EXIT_OK = 0
+EXIT_REFUSED = 3
+EXIT_ERROR = 4
+
+
+def _resolve_code_repo() -> str:
+    from backend._repo import CODE_REPO  # noqa: PLC0415
+
+    return CODE_REPO
+
+
+def _resolve_trust_allowlist():
+    from external_intake_gate import resolve_allowlist  # noqa: PLC0415
+
+    return resolve_allowlist()
+
+
+def _pr_author(pr_number: int, repo_slug: str) -> str | None:
+    from pr_intake_gate import fetch_pr_meta  # noqa: PLC0415
+
+    meta = fetch_pr_meta(pr_number, repo_slug)
+    if not meta.get("fetch_ok"):
+        return None
+    return meta.get("author")
+
+
+def _is_trusted_author(login, allowlist):
+    from pr_comment_trust import is_trusted_author  # noqa: PLC0415
+
+    return is_trusted_author(login, allowlist)
+
+
+def classify_report(
+    *,
+    marker: str,
+    remote: str,
+    remote_branch: str,
+    repo_dir: Path,
+    code_repo_slug: str,
+    max_files: int,
+    max_lines: int,
+    do_fetch: bool = True,
+    remote_ref: str | None = None,
+    resolve_trust_allowlist=None,
+    resolve_pr_author=None,
+    is_trusted_author=None,
+) -> dict:
+    """The full pipeline. Injectable seams (resolve_trust_allowlist,
+    resolve_pr_author, is_trusted_author) default to the live GitHub-backed
+    implementations; tests supply stubs so provenance can be exercised
+    without a network call. `remote_ref` overrides the `{remote}/{remote_branch}`
+    join for tests that model "the code plane's tip" as a plain local branch
+    rather than a configured git remote."""
+    resolve_trust_allowlist = resolve_trust_allowlist or _resolve_trust_allowlist
+    resolve_pr_author = resolve_pr_author or (lambda pr: _pr_author(pr, code_repo_slug))
+    is_trusted_author = is_trusted_author or _is_trusted_author
+
+    remote_ref = remote_ref or f"{remote}/{remote_branch}"
+
+    if do_fetch:
+        changeset.ensure_remote_fetched(remote, remote_branch, repo_dir=repo_dir)
+
+    cs = changeset.build_changeset(marker, remote_ref, repo_dir=repo_dir)
+
+    # --- ceiling check first: this is the tree-diff-trap guard (B2). A
+    # change set this large, from commit enumeration alone, means something
+    # is wrong upstream of this tool (or the marker is badly stale) -- refuse
+    # rather than print a report nobody asked for at this size. ---
+    if cs["touched_path_count"] > max_files or cs["total_insertions"] + cs["total_deletion_lines"] > max_lines:
+        return {
+            "marker": marker,
+            "remote_ref": remote_ref,
+            "refused": True,
+            "refusal_reason": (
+                f"change set exceeds ceiling: {cs['touched_path_count']} files "
+                f"(max {max_files}), {cs['total_insertions'] + cs['total_deletion_lines']} "
+                f"lines (max {max_lines})"
+            ),
+            "commit_count": cs["commit_count"],
+            "touched_path_count": cs["touched_path_count"],
+        }
+
+    trust_allowlist = resolve_trust_allowlist()
+
+    # Resolve provenance per commit, once each (not per path).
+    commit_trust: dict[str, tuple[bool, str]] = {}
+    commits_out = []
+    for c in cs["commits"]:
+        pr = c["pr"]
+        if pr is None:
+            trusted, reason = False, "commit subject has no trailing PR reference; provenance unresolvable"
+            author = None
+        else:
+            author = resolve_pr_author(pr)
+            if author is None:
+                trusted, reason = False, f"PR #{pr} author unreadable"
+            else:
+                trusted, reason = gate.check_provenance(author, trust_allowlist, is_trusted_author=is_trusted_author)
+        commit_trust[c["sha"]] = (trusted, reason)
+        commits_out.append({**c, "author": author, "trusted": trusted})
+
+    surface_patterns = gate.load_export_surface_patterns()
+    sensitive_prefixes = gate.read_sensitive_prefixes()
+
+    buckets: dict[str, list[str]] = {
+        gate.CAT_GENERATED: [],
+        gate.CAT_QUARANTINED: [],
+        gate.CAT_PATH_UNSAFE: [],
+        gate.CAT_OUT_OF_SURFACE: [],
+        gate.CAT_NEEDS_APPROVAL: [],
+        pull.STATUS_CLEAN_APPLY: [],
+        pull.STATUS_LOCAL_PATCH: [],
+        pull.STATUS_ALREADY_APPLIED: [],
+        pull.STATUS_CONFLICT: [],
+        pull.STATUS_INTEGRITY_FAIL: [],
+    }
+    classifications: dict[str, dict] = {}
+
+    for remote_path, info in sorted(cs["touched_paths"].items()):
+        touching_commits = info["commits"]
+
+        # Gate 1: provenance. Fails closed if ANY touching commit is
+        # untrusted -- a path is only as trustworthy as its least-trusted
+        # contributor.
+        untrusted_reasons = [commit_trust[sha][1] for sha in touching_commits if not commit_trust[sha][0]]
+        if untrusted_reasons:
+            classifications[remote_path] = {
+                "status": gate.CAT_QUARANTINED,
+                "reason": untrusted_reasons[0],
+                "commits": touching_commits,
+            }
+            buckets[gate.CAT_QUARANTINED].append(remote_path)
+            continue
+
+        engine_path, pre_category = gate.reverse_map_path(remote_path)
+        if pre_category == gate.CAT_GENERATED:
+            classifications[remote_path] = {
+                "status": gate.CAT_GENERATED,
+                "reason": "export-generated artifact with no engine-side source; regenerated by export.sh, never synced",
+                "commits": touching_commits,
+            }
+            buckets[gate.CAT_GENERATED].append(remote_path)
+            continue
+
+        # Gate 2+3: path safety and export-surface membership.
+        category, reason = gate.path_gate(engine_path, surface_patterns, sensitive_prefixes, target_root=repo_dir)
+        if category:
+            classifications[remote_path] = {
+                "status": category,
+                "reason": reason,
+                "engine_path": engine_path,
+                "commits": touching_commits,
+            }
+            buckets[category].append(remote_path)
+            continue
+
+        # Gate 4 cleared -- hash-classify.
+        base_hash = changeset.blob_hash_at(marker, remote_path, repo_dir=repo_dir)
+        upstream_hash = changeset.blob_hash_at(remote_ref, remote_path, repo_dir=repo_dir)
+        local_hash = changeset.blob_hash_at("HEAD", engine_path, repo_dir=repo_dir)
+
+        if upstream_hash is None:
+            # The path was deleted on the code plane after the marker (a D
+            # status will already be in info["statuses"]). Read-only report:
+            # never treat this as license to write; just say so.
+            status, reason = "rejected", "upstream deletes this path; Slice B never proposes a delete"
+        else:
+            status, reason = pull.classify_against_baseline(local_hash, base_hash, upstream_hash)
+
+        classifications[remote_path] = {
+            "status": status,
+            "reason": reason,
+            "engine_path": engine_path,
+            "local_hash": local_hash,
+            "base_hash": base_hash,
+            "upstream_hash": upstream_hash,
+            "commits": touching_commits,
+        }
+        buckets.setdefault(status, []).append(remote_path)
+
+    return {
+        "marker": marker,
+        "remote_ref": remote_ref,
+        "refused": False,
+        "commit_count": cs["commit_count"],
+        "commits": commits_out,
+        "touched_path_count": cs["touched_path_count"],
+        "file_deletions": cs["file_deletions"],
+        "classifications": classifications,
+        "buckets": {k: sorted(v) for k, v in buckets.items()},
+    }
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--marker", default="refs/synced/code-plane")
+    parser.add_argument("--remote", default="code-plane")
+    parser.add_argument("--remote-branch", default="main")
+    parser.add_argument("--repo-dir", default=str(REPO_ROOT))
+    parser.add_argument("--code-repo", default=None, help="code plane slug (default: resolved via backend._repo.CODE_REPO)")
+    parser.add_argument("--max-files", type=int, default=DEFAULT_MAX_FILES)
+    parser.add_argument("--max-lines", type=int, default=DEFAULT_MAX_LINES)
+    parser.add_argument("--no-fetch", action="store_true", help="skip the one-ref git fetch (assumes objects already present)")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    code_repo_slug = args.code_repo or _resolve_code_repo()
+    report = classify_report(
+        marker=args.marker,
+        remote=args.remote,
+        remote_branch=args.remote_branch,
+        repo_dir=Path(args.repo_dir),
+        code_repo_slug=code_repo_slug,
+        max_files=args.max_files,
+        max_lines=args.max_lines,
+        do_fetch=not args.no_fetch,
+    )
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return EXIT_REFUSED if report.get("refused") else EXIT_OK
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,34 @@
+# engine-sync INBOUND sensitive-content gate (D#2439 Slice B, B4).
+#
+# Distinct from ../protected.txt, which answers a different question.
+# protected.txt says "never auto-writable" (self-protection for the OUTBOUND
+# channel's own guard code, D#1586 G4). This file says "legitimately inside
+# the export surface, but a human must approve this specific hunk before it
+# is applied" -- these paths pass the allowlist (they are supposed to be
+# public) and are exactly the ones an attacker would target, per
+# security-expert's Round-1 finding on D#2439: path allowlisting protects
+# archive/, .autonomous-team/, open-source/ -- the paths nobody would
+# attack -- and cannot protect the sandbox hook, the spawn scripts, the
+# top-level instruction file, or the role definitions, because those are
+# legitimately public.
+#
+# gate.py checks BOTH the reverse-mapped engine-side path (after the
+# agents/ -> .claude/agents/, commands/ -> .claude/commands/ rewrite) AND
+# the raw remote-side path against this list -- belt-and-suspenders, so a
+# bug in the reverse-map does not silently drop the sensitivity check.
+#
+# Any inbound path matching one of these prefixes (or CLAUDE.md exactly) is
+# reported "needs-human-approval" regardless of its hash classification --
+# never auto-applied by Slice C, whatever pull.classify_against_baseline
+# would otherwise have said. This is D#2439's answer to D#2434: those paths
+# stay quarantined until D#2434's sanitization gap is closed.
+#
+# One prefix (directory, trailing slash) or one exact filename per line.
+# Blank lines and lines starting with '#' are ignored.
+
+hooks/
+scripts/
+.claude/
+CLAUDE.md
+agents/
+commands/
