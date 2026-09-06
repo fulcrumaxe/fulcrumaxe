@@ -103,6 +103,22 @@ export default function SettingsPage() {
                   />
                   <span>{merged.maxConcurrentAgents ?? 3}</span>
                 </label>
+                {/* D#2323: this slider writes policies.executor.max_concurrent,
+                    which has no default in the control plane. Until it is
+                    saved, the spawn gate reads a non-numeric value and skips
+                    the per-project cap entirely — the number shown is a
+                    placeholder, not a limit in force. Say so, rather than let
+                    the control imply an active limit. */}
+                <p
+                  style={{ margin: '-8px 0 0', fontSize: 12, color: '#9ca3af', lineHeight: 1.5 }}
+                  data-testid="max-concurrent-note"
+                >
+                  Per project, and unset until you save it — the spawn gate enforces no
+                  per-project cap while it is unset, and the number above is a placeholder
+                  rather than a limit in force. The fleet-wide cap (8 by default) applies
+                  either way, and it covers only agents spawned through spawn-agent.sh —
+                  not Agent()-tool spawns.
+                </p>
                 <label className="settings-field">
                   Quality gate threshold
                   <input

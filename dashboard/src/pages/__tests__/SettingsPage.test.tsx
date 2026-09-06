@@ -50,6 +50,25 @@ describe('SettingsPage', () => {
     expect(await screen.findByText('Control Plane')).toBeInTheDocument()
   })
 
+  it('says the max-concurrent slider is not an enforced limit until saved', async () => {
+    // D#2323: the control writes policies.executor.max_concurrent, which the
+    // control plane has no default for. Until it is saved the spawn gate skips
+    // the per-project cap, so the number rendered beside the slider is a
+    // placeholder — the copy has to say that, or the control reads as a limit.
+    render(
+      <MemoryRouter initialEntries={['/project/proj-1/settings']}>
+        <Routes>
+          <Route path="/project/:id/settings" element={<SettingsPage />} />
+        </Routes>
+      </MemoryRouter>
+    )
+
+    const note = await screen.findByTestId('max-concurrent-note')
+    expect(note.textContent).toMatch(/unset until you save/i)
+    expect(note.textContent).toMatch(/placeholder/i)
+    expect(note.textContent).toMatch(/not Agent\(\)-tool spawns/i)
+  })
+
   it('global route (/settings) never calls controlApi — no malformed /control request', async () => {
     render(
       <MemoryRouter initialEntries={['/settings']}>
