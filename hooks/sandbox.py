@@ -44,6 +44,7 @@ from hooks.sandbox_rules import (  # noqa: E402
     classify_git_rm,
     classify_path_write,
     is_foreign_self_governed,
+    is_head_flipping_git_invocation,
     is_real_git_rm_invocation,
     is_worktree,
 )
@@ -362,6 +363,61 @@ def _write_archive_protocol_warning_event(
         pass  # Swallow all telemetry errors
 
 
+def _write_head_flip_warning_event(
+    cwd: str,
+    command: str,
+) -> None:
+    """Write a structured warning audit row when the Team Lead issues a git
+    command that moves HEAD or the `main` ref (D#2324).
+
+    kind: "head_flip_warning" — records the invocation in the daily
+    hook-events file and in <state_dir>/audit.jsonl, mirroring
+    _write_archive_protocol_warning_event above field for field.
+
+    This OBSERVES. It does not prevent. The command is still ALLOWED (exit 0)
+    and no verb becomes newly unavailable at this tier — the whole point is
+    that a HEAD flip in the operator checkout stops depending on an agent
+    volunteering it afterwards. The incident behind D#2324 was corrected by a
+    `git reset --hard`, so blocking here would have stopped the repair.
+
+    Fields: ts, tool, kind, decision, cwd, tier, command (truncated to 500).
+    Never raises — telemetry failure must not block the tool call.
+    """
+    try:
+        import datetime
+
+        entry = {
+            "ts": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
+            "tool": "Bash",
+            "kind": "head_flip_warning",
+            "decision": "warn",
+            "tier": "team_lead",
+            "cwd": cwd,
+            "command": command[:500],
+        }
+        line = json.dumps(entry) + "\n"
+
+        # Write to daily hook-events file
+        _TELEMETRY_DIR.mkdir(parents=True, exist_ok=True)
+        log_file = _TELEMETRY_DIR / f"blocks-{date.today().isoformat()}.jsonl"
+        with open(log_file, "a") as fh:
+            fh.write(line)
+
+        # Also write to state-dir audit.jsonl for cross-subsystem observability
+        state_dir = Path(
+            os.environ.get(
+                "AUTONOMOUS_TEAM_STATE_DIR",
+                str(Path.home() / ".autonomous-forever-state"),
+            )
+        )
+        audit_log = state_dir / "audit.jsonl"
+        if state_dir.exists():
+            with open(audit_log, "a") as fh:
+                fh.write(line)
+    except Exception:
+        pass  # Swallow all telemetry errors
+
+
 def main() -> None:
     # 1. Parse stdin
     try:
@@ -398,6 +454,12 @@ def main() -> None:
     #    + stderr warning so violations are observable even though they are not blocked.
     #    The Team Lead needs full git access (merges, branch ops, etc.), so we NEVER
     #    hard-block this tier — warn+audit is the enforcement mechanism here.
+    #
+    #    D#2324 adds a second warn+audit check of the same shape, for the git
+    #    verbs that move HEAD or the `main` ref. It observes only: exit stays 0
+    #    and no command that runs at this tier today stops running. The two
+    #    checks are independent — a command can be both, and then writes both
+    #    rows.
     if cwd_tier == "team_lead":
         if tool_name == "Bash":
             command = tool_input.get("command", "")
@@ -407,6 +469,14 @@ def main() -> None:
                     "[sandbox] WARNING: git rm in main repo violates archive protocol"
                     " — use git mv to archive/<name>-<date>/ instead. "
                     "See CLAUDE.md Archive Protocol.\n"
+                )
+            if is_head_flipping_git_invocation(command):
+                _write_head_flip_warning_event(cwd=cwd, command=command)
+                sys.stderr.write(
+                    "[sandbox] WARNING: this command moves HEAD or the main ref in the"
+                    " main repo — recorded as head_flip_warning, NOT blocked. If it was"
+                    " meant for a worktree, address it with git -C <path> so a wrong"
+                    " path fails loudly instead of landing here.\n"
                 )
         _allow(tool_name, cwd, str(tool_input), worktree_id)
         return  # unreachable after sys.exit, but keeps type-checker happy
