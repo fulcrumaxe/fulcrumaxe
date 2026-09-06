@@ -1,0 +1,4 @@
+{
+  "note": "Scripts allowed to call `python3 -m backend...` without anchoring PYTHONPATH or cd'ing to their own repo root. Read by scripts/ci/backend-module-cwd-guard.py (D#2325). Keys are repo-relative script paths; every value has to be a reason a reviewer can check against the file, not a label. An entry naming a script that no longer has an unanchored call fails the build, so a stale exemption cannot sit here unnoticed. Empty on purpose today: every call site in scripts/ is anchored, and this file exists so that the first script that genuinely cannot be gets a written reason instead of a hardcoded skip in the checker.",
+  "exempt": {}
+}
