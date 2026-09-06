@@ -33,8 +33,8 @@ Per-project lookup::
 Resolution timing (D#1810)
 ---------------------------
 ``STATE_DIR``, ``STATS_DB``, ``STATE_DB``, ``AUDIT_LOG``,
-``CIRCUIT_BREAKER_HISTORY``, ``BLACKBOARD_DIR``, ``EXTERNAL_INTAKE_BASELINES``
-and ``PARITY_HISTORY`` are **not** module-level constants — they are resolved
+``CIRCUIT_BREAKER_HISTORY``, ``BLACKBOARD_DIR``, ``EXTERNAL_INTAKE_BASELINES``,
+``PR_HEAD_BASELINES`` and ``PARITY_HISTORY`` are **not** module-level constants — they are resolved
 on every attribute access via :pep:`562` module ``__getattr__``. Binding one
 of them to a name at import time (``from backend.state_paths import STATS_DB``
 at module scope, or ``X = state_paths.STATS_DB`` at module scope) freezes it
@@ -207,6 +207,21 @@ def _external_intake_baselines() -> Path:
     return _state_dir("EXTERNAL_INTAKE_BASELINES") / "external-intake-baselines.json"
 
 
+def _pr_head_baselines() -> Path:
+    """PR head-SHA approval baseline store (scripts/lib/pr_head_baseline.py, D#2421).
+
+    Binds a PR's `intake-approved` label to the commit SHA that was actually
+    approved, so a force-push (or any head move) after approval is detected.
+    Deliberately a SIBLING file to `EXTERNAL_INTAKE_BASELINES`, not the same
+    one: a PR key and a Discussion key are the identical
+    "{owner}/{name}#{number}" shape, and would collide in one store the
+    moment the code and Discussion planes resolve to the same slug (the
+    `code_repo` revert path CLAUDE.md documents). Two files means that
+    collision cannot happen regardless of what the two keys look like.
+    """
+    return _state_dir("PR_HEAD_BASELINES") / "pr-head-baselines.json"
+
+
 def _parity_history() -> Path:
     """Append-only parity-experiment run history (parity_experiment.py).
 
@@ -228,6 +243,7 @@ _RESOLVERS = {
     "CIRCUIT_BREAKER_HISTORY": _circuit_breaker_history,
     "BLACKBOARD_DIR": _blackboard_dir,
     "EXTERNAL_INTAKE_BASELINES": _external_intake_baselines,
+    "PR_HEAD_BASELINES": _pr_head_baselines,
     "PARITY_HISTORY": _parity_history,
 }
 
