@@ -53,9 +53,8 @@
 # subset would have excluded the exact backend job that was red — require the
 # whole matrix, every time, by exact name).
 #
-# D#1989 added "open-source export audit". Two properties made that safe, both
-# of which live above in this same file, and both of which any future addition
-# to this array has to re-check rather than assume:
+# Two properties govern what may live in this array. Any addition has to
+# re-check both rather than assume them:
 #
 #   1. It cannot deadlock the gate under the kill switch. check_ci_status
 #      reads CI_DISABLED FIRST and returns 2 (stand-down) before _ci_evaluate
@@ -67,10 +66,36 @@
 #      _CI_EVAL_PY puts it in `missing` and prints STATUS=fail. That is a hard
 #      block rather than a hang — loud, and diagnosable from the run — but it
 #      does mean the job carrying this name must register a check-run on every
-#      head it gates. ci.yml's export-audit job does: its only job-level `if:`
-#      is the kill switch, and its per-repository conditions are all
-#      step-level, so the job itself always runs and always concludes.
-CI_REQUIRED_CHECKS=("tui" "dashboard" "ts-backend" "backend (import-smoke)" "open-source export audit")
+#      head it gates, on every repository this gate runs against.
+#
+# D#1989 added "open-source export audit" and D#2456 took it back out, and the
+# reason is property 2 read the other way round. Property 2 was satisfied by
+# that job's per-repository conditions all being step-level, so the job always
+# ran and always concluded — but on the plane where PRs actually merge every
+# one of those steps skipped, and a job whose steps all skip concludes
+# `success`. Measured, run 34048489210: `success` in 5 seconds with all six
+# verifying steps skipped. So the required list carried a fifth name whose
+# green was guaranteed and meant nothing.
+#
+# Note that is NOT the hole D#1987 closed a few commits earlier, and the two
+# must not be conflated: D#1987 catches a check-run whose *conclusion* is
+# `skipped`. This job's conclusion was `success` — skipped steps, successful
+# job — so it was never in reach of that fix and the accept-set tightening
+# would never have turned it red.
+#
+# A required name that can never block is not a harmless one. It reads to
+# every later reader as a verified property, and that is the more expensive
+# failure: a missing check is a gap and invites a look, a missing check with a
+# green tick does not. Rather than leave it required-but-hollow, ci.yml's
+# export-audit job now carries that repository condition on the job's own
+# `if:`, so where it does not apply GitHub registers no check-run at all —
+# absent, which is the honest state — and this array no longer names it.
+#
+# Those two edits are ONE change and must never be split. Absent job plus
+# still-required name is property 2 firing exactly as designed: STATUS=fail on
+# every head, i.e. a repo-wide merge outage. tests/test_ci_status_check.sh
+# CS-17 and CS-21 pin both halves.
+CI_REQUIRED_CHECKS=("tui" "dashboard" "ts-backend" "backend (import-smoke)")
 
 # ── Gate streak markers (D#2271 PR-a) ───────────────────────────────────────
 # 138 ci_gate_stood_down rows sat in the audit trail for two weeks, each one
