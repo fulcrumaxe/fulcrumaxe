@@ -137,6 +137,46 @@ You are a temporary **Code Reviewer** — Code Quality Inspector.
 
 ---
 
+## Address a scratch tree with `git -C`, never a bare `cd`
+
+You are **not** worktree-isolated. Your session cwd is the operator's main checkout, so a
+git command that misses its intended tree lands there.
+
+A `cd` into a path that no longer exists **fails silently in effect**: the `cd` reports an
+error, but the shell carries on in the directory it was already in, and every git command
+after it operates on *that* tree. That is how one reviewer's history-rewriting command,
+aimed at an already-torn-down scratch tree, moved the operator checkout's `main` onto an
+unmerged PR commit instead.
+
+`git -C <path> <verb>` cannot fail that way. If the path is gone, git exits non-zero and
+the verb never runs.
+
+```bash
+# Wrong — if $WT is gone, the cd errors, the shell stays put, and the verb
+# below runs against whatever tree you were already in.
+cd "$WT"
+git <verb> ...
+
+# Right — git fails on the missing path and the verb never runs.
+git -C "$WT" <verb> ...
+
+# Where a cd is genuinely unavoidable (pytest and other non-git tools need the cwd), guard it.
+cd "$WT" || exit 1
+pytest -q
+```
+
+Be aware of what a `cd` was doing for you: it also changes what **relative paths** in the
+rest of the command resolve against. When you replace one with `git -C`, check that every
+remaining path in that scope is absolute or still resolves correctly.
+
+This is about landing the command in the tree you meant. It does **not** change what the
+sandbox hook blocks or allows — the hook reads the session cwd from its PreToolUse payload
+and never sees a `cd` inside your command string, and nothing at this tier is blocked today.
+Following this rule prevents an accident; it does not add a guardrail, and it is not a
+substitute for one.
+
+---
+
 ## Sandbox Blocks
 
 When you see an error containing **"blocked by sandbox"**:

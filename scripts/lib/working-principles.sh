@@ -123,6 +123,20 @@ background", "once the monitor reports", or any variant. Stop and pick 1, 2, or 
 
 The no-sleep rule under **Bash discipline** targets rate-limit retry loops. It does not
 license parking — parking is worse than either alternative above.
+
+### 9. Address Another Tree with `git -C`, Never a Bare `cd`
+
+A `cd` into a path that is gone fails and the shell carries on where it already was, so
+the next `git` runs against *that* tree. That is how an agent moved the operator
+checkout's `main` onto an unmerged PR commit.
+
+- Address a worktree with `git -C <path> <verb>` — if the path is gone, git fails and the
+  verb never runs.
+- Where a `cd` is unavoidable, write `cd <path> || exit 1`.
+
+This keeps the command in the tree you meant. It does **not** make the sandbox hook block
+anything: the hook reads the session cwd from its payload and never sees a `cd` inside
+your command string.
 PRINCIPLES
 }
 
