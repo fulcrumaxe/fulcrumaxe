@@ -194,7 +194,6 @@
     ]
   },
   "contention_limitation": "Contention is CPU-only (nproc/2 busy-loop spinners). It does not reproduce port or filesystem collisions between concurrently-running pytest suites \u2014 that is a different experiment, out of scope for this measurement.",
-  "dedup_convention": "failure+error",
   "duration_correlation": {},
   "idle": {
     "instability": [],
@@ -395,5 +394,6 @@
     "idle_only": [],
     "symmetric_difference": []
   },
+  "outcome_kinds": "failure+error",
   "sufficient": true
 }
