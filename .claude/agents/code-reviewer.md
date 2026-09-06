@@ -170,8 +170,16 @@ rest of the command resolve against. When you replace one with `git -C`, check t
 remaining path in that scope is absolute or still resolves correctly.
 
 This is about landing the command in the tree you meant. It does **not** change what the
-sandbox hook blocks or allows — the hook reads the session cwd from its PreToolUse payload
-and never sees a `cd` inside your command string, and nothing at this tier is blocked today.
+sandbox hook blocks or allows **for a git verb**: the hook picks its tier from the session
+cwd in its PreToolUse payload, and nothing in it uses a `cd` in your command string to
+decide which tree a git verb runs in. At your tier the hook short-circuits to allow before
+it inspects the command string at all — nothing here is blocked today, which is exactly
+why the convention has to carry its own weight.
+
+(At worktree tier the hook *does* read `cd` out of the command string — but only to work
+out where a **redirect** lands, not to redirect a git verb. Worth knowing when you review
+an executor's PR, because it is easy to mis-read that block as being about git.)
+
 Following this rule prevents an accident; it does not add a guardrail, and it is not a
 substitute for one.
 

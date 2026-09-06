@@ -353,9 +353,18 @@ rest of the command resolve against. When you replace one with `git -C`, check t
 remaining path in that scope is absolute or still resolves correctly.
 
 This is about landing the command in the tree you meant. It does **not** change what the
-sandbox hook blocks or allows — the hook reads the session cwd from its PreToolUse payload
-and never sees a `cd` inside your command string. Following this rule prevents an accident;
-it does not add a guardrail, and it is not a substitute for one.
+sandbox hook blocks or allows **for a git verb**: the hook picks its tier from the session
+cwd in its PreToolUse payload, and nothing in it uses a `cd` in your command string to
+decide which tree a git verb runs in.
+
+The hook *does* read `cd` out of your command string at worktree tier — but only to work
+out where a **redirect** lands, not to redirect a git verb. `cd ~ && echo x >> notes.txt`
+is blocked with "output redirect outside worktree (cd left the worktree)" where the same
+`echo` without the `cd` is allowed. So do not read this rule as "the hook ignores `cd`";
+it does not.
+
+Following this rule prevents an accident; it does not add a guardrail, and it is not a
+substitute for one.
 
 ---
 

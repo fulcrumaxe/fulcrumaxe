@@ -134,9 +134,10 @@ checkout's `main` onto an unmerged PR commit.
   verb never runs.
 - Where a `cd` is unavoidable, write `cd <path> || exit 1`.
 
-This keeps the command in the tree you meant. It does **not** make the sandbox hook block
-anything: the hook reads the session cwd from its payload and never sees a `cd` inside
-your command string.
+This keeps the command in the tree you meant. It does **not** change what the sandbox hook
+blocks for a git verb: the hook takes its tier from the session cwd in its payload, and
+nothing in it reads a `cd` to decide which tree a verb runs in. (It does parse `cd` at
+worktree tier — but only to see where a *redirect* lands.)
 PRINCIPLES
 }
 
