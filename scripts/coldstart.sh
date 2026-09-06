@@ -47,6 +47,13 @@
 #                               operator's first merge.
 #                          Exits 0. The operator fills in the epic backlog,
 #                          then re-runs with --resume to seed Discussions.
+#   7b. epic backlog    — scripts/lib/coldstart-backlog.sh. Classifies the
+#                          --backlog directory as absent / empty / conforming
+#                          / foreign, and scaffolds from the committed
+#                          template (scripts/coldstart-templates/epic/) only
+#                          in the first two. A backlog already in some other
+#                          format is reported and left alone — coldstart
+#                          never converts one.
 #   8. seed             — scripts/import-epic-tasks.py (only on --resume or
 #                          --phase seed).
 #
@@ -241,6 +248,9 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   echo "  5. sandbox hook          — scripts/install-sandbox-hook.sh"
   echo "  6. engine-apply seam     — checks engine/manifest.json (manifest-gated, D#1528-owned)"
   echo "  7. HALT                  — orient ($MODE) -> interview -> deep-tutorial offer"
+  echo "  7b. epic backlog         — scripts/lib/coldstart-backlog.sh: classify $EPICS_DIR,"
+  echo "                            scaffold from scripts/coldstart-templates/epic/ only when"
+  echo "                            it is absent or empty; report and touch nothing otherwise"
   echo "  8. seed                  — scripts/import-epic-tasks.py $REPO_PATH --repo <owner/name>"
   echo ""
   echo "  target repo path:  $REPO_PATH"
@@ -450,28 +460,23 @@ echo ""
 source "$SCRIPT_DIR/lib/coldstart-halt-flow.sh"
 coldstart_halt_flow "$REPO_PATH" "$PROJECT_NAME" "$MODE"
 
+# ---------------------------------------------------------------------------
+# 7b. Epic backlog — classify what is at the backlog dir, scaffold from the
+# committed template only where that cannot destroy anything.
+#
+# This block used to print its own fill-in-the-blank epic format inline, and
+# that format was not the one scripts/import-epic-tasks.py parses — no YAML
+# frontmatter, so no Discussion title, no labels. The format now lives in
+# scripts/coldstart-templates/epic/ and both sides read it from there.
+# Behaviour per case lives in the module (module-per-feature: this hub only
+# sequences).
+# ---------------------------------------------------------------------------
+
+source "$SCRIPT_DIR/lib/coldstart-backlog.sh"
+coldstart_backlog_step "$EPICS_DIR" "$REPO_PATH"
+
 cat <<EOF
-
-What's still left is the initial epic backlog: fill in
-epics/epic-<N>-<slug>/epic.md files (and task files under them) describing
-the first bodies of work. A fill-in-the-blank template:
-
-    # Epic <N>: <short title>
-
-    ## Goal
-    <one paragraph: what does this epic accomplish?>
-
-    ## Why now
-    <one paragraph: why is this the first thing to build?>
-
-    ## Scope
-    - <bullet: in scope>
-    - <bullet: in scope>
-
-    ## Out of scope
-    - <bullet: explicitly deferred>
-
-Once the backlog exists under $EPICS_DIR, re-run:
+Once the backlog is filled in under $EPICS_DIR, re-run:
 
     bash scripts/coldstart.sh --path $REPO_PATH --name $PROJECT_NAME --resume
 
