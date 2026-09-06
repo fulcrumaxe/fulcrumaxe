@@ -1438,6 +1438,120 @@ def is_real_git_rm_invocation(command: str, *, exempt_cached: bool = False) -> b
     return False
 
 
+# --- HEAD-flip observation (D#2324) ----------------------------------------
+#
+# Flags that make `git checkout` / `git reset` move HEAD rather than restore a
+# file. Spelled out here rather than reused from _GIT_ALWAYS_BLOCKED_VERBS,
+# which is the wrong source to copy for this purpose twice over: it contains
+# `worktree` and `branch` — Team Lead traffic all day long — and it omits
+# `merge`, which lives in _GIT_WRITE_VERBS.
+_HEAD_FLIP_RESET_FLAGS: frozenset[str] = frozenset(["--hard"])
+_HEAD_FLIP_CHECKOUT_FLAGS: frozenset[str] = frozenset(["-B", "-f", "--force"])
+
+
+def _git_option_present(args: list[str], flags: frozenset[str]) -> bool:
+    """Return True if any token in *flags* appears among *args* before a bare `--`.
+
+    Option parsing ends at `--`: everything after it names a pathspec, so
+    `git checkout -- --force` restores a file called `--force` and must not
+    read as a forced checkout. Same reasoning (and same stopping rule) as
+    _git_rm_args_have_cached above.
+
+    Requires EXACT tokens — no prefix matching. `-b` is not `-B` and must not
+    be treated as one; git itself distinguishes them.
+    """
+    for tok in args:
+        if tok == "--":
+            return False
+        if tok in flags:
+            return True
+    return False
+
+
+def _git_push_args_target_main(args: list[str]) -> bool:
+    """Return True if a `git push` invocation's own *args* name `main` as a
+    destination ref.
+
+    Covers the spellings that turn up by accident: a bare `main`, a `src:dst`
+    refspec (`HEAD:main`), a lease/force-prefixed `+main`, the deletion form
+    `:main`, and the fully-qualified `refs/heads/main`. A leading-`-` token is
+    a flag and is skipped, so `--force` and `--repo=x` can never stand in for
+    a ref. Comparison is on the whole ref name, so `main-feature` does not
+    match.
+
+    Deliberately does NOT fire on a bare `git push` with no refspec. That
+    pushes the current branch to its upstream, which on the operator checkout
+    usually IS main — but the command text alone cannot say so, and this
+    module is pure functions with no subprocess, so it cannot ask git which
+    branch is checked out. Firing on every bare `git push` to cover that case
+    would put an audit row on routine traffic, which D#2324's Spec names as a
+    failure condition. This is a stated, accepted gap, not an oversight.
+    """
+    for tok in args:
+        if tok.startswith("-"):
+            continue
+        ref = tok.lstrip("+")
+        if ":" in ref:
+            ref = ref.rsplit(":", 1)[1]
+        if ref.startswith("refs/heads/"):
+            ref = ref[len("refs/heads/") :]
+        if ref == "main":
+            return True
+    return False
+
+
+def is_head_flipping_git_invocation(command: str) -> bool:
+    """Return True if *command* contains a git invocation that moves HEAD or
+    the `main` ref (D#2324).
+
+    OBSERVATION ONLY. Nothing blocks on this predicate. Its single caller is
+    the `team_lead` warn+audit carve-out in hooks/sandbox.py, which writes an
+    audit row, warns on stderr, and then allows the command exactly as it did
+    before — the same shape the `git rm` archive-protocol warning already
+    uses. Blocking any of these verbs at `team_lead` tier would be a straight
+    over-block of the one role that needs them: the corrective
+    `git reset --hard` that repaired the incident behind D#2324 was itself one
+    of these commands, so a block would have stopped the fix, not the fault.
+
+    The four shapes, deliberately narrow:
+
+      - `reset --hard` — a bare `reset` and `reset --soft`/`--mixed` do not
+        discard the working tree and stay silent.
+      - `checkout -B|-f|--force` — `checkout -- <path>` (a file restore) and
+        `checkout -b <new>` (which fails if the branch exists) stay silent.
+      - `merge` — every merge. Exact token match, so `merge-base` (a read the
+        rebase workflow runs constantly) is not it.
+      - `push` whose args name `main` as a destination ref. A push to any
+        other branch stays silent; see _git_push_args_target_main for the
+        bare-`git push` gap and why it is left open.
+
+    `--help`/`-h` never executes the verb, so it is silent for all four —
+    the same carve-out _is_git_readonly_invocation makes for the same flags.
+
+    Reuses this module's ONE segmentation layer — `_tokenize_shell_command`
+    then `_walk_git_invocations` (D#1746/D#1748) — so `cd x && git reset
+    --hard`, `git -C p merge origin/foo` and `a; git checkout -f b` are all
+    seen without a second parser of git command text ever entering the tree.
+    The base cwd handed to the walker is a placeholder, exactly as in
+    _extract_all_git_verbs: this predicate asks only WHAT a command does,
+    never where it lands — the caller has already decided the tier.
+    """
+    tokens = _tokenize_shell_command(command)
+    invocations, _final_cwd = _walk_git_invocations(tokens, base_cwd=".")
+    for verb, _cwd, args in invocations:
+        if _git_option_present(args, frozenset(["--help", "-h"])):
+            continue
+        if verb == "reset" and _git_option_present(args, _HEAD_FLIP_RESET_FLAGS):
+            return True
+        if verb == "checkout" and _git_option_present(args, _HEAD_FLIP_CHECKOUT_FLAGS):
+            return True
+        if verb == "merge":
+            return True
+        if verb == "push" and _git_push_args_target_main(args):
+            return True
+    return False
+
+
 def _is_bash_wrapping_git_write(command: str, worktree_root: str) -> Optional[str]:
     """Detect `bash -c '...'` or `sh -c '...'` wrapping a git write-verb."""
     try:
