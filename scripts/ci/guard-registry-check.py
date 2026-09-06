@@ -295,6 +295,20 @@ def main() -> int:
                 )
             else:
                 passes.append(f"PASS  {name}  ledgered — {exempt[name]}")
+        elif in_runner and hits:
+            # The residue a bad conflict resolution leaves. Before PR-b every
+            # guard was a hand-written step; a resolution that keeps one of
+            # those steps AND lets the runner discover the same file runs it
+            # twice, and without this it passes in silence — the guard works,
+            # the job is green, and the only symptom is a duplicated block in
+            # a log nobody reads. That is this Discussion's own defect shape
+            # arriving through the fix for it, so it fails by name.
+            failures.append(
+                f"{name} is BOTH discovered by {RUNNER_NAME} and invoked directly by "
+                f"{', '.join(hits)} — it would run twice. Delete the workflow step "
+                f"(the runner already covers it), or ledger the file under 'own_step' "
+                f"if the direct invocation is the one that has to stay"
+            )
         elif in_runner:
             passes.append(f"PASS  {name}  run by {RUNNER_NAME}")
         else:

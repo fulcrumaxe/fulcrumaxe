@@ -159,28 +159,39 @@ workflow "$R" alpha-guard.py
 ledger "$R" '{"exempt": {"alpha-guard.py": "claims nothing runs this"}, "own_step": {}}'
 expect "an exempt entry a workflow does reference fails" 1 "one of the two is stale" "$(run_checker "$R")"
 
-# 5. A blank reason is not a decision.
+# 5. A file the runner discovers that ALSO has its own `run:` step runs twice.
+#    This is precisely the residue a bad conflict resolution leaves — keep the
+#    hand-written step from the other side AND let the runner pick the file up
+#    — and it used to pass in silence: green job, working guard, one duplicated
+#    block in a log nobody reads.
+R="$(make_tree double_run)"
+touch "$R/scripts/ci/alpha-guard.py"
+workflow "$R" alpha-guard.py
+ledger "$R" '{"exempt": {}, "own_step": {}}'
+expect "a guard both discovered and hand-wired fails" 1 "it would run twice" "$(run_checker "$R")"
+
+# 6. A blank reason is not a decision.
 R="$(make_tree blank_reason)"
 touch "$R/scripts/ci/local-tool.sh"
 workflow "$R"
 ledger "$R" '{"exempt": {"local-tool.sh": "   "}, "own_step": {}}'
 expect "blank ledger reason fails" 1 "empty or non-string reason" "$(run_checker "$R")"
 
-# 6. A ledger entry naming a file that no longer exists is stale.
+# 7. A ledger entry naming a file that no longer exists is stale.
 R="$(make_tree stale)"
 touch "$R/scripts/ci/alpha-guard.py"
 workflow "$R"
 ledger "$R" '{"exempt": {"deleted-tool.sh": "a real-looking reason"}, "own_step": {}}'
 expect "stale ledger entry fails and is named" 1 "deleted-tool.sh" "$(run_checker "$R")"
 
-# 7. One file cannot be both exempt and own_step.
+# 8. One file cannot be both exempt and own_step.
 R="$(make_tree both_sections)"
 touch "$R/scripts/ci/alpha-guard.py"
 workflow "$R" alpha-guard.py
 ledger "$R" '{"exempt": {"alpha-guard.py": "r1"}, "own_step": {"alpha-guard.py": "r2"}}'
 expect "a file in both ledger sections fails" 1 "it cannot be both" "$(run_checker "$R")"
 
-# 8. Discovering nothing is a failure, not a pass — the item that keeps this
+# 9. Discovering nothing is a failure, not a pass — the item that keeps this
 #    check from becoming the thing it guards against.
 R="$(make_tree empty)"
 rm -f "$R/scripts/ci/run-guards.sh"
@@ -188,7 +199,7 @@ workflow "$R"
 ledger "$R" '{"exempt": {}, "own_step": {}}'
 expect "empty scripts/ci/ fails rather than reporting all-clear" 1 "discovered zero files" "$(run_checker "$R")"
 
-# 9. A guard named only in a YAML comment is not wired. Same rule as before
+# 10. A guard named only in a YAML comment is not wired. Same rule as before
 #    PR-b, applied now to the runner and to own-step files.
 R="$(make_tree comment_only)"
 touch "$R/scripts/ci/own-guard.py"
@@ -197,7 +208,7 @@ printf '      # see scripts/ci/own-guard.py for why\n' >> "$R/.github/workflows/
 ledger "$R" '{"exempt": {}, "own_step": {"own-guard.py": "supposedly its own step"}}'
 expect "a comment mention does not count as wired" 1 "own-guard.py" "$(run_checker "$R")"
 
-# 10. Discovery is a directory listing, not a mode-bit filter.
+# 11. Discovery is a directory listing, not a mode-bit filter.
 R="$(make_tree modebit)"
 touch "$R/scripts/ci/no-x-bit-guard.py"
 chmod 644 "$R/scripts/ci/no-x-bit-guard.py"
@@ -207,7 +218,7 @@ expect "a non-executable file is still discovered" 0 "no-x-bit-guard.py" "$(run_
 expect "--list includes the non-executable file" 0 "no-x-bit-guard.py" "$(run_checker "$R" --list)"
 expect "--list counts the runner too" 0 "count: 2" "$(run_checker "$R" --list)"
 
-# 11. A missing or malformed ledger is a hard failure, not an empty exemption set.
+# 12. A missing or malformed ledger is a hard failure, not an empty exemption set.
 R="$(make_tree no_ledger)"
 touch "$R/scripts/ci/alpha-guard.py"
 workflow "$R"
@@ -219,7 +230,7 @@ expect "ledger without an exempt object fails" 1 "missing its required 'exempt' 
 ledger "$R" '{"exempt": {}}'
 expect "ledger without an own_step object fails" 1 "missing its required 'own_step' object" "$(run_checker "$R")"
 
-# 12. If the runner cannot be asked what it runs, the checker must say so
+# 13. If the runner cannot be asked what it runs, the checker must say so
 #     rather than reconcile against an empty set and report all-clear.
 R="$(make_tree runner_broken)"
 touch "$R/scripts/ci/alpha-guard.py"
@@ -228,7 +239,7 @@ workflow "$R"
 ledger "$R" '{"exempt": {}, "own_step": {}}'
 expect "an unusable runner fails the check" 1 "--list exited 9" "$(run_checker "$R")"
 
-# 13. The real tree, run the way ci.yml runs it.
+# 14. The real tree, run the way ci.yml runs it.
 expect "the real repo reconciles clean" 0 "guard-registry-check: OK" "$(run_checker "$REPO_ROOT")"
 
 echo ""
