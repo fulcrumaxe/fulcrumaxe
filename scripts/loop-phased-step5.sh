@@ -111,6 +111,9 @@ source "$SCRIPT_DIR/lib/security-trigger.sh" 2>/dev/null || true
 # shellcheck source=scripts/lib/panel-helpers.sh
 source "$SCRIPT_DIR/lib/panel-helpers.sh" 2>/dev/null || true
 
+# shellcheck source=scripts/lib/panel-quorum.sh
+source "$SCRIPT_DIR/lib/panel-quorum.sh" 2>/dev/null || true
+
 # shellcheck source=scripts/lib/two-gate-check.sh
 source "$SCRIPT_DIR/lib/two-gate-check.sh" 2>/dev/null || true
 
@@ -1077,8 +1080,12 @@ Post ONE comment on that Discussion (<=300 words) with exactly these sections:
 ### Questions
 [Questions that should be resolved before the Spec is written]
 
-To post the comment, use gh api graphql with the addDiscussionComment mutation.
-First fetch the Discussion node ID, then post your comment.
+To post the comment: source scripts/lib/panel-helpers.sh, get the Discussion
+node ID with get_discussion_id ${P_DISC_NUM}, then call
+post_specialist_comment DISC_ID \"${SPEC_ROLE}\" \"BODY\" with BODY ending in
+the envelope below. Do not build the addDiscussionComment mutation yourself —
+that helper refuses a body whose envelope role doesn't match yours, and reads
+the comment back after posting so a bad post is caught immediately.
 
 End your comment (and your final response) with this AGENT_OUTPUT envelope:
 <!-- AGENT_OUTPUT -->
@@ -1109,30 +1116,21 @@ HARD RULES:
         ;;
 
       DISCUSSING-needs-panel)
-        # Specialists were spawned last iteration — check if all comments are in
-        EXPECTED=$(python3 "$REPO_ROOT/backend/consensus_panel.py" get-panel \
-          --title "$P_DISC_TITLE" 2>/dev/null \
-          | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d.get('specialists',[])))" \
-          2>/dev/null || echo 0)
-        # count_specialist_comments now returns non-zero (no stdout) on a broken
-        # query instead of a bare "0" — a genuine zero-comment panel must not
-        # look the same as a broken quorum check (D#2156). Don't re-swallow
-        # that distinction back into a fake "0" here.
-        if ! ACTUAL=$(count_specialist_comments "$P_DISC_NUM" 2>/dev/null); then
-          _log "D#$P_DISC_NUM: WARNING — count_specialist_comments query failed; cannot determine panel status this iteration"
-        else
-          _log "D#$P_DISC_NUM: needs-panel — specialist comments: $ACTUAL/$EXPECTED present"
-
-          if [ "$ACTUAL" -ge "$EXPECTED" ] && [ "$EXPECTED" -gt 0 ]; then
-            # All specialist comments are in — advance to panel-ready
-            if set_discussion_status "$P_DISC_NUM" "DISCUSSING-panel-ready" 2>/dev/null; then
-              _log "D#$P_DISC_NUM: all specialists present — status set to DISCUSSING-panel-ready"
-            else
-              _log "D#$P_DISC_NUM: WARNING — failed to set DISCUSSING-panel-ready; will retry next iteration"
-            fi
+        # D#1924 PR-b: gate on roles, not comment count — a duplicate can't
+        # conceal a missing role. Logic lives in scripts/lib/panel-quorum.sh.
+        EXPECTED_ROLES=$(python3 "$REPO_ROOT/backend/consensus_panel.py" get-panel --title "$P_DISC_TITLE" 2>/dev/null | python3 -c "import json,sys; print(','.join(json.load(sys.stdin).get('specialists',[])))" 2>/dev/null)
+        if [ -z "$EXPECTED_ROLES" ] || ! DECISION=$(panel_gate_decide "$P_DISC_NUM" "$EXPECTED_ROLES" 2>/dev/null); then
+          _log "D#$P_DISC_NUM: WARNING — panel_gate_decide query failed; cannot determine panel status this iteration"
+        elif [ "$DECISION" = ready ] || [[ "$DECISION" == timeout:* ]]; then
+          [[ "$DECISION" == timeout:* ]] && _log "D#$P_DISC_NUM: panel timed out — missing roles: ${DECISION#timeout:}"
+          if set_discussion_status "$P_DISC_NUM" "DISCUSSING-panel-ready" 2>/dev/null; then
+            _log "D#$P_DISC_NUM: status set to DISCUSSING-panel-ready"
+            [[ "$DECISION" == timeout:* ]] && panel_gate_post_timeout_notice "$P_DISC_NUM" "${DECISION#timeout:}" 2>/dev/null
           else
-            _log "D#$P_DISC_NUM: waiting for specialist comments ($ACTUAL/$EXPECTED) — no action this iteration"
+            _log "D#$P_DISC_NUM: WARNING — failed to set DISCUSSING-panel-ready; will retry next iteration"
           fi
+        else
+          _log "D#$P_DISC_NUM: waiting for specialist roles (${DECISION#waiting:}) — no action this iteration"
         fi
         ;;
 
