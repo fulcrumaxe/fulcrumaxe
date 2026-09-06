@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
-"""scripts/engine-sync/inbound/gate.py -- D#2439 Slice B (read-only classify
-report), the gating half.
+"""scripts/engine-sync/inbound/gate.py -- the read-only classify report's
+gating half.
 
 Four gates, applied in this order to every path the changeset touches:
 
   1. provenance   -- is the touching commit's PR author GitHub-authenticated
-                      and in the trust set? (B3)
+                      and in the trust set?
   2. path safety  -- does the path resolve inside the repo, with no
                       traversal, no symlink escape, no non-canonical form?
-                      (B6, reusing pull.canonicalize_relpath/validate_path)
+                      (reusing pull.canonicalize_relpath/validate_path)
   3. surface      -- is the path (after reverse-mapping the generated
                       mirrors) actually inside the export surface at all?
-                      (B5, also via pull.validate_path's include-pattern
-                      check)
+                      (also via pull.validate_path's include-pattern check)
   4. sensitivity  -- even though it IS inside the export surface, is it one
-                      of the four prefixes a human must approve regardless
-                      of hash state? (B4)
+                      of the prefixes a human must approve regardless of
+                      hash state?
 
 Only a path that clears all four ever reaches hash-based classification
 (pull.classify_against_baseline). Nothing here writes to the working tree;
@@ -23,7 +22,6 @@ nothing here calls `git diff <a> <b>` between branch tips.
 """
 from __future__ import annotations
 
-import fnmatch
 import sys
 from pathlib import Path
 
@@ -49,7 +47,7 @@ CAT_NEEDS_APPROVAL = "needs-human-approval"
 
 #: The two generated mirrors export.sh produces at the export root, plus the
 #: one fully-synthetic file it bakes with no engine-side source at all.
-#: This is D#2439's "function, not a heuristic": MANIFEST.md's
+#: Derived as a function of MANIFEST.md's own markers, not a guess: its
 #: GENERATED_PATHS_START block (`agents/`, `commands/`) inverted against
 #: its own PATHS_START entries (`.claude/agents/*.md`, `.claude/commands/*.md`),
 #: plus the one export.sh-baked file named in BOOTSTRAP_PATHS_START's sibling
@@ -63,9 +61,10 @@ _MIRROR_PREFIXES = (("agents/", ".claude/agents/"), ("commands/", ".claude/comma
 def reverse_map_path(remote_path: str) -> tuple[str | None, str]:
     """(engine_path, category). engine_path is None when the remote path is
     purely export-generated and has no engine-side source at all -- category
-    is CAT_GENERATED in that case, and the caller must report it (never drop
-    it silently), per the Spec's "an inbound commit that touches only the
-    generated mirror must fail loud, not drop silently."
+    is CAT_GENERATED in that case, and the caller must report it rather than
+    drop it silently: a commit that touches only the generated mirror is a
+    real, reportable event even though there is nowhere on the engine side
+    for it to land.
 
     For everything else category is "" (not yet classified) and engine_path
     is the path this repo would recognize -- identical to remote_path unless
@@ -81,9 +80,9 @@ def reverse_map_path(remote_path: str) -> tuple[str | None, str]:
 
 def _parse_marker_block(text: str, marker: str) -> list[str]:
     """Pure-Python reimplementation of open-source/lib/manifest_paths.sh's
-    marker-block parser (exact-line-equality on the trimmed line, so
-    "PATHS_START" never fires on "BOOTSTRAP_PATHS_START" -- same bug class
-    as D#1844). Not shelling out to the bash version so this module (and
+    marker-block parser: exact-line-equality on the trimmed line, so
+    "PATHS_START" never fires on "BOOTSTRAP_PATHS_START" as a substring
+    match would. Not shelling out to the bash version so this module (and
     its tests) never need bash + a subprocess round trip for a 15-line
     parse; the marker semantics are copied intentionally, not
     reinterpreted."""
@@ -128,8 +127,13 @@ def load_export_surface_patterns(manifest_md_path: Path = MANIFEST_MD_PATH) -> l
     return out
 
 
-def is_in_export_surface(relpath: str, patterns: list[str]) -> bool:
-    return any(fnmatch.fnmatch(relpath, pat) for pat in patterns)
+# Re-exported, not reimplemented: pull.validate_path (the function
+# path_gate below actually calls in production) answers "is this path
+# covered by the allowlist" through pull.manifest_mod.is_included. A
+# second, hand-rolled fnmatch loop here would answer the same question with
+# a second implementation that could silently drift from the one
+# production uses -- so this name is an alias, not a parallel matcher.
+is_in_export_surface = pull.manifest_mod.is_included
 
 
 def read_sensitive_prefixes(path: Path = SENSITIVE_PATH) -> list[str]:
@@ -157,16 +161,16 @@ def check_provenance(author: str | None, allowlist: set[str], *, is_trusted_auth
     a commit trailer -- is in *allowlist*. `is_trusted_author` is injected
     (pr_comment_trust.is_trusted_author in production) so this function
     itself never imports a live trust resolver and stays a pure decision
-    given its inputs -- the property B3's negative test needs: the same
-    commit, re-run with a forged Co-Authored-By/committer naming a trusted
-    login, must still quarantine, because nothing here ever looks at commit
-    metadata at all."""
+    given its inputs: the same commit, re-run with a forged Co-Authored-By
+    or committer naming a trusted login, must still quarantine, because
+    nothing here ever looks at commit metadata at all."""
     if is_trusted_author(author, allowlist):
         return True, ""
     return False, f"PR author {author!r} not in trust set"
 
 
 def path_gate(
+    remote_path: str,
     engine_path: str,
     surface_patterns: list[str],
     sensitive_prefixes: list[str],
@@ -174,18 +178,33 @@ def path_gate(
     target_root: Path = REPO_ROOT,
 ) -> tuple[str, str]:
     """(category, reason). category == "" means the path cleared every
-    gate here and is ready for hash classification."""
+    gate here and is ready for hash classification.
+
+    Path safety and export-surface membership are checked against
+    *engine_path* -- that is the real filesystem location this repo would
+    write to, so that is the one traversal/allowlist checks have to agree
+    with. Sensitivity is checked against BOTH *engine_path* and
+    *remote_path* -- belt-and-suspenders, so a bug in the reverse-map (or a
+    future generated mirror this module doesn't know about yet) cannot
+    silently drop the sensitivity check just because the mapped path
+    happened not to look sensitive."""
     valid, reason = pull.validate_path(engine_path, target_root, surface_patterns, excludes=[])
     if not valid:
         # pull.validate_path's own reasons distinguish "not covered by any
-        # allowlist include pattern" (out-of-surface, B5) from every other
+        # allowlist include pattern" (out-of-surface) from every other
         # rejection (traversal / absolute / symlink / non-canonical form /
-        # case-variant -- B6). Preserve that distinction in the category.
+        # case-variant). Preserve that distinction in the category.
         if reason == "not covered by any allowlist include pattern":
             return CAT_OUT_OF_SURFACE, reason
         return CAT_PATH_UNSAFE, reason
 
     if is_sensitive(engine_path, sensitive_prefixes):
         return CAT_NEEDS_APPROVAL, "matches a sensitive prefix -- human approval required regardless of hash state"
+    if is_sensitive(remote_path, sensitive_prefixes):
+        return (
+            CAT_NEEDS_APPROVAL,
+            "raw remote path matches a sensitive prefix even though the reverse-mapped path did not -- "
+            "human approval required regardless of hash state",
+        )
 
     return "", ""

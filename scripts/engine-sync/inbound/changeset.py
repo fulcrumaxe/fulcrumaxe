@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
-"""scripts/engine-sync/inbound/changeset.py -- D#2439 Slice B (read-only
-classify report), the enumeration half.
+"""scripts/engine-sync/inbound/changeset.py -- the read-only classify
+report's enumeration half.
 
 Pure(-ish) commit enumeration: everything the code plane's `main` has that
 `refs/synced/code-plane` (the marker) does not, expressed as commits and the
 paths each commit touches.
 
-THE ONE RULE THIS FILE EXISTS TO ENFORCE (D#2439 B2, "the tree-diff trap"):
-the change set comes from `git rev-list marker..remote` plus a per-commit
+THE ONE RULE THIS FILE EXISTS TO ENFORCE ("the tree-diff trap"): the change
+set comes from `git rev-list marker..remote` plus a per-commit
 `git show --name-status` (git's own diff-tree for a single commit, not a
 comparison of two trees) and single-path `git rev-parse <ref>:<path>`
 look-ups. This module NEVER calls `git diff <a> <b>` between two branch
-tips. `git diff main code-plane/main` is 570 files and 109,802 deletions --
-that is the export filter, not drift, and reporting it would delete the
-engine's own report of itself. Real drift here is a handful of commits;
-walking them one at a time is what keeps this file honest.
+tips. The two planes' trees differ by whatever the export filter excludes
+from one side entirely -- hundreds of files and tens of thousands of lines
+that were never "deleted" by any commit -- so a naive two-tree diff between
+their branch tips would report that whole export filter as drift and
+propose deleting it. Real drift between the marker and the remote tip is a
+handful of commits; walking them one at a time, never comparing the two
+trees wholesale, is what keeps this file honest.
 
 Every git call takes an explicit `repo_dir` (default REPO_ROOT) so tests can
 point this at a disposable scratch repository -- this module never assumes
@@ -24,7 +27,6 @@ from __future__ import annotations
 
 import re
 import subprocess
-import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -56,23 +58,23 @@ def _git(args: list[str], repo_dir: Path = REPO_ROOT) -> str:
 
 
 def ensure_remote_fetched(remote: str, branch: str, repo_dir: Path = REPO_ROOT) -> None:
-    """The one deliberate network call in Slice B: fetch a single branch
-    from a single remote so the commits `list_commits`/`commit_name_status`
-    below need are actually present as local objects.
+    """The one deliberate network call this tool makes: fetch a single
+    branch from a single remote so the commits `list_commits`/
+    `commit_name_status` below need are actually present as local objects.
 
-    This is NOT staleness.sh's job and does not change it: staleness.sh
-    (Slice A) is deliberately fetch-free -- one `git ls-remote`, nothing
-    more -- because its whole design point is a near-zero-cost check that
-    runs every loop iteration. Slice B runs far less often and cannot
-    classify anything without the real trees, so it fetches explicitly here
-    instead. Running this happens to leave the remote's objects fetched
-    locally, which can incidentally make a *subsequent* staleness.sh call
-    decidable where it previously reported `undecidable` -- but that is a
-    side effect of this call, not a fix to staleness.sh's own script, and
-    nothing here changes staleness.sh's code, its non-fetching contract, or
-    guarantees it will ever be re-run after this. See D#2439 comment
-    (2026-09-06T08:08:30Z) for the underlying design tension; resolving it
-    properly is left to Slice C.
+    This is NOT staleness.sh's job and does not change it: staleness.sh is
+    deliberately fetch-free -- one `git ls-remote`, nothing more -- because
+    its whole design point is a near-zero-cost check that runs every loop
+    iteration. This report runs far less often and cannot classify anything
+    without the real trees, so it fetches explicitly here instead. Running
+    this happens to leave the remote's objects fetched locally, which can
+    incidentally make a *subsequent* staleness.sh call decidable where it
+    previously reported `undecidable` -- but that is a side effect of this
+    call, not a fix to staleness.sh's own script: nothing here changes its
+    code, its non-fetching contract, or guarantees it will ever be re-run
+    after this. Resolving that gap properly (so the alarm is decidable
+    right after every merge, not just when something else happens to have
+    fetched) is left to whatever applies these commits, not this report.
     """
     _git(["fetch", "--quiet", remote, branch], repo_dir=repo_dir)
 
@@ -98,9 +100,9 @@ def commit_name_status(sha: str, repo_dir: Path = REPO_ROOT) -> list[tuple[str, 
     """[(status, path), ...] for one commit, via git's own per-commit
     diff-tree (`git show --name-status`), never a two-tree `git diff`.
     Renames/copies (R###/C###) are reported as a touch on the NEW path only
-    -- Slice B classifies where content lands, not where it came from; the
-    old path is not separately reported as deleted, since nothing outside
-    the export surface is being asked to delete anything here (read-only)."""
+    -- this report classifies where content lands, not where it came from;
+    the old path is not separately reported as deleted, since nothing here
+    proposes deleting anything -- read-only."""
     raw = _git(["show", "--format=", "--name-status", sha], repo_dir=repo_dir)
     out: list[tuple[str, str]] = []
     for line in raw.splitlines():

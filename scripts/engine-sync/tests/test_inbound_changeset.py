@@ -1,9 +1,9 @@
-"""Tests for scripts/engine-sync/inbound/changeset.py -- D#2439 Slice B.
+"""Tests for scripts/engine-sync/inbound/changeset.py.
 
 Builds disposable scratch git repos (never the real checkout) to exercise
 commit enumeration deterministically, and asserts the enumeration NEVER
-calls `git diff <a> <b>` between two branch tips -- the tree-diff trap B2
-calls "the single most important test in the Spec."
+calls `git diff <a> <b>` between two branch tips -- the tree-diff trap that
+makes commit replay the only safe way to compute this change set.
 """
 from __future__ import annotations
 
@@ -73,8 +73,9 @@ def test_extract_pr_number_absent():
     assert changeset.extract_pr_number("see (#3) for context, unrelated change") is None
 
 
-def test_build_changeset_matches_b1_shape(scratch_repo):
-    """Mirrors the Spec's B1: 2 commits, 11 touched paths (7 + 4), 0 deletions."""
+def test_build_changeset_two_commits_eleven_paths_no_deletions(scratch_repo):
+    """Two commits touching disjoint path sets: the changeset reports both
+    commits, the union of their touched paths, and zero deletions."""
     seed = _commit(scratch_repo, "seed", {"README.md": "seed\n"})
     _commit(
         scratch_repo,
@@ -121,11 +122,12 @@ def test_blob_hash_at_present_and_absent(scratch_repo):
 
 
 def test_never_calls_two_tree_diff(scratch_repo, tmp_path, monkeypatch):
-    """B2's tree-diff-trap regression guard: a fake `git` earlier on PATH
-    fails loudly if invoked with `diff <ref-a> <ref-b>` naming two distinct
-    non-triple-dot refs -- the shape `git diff main code-plane/main` takes.
-    Everything else is delegated to the real git so the fixture repo still
-    works."""
+    """Tree-diff-trap regression guard: a fake `git` earlier on PATH fails
+    loudly if invoked with `diff <ref-a> <ref-b>` OR `diff-tree <ref-a>
+    <ref-b>` naming two distinct non-triple-dot refs -- both are the same
+    two-tree comparison the shape `git diff main code-plane/main` takes,
+    and either would manufacture the same phantom-deletion trap. Everything
+    else is delegated to the real git so the fixture repo still works."""
     real_git = subprocess.run(["which", "git"], capture_output=True, text=True).stdout.strip()
     sentinel = tmp_path / "diff_was_called"
 
@@ -134,9 +136,11 @@ def test_never_calls_two_tree_diff(scratch_repo, tmp_path, monkeypatch):
     fake_git = fake_git_dir / "git"
     fake_git.write_text(
         f"""#!/usr/bin/env bash
-if [ "$1" = "diff" ]; then
-  # Any two-positional-ref diff invocation (excluding range syntax like
-  # A..B or A...B, which is a single argument) is the trap shape.
+if [ "$1" = "diff" ] || [ "$1" = "diff-tree" ]; then
+  # Any two-positional-ref invocation (excluding range syntax like A..B or
+  # A...B, which is a single argument) is the trap shape, for either
+  # subcommand -- diff-tree <a> <b> is the same two-tree comparison as
+  # diff <a> <b>, just spelled differently.
   args=("$@")
   positional=()
   for a in "${{args[@]:1}}"; do

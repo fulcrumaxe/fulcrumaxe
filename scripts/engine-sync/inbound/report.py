@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""scripts/engine-sync/inbound/report.py -- D#2439 Slice B: the read-only
-classify report CLI.
+"""scripts/engine-sync/inbound/report.py -- the read-only classify report
+CLI for the engine-sync inbound channel.
 
 Given the marker ref (`refs/synced/code-plane` by default) and the code
 plane's current `main` tip, this classifies every changed path into one of:
@@ -8,26 +8,27 @@ plane's current `main` tip, this classifies every changed path into one of:
   clean-apply / local-patch / already-applied / conflict / rejected /
   integrity-fail          (pull.classify_against_baseline's own vocabulary)
 
-  plus three gate outcomes that stop a path before it ever reaches that
-  table: quarantined:untrusted-provenance, rejected:out-of-surface,
+  plus gate outcomes that stop a path before it ever reaches that table:
+  quarantined:untrusted-provenance, rejected:out-of-surface,
   rejected:path-unsafe, needs-human-approval, and one purely-informational
   bucket: generated (an export-generated path with no engine-side source).
 
 APPLIES NOTHING. WRITES NOTHING to the working tree, the index, or
 `refs/synced/code-plane`. The only network call this tool makes is one
 `git fetch` of the code-plane remote's tracked branch (see
-changeset.ensure_remote_fetched's docstring for why, and why that is not a
-fix to Slice A's staleness.sh) and, per touched commit, one `gh api
-repos/<repo>/pulls/<N>` read to resolve that PR's GitHub-authenticated
-author (via pr_intake_gate.fetch_pr_meta -- never a second gh call path,
-never commit metadata).
+changeset.ensure_remote_fetched's docstring for why, and why that does not
+change the existing staleness check's own fetch-free contract) and, per
+touched commit, one `gh api repos/<repo>/pulls/<N>` read to resolve that
+PR's GitHub-authenticated author (via pr_intake_gate.fetch_pr_meta -- never
+a second gh call path, never commit metadata).
 
-Refuses (nonzero exit, no partial report of a write-set) when the computed
-change set exceeds the file/line ceiling, or would need to report a path
-delete outside the export surface -- the tree-diff trap, B2's "single most
-important test in the Spec." Any other outcome -- including every path
-rejected or quarantined -- is a *successful* report and exits 0: the tool's
-job is to classify and print, not to have an opinion about what it finds.
+Refuses (nonzero exit, no partial report) when the computed change set
+exceeds the file/line ceiling, or when it contains a deletion of a path the
+engine actually has that resolves outside the export surface -- the
+tree-diff trap this whole module exists to avoid falling into. Any other
+outcome -- including every path rejected or quarantined -- is a
+*successful* report and exits 0: the tool's job is to classify and print,
+not to have an opinion about what it finds.
 """
 from __future__ import annotations
 
@@ -94,19 +95,31 @@ def classify_report(
     max_lines: int,
     do_fetch: bool = True,
     remote_ref: str | None = None,
+    local_ref: str = "main",
     resolve_trust_allowlist=None,
     resolve_pr_author=None,
     is_trusted_author=None,
+    resolve_surface_patterns=None,
+    resolve_sensitive_prefixes=None,
 ) -> dict:
     """The full pipeline. Injectable seams (resolve_trust_allowlist,
-    resolve_pr_author, is_trusted_author) default to the live GitHub-backed
-    implementations; tests supply stubs so provenance can be exercised
-    without a network call. `remote_ref` overrides the `{remote}/{remote_branch}`
-    join for tests that model "the code plane's tip" as a plain local branch
-    rather than a configured git remote."""
+    resolve_pr_author, is_trusted_author, resolve_surface_patterns,
+    resolve_sensitive_prefixes) default to the live, real-file-backed
+    implementations; tests supply stubs so provenance and surface/sensitivity
+    matching can be exercised without a network call or a real
+    open-source/MANIFEST.md on disk. `remote_ref` overrides the
+    `{remote}/{remote_branch}` join for tests that model "the code plane's
+    tip" as a plain local branch rather than a configured git remote.
+
+    `local_ref` is what "the engine's own copy" means when hash-classifying
+    -- it defaults to `main`, not `HEAD`, specifically so that running this
+    tool from a feature branch does not silently shift every classification
+    against a tree nobody else is looking at."""
     resolve_trust_allowlist = resolve_trust_allowlist or _resolve_trust_allowlist
     resolve_pr_author = resolve_pr_author or (lambda pr: _pr_author(pr, code_repo_slug))
     is_trusted_author = is_trusted_author or _is_trusted_author
+    resolve_surface_patterns = resolve_surface_patterns or gate.load_export_surface_patterns
+    resolve_sensitive_prefixes = resolve_sensitive_prefixes or gate.read_sensitive_prefixes
 
     remote_ref = remote_ref or f"{remote}/{remote_branch}"
 
@@ -115,10 +128,10 @@ def classify_report(
 
     cs = changeset.build_changeset(marker, remote_ref, repo_dir=repo_dir)
 
-    # --- ceiling check first: this is the tree-diff-trap guard (B2). A
-    # change set this large, from commit enumeration alone, means something
-    # is wrong upstream of this tool (or the marker is badly stale) -- refuse
-    # rather than print a report nobody asked for at this size. ---
+    # --- Ceiling check: a change set this large, from commit enumeration
+    # alone, means something is wrong upstream of this tool (or the marker
+    # is badly stale) -- refuse rather than print a report nobody asked for
+    # at this size. ---
     if cs["touched_path_count"] > max_files or cs["total_insertions"] + cs["total_deletion_lines"] > max_lines:
         return {
             "marker": marker,
@@ -132,6 +145,41 @@ def classify_report(
             "commit_count": cs["commit_count"],
             "touched_path_count": cs["touched_path_count"],
         }
+
+    # --- Deletion-refusal check: the tree-diff trap this whole module
+    # exists to avoid. Commit enumeration cannot manufacture a phantom
+    # deletion of a path that was never really deleted (unlike a two-tree
+    # diff, which would report the entire export filter as one), but a
+    # REAL per-commit deletion of a path the engine actually has, that is
+    # not something the export surface covers, is exactly the shape this
+    # refuses: a real delete this report should never wave through as an
+    # ordinary classification. Only spends the (cheap, but non-zero)
+    # surface-pattern read when there is at least one real deletion to
+    # check. ---
+    deleted_paths = [p for p, info in cs["touched_paths"].items() if "D" in info["statuses"]]
+    if deleted_paths:
+        surface_patterns_for_deletes = resolve_surface_patterns()
+        unsafe_deletions = []
+        for remote_path in sorted(deleted_paths):
+            engine_path, category = gate.reverse_map_path(remote_path)
+            if category == gate.CAT_GENERATED:
+                continue  # no engine-side path to delete in the first place
+            engine_exists = changeset.blob_hash_at(local_ref, engine_path, repo_dir=repo_dir) is not None
+            in_surface = gate.is_in_export_surface(engine_path, surface_patterns_for_deletes)
+            if engine_exists and not in_surface:
+                unsafe_deletions.append(remote_path)
+        if unsafe_deletions:
+            return {
+                "marker": marker,
+                "remote_ref": remote_ref,
+                "refused": True,
+                "refusal_reason": (
+                    "change set deletes path(s) the engine has that resolve outside the "
+                    f"export surface: {unsafe_deletions}"
+                ),
+                "commit_count": cs["commit_count"],
+                "touched_path_count": cs["touched_path_count"],
+            }
 
     trust_allowlist = resolve_trust_allowlist()
 
@@ -152,9 +200,13 @@ def classify_report(
         commit_trust[c["sha"]] = (trusted, reason)
         commits_out.append({**c, "author": author, "trusted": trusted})
 
-    surface_patterns = gate.load_export_surface_patterns()
-    sensitive_prefixes = gate.read_sensitive_prefixes()
+    surface_patterns = resolve_surface_patterns()
+    sensitive_prefixes = resolve_sensitive_prefixes()
 
+    # Every status this report can ever assign is pre-seeded here, so a
+    # bucket the classifications happen not to hit still appears (empty)
+    # in the output rather than being silently absent -- a consumer
+    # iterating `buckets` should never have to guess which keys can show up.
     buckets: dict[str, list[str]] = {
         gate.CAT_GENERATED: [],
         gate.CAT_QUARANTINED: [],
@@ -166,6 +218,7 @@ def classify_report(
         pull.STATUS_ALREADY_APPLIED: [],
         pull.STATUS_CONFLICT: [],
         pull.STATUS_INTEGRITY_FAIL: [],
+        pull.STATUS_REJECTED: [],
     }
     classifications: dict[str, dict] = {}
 
@@ -196,7 +249,9 @@ def classify_report(
             continue
 
         # Gate 2+3: path safety and export-surface membership.
-        category, reason = gate.path_gate(engine_path, surface_patterns, sensitive_prefixes, target_root=repo_dir)
+        category, reason = gate.path_gate(
+            remote_path, engine_path, surface_patterns, sensitive_prefixes, target_root=repo_dir
+        )
         if category:
             classifications[remote_path] = {
                 "status": category,
@@ -210,13 +265,17 @@ def classify_report(
         # Gate 4 cleared -- hash-classify.
         base_hash = changeset.blob_hash_at(marker, remote_path, repo_dir=repo_dir)
         upstream_hash = changeset.blob_hash_at(remote_ref, remote_path, repo_dir=repo_dir)
-        local_hash = changeset.blob_hash_at("HEAD", engine_path, repo_dir=repo_dir)
+        local_hash = changeset.blob_hash_at(local_ref, engine_path, repo_dir=repo_dir)
 
         if upstream_hash is None:
             # The path was deleted on the code plane after the marker (a D
-            # status will already be in info["statuses"]). Read-only report:
-            # never treat this as license to write; just say so.
-            status, reason = "rejected", "upstream deletes this path; Slice B never proposes a delete"
+            # status is already in info["statuses"]) and cleared the
+            # deletion-refusal check above -- so either the engine has no
+            # copy at all, or the copy it has is inside the export surface.
+            # Either way this read-only report never proposes the delete
+            # itself; it names the status so a human (or the apply step) can
+            # decide, using pull.py's own vocabulary rather than a bespoke one.
+            status, reason = pull.STATUS_REJECTED, "upstream deletes this path; a read-only report never proposes a delete"
         else:
             status, reason = pull.classify_against_baseline(local_hash, base_hash, upstream_hash)
 
@@ -254,22 +313,36 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-files", type=int, default=DEFAULT_MAX_FILES)
     parser.add_argument("--max-lines", type=int, default=DEFAULT_MAX_LINES)
     parser.add_argument("--no-fetch", action="store_true", help="skip the one-ref git fetch (assumes objects already present)")
+    parser.add_argument(
+        "--local-ref",
+        default="main",
+        help="what 'the engine's own copy' means when hash-classifying (default: main, not HEAD -- "
+        "running from a feature branch must not silently change what gets reported)",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     code_repo_slug = args.code_repo or _resolve_code_repo()
-    report = classify_report(
-        marker=args.marker,
-        remote=args.remote,
-        remote_branch=args.remote_branch,
-        repo_dir=Path(args.repo_dir),
-        code_repo_slug=code_repo_slug,
-        max_files=args.max_files,
-        max_lines=args.max_lines,
-        do_fetch=not args.no_fetch,
-    )
+    try:
+        report = classify_report(
+            marker=args.marker,
+            remote=args.remote,
+            remote_branch=args.remote_branch,
+            repo_dir=Path(args.repo_dir),
+            code_repo_slug=code_repo_slug,
+            max_files=args.max_files,
+            max_lines=args.max_lines,
+            do_fetch=not args.no_fetch,
+            local_ref=args.local_ref,
+        )
+    except changeset.GitError as exc:
+        # Fail closed, but readably: an operator (or the loop) reading this
+        # tool's exit path should get a reason, not a stack trace, when a
+        # fetch or another git call hits a network blip or a bad ref.
+        print(json.dumps({"refused": True, "refusal_reason": f"git operation failed: {exc}"}, indent=2, sort_keys=True))
+        return EXIT_ERROR
     print(json.dumps(report, indent=2, sort_keys=True))
     return EXIT_REFUSED if report.get("refused") else EXIT_OK
 
