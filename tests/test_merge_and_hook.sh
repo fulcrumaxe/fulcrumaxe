@@ -19,6 +19,7 @@ REPO_RESOLVE_LIB="$REPO_ROOT/scripts/lib/repo-resolve.sh"
 RESOLVE_PR_DISC_LIB="$REPO_ROOT/scripts/lib/resolve-pr-discussion.sh"
 CI_STATUS_LIB="$REPO_ROOT/scripts/lib/ci-status-check.sh"
 PR_DEPENDENTS_LIB="$REPO_ROOT/scripts/lib/pr-dependents.sh"
+DASHBOARD_TOUCHED_SCRIPT="$REPO_ROOT/scripts/check-pr-dashboard-touched.sh"
 
 PASS=0
 FAIL=0
@@ -112,6 +113,17 @@ if [[ "$ARGS" == *"graphql"* && "$ARGS" == *"discussion(number:"* ]]; then
   exit 0
 fi
 
+# `gh pr diff --name-only <PR> --repo ...` (D#2332 browser-test gate, via
+# check-pr-dashboard-touched.sh). Deliberately silent about GH_ARGS: this
+# stub's stdout is piped straight into that script's `grep -q '^dashboard/'`,
+# and every pre-existing test here asserts on GH_ARGS to prove whether a merge
+# was attempted. Default empty => "no dashboard files touched" => the gate is
+# inert for every test that predates it.
+if [[ "$ARGS" == *"pr diff"* ]]; then
+  printf '%s' "${STUB_PR_DIFF_FILES:-}"
+  exit 0
+fi
+
 # `gh pr view <PR> --repo ... --json files --jq '.files[].path'` (D#1614 provenance gate)
 if [[ "$ARGS" == *"--json files"* ]]; then
   echo "GH_ARGS: $ARGS" >&2
@@ -197,6 +209,11 @@ PYEOF
   cp "$RESOLVE_PR_DISC_LIB" "$tmpdir/scripts/lib/resolve-pr-discussion.sh"
   cp "$CI_STATUS_LIB"       "$tmpdir/scripts/lib/ci-status-check.sh"
   cp "$PR_DEPENDENTS_LIB"   "$tmpdir/scripts/lib/pr-dependents.sh"
+  # D#2332: the browser-test gate shells out to this, so it has to exist beside
+  # the copied merge-and-hook.sh. It resolves the code repo through the copied
+  # repo-resolve.sh, which finds no config.json under tmpdir and falls through
+  # to AUTONOMOUS_TEAM_REPO — which run_script sets.
+  cp "$DASHBOARD_TOUCHED_SCRIPT" "$tmpdir/scripts/check-pr-dashboard-touched.sh"
 
   # Stub post-merge-hook.sh — exits with the requested code
   cat > "$tmpdir/scripts/post-merge-hook.sh" <<EOF
@@ -832,6 +849,168 @@ else
   fail "CD-5: expected a ci_gate_unverified_merge row, got: $(cat "$AUDIT_CD5" 2>/dev/null)"
 fi
 rm -f "$AUDIT_CD5"
+
+# ══ D#2332: browser-test gate on the manual merge path ════════════════════════
+# The loop auto-merge path refuses a dashboard PR without browser-test-passed.
+# This path did not, so a five-file dashboard PR reached main carrying exactly
+# one label. Every test below drives the REAL scripts/merge-and-hook.sh — only
+# gh and post-merge-hook.sh are stubbed, so the gate ordering, the exit codes
+# and the audit write are the production ones.
+
+# A diff that trips check-pr-dashboard-touched.sh's `grep -q '^dashboard/'`.
+BT_DASHBOARD_DIFF='dashboard/src/api/client.ts
+dashboard/src/pages/stats/AnalystFindingsTile.tsx
+backend/server.py'
+
+# ── Test BT-1: dashboard PR, no browser-test-passed — refused ────────────────
+echo "Test BT-1: dashboard PR without browser-test-passed — refused, not merged"
+T_BT1=$(mktemp -d)
+setup_stubs "$T_BT1" 0
+export TWO_GATE_PR_BODY_999="Gate 1: PASS\nGate 2: PASS"
+export STUB_PR_DIFF_FILES="$BT_DASHBOARD_DIFF"
+export STUB_PR_LABELS="code-review-passed"
+OUT_BT1=$(run_script "$T_BT1" --pr 999 2>&1)
+RC_BT1=$?
+assert_exit "BT-1: exits 1" 1 "$RC_BT1"
+assert_contains "BT-1: names the missing label" "does not carry the browser-test-passed label" "$OUT_BT1"
+assert_contains "BT-1: names the dashboard as the reason" "touches dashboard/" "$OUT_BT1"
+assert_not_contains "BT-1: no merge happened" "PR #999 merged." "$OUT_BT1"
+assert_not_contains "BT-1: refused before the Two-Gate step ran" "Two-Gate check passed" "$OUT_BT1"
+unset TWO_GATE_PR_BODY_999 STUB_PR_DIFF_FILES STUB_PR_LABELS
+rm -rf "$T_BT1"
+
+# ── Test BT-2: dashboard PR WITH browser-test-passed — proceeds ──────────────
+echo "Test BT-2: dashboard PR carrying browser-test-passed — proceeds unchanged"
+T_BT2=$(mktemp -d)
+setup_stubs "$T_BT2" 0
+export TWO_GATE_PR_BODY_999="Gate 1: PASS\nGate 2: PASS"
+export STUB_PR_DIFF_FILES="$BT_DASHBOARD_DIFF"
+export STUB_PR_LABELS="code-review-passed
+browser-test-passed"
+OUT_BT2=$(run_script "$T_BT2" --pr 999 2>&1)
+RC_BT2=$?
+assert_exit "BT-2: exits 0" 0 "$RC_BT2"
+assert_contains "BT-2: gate reports satisfied" "browser-test gate satisfied" "$OUT_BT2"
+assert_contains "BT-2: the later gates still ran" "Two-Gate check passed" "$OUT_BT2"
+assert_contains "BT-2: merge happened" "PR #999 merged." "$OUT_BT2"
+unset TWO_GATE_PR_BODY_999 STUB_PR_DIFF_FILES STUB_PR_LABELS
+rm -rf "$T_BT2"
+
+# ── Test BT-3: non-dashboard PR — gate is inert either way ───────────────────
+echo "Test BT-3: PR touching no dashboard file — unaffected by the gate"
+T_BT3=$(mktemp -d)
+setup_stubs "$T_BT3" 0
+export TWO_GATE_PR_BODY_999="Gate 1: PASS\nGate 2: PASS"
+export STUB_PR_DIFF_FILES='backend/server.py
+scripts/merge-and-hook.sh'
+export STUB_PR_LABELS="code-review-passed"
+OUT_BT3=$(run_script "$T_BT3" --pr 999 2>&1)
+RC_BT3=$?
+assert_exit "BT-3: exits 0" 0 "$RC_BT3"
+assert_contains "BT-3: merge happened" "PR #999 merged." "$OUT_BT3"
+assert_not_contains "BT-3: gate said nothing at all" "browser-test" "$OUT_BT3"
+unset TWO_GATE_PR_BODY_999 STUB_PR_DIFF_FILES STUB_PR_LABELS
+rm -rf "$T_BT3"
+
+# ── Test BT-4: --force-no-browser-test with no reason — refused, no audit row ─
+#    The refusal must land before ANY side effect, so a rejected invocation
+#    leaves the audit trail byte-identical. Seeded with a row first so the
+#    assertion is "unchanged", not "still empty".
+echo "Test BT-4: --force-no-browser-test without --bypass-reason — refused, audit unchanged"
+T_BT4=$(mktemp -d)
+setup_stubs "$T_BT4" 0
+AUDIT_BT4="$T_BT4/state/audit.jsonl"
+printf '%s\n' '{"kind":"ci_gate_verified","pr":1,"reason":"seed"}' > "$AUDIT_BT4"
+N_BEFORE_BT4=$(wc -l < "$AUDIT_BT4")
+export TWO_GATE_PR_BODY_999="Gate 1: PASS\nGate 2: PASS"
+export STUB_PR_DIFF_FILES="$BT_DASHBOARD_DIFF"
+export STUB_PR_LABELS="code-review-passed"
+OUT_BT4=$(run_script "$T_BT4" --pr 999 --force-no-browser-test 2>&1)
+RC_BT4=$?
+N_AFTER_BT4=$(wc -l < "$AUDIT_BT4")
+assert_exit "BT-4: exits 1" 1 "$RC_BT4"
+assert_contains "BT-4: says the reason is required" "--force-no-browser-test requires --bypass-reason" "$OUT_BT4"
+assert_not_contains "BT-4: no merge happened" "PR #999 merged." "$OUT_BT4"
+if [[ "$N_BEFORE_BT4" -eq "$N_AFTER_BT4" ]]; then
+  pass "BT-4: audit line count unchanged ($N_BEFORE_BT4)"
+else
+  fail "BT-4: audit line count changed $N_BEFORE_BT4 -> $N_AFTER_BT4: $(cat "$AUDIT_BT4")"
+fi
+unset TWO_GATE_PR_BODY_999 STUB_PR_DIFF_FILES STUB_PR_LABELS
+rm -rf "$T_BT4"
+
+# ── Test BT-5: --force-no-browser-test WITH a reason — merges, one audit row ──
+echo "Test BT-5: --force-no-browser-test --bypass-reason — merges, one audit row"
+T_BT5=$(mktemp -d)
+setup_stubs "$T_BT5" 0
+export TWO_GATE_PR_BODY_999="Gate 1: PASS\nGate 2: PASS"
+export STUB_PR_DIFF_FILES="$BT_DASHBOARD_DIFF"
+export STUB_PR_LABELS="code-review-passed"
+OUT_BT5=$(run_script "$T_BT5" --pr 999 --force-no-browser-test --bypass-reason "css-only, no rendered change" 2>&1)
+RC_BT5=$?
+AUDIT_BT5="$T_BT5/state/audit.jsonl"
+assert_exit "BT-5: exits 0" 0 "$RC_BT5"
+assert_contains "BT-5: loud warning on the bypass" "--force-no-browser-test used for PR #999" "$OUT_BT5"
+assert_contains "BT-5: reason echoed" "css-only, no rendered change" "$OUT_BT5"
+assert_contains "BT-5: merge happened" "PR #999 merged." "$OUT_BT5"
+N_BT5=$(_audit_count "$AUDIT_BT5" "manual_merge_browser_test_bypass")
+if [[ "$N_BT5" -eq 1 ]]; then
+  pass "BT-5: exactly 1 manual_merge_browser_test_bypass row"
+else
+  fail "BT-5: expected 1 manual_merge_browser_test_bypass row, got $N_BT5: $(cat "$AUDIT_BT5" 2>/dev/null)"
+fi
+assert_contains "BT-5: audit row carries the PR number" '"pr": 999' "$(cat "$AUDIT_BT5" 2>/dev/null)"
+assert_contains "BT-5: audit row carries the reason" "css-only, no rendered change" "$(cat "$AUDIT_BT5" 2>/dev/null)"
+unset TWO_GATE_PR_BODY_999 STUB_PR_DIFF_FILES STUB_PR_LABELS
+rm -rf "$T_BT5"
+
+# ── Test BT-6: the refusal lands before the CI-status wait ───────────────────
+#    merge-and-hook.sh blocks up to CI_MAX_WAIT_SECONDS (1200s) on the CI gate.
+#    A gate that refused only after that wait would cost 20 minutes per blocked
+#    dashboard merge. Proven by the call log: a refused BT-1 must never have
+#    asked GitHub for a check-run.
+echo "Test BT-6: refusal happens before any check-runs fetch (i.e. before the CI wait)"
+T_BT6=$(mktemp -d)
+setup_stubs "$T_BT6" 0
+export TWO_GATE_PR_BODY_999="Gate 1: PASS\nGate 2: PASS"
+export STUB_PR_DIFF_FILES="$BT_DASHBOARD_DIFF"
+export STUB_PR_LABELS="code-review-passed"
+export STUB_CALL_LOG="$T_BT6/gh-calls.log"
+OUT_BT6=$(run_script "$T_BT6" --pr 999 2>&1)
+RC_BT6=$?
+assert_exit "BT-6: exits 1" 1 "$RC_BT6"
+# The absence assertion needs the log to exist first. `grep -q … 2>/dev/null`
+# on a missing or empty file exits 1, which reads as "no check-runs fetched" —
+# so a change that silently stopped the stub writing the log would turn this
+# green while measuring nothing. Given what this suite gates, an assertion that
+# passes by never running is exactly the shape not to ship.
+if [[ ! -s "$STUB_CALL_LOG" ]]; then
+  fail "BT-6: call log missing or empty — the check-runs assertion below would pass vacuously"
+elif grep -q "check-runs" "$STUB_CALL_LOG" 2>/dev/null; then
+  fail "BT-6: CI check-runs were fetched before the browser gate refused: $(cat "$STUB_CALL_LOG")"
+else
+  pass "BT-6: no check-runs fetch in $(wc -l < "$STUB_CALL_LOG") logged gh call(s) — refused before the CI-status wait"
+fi
+unset TWO_GATE_PR_BODY_999 STUB_PR_DIFF_FILES STUB_PR_LABELS STUB_CALL_LOG
+rm -rf "$T_BT6"
+
+# ── Test BT-7: the dashboard-touched predicate is missing — fail closed ──────
+#    check-pr-dashboard-touched.sh returning non-zero means "no dashboard
+#    files". An absent script would return 127, which reads identically — a
+#    silent fail-open on the one script the gate depends on.
+echo "Test BT-7: check-pr-dashboard-touched.sh absent — refuses rather than assuming no"
+T_BT7=$(mktemp -d)
+setup_stubs "$T_BT7" 0
+rm -f "$T_BT7/scripts/check-pr-dashboard-touched.sh"
+export TWO_GATE_PR_BODY_999="Gate 1: PASS\nGate 2: PASS"
+export STUB_PR_DIFF_FILES="$BT_DASHBOARD_DIFF"
+OUT_BT7=$(run_script "$T_BT7" --pr 999 2>&1)
+RC_BT7=$?
+assert_exit "BT-7: exits 1" 1 "$RC_BT7"
+assert_contains "BT-7: says why it cannot decide" "cannot tell whether PR #999 touches the dashboard" "$OUT_BT7"
+assert_not_contains "BT-7: no merge happened" "PR #999 merged." "$OUT_BT7"
+unset TWO_GATE_PR_BODY_999 STUB_PR_DIFF_FILES
+rm -rf "$T_BT7"
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""

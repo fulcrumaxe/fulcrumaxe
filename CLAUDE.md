@@ -265,14 +265,30 @@ conversation); there is no equivalent stable address the other way.
 **Default (loop auto-merge):** The loop's merging phase checks these labels:
 - `code-review-passed` — required, unconditionally
 - `security-review-passed` — conditional: required when `needs_security_review` is set, a live diff-content security trigger fires, or the originating Discussion is `provenance:external`
+- `browser-test-passed` — conditional: required when the PR touches `dashboard/`
 - `acceptance-passed` — advisory: `acceptance-failed` blocks a merge (a veto without quorum), but no acceptance-passed label is required to merge
 
 This is enforced in `scripts/loop-phased-step5.sh` at the `merging` phase. No manual override needed for the normal path.
 
-**Team Lead direct-merge exception:** When Team Lead needs to merge manually after an explicit code-review pass, the merge gate is bypassed by design. This shortcut is only for:
+**Team Lead direct-merge exception:** When Team Lead needs to merge manually after an explicit code-review pass, most of the merge gate is bypassed by design. This shortcut is only for:
 - Small bug fixes and surgical changes (≤ 50 lines, single concern)
 - Single reviewer pass already confirmed
 - No auth, SQL, secrets, or sandbox-sensitive code touched
+
+The exception is not total, and it is also not what the label names suggest.
+The wrapper reads exactly two labels: `security-review-passed`, forced when the
+originating Discussion is `provenance:external` (HG-7), and — since D#2332 —
+`browser-test-passed`, when the PR touches `dashboard/`. The second was the gap
+that closed: a dashboard PR touching five files merged manually carrying one
+label, and the identical PR would have been blocked at the loop path's merging
+phase.
+
+`code-review-passed` is **not** one of the two. The loop path requires it
+unconditionally; `scripts/merge-and-hook.sh` never reads it at all, so on this
+path it is enforced by whoever is running the merge and by nothing else. That
+is a live divergence between the paths, not a documented exception, and it is
+stated here rather than left implied because a gate everyone believes in and
+nothing checks is worse than no gate — it removes the pressure to look.
 
 **Always use the merge wrapper for manual merges:**
 
@@ -342,6 +358,24 @@ bash scripts/merge-and-hook.sh --pr <PR_NUMBER> --force-no-two-gate --bypass-rea
 
 The `--force-no-two-gate` flag logs a loud warning to stderr and writes an audit row
 (`kind: manual_merge_two_gate_bypass`) to `<state_dir>/audit.jsonl`. Use sparingly.
+
+**Browser-test gate (D#2332):** a PR that touches `dashboard/` must carry
+`browser-test-passed`, or the wrapper refuses to merge it. It runs first — ahead
+of the Two-Gate check and long before the CI wait — so a refusal costs two API
+calls, and it derives "touches the dashboard" from the same
+`scripts/check-pr-dashboard-touched.sh` the loop path calls, so the two cannot
+answer differently. Spawn a browser-tester and let it label the PR, or override:
+
+```bash
+bash scripts/merge-and-hook.sh --pr <PR_NUMBER> \
+  --force-no-browser-test --bypass-reason "<why this needs no browser test>"
+```
+
+Unlike `--force-no-two-gate`, the reason is **mandatory** — the invocation is
+refused without one, before any side effect, so a rejected call leaves no audit
+row at all. A bypass with a reason writes `kind: manual_merge_browser_test_bypass`
+carrying the PR number and the reason text. This is the `--force-no-ci` contract,
+deliberately, rather than a third override idiom.
 
 **Hard stop:** If a PR touches auth, SQL, secrets handling, sandbox rules, or the hook/permission system — spawn a security-reviewer and acceptance-tester before merging, regardless of PR size.
 
