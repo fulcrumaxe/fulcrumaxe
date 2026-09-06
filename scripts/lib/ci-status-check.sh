@@ -331,19 +331,31 @@ for name in required:
         failing.append((name, r.get("html_url") or ""))
 
 # Report order: absent, then red, then did-not-run, then pending. A red check
-# outranks a skipped one on a mixed set because it is the more concrete signal
-# — the skipped names still travel in FAILING so nothing is hidden.
+# outranks a skipped one on a mixed set because it is the more concrete signal,
+# so STATUS and the head of REASON are red-first.
+#
+# But outranking is not the same as replacing. On a mixed red+skipped set the
+# skipped names are carried explicitly into both operator-visible fields — a
+# trailing "; also did not run: ..." clause on REASON, and their own entries in
+# FAILING. Dropping them here would collapse two distinct causes into one
+# report, which is the exact defect this evaluator was changed to remove; doing
+# it inside the fix would have been worse than not fixing it, because the
+# remaining single cause looks complete.
 if missing:
     print("STATUS=fail")
     print("REASON=required check absent: " + ", ".join(missing))
     print("FAILING=" + ",".join(missing))
     print("URL=")
 elif failing:
-    names = ",".join(n for n, _ in failing)
+    failed_names = [n for n, _ in failing]
+    also_skipped = [n for n, _ in did_not_run]
     url = next((u for _, u in failing if u), "")
+    reason = "required check(s) failed: " + ",".join(failed_names)
+    if also_skipped:
+        reason += "; also did not run: " + ",".join(also_skipped)
     print("STATUS=fail")
-    print("REASON=required check(s) failed: " + names)
-    print("FAILING=" + names)
+    print("REASON=" + reason)
+    print("FAILING=" + ",".join(failed_names + also_skipped))
     print("URL=" + url)
 elif did_not_run:
     names = ",".join(n for n, _ in did_not_run)

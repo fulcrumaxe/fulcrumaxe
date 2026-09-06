@@ -692,6 +692,32 @@ done
 assert_exit_1 "CS-18c: the failed set blocks" "$RC_FAILED"
 assert_exit_1 "CS-18c: the absent set blocks" "$RC_ABSENT"
 
+# 18e — a mixed red+skipped set reports BOTH causes. The red one outranks the
+# skipped ones for STATE and the head of REASON, but outranking is not
+# replacing: dropping the skipped names would collapse two distinct causes into
+# one report inside the very change that exists to stop that, and the surviving
+# cause would look complete to whoever read it.
+echo ""
+echo "=== CS-18e: a mixed failed+skipped set surfaces both causes ==="
+MIXED_RED_SKIPPED='['"$(_gha tui failure 'https://x/y/runs/7')"','"$(_gha dashboard skipped)"','"$(_gha ts-backend success)"','"$(_gha 'backend (import-smoke)' success)"','"$(_gha 'open-source export audit' skipped)"']'
+export CI_STATUS_OVERRIDE_20165="$MIXED_RED_SKIPPED"
+export CI_STATUS_HEAD_SHA_20165="deadbeef65"
+OUT=$(_run_status 20165); RC=$?
+assert_exit_1 "CS-18e: mixed red+skipped set is blocked" "$RC"
+assert_contains "CS-18e: STATE stays fail (red outranks skipped)" "STATE:fail" "$OUT"
+assert_contains "CS-18e: REASON leads with the red check" "required check(s) failed: tui" "$OUT"
+# The two skipped names must reach BOTH operator-visible fields. Asserted per
+# name against each field separately, rather than against one whole formatted
+# string, so a later wording change cannot quietly drop a name while still
+# matching the assertion.
+_FAILING_LINE="$(printf '%s\n' "$OUT" | grep '^FAILING:' | head -1)"
+_REASON_LINE="$(printf '%s\n' "$OUT" | grep '^REASON:' | head -1)"
+for _n in dashboard 'open-source export audit'; do
+  assert_contains "CS-18e: FAILING carries the skipped name '$_n'" "$_n" "$_FAILING_LINE"
+  assert_contains "CS-18e: REASON names the skipped check '$_n'" "$_n" "$_REASON_LINE"
+done
+unset CI_STATUS_OVERRIDE_20165 CI_STATUS_HEAD_SHA_20165
+
 # 18d — the conclusions the D#1987 body measured as ALREADY correct stay
 # correct. This item exists to prove the change did not disturb them, and to
 # keep them distinct from the new `skipped` state.
