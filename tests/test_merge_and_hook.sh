@@ -1061,6 +1061,9 @@ OUT_MC1=$(run_script "$T_MC1" --pr 999 2>&1)
 RC_MC1=$?
 assert_exit "MC-1: exits 1" 1 "$RC_MC1"
 assert_contains "MC-1: says the PR is conflicting" "GitHub reports it as conflicting" "$OUT_MC1"
+# The message must name the field that actually fired. Here `mergeable` did.
+assert_contains "MC-1: names mergeable as the trigger" "via mergeable=CONFLICTING" "$OUT_MC1"
+assert_contains "MC-1: shows the status it observed alongside" "mergeStateStatus=DIRTY" "$OUT_MC1"
 # AC-22: the same sentence the direct-merge path prints, not a second phrasing.
 assert_contains "MC-1: reuses the direct-merge wording" "cause: this branch conflicts with its base and is not mergeable." "$OUT_MC1"
 assert_contains "MC-1: states the same remedy" "resolve the conflicts, then re-run" "$OUT_MC1"
@@ -1153,6 +1156,15 @@ RC_MC4=$?
 assert_exit "MC-4: exits 1" 1 "$RC_MC4"
 assert_contains "MC-4: named as a conflict" "conflicts with its base" "$OUT_MC4"
 assert_not_contains "MC-4: no merge happened" "PR #999 merged." "$OUT_MC4"
+# The refusal is right on this path; the MESSAGE is the thing under test here.
+# GitHub returned mergeable=UNKNOWN, so a message saying "mergeable=CONFLICTING"
+# would assert a value it never returned — the same defect class as reporting a
+# conflicting branch as slow CI, one layer down. The negative assertion is the
+# load-bearing one: it fails against a hardcoded trigger string even though the
+# refusal itself works.
+assert_contains "MC-4: names mergeStateStatus as the trigger" "via mergeStateStatus=DIRTY" "$OUT_MC4"
+assert_not_contains "MC-4: never claims GitHub returned mergeable=CONFLICTING" "mergeable=CONFLICTING" "$OUT_MC4"
+assert_contains "MC-4: reports the mergeable value actually observed" "observed mergeable=UNKNOWN" "$OUT_MC4"
 unset TWO_GATE_PR_BODY_999 STUB_MERGEABLE
 rm -rf "$T_MC4"
 
@@ -1291,6 +1303,32 @@ else
 fi
 unset TWO_GATE_PR_BODY_999 STUB_MERGEABLE_SEQ STUB_MERGEABLE_SEQ_COUNTER CI_MERGE_PROBE_ATTEMPTS CI_MERGE_PROBE_INTERVAL
 rm -rf "$T_MC11"
+
+# ── Test MC-12: the timeout re-probe names its trigger honestly too ─────────
+#    The re-probe on the CI-wait timeout path prints its own message, so it is
+#    a second place the trigger can be hardcoded. Same shape as MC-4: GitHub
+#    answers UNKNOWN|DIRTY on the re-read, and the message must say which field
+#    fired rather than naming a value that was never returned.
+echo "Test MC-12: timeout re-probe fires on DIRTY — message names mergeStateStatus, not mergeable"
+T_MC12=$(mktemp -d)
+setup_stubs "$T_MC12" 0
+export TWO_GATE_PR_BODY_999="Gate 1: PASS\nGate 2: PASS"
+export STUB_MERGEABLE_SEQ="MERGEABLE|CLEAN;UNKNOWN|DIRTY"
+export STUB_MERGEABLE_SEQ_COUNTER="$T_MC12/mergeable-seq.count"
+: > "$STUB_MERGEABLE_SEQ_COUNTER"
+export STUB_CI_CHECK_RUNS='[]'
+export CI_MAX_WAIT_SECONDS=2
+export CI_POLL_INTERVAL=1
+OUT_MC12=$(run_script "$T_MC12" --pr 999 2>&1)
+RC_MC12=$?
+assert_exit "MC-12: exits 1" 1 "$RC_MC12"
+assert_contains "MC-12: still reports the during-wait conflict" "became conflicting while waiting on CI" "$OUT_MC12"
+assert_contains "MC-12: names mergeStateStatus as the trigger" "via mergeStateStatus=DIRTY" "$OUT_MC12"
+assert_not_contains "MC-12: never claims GitHub returned mergeable=CONFLICTING" "mergeable=CONFLICTING" "$OUT_MC12"
+assert_contains "MC-12: reports the mergeable value actually observed" "observed mergeable=UNKNOWN" "$OUT_MC12"
+assert_not_contains "MC-12: no merge happened" "PR #999 merged." "$OUT_MC12"
+unset TWO_GATE_PR_BODY_999 STUB_MERGEABLE_SEQ STUB_MERGEABLE_SEQ_COUNTER STUB_CI_CHECK_RUNS CI_MAX_WAIT_SECONDS CI_POLL_INTERVAL
+rm -rf "$T_MC12"
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""

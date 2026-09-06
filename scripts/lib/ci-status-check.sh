@@ -126,6 +126,20 @@ CI_MERGE_PROBE=""
 # NOT on its own what a refusal is decided on -- see ci_probe_mergeable for
 # which states mean what.
 CI_MERGE_STATE_STATUS=""
+# The raw `mergeable` GitHub reported, exported for the same reason as the
+# status above: a caller that wants to tell the operator what was OBSERVED
+# needs both halves, not one half and an assumption about the other.
+CI_MERGE_MERGEABLE=""
+# The single `field=value` that actually drove a refusal, e.g.
+# "mergeable=CONFLICTING" or "mergeStateStatus=DIRTY". Set only on the two
+# branches below that return 1, and cleared otherwise.
+#
+# It exists so a caller never has to re-derive which field fired. Two fields
+# can each refuse, so a message that hardcodes one of them is wrong half the
+# time -- and wrong in the specific way this whole Discussion is about: a
+# diagnostic asserting something other than what was observed. The caller
+# prints this string; it does not reconstruct it.
+CI_MERGE_PROBE_TRIGGER=""
 # Why the probe could not decide, when CI_MERGE_PROBE is `unknown`. Callers
 # that fall through on `unknown` should print this, for the same reason
 # CI_CONFLICT_FILES_REASON exists: an unexplained silence reads as an answer.
@@ -670,10 +684,18 @@ ci_conflicting_files() {
 #                               freshly-pushed branch unmergeable for exactly
 #                               the wrong reason -- the same class of
 #                               misdiagnosis this probe exists to end.
+#
+# Two of those rows refuse, so callers MUST print CI_MERGE_PROBE_TRIGGER rather
+# than naming a field themselves: the DIRTY row is reached precisely when
+# `mergeable` was UNKNOWN, so a message hardcoding "mergeable=CONFLICTING"
+# reports a value GitHub did not return. CI_MERGE_MERGEABLE and
+# CI_MERGE_STATE_STATUS carry the two raw observations alongside it.
 ci_probe_mergeable() {
   local pr="$1" repo="$2"
   CI_MERGE_PROBE="unknown"
   CI_MERGE_STATE_STATUS=""
+  CI_MERGE_MERGEABLE=""
+  CI_MERGE_PROBE_TRIGGER=""
   CI_MERGE_PROBE_REASON=""
 
   local attempts="${CI_MERGE_PROBE_ATTEMPTS:-3}"
@@ -700,10 +722,12 @@ ci_probe_mergeable() {
     mergeable="${raw%%|*}"
     state="${raw##*|}"
     CI_MERGE_STATE_STATUS="$state"
+    CI_MERGE_MERGEABLE="$mergeable"
 
     case "$mergeable" in
       CONFLICTING)
         CI_MERGE_PROBE="conflicting"
+        CI_MERGE_PROBE_TRIGGER="mergeable=CONFLICTING"
         return 1
         ;;
       MERGEABLE)
@@ -712,7 +736,12 @@ ci_probe_mergeable() {
         ;;
     esac
     if [ "$state" = "DIRTY" ]; then
+      # Reached only when `mergeable` did NOT say CONFLICTING -- in practice
+      # when it is still UNKNOWN. The trigger records that, so the caller says
+      # mergeStateStatus fired rather than claiming GitHub returned a
+      # `mergeable` value it never returned.
       CI_MERGE_PROBE="conflicting"
+      CI_MERGE_PROBE_TRIGGER="mergeStateStatus=DIRTY"
       return 1
     fi
     if [ "$i" -lt "$attempts" ]; then

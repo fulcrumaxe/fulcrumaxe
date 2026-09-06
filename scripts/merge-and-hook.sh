@@ -289,7 +289,13 @@ fi
 # script decides, so an override would buy back the 1200-second timeout and
 # nothing else. The remedy is to rebase, which is not a bypass.
 if ! ci_probe_mergeable "$PR" "$_CODE_REPO"; then
-  echo "[merge-and-hook] ERROR: PR #$PR cannot be merged — GitHub reports it as conflicting (mergeable=CONFLICTING, mergeStateStatus=${CI_MERGE_STATE_STATUS:-unknown}). Refusing to merge, without waiting on CI." >&2
+  # Name the field that ACTUALLY fired, not a guess at it. Either
+  # mergeable=CONFLICTING or mergeStateStatus=DIRTY can refuse here, and the
+  # DIRTY path is reached exactly when `mergeable` was UNKNOWN — so a message
+  # hardcoding CONFLICTING would report a value GitHub never returned, which
+  # is the same defect as calling a conflict "slow CI". Both raw observations
+  # follow the trigger so the operator can see what was read.
+  echo "[merge-and-hook] ERROR: PR #$PR cannot be merged — GitHub reports it as conflicting via ${CI_MERGE_PROBE_TRIGGER:-unknown trigger} (observed mergeable=${CI_MERGE_MERGEABLE:-unknown}, mergeStateStatus=${CI_MERGE_STATE_STATUS:-unknown}). Refusing to merge, without waiting on CI." >&2
   echo "[merge-and-hook] A conflicting branch never registers a check-run, so the CI wait below would have timed out after ${CI_MAX_WAIT_SECONDS}s and blamed slow CI." >&2
   _CONFLICT_HEAD="$(gh pr view "$PR" --repo "$_CODE_REPO" --json headRefOid --jq .headRefOid 2>/dev/null || true)"
   ci_report_conflict "$PR" "$_CODE_REPO" "${_CONFLICT_HEAD:-}"
@@ -368,7 +374,9 @@ elif [[ "$_CI_RC" -ne 0 ]]; then
   # The timeout wording is deliberately NOT printed on this branch: the cause is
   # the conflict, and naming both would leave the reader to guess which.
   if ! ci_probe_mergeable "$PR" "$_CODE_REPO"; then
-    echo "[merge-and-hook] ERROR: PR #$PR became conflicting while waiting on CI — GitHub now reports mergeable=CONFLICTING (mergeStateStatus=${CI_MERGE_STATE_STATUS:-unknown}). Refusing to merge." >&2
+    # Same rule as the Step 0c refusal above: print the trigger, never a
+    # hardcoded field name.
+    echo "[merge-and-hook] ERROR: PR #$PR became conflicting while waiting on CI — GitHub now reports it as conflicting via ${CI_MERGE_PROBE_TRIGGER:-unknown trigger} (observed mergeable=${CI_MERGE_MERGEABLE:-unknown}, mergeStateStatus=${CI_MERGE_STATE_STATUS:-unknown}). Refusing to merge." >&2
     ci_report_conflict "$PR" "$_CODE_REPO" "${CI_STATUS_HEAD_SHA:-}"
     ci_write_audit "ci_gate_block" "$PR" "$CI_STATUS_HEAD_SHA" "$CI_STATUS_FAILING_CHECKS" "$CI_STATUS_RUN_URL" "branch conflicts with its base — no check-run can register on a conflicting head"
     exit 1
