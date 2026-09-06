@@ -31,6 +31,7 @@ STEP5_SCRIPT="$REPO_ROOT/scripts/loop-phased-step5.sh"
 
 PASS=0
 FAIL=0
+SKIP=0
 
 # -----------------------------------------------------------------------
 # Test harness
@@ -95,6 +96,48 @@ assert_not_contains() {
   else
     echo "  PASS: $label"; PASS=$((PASS + 1))
   fi
+}
+
+skip_check() {
+  local label="$1"
+  echo "  SKIP: $label"
+  SKIP=$((SKIP + 1))
+}
+
+# Independently computes the specialist-comment count for a live Discussion —
+# a separate GraphQL query and a separate scan of the comment bodies, not a
+# call into count_specialist_comments. This is what the live assertion below
+# diffs against instead of a remembered snapshot value. Same "agent field in
+# SPECIALIST_ROLES" definition as panel-helpers.sh's count on purpose — the
+# point is freshness (queried this run) not an independent definition.
+_independent_specialist_comment_count() {
+  local disc_num="$1"
+  gh api graphql -f query="
+    query {
+      repository(owner:\"autonomous-agent-7\", name:\"fulcrumaxe\") {
+        discussion(number: $disc_num) {
+          comments(first: 50) { nodes { body } }
+        }
+      }
+    }
+  " 2>/dev/null | python3 -c "
+import json, sys, re
+
+SPECIALIST_ROLES = {
+    'technical-architect', 'security-expert', 'cost-analyst',
+    'product-owner', 'performance-expert'
+}
+
+data = json.load(sys.stdin)
+comments = data['data']['repository']['discussion']['comments']['nodes']
+count = 0
+for c in comments:
+    body = c.get('body', '')
+    m = re.search(r'\"agent\"\s*:\s*\"([^\"]+)\"', body)
+    if m and m.group(1) in SPECIALIST_ROLES:
+        count += 1
+print(count)
+" 2>/dev/null
 }
 
 # -----------------------------------------------------------------------
@@ -282,10 +325,32 @@ if gh auth status >/dev/null 2>&1; then
 
   LIVE_COUNT_2158=$(bash -c "source '$PANEL_HELPERS'; count_specialist_comments 2158")
   RC_LIVE_COUNT=$?
-  assert_exit_0 "count_specialist_comments 2158 (live, genuine zero) exits 0" "$RC_LIVE_COUNT"
-  assert_equals "count_specialist_comments 2158 (live) has no specialist comments" "0" "$LIVE_COUNT_2158"
+  assert_exit_0 "count_specialist_comments 2158 (live) exits 0" "$RC_LIVE_COUNT"
+
+  # Differential, not a pinned snapshot: compute the expected count fresh,
+  # from a separate query over the same Discussion's comments, and compare.
+  # A Discussion that lost every specialist comment must not make this
+  # vacuously pass, so >= 1 is asserted too.
+  EXPECTED_COUNT_2158=$(_independent_specialist_comment_count 2158)
+  RC_EXPECTED_2158=$?
+  assert_exit_0 "independent specialist-comment count for 2158 succeeds" "$RC_EXPECTED_2158"
+  assert_equals "count_specialist_comments 2158 (live) matches an independently computed count" \
+    "$EXPECTED_COUNT_2158" "$LIVE_COUNT_2158"
+  if [ "${LIVE_COUNT_2158:-0}" -ge 1 ] 2>/dev/null; then
+    echo "  PASS: count_specialist_comments 2158 (live) is >= 1, not vacuously zero"; PASS=$((PASS + 1))
+  else
+    echo "  FAIL: count_specialist_comments 2158 (live) expected >= 1, got [$LIVE_COUNT_2158]"; FAIL=$((FAIL + 1))
+  fi
 else
   echo "=== Live checks skipped (gh not authenticated) ==="
+  skip_check "get_discussion_id 2156 (live)"
+  skip_check "get_discussion_id 2156 (live) returns the known node id"
+  skip_check "get_discussion_id 2158 (live)"
+  skip_check "get_discussion_id 2158 (live) returns the known node id"
+  skip_check "count_specialist_comments 2158 (live) exits 0"
+  skip_check "independent specialist-comment count for 2158 succeeds"
+  skip_check "count_specialist_comments 2158 (live) matches an independently computed count"
+  skip_check "count_specialist_comments 2158 (live) is >= 1, not vacuously zero"
 fi
 
 # -----------------------------------------------------------------------
@@ -293,7 +358,7 @@ fi
 # -----------------------------------------------------------------------
 echo ""
 echo "========================================"
-echo "Results: $PASS passed, $FAIL failed"
+echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
 echo "========================================"
 
 if [ "$FAIL" -gt 0 ]; then
