@@ -562,33 +562,73 @@ assert_exit_1 "CS-16: an all-skipped required set blocks the merge" "$RC"
 unset CI_STATUS_OVERRIDE_20151 CI_STATUS_HEAD_SHA_20151
 
 # -----------------------------------------------------------------------
-# CS-17 (AC-11): pin the required set exactly. Widening it unannounced is
-# what would turn a real block into a silent pass, so the set is spelled out
-# here and any change to it has to come through this assertion.
+# CS-17 (AC-11): pin the required set. Widening it unannounced is what would
+# turn a real block into a silent pass, so any change to the array has to come
+# through this assertion — that part is unchanged.
 #
-# D#1989 changed the expected value from four names to five, deliberately:
-# "open-source export audit" was added to CI_REQUIRED_CHECKS in the same
-# change that made that job able to fail at all. The assertion is updated,
-# not relaxed and not deleted — it still requires an exact, ordered match, so
-# the next unannounced edit to the array still fails right here. The two
-# safety properties that made the addition legal (kill-switch precedence, and
-# absent-reads-as-fail rather than pending-forever) are written out above the
-# array itself.
+# What changed (D#2456) is how the assertion is written. It used to restate the
+# array as a literal and check the count. A restated literal is only ever an
+# assertion about the moment someone wrote it: whoever adds a sixth name edits
+# the literal in the same commit, the count moves with it, and the test goes on
+# passing without anyone having argued for the addition. That is exactly how
+# "open-source export audit" arrived (D#1989) and then sat in the required list
+# meaning nothing on the plane where PRs merge.
+#
+# So the pin is a DIFFERENCE now. `baseline` below is the array as D#1989 left
+# it — a frozen historical record, not a statement of what it ought to be — and
+# the live array has to equal that baseline with exactly one *named* element
+# removed, in order. One element, named, nothing else moved. A sixth name fails
+# here on the length comparison; a reordering fails on the positional one; and
+# neither can be absorbed by editing a list to match.
 # -----------------------------------------------------------------------
 echo ""
-echo "=== CS-17: required check names and accept set are exactly as pinned ==="
+echo "=== CS-17: required set is the D#1989 baseline minus exactly one named element ==="
+CS17_REMOVED="open-source export audit"
 (
   source "$CI_LIB"
-  expected=("tui" "dashboard" "ts-backend" "backend (import-smoke)" "open-source export audit")
-  if [ "${#CI_REQUIRED_CHECKS[@]}" -eq 5 ] && [ "${CI_REQUIRED_CHECKS[*]}" = "${expected[*]}" ]; then
-    exit 0
+  # The array exactly as D#1989 left it. Do not "update" this to match a new
+  # value — it is the fixed point the difference is measured from.
+  baseline=("tui" "dashboard" "ts-backend" "backend (import-smoke)" "open-source export audit")
+
+  expected=()
+  for n in "${baseline[@]}"; do
+    if [ "$n" != "$CS17_REMOVED" ]; then expected+=("$n"); fi
+  done
+
+  if [ $(( ${#baseline[@]} - ${#expected[@]} )) -ne 1 ]; then
+    echo "        baseline does not contain '$CS17_REMOVED' exactly once" >&2
+    exit 1
   fi
-  exit 1
+  if [ "${#CI_REQUIRED_CHECKS[@]}" -ne "${#expected[@]}" ]; then
+    echo "        live array has ${#CI_REQUIRED_CHECKS[@]} names; baseline-minus-one has ${#expected[@]}" >&2
+    exit 1
+  fi
+  i=0
+  while [ "$i" -lt "${#expected[@]}" ]; do
+    if [ "${CI_REQUIRED_CHECKS[$i]}" != "${expected[$i]}" ]; then
+      echo "        position $i: live '${CI_REQUIRED_CHECKS[$i]}' != expected '${expected[$i]}'" >&2
+      exit 1
+    fi
+    i=$(( i + 1 ))
+  done
+  exit 0
 )
 if [ $? -eq 0 ]; then
-  echo "  PASS: CI_REQUIRED_CHECKS matches the pinned five-name set exactly"; PASS=$((PASS + 1))
+  echo "  PASS: CI_REQUIRED_CHECKS is the D#1989 baseline minus '$CS17_REMOVED', in order"; PASS=$((PASS + 1))
 else
-  echo "  FAIL: CI_REQUIRED_CHECKS is not the pinned set"; FAIL=$((FAIL + 1))
+  echo "  FAIL: CI_REQUIRED_CHECKS is not the D#1989 baseline minus exactly that one name"; FAIL=$((FAIL + 1))
+fi
+(
+  source "$CI_LIB"
+  for n in "${CI_REQUIRED_CHECKS[@]}"; do
+    if [ "$n" = "$CS17_REMOVED" ]; then exit 1; fi
+  done
+  exit 0
+)
+if [ $? -eq 0 ]; then
+  echo "  PASS: '$CS17_REMOVED' is the element that came out"; PASS=$((PASS + 1))
+else
+  echo "  FAIL: '$CS17_REMOVED' is still a required check name"; FAIL=$((FAIL + 1))
 fi
 # D#1987 inverted this assertion. It used to require the accept set to still
 # read `not in ("success", "skipped")` — a deliberate hold saying "the
@@ -643,18 +683,27 @@ OUT_SKIPPED=$(_run_status 20161); RC=$?
 assert_exit_1 "CS-18a: all-skipped required set is blocked" "$RC"
 assert_contains "CS-18a: STATE is the distinct 'skipped' token" "STATE:skipped" "$OUT_SKIPPED"
 assert_not_contains "CS-18a: STATE is never laundered to pass" "STATE:pass" "$OUT_SKIPPED"
-assert_contains "CS-18a: every skipped name is surfaced in FAILING" "open-source export audit" "$OUT_SKIPPED"
+# D#2456 took "open-source export audit" out of the required set, so it is no
+# longer a name this assertion could look for. Asserted per required name
+# instead of against one chosen name — which is what "every skipped name" was
+# claiming anyway, and it now actually checks it.
+_FAILING_SKIPPED="$(printf '%s\n' "$OUT_SKIPPED" | grep '^FAILING:' | head -1)"
+for _n in tui dashboard ts-backend 'backend (import-smoke)'; do
+  assert_contains "CS-18a: skipped name '$_n' is surfaced in FAILING" "$_n" "$_FAILING_SKIPPED"
+done
 unset CI_STATUS_OVERRIDE_20161 CI_STATUS_HEAD_SHA_20161
 
-# 18b — a single skipped name among four green ones. The realistic shape: one
-# job turned off, not the whole workflow.
-ONE_SKIPPED='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"','"$(_gha 'backend (import-smoke)' success)"','"$(_gha 'open-source export audit' skipped)"']'
+# 18b — a single skipped name among the green ones. The realistic shape: one
+# job turned off, not the whole workflow. (D#2456: the skipped name here used
+# to be "open-source export audit"; it is a required name that carries this
+# case, and that one is no longer required.)
+ONE_SKIPPED='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"','"$(_gha 'backend (import-smoke)' skipped)"']'
 export CI_STATUS_OVERRIDE_20162="$ONE_SKIPPED"
 export CI_STATUS_HEAD_SHA_20162="deadbeef62"
 OUT=$(_run_status 20162); RC=$?
-assert_exit_1 "CS-18b: one skipped name among four green is still blocked" "$RC"
+assert_exit_1 "CS-18b: one skipped name among green ones is still blocked" "$RC"
 assert_contains "CS-18b: STATE is skipped" "STATE:skipped" "$OUT"
-assert_contains "CS-18b: the reason names the one check that did not run" "open-source export audit" "$OUT"
+assert_contains "CS-18b: the reason names the one check that did not run" "backend (import-smoke)" "$OUT"
 unset CI_STATUS_OVERRIDE_20162 CI_STATUS_HEAD_SHA_20162
 
 # 18c — the three reasons are asserted to differ FROM EACH OTHER, not to equal
@@ -699,7 +748,7 @@ assert_exit_1 "CS-18c: the absent set blocks" "$RC_ABSENT"
 # cause would look complete to whoever read it.
 echo ""
 echo "=== CS-18e: a mixed failed+skipped set surfaces both causes ==="
-MIXED_RED_SKIPPED='['"$(_gha tui failure 'https://x/y/runs/7')"','"$(_gha dashboard skipped)"','"$(_gha ts-backend success)"','"$(_gha 'backend (import-smoke)' success)"','"$(_gha 'open-source export audit' skipped)"']'
+MIXED_RED_SKIPPED='['"$(_gha tui failure 'https://x/y/runs/7')"','"$(_gha dashboard skipped)"','"$(_gha ts-backend skipped)"','"$(_gha 'backend (import-smoke)' success)"']'
 export CI_STATUS_OVERRIDE_20165="$MIXED_RED_SKIPPED"
 export CI_STATUS_HEAD_SHA_20165="deadbeef65"
 OUT=$(_run_status 20165); RC=$?
@@ -712,7 +761,7 @@ assert_contains "CS-18e: REASON leads with the red check" "required check(s) fai
 # matching the assertion.
 _FAILING_LINE="$(printf '%s\n' "$OUT" | grep '^FAILING:' | head -1)"
 _REASON_LINE="$(printf '%s\n' "$OUT" | grep '^REASON:' | head -1)"
-for _n in dashboard 'open-source export audit'; do
+for _n in dashboard ts-backend; do
   assert_contains "CS-18e: FAILING carries the skipped name '$_n'" "$_n" "$_FAILING_LINE"
   assert_contains "CS-18e: REASON names the skipped check '$_n'" "$_n" "$_REASON_LINE"
 done
@@ -811,6 +860,122 @@ _prov_row "CS-20d: provenance:external + workflows/** still blocked (switch off)
 _prov_row "CS-20e: provenance:external touching no workflow file still passes" \
           0 "$_NO_WF_FILES" false yes 40015 8015
 export CI_KILL_SWITCH_OVERRIDE=HTTP_404
+
+# ═══════════════════════════════════════════════════════════════════════════
+# CS-21 (D#2456) — the workflow half and the array half are ONE change.
+#
+# Removing "open-source export audit" from CI_REQUIRED_CHECKS is only correct
+# because ci.yml's export-audit job no longer registers a check-run where its
+# repository condition is false. Put that condition back on the steps and the
+# job concludes `success` on every plane again — the original defect, now minus
+# the required-list entry that made it visible. So 21a pins where the condition
+# lives, and 21b/21c run the same fixture on each side of the array edit.
+#
+# Two shapes are covered, because the change was planned around a prediction
+# that turned out to be wrong and the correction is worth keeping visible:
+#
+#   21b/21c — the audit check-run is registered with `conclusion: skipped`.
+#             This is what a job-level `if:` actually produces here, measured
+#             on run 34067010184. It lands in `did_not_run` (D#1987).
+#   21d/21e — no audit check-run at all. This is what the change was planned
+#             expecting, and it is what deleting the job outright would give.
+#             It lands in `missing`.
+#
+# Both are a hard block while the name is required, and neither is once it is
+# not. The prediction being wrong changed which bucket does the blocking; it
+# did not change the reason the two edits cannot be sequenced.
+# ═══════════════════════════════════════════════════════════════════════════
+echo ""
+echo "=== CS-21a: the export-audit repository guard is job-level, not step-level ==="
+if python3 - "$REAL_REPO_ROOT/.github/workflows/ci.yml" <<'PYEOF'
+import sys, yaml
+
+job = yaml.safe_load(open(sys.argv[1]))["jobs"]["export-audit"]
+cond = str(job.get("if", ""))
+problems = []
+if "github.repository" not in cond:
+    problems.append("job-level if: does not test github.repository")
+if "CI_DISABLED" not in cond:
+    problems.append("job-level if: dropped the CI_DISABLED kill switch")
+# The `env` context is not available when a job-level `if:` is evaluated, so a
+# guard written as env.FOO resolves empty and skips the job everywhere --
+# including where the audit is supposed to run. Catch that spelling here; on
+# every plane but the engine it is indistinguishable from the correct one.
+if "env." in cond:
+    problems.append("job-level if: reads the env context, which is unavailable there")
+for step in job.get("steps") or []:
+    if "github.repository" in str(step.get("if", "")):
+        problems.append("step %r still carries its own repository guard" % step.get("name"))
+for p in problems:
+    print("        " + p, file=sys.stderr)
+sys.exit(1 if problems else 0)
+PYEOF
+then
+  echo "  PASS: export-audit is guarded once, on the job, so its check-run says skipped and not success elsewhere"; PASS=$((PASS + 1))
+else
+  echo "  FAIL: export-audit's repository guard is not where the required-list edit assumes"; FAIL=$((FAIL + 1))
+fi
+
+# What a head here really produces once the job's `if:` is false: the required
+# names green, and the audit check-run registered as `skipped`. Copied from the
+# observed shape of run 34067010184, not imagined.
+SKIPPED_AUDIT_RUN='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"','"$(_gha 'backend (import-smoke)' success)"','"$(_gha 'open-source export audit' skipped)"']'
+# The shape the change was planned around, and the shape deleting the job would
+# give: no audit check-run at all.
+NO_AUDIT_RUN='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"','"$(_gha 'backend (import-smoke)' success)"']'
+
+# _cs21_required_still_has_audit <pr> — run the gate with the pre-D#2456
+# required set restored. Not a hypothetical: this is the state the repo would
+# be in had only the workflow half landed.
+_cs21_old_required() {
+  (
+    source "$CI_LIB"
+    CI_REQUIRED_CHECKS=("tui" "dashboard" "ts-backend" "backend (import-smoke)" "open-source export audit")
+    check_ci_status "$1" "test-owner/test-repo"
+    rc=$?
+    echo "RC:$rc"
+    echo "STATE:${CI_STATUS_STATE:-}"
+    echo "REASON:${CI_STATUS_FAIL_REASON:-}"
+    exit "$rc"
+  )
+}
+
+echo ""
+echo "=== CS-21b: skipped audit check-run + name still required -> blocked ==="
+export CI_STATUS_OVERRIDE_20191="$SKIPPED_AUDIT_RUN"
+export CI_STATUS_HEAD_SHA_20191="deadbeef91"
+OUT=$(_cs21_old_required 20191); RC=$?
+assert_exit_1 "CS-21b: half the change blocks every merge, as designed" "$RC"
+assert_contains "CS-21b: STATE is the did-not-run token, not fail" "STATE:skipped" "$OUT"
+assert_contains "CS-21b: reason names the check that did not run" "open-source export audit" "$OUT"
+unset CI_STATUS_OVERRIDE_20191 CI_STATUS_HEAD_SHA_20191
+
+echo ""
+echo "=== CS-21c: skipped audit check-run + name removed -> the same head merges ==="
+export CI_STATUS_OVERRIDE_20192="$SKIPPED_AUDIT_RUN"
+export CI_STATUS_HEAD_SHA_20192="deadbeef92"
+OUT=$(_run_status 20192); RC=$?
+assert_exit_0 "CS-21c: with both halves landed, a skipped audit check-run is not a block" "$RC"
+assert_contains "CS-21c: STATE is pass" "STATE:pass" "$OUT"
+unset CI_STATUS_OVERRIDE_20192 CI_STATUS_HEAD_SHA_20192
+
+echo ""
+echo "=== CS-21d: absent audit check-run + name still required -> blocked ==="
+export CI_STATUS_OVERRIDE_20193="$NO_AUDIT_RUN"
+export CI_STATUS_HEAD_SHA_20193="deadbeef93"
+OUT=$(_cs21_old_required 20193); RC=$?
+assert_exit_1 "CS-21d: the absent shape blocks too, by a different bucket" "$RC"
+assert_contains "CS-21d: reason names the check that is not there" "open-source export audit" "$OUT"
+unset CI_STATUS_OVERRIDE_20193 CI_STATUS_HEAD_SHA_20193
+
+echo ""
+echo "=== CS-21e: absent audit check-run + name removed -> the same head merges ==="
+export CI_STATUS_OVERRIDE_20194="$NO_AUDIT_RUN"
+export CI_STATUS_HEAD_SHA_20194="deadbeef94"
+OUT=$(_run_status 20194); RC=$?
+assert_exit_0 "CS-21e: an absent audit check-run is not a block either" "$RC"
+assert_contains "CS-21e: STATE is pass" "STATE:pass" "$OUT"
+unset CI_STATUS_OVERRIDE_20194 CI_STATUS_HEAD_SHA_20194
 
 # -----------------------------------------------------------------------
 # Summary

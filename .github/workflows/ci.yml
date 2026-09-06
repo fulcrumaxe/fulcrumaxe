@@ -153,7 +153,58 @@ jobs:
     # variable and stands down explicitly, writing a ci_gate_stood_down audit
     # row (see scripts/lib/ci-status-check.sh, D#1944). Change the variable
     # with scripts/set-ci-kill-switch.sh so the change is audited.
-    if: vars.CI_DISABLED != 'true'
+    #
+    # D#2456: the repository test used to sit on each of the five steps below,
+    # which meant that on any repository other than the one named here the job
+    # still ran, still registered a check-run, and still concluded `success`
+    # having executed nothing that could fail. Measured on the public plane
+    # (run 34048489210): conclusion `success` in 5 seconds, with all six
+    # verifying steps skipped. That green was then promoted into
+    # CI_REQUIRED_CHECKS, so the merge gate carried a name whose pass was
+    # guaranteed and meant nothing — a false assurance, which is worse than an
+    # absent check, because a gap invites a look and a green tick does not.
+    #
+    # Hoisting the same comparison to the job's own `if:` changes what the
+    # check-run says. MEASURED, run 34067010184 on the public plane, rather
+    # than assumed: the job does not run, and GitHub still registers a
+    # check-run for it, with `conclusion: skipped`. Not absent — skipped. The
+    # planning for this change predicted absent, and that prediction was
+    # wrong; the distinction matters enough to write down, because two things
+    # downstream turn on it.
+    #
+    # What it buys is still the point: the check no longer says `success`. A
+    # step-skipped job concludes `success` and is indistinguishable from one
+    # that verified something; a job-skipped job concludes `skipped` and is
+    # distinguishable by anyone reading the checks list or the API.
+    #
+    # First thing that turns on it: this is now squarely in reach of the fix
+    # D#1987 landed a few commits earlier, where a required check whose
+    # CONCLUSION is `skipped` stops reading as green and becomes a hard block.
+    # Before this change it was NOT in reach of that fix — the conclusion was
+    # `success`, so the accept-set tightening could never have caught it, and
+    # the two must not be conflated on that account.
+    #
+    # Second: it is why the required-list edit had to land in this same
+    # commit. Post-D#1987, leaving "open-source export audit" in
+    # CI_REQUIRED_CHECKS while this job skips is STATUS=skipped on every head
+    # here — a repo-wide merge outage. The two edits are one change.
+    #
+    # The slug is spelled out here rather than read from the job's `env:`
+    # block below, because it cannot be read from there: the `env` context is
+    # not available when a job-level `if:` is evaluated, so `env.FOO` resolves
+    # empty and the condition is false everywhere — including on this
+    # repository, silently disabling the audit outright. This is the same
+    # deliberate second copy of a slug the resolvers own elsewhere
+    # (scripts/lib/repo-resolve.sh, backend/_repo.py), kept for the same
+    # recorded reason: a workflow `if:` expression cannot call either of them.
+    #
+    # Latent inversion, recorded rather than fixed (D#2456 item 11): export.sh
+    # rewrites this owner to the public one on the way out, so a tree that was
+    # produced by the export AND is itself the public repository would flip
+    # this condition from false to true and start demanding an `open-source/`
+    # that is not there. Not the case today — the public tree is a mirror, not
+    # export output (D#2446). Do not build for it; do not be surprised by it.
+    if: vars.CI_DISABLED != 'true' && github.repository == 'autonomous-agent-7/fulcrumaxe'
     # No secrets are used anywhere in this job. export.sh and
     # verify-export.sh themselves rsync into a local mktemp -d and never
     # touch the network -- but the claude CLI install step below does (a
@@ -168,14 +219,6 @@ jobs:
     # room for that; 15 does. See PR #2212's body for the actual measured
     # duration on this repo's runner.
     timeout-minutes: 15
-    env:
-      # The one repository where open-source/ is expected to exist. This is a
-      # second copy of a slug the resolvers own elsewhere
-      # (scripts/lib/repo-resolve.sh, backend/_repo.py) -- deliberate,
-      # because a workflow `if:` expression cannot call either of them. Named
-      # once here rather than spelled out on each of the five step conditions
-      # below, so there is one place to change and one place to grep.
-      EXPORT_AUDIT_REPO: autonomous-agent-7/fulcrumaxe
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -202,8 +245,13 @@ jobs:
       # For a `pull_request` event `github.repository` is the BASE
       # repository, not the fork's, so fork PRs opened against this repo keep
       # auditing.
+      #
+      # D#2456: the `github.repository` half of that comparison now lives on
+      # the job's own `if:`, so reaching this step already means we are on the
+      # repository where open-source/ must exist. What is left here is the
+      # question this step alone can answer: is the file actually there?
       - name: Assert export tooling is present
-        if: github.repository == env.EXPORT_AUDIT_REPO && hashFiles('open-source/verify-export.sh') == ''
+        if: hashFiles('open-source/verify-export.sh') == ''
         run: |
           echo "::error::open-source/verify-export.sh is missing from ${{ github.repository }}"
           {
@@ -222,7 +270,9 @@ jobs:
       # the assert step above, on this repo the file provably exists, so a
       # hashFiles() guard here could only ever mask the rename it was
       # supposed to catch -- which is the defect, not a second layer of
-      # defence against it.
+      # defence against it. D#2456 moved that repository condition up to the
+      # job, so these steps carry no `if:` of their own: reaching them at all
+      # already means the condition held.
       #
       # Node 22, not the "20" build-test uses above: @anthropic-ai/claude-
       # code's package.json declares engines.node >=22. A first pass at
@@ -232,7 +282,6 @@ jobs:
       # breaks silently on some future patch release. Checked against the
       # real run.
       - name: Setup Node
-        if: github.repository == env.EXPORT_AUDIT_REPO
         uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -250,11 +299,9 @@ jobs:
       # specifically so this step runs a build the gate has actually been
       # checked against, not whatever ships next.
       - name: Install claude CLI
-        if: github.repository == env.EXPORT_AUDIT_REPO
         run: npm install -g @anthropic-ai/claude-code@2.1.258
 
       - name: Run verify-export.sh
-        if: github.repository == env.EXPORT_AUDIT_REPO
         env:
           # Step-level only -- deliberately not job- or workflow-level. This
           # turns a SKIP into a hard FAIL (D#2210 round 4's opt-in default),
@@ -271,13 +318,14 @@ jobs:
       # verify-export.sh above: guarded on the repository rather than on the
       # checked-out tree, because open-source/ and loop-bootstrap/ are both
       # excluded from what this workflow itself ships to adopters, and a
-      # rename of either script on THIS repo has to be loud (D#1989).
+      # rename of either script on THIS repo has to be loud (D#1989). That
+      # repository guard is the job's own `if:` since D#2456 -- same question,
+      # asked once, and asked early enough that the check-run says `skipped`
+      # rather than `success` where the answer is no.
       - name: BOOTSTRAP_PATHS subset check
-        if: github.repository == env.EXPORT_AUDIT_REPO
         run: python3 open-source/checks/bootstrap_subset.py
 
       - name: Bootstrap file classification coverage check
-        if: github.repository == env.EXPORT_AUDIT_REPO
         run: python3 open-source/checks/verify_classification.py
 
   # Import-smoke gate for backend/ itself (D#1608). Deliberately NOT the full
@@ -422,7 +470,7 @@ jobs:
       #
       # Fails the build the ordinary way: a non-zero exit fails this step,
       # which fails this job, whose name — "backend (import-smoke)" — is one of
-      # the five exact strings in CI_REQUIRED_CHECKS
+      # the exact strings in CI_REQUIRED_CHECKS
       # (scripts/lib/ci-status-check.sh), so a red run blocks the merge gate on
       # both merge paths. Hermetic: CI_STATUS_TEST_MODE=1 routes every fetch
       # through the mock seams, so no network, no GH_TOKEN, and zero GitHub API
