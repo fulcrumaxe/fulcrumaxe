@@ -165,13 +165,72 @@ assert_eq "epic dirs with no markdown still classify as empty" "$(coldstart_back
 
 echo ""
 echo "=== classify: conforming ==="
+# Conformance is the full required-field set, because that set is the whole of
+# what stands between a file and a Discussion.
+mk_task() {
+  printf -- '---\nepic: 3\ntask: 1\ntitle: "Proration on plan change"\ntype: feature\nstatus: %s\nestimated_hours: 3\ndepends_on: []\ntags: [epic-3]\n---\n\n# Task: Proration on plan change\n' "$1"
+}
 D="$(mkfixture)"; mkdir -p "$D/epics/epic-3-billing"
-echo "# Epic 3: Billing" >"$D/epics/epic-3-billing/epic.md"
-assert_eq "an epic-*/epic.md classifies as conforming" "$(coldstart_backlog_classify "$D/epics")" "conforming"
+mk_task not-started >"$D/epics/epic-3-billing/01.md"
+assert_eq "a complete task file classifies as conforming" "$(coldstart_backlog_classify "$D/epics")" "conforming"
 
 D="$(mkfixture)"; mkdir -p "$D/epics/epic-3-billing"
-printf -- '---\nepic: 3\ntask: 1\ntitle: "x"\n---\n\n# Task: x\n' >"$D/epics/epic-3-billing/01.md"
-assert_eq "a task file with frontmatter classifies as conforming" "$(coldstart_backlog_classify "$D/epics")" "conforming"
+mk_task completed >"$D/epics/epic-3-billing/01.md"
+assert_eq "a finished backlog is still well-formed, so still conforming" "$(coldstart_backlog_classify "$D/epics")" "conforming"
+OUT="$(coldstart_backlog_step "$D/epics" "$D" "$TPL_DIR" 2>&1)"
+assert_contains "an all-completed backlog says nothing would import" "would create nothing" "$OUT"
+assert_not_contains "and does not then tell you to run --resume anyway" "Re-run with --resume" "$OUT"
+
+echo ""
+echo "=== classify: incomplete — the old on-screen format ==="
+# THE REVIEW BLOCKER. The first cut of this module accepted the basename
+# epic.md as proof of conformance, which told a repo written to coldstart's
+# own removed on-screen format that it was already fine and sent it to
+# --resume — which imports 0 tasks at rc=0. That population is exactly the
+# audience this change exists for, so the assertion below is the one that
+# matters most in this file.
+D="$(mkfixture)"; mkdir -p "$D/epics/epic-3-billing"
+cat >"$D/epics/epic-3-billing/epic.md" <<'OLDFMT'
+# Epic 3: Billing
+
+## Goal
+Charge correctly on mid-cycle plan change.
+
+## Why now
+Top support ticket.
+
+## Scope
+- proration
+
+## Out of scope
+- refunds
+OLDFMT
+assert_eq "an epic.md with no task file is NOT conforming" "$(coldstart_backlog_classify "$D/epics")" "incomplete"
+OUT="$(coldstart_backlog_step "$D/epics" "$D" "$TPL_DIR" 2>&1)"
+assert_not_contains "the old format is never told it is already in the right shape" "already holds epics in the format" "$OUT"
+# --resume may be NAMED here, but only to warn against it — never as the
+# affirmative "Re-run with --resume" the conforming branch gives.
+assert_not_contains "and never gets the conforming branch's go-ahead" "Re-run with --resume" "$OUT"
+assert_contains "--resume is named only to steer away from it" "do not reach for --resume" "$OUT"
+assert_contains "it is told the seeding path would import nothing" "imports 0 tasks and exits 0" "$OUT"
+assert_contains "it is told that silence is the point" "silently" "$OUT"
+assert_contains "it is told what a task file actually is" "epic-<N>-<slug>/01.md" "$OUT"
+assert_contains "it is told epic.md alone needs a flag the seeding step never passes" "--include-empty-epics" "$OUT"
+assert_contains "it is given the format doc" "README.md" "$OUT"
+assert_contains "it is given the check that costs nothing" "--dry-run" "$OUT"
+assert_contains "it is told nothing was touched" "Nothing was written, moved, or deleted" "$OUT"
+assert_no_file "no example epic was scaffolded over it" "$D/epics/epic-1-example"
+
+echo ""
+echo "=== classify: incomplete — frontmatter present, status missing ==="
+# The silent-drop case: the importer finds the file, then the status filter
+# discards it with nothing printed. Named before it can happen.
+D="$(mkfixture)"; mkdir -p "$D/epics/epic-4-search"
+printf -- '---\nepic: 4\ntask: 1\ntitle: "Typeahead"\ntype: feature\nestimated_hours: 3\n---\n\n# Task: Typeahead\n' >"$D/epics/epic-4-search/01.md"
+assert_eq "a task file missing status is NOT conforming" "$(coldstart_backlog_classify "$D/epics")" "incomplete"
+OUT="$(coldstart_backlog_step "$D/epics" "$D" "$TPL_DIR" 2>&1)"
+assert_contains "the diagnosis names the file" "epic-4-search/01.md" "$OUT"
+assert_contains "the diagnosis names the missing field" "missing status" "$OUT"
 
 echo ""
 echo "=== classify: foreign ==="
@@ -215,11 +274,12 @@ fi
 
 echo ""
 echo "=== the scaffold is idempotent and never overwrites ==="
-echo "OPERATOR EDIT" >"$D/epics/epic-1-example/01.md"
+assert_eq "a freshly scaffolded dir classifies as conforming" "$(coldstart_backlog_classify "$D/epics")" "conforming"
+echo "OPERATOR EDIT" >>"$D/epics/epic-1-example/epic.md"
 OUT="$(coldstart_backlog_step "$D/epics" "$D" "$TPL_DIR" 2>&1)"
-assert_eq "an already-scaffolded dir classifies as conforming" "$(coldstart_backlog_classify "$D/epics")" "conforming"
 assert_contains "a conforming backlog is reported, not rewritten" "Nothing written" "$OUT"
-assert_eq "the operator's edit survived" "$(cat "$D/epics/epic-1-example/01.md")" "OPERATOR EDIT"
+assert_contains "the operator's edit survived" "OPERATOR EDIT" "$(cat "$D/epics/epic-1-example/epic.md")"
+assert_contains "the scaffolded task file survived untouched" "one line — what this task delivers" "$(cat "$D/epics/epic-1-example/01.md")"
 
 echo ""
 echo "=== a foreign backlog is reported and left completely alone ==="

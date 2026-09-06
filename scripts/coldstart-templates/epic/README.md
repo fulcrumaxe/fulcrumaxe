@@ -48,6 +48,33 @@ Everything below the frontmatter is free-form Markdown and becomes the
 Discussion body verbatim. The section order in `NN.md` is a convention worth
 keeping, not something the importer enforces.
 
+## What the task template does and does not cover
+
+The four sections in `NN.md` are the ones a task carries while it is open.
+They are not the whole life of the file.
+
+A **`## Completion Summary`** is the usual fifth section, added when the task
+is finished rather than written up front: files changed, what was actually
+implemented, time spent against the estimate, how it was verified, what went
+sideways, and the commit. It is absent from the template because a
+not-started task has nothing to put in it — not because the section does not
+exist. Add it when you close the task out.
+
+Two things in the template are deliberately stricter than common practice,
+and are choices rather than requirements:
+
+- **Numbered section headings** (`## 1. Assessment` … `## 4. Implementation
+  Notes`). Plenty of real task files use unnumbered headings and read fine.
+  Numbering them makes "see section 3" mean something in a review comment.
+- **The trailing `**Status:**` line.** It duplicates the `status:` field in
+  the frontmatter, which is the one the importer actually reads. It is there
+  so the state is visible to someone reading the rendered file rather than
+  the source.
+
+Neither is enforced anywhere and dropping either breaks nothing. They are
+written down here so the next person changing the template knows they are
+looking at a decision rather than an accident.
+
 ## Checking a file before you import it
 
 The importer will tell you what it would create without touching GitHub:
