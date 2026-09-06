@@ -49,3 +49,12 @@ pytest-picked>=0.5.1
 # collects fine and then fails at runtime with "async def functions are not
 # natively supported."
 pytest-asyncio>=0.24.0
+# Eight @pytest.mark.timeout call sites (six in tests/integration/test_full_stack.py,
+# two in backend/tests/test_rpc_sse_aliases.py) were written expecting a per-test
+# time bound, but the plugin providing that marker was never declared — the same
+# ambient-only gap as pytest-asyncio above. pytest accepts an unknown marker and
+# does nothing with it, so all eight bounds were inert: a hung test took down
+# whatever coarse wrapper was around the whole invocation, which attributes the
+# hang to the wrong test (D#2441). Lower bound is the version actually resolved
+# on the measuring host: pytest-timeout 2.4.0.
+pytest-timeout>=2.4.0

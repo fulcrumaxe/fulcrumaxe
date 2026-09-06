@@ -151,8 +151,18 @@ def api_server() -> Generator[str, None, None]:
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+#
+# The timeout bound below has to clear the api_server fixture's own setup
+# budget, not just the request the test makes. pytest-timeout bounds
+# setup + call + teardown together, and when the server does not come up the
+# fixture spends up to 20s in _wait_for_health plus up to 5s in proc.wait()
+# before it reaches its pytest.skip(). These were written as timeout(10),
+# which is less than that 25s worst case — so on any host where the server
+# fails to start, the bound fires during setup and the test ERRORs instead of
+# skipping. That contradiction was invisible while the marker was inert: the
+# plugin providing it was never declared (D#2441).
 
-@pytest.mark.timeout(10)
+@pytest.mark.timeout(30)
 def test_health(api_server: str) -> None:
     """GET /health returns {"ok": true}."""
     status, body = _get(f"{api_server}/health")
@@ -161,7 +171,7 @@ def test_health(api_server: str) -> None:
     assert body.get("ok") is True, f"Expected ok=true, got: {body}"
 
 
-@pytest.mark.timeout(10)
+@pytest.mark.timeout(30)
 def test_budget_init_then_status(api_server: str) -> None:
     """POST /budget/init then GET /budget/status shows an initialized budget."""
     # Initialize budget
@@ -176,7 +186,7 @@ def test_budget_init_then_status(api_server: str) -> None:
     assert len(body) > 0, "budget/status returned empty dict"
 
 
-@pytest.mark.timeout(10)
+@pytest.mark.timeout(30)
 def test_registry_schema(api_server: str) -> None:
     """GET /registry returns valid JSON with expected schema."""
     status, body = _get(f"{api_server}/registry")
@@ -186,7 +196,7 @@ def test_registry_schema(api_server: str) -> None:
     assert len(body) >= 0, "registry returned unexpected structure"
 
 
-@pytest.mark.timeout(10)
+@pytest.mark.timeout(30)
 def test_control_gates(api_server: str) -> None:
     """GET /control/gates returns gates list."""
     status, body = _get(f"{api_server}/control/gates")
@@ -194,7 +204,7 @@ def test_control_gates(api_server: str) -> None:
     assert isinstance(body, dict), f"Expected dict from /control/gates, got: {body}"
 
 
-@pytest.mark.timeout(10)
+@pytest.mark.timeout(30)
 def test_metrics_prometheus_format(api_server: str) -> None:
     """GET /metrics returns Prometheus text format."""
     status, body = _get(f"{api_server}/metrics")
@@ -205,7 +215,7 @@ def test_metrics_prometheus_format(api_server: str) -> None:
     assert body is not None and body != "", "metrics returned empty body"
 
 
-@pytest.mark.timeout(10)
+@pytest.mark.timeout(30)
 def test_cost_summary(api_server: str) -> None:
     """GET /cost/summary returns cost breakdown."""
     status, body = _get(f"{api_server}/cost/summary")
