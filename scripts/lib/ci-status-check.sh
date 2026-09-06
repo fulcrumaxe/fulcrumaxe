@@ -45,8 +45,26 @@
 #
 # Required check-run name allowlist (D#1608/#1610 incident: a naive per-PR
 # subset would have excluded the exact backend job that was red — require the
-# whole matrix, every time, by exact name):
-CI_REQUIRED_CHECKS=("tui" "dashboard" "ts-backend" "backend (import-smoke)")
+# whole matrix, every time, by exact name).
+#
+# D#1989 added "open-source export audit". Two properties made that safe, both
+# of which live above in this same file, and both of which any future addition
+# to this array has to re-check rather than assume:
+#
+#   1. It cannot deadlock the gate under the kill switch. check_ci_status
+#      reads CI_DISABLED FIRST and returns 2 (stand-down) before _ci_evaluate
+#      is ever called, so this array is not consulted at all on that path —
+#      the ci_gate_stood_down row is written without the required set being
+#      read. A name added here therefore cannot make the gate impossible to
+#      stand down.
+#   2. A never-registered check reads as absent, not as pending-forever:
+#      _CI_EVAL_PY puts it in `missing` and prints STATUS=fail. That is a hard
+#      block rather than a hang — loud, and diagnosable from the run — but it
+#      does mean the job carrying this name must register a check-run on every
+#      head it gates. ci.yml's export-audit job does: its only job-level `if:`
+#      is the kill switch, and its per-repository conditions are all
+#      step-level, so the job itself always runs and always concludes.
+CI_REQUIRED_CHECKS=("tui" "dashboard" "ts-backend" "backend (import-smoke)" "open-source export audit")
 
 # ── Gate streak markers (D#2271 PR-a) ───────────────────────────────────────
 # 138 ci_gate_stood_down rows sat in the audit trail for two weeks, each one

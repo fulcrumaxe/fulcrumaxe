@@ -147,7 +147,7 @@ if [[ "$ARGS" == *"check-runs"* ]]; then
   if [[ -n "${STUB_CI_CHECK_RUNS:-}" ]]; then
     printf '%s' "$STUB_CI_CHECK_RUNS"
   else
-    printf '%s' '[{"name":"tui","status":"completed","conclusion":"success","app":{"slug":"github-actions"},"html_url":""},{"name":"dashboard","status":"completed","conclusion":"success","app":{"slug":"github-actions"},"html_url":""},{"name":"ts-backend","status":"completed","conclusion":"success","app":{"slug":"github-actions"},"html_url":""},{"name":"backend (import-smoke)","status":"completed","conclusion":"success","app":{"slug":"github-actions"},"html_url":""}]'
+    printf '%s' '[{"name":"tui","status":"completed","conclusion":"success","app":{"slug":"github-actions"},"html_url":""},{"name":"dashboard","status":"completed","conclusion":"success","app":{"slug":"github-actions"},"html_url":""},{"name":"ts-backend","status":"completed","conclusion":"success","app":{"slug":"github-actions"},"html_url":""},{"name":"backend (import-smoke)","status":"completed","conclusion":"success","app":{"slug":"github-actions"},"html_url":""},{"name":"open-source export audit","status":"completed","conclusion":"success","app":{"slug":"github-actions"},"html_url":""}]'
   fi
   exit 0
 fi
@@ -677,9 +677,9 @@ rm -rf "$T_MF5" "$MF5_REPO"
 #
 # MISSING_MATRIX is the live shape of the bug: a job-level `if:` is evaluated
 # before matrix expansion, so tui/dashboard/ts-backend never register at all
-# and only the non-matrix job appears.
+# and only the non-matrix jobs appear.
 # ═══════════════════════════════════════════════════════════════════════════
-MISSING_MATRIX='[{"name":"backend (import-smoke)","status":"completed","conclusion":"success","app":{"slug":"github-actions"},"html_url":""}]'
+MISSING_MATRIX='[{"name":"backend (import-smoke)","status":"completed","conclusion":"success","app":{"slug":"github-actions"},"html_url":""},{"name":"open-source export audit","status":"completed","conclusion":"success","app":{"slug":"github-actions"},"html_url":""}]'
 
 _audit_count() {
   local file="$1" kind="$2" n

@@ -168,23 +168,61 @@ jobs:
     # room for that; 15 does. See PR #2212's body for the actual measured
     # duration on this repo's runner.
     timeout-minutes: 15
+    env:
+      # The one repository where open-source/ is expected to exist. This is a
+      # second copy of a slug the resolvers own elsewhere
+      # (scripts/lib/repo-resolve.sh, backend/_repo.py) -- deliberate,
+      # because a workflow `if:` expression cannot call either of them. Named
+      # once here rather than spelled out on each of the five step conditions
+      # below, so there is one place to change and one place to grep.
+      EXPORT_AUDIT_REPO: autonomous-agent-7/fulcrumaxe
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # D#1847 removed open-source/ from what this workflow itself ships in
-      # an export, so on an adopter's checked-out tree this script no longer
-      # exists — a plain `run:` here would be a permanently red check on
-      # every adopter's first push (exit 127, not a real failure). Guard on
-      # the checked-out tree rather than dropping the job outright, so it
-      # still runs unconditionally on this repo, where open-source/ does
-      # exist. hashFiles() has to come after Checkout — evaluated any
-      # earlier the workspace is empty and this would always read as absent.
+      # D#1989: one guard was being asked two different questions, and that
+      # is why this job could not fail.
       #
-      # D#2212: Node + the claude CLI are provisioned here, guarded by the
-      # same hashFiles() check, so an adopter's checked-out tree (no
+      # D#1847 removed open-source/ from what this workflow ships, so on an
+      # adopter's checked-out tree these scripts genuinely do not exist -- a
+      # plain `run:` would be a permanently red check on their very first
+      # push (exit 127, not a real failure). The old guard -- a bare
+      # hashFiles() test on that path, with nothing else in the condition
+      # -- skipped in that case, correctly. But it skipped identically when
+      # the file was renamed or deleted HERE, where it must exist. A job
+      # whose every step skips still reports success, so the audit went
+      # green having audited nothing: on a real run before this change the
+      # log was checkout, then cleanup, conclusion `success`.
+      #
+      # `github.repository` tells the two apart: absent-because-adopter
+      # (skip, stay green) from absent-because-renamed (fail, and say which
+      # path). hashFiles() still has to come after Checkout -- evaluated any
+      # earlier the workspace is empty and every path reads as absent.
+      #
+      # For a `pull_request` event `github.repository` is the BASE
+      # repository, not the fork's, so fork PRs opened against this repo keep
+      # auditing.
+      - name: Assert export tooling is present
+        if: github.repository == env.EXPORT_AUDIT_REPO && hashFiles('open-source/verify-export.sh') == ''
+        run: |
+          echo "::error::open-source/verify-export.sh is missing from ${{ github.repository }}"
+          {
+            echo "open-source/verify-export.sh is missing from ${{ github.repository }}."
+            echo "On this repository the export tooling must exist, so an absent file here means it was renamed or removed -- not that this is an adopter checkout."
+            echo "Restore open-source/verify-export.sh, or update this job if the path moved."
+          } >&2
+          exit 1
+
+      # D#2212: Node + the claude CLI are provisioned here under the same
+      # condition as the audit itself, so an adopter's checked-out tree (no
       # open-source/) never pays for either -- installing a CLI they will
       # never use on every one of their pushes would be rude (D#1847).
+      #
+      # D#1989: that condition is now the repository, not hashFiles(). Past
+      # the assert step above, on this repo the file provably exists, so a
+      # hashFiles() guard here could only ever mask the rename it was
+      # supposed to catch -- which is the defect, not a second layer of
+      # defence against it.
       #
       # Node 22, not the "20" build-test uses above: @anthropic-ai/claude-
       # code's package.json declares engines.node >=22. A first pass at
@@ -194,7 +232,7 @@ jobs:
       # breaks silently on some future patch release. Checked against the
       # real run.
       - name: Setup Node
-        if: hashFiles('open-source/verify-export.sh') != ''
+        if: github.repository == env.EXPORT_AUDIT_REPO
         uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -212,11 +250,11 @@ jobs:
       # specifically so this step runs a build the gate has actually been
       # checked against, not whatever ships next.
       - name: Install claude CLI
-        if: hashFiles('open-source/verify-export.sh') != ''
+        if: github.repository == env.EXPORT_AUDIT_REPO
         run: npm install -g @anthropic-ai/claude-code@2.1.258
 
       - name: Run verify-export.sh
-        if: hashFiles('open-source/verify-export.sh') != ''
+        if: github.repository == env.EXPORT_AUDIT_REPO
         env:
           # Step-level only -- deliberately not job- or workflow-level. This
           # turns a SKIP into a hard FAIL (D#2210 round 4's opt-in default),
@@ -230,15 +268,16 @@ jobs:
       # D#1890: loop-bootstrap/'s payload is now derived from BOOTSTRAP_PATHS
       # rather than hand-maintained — these two checks are what keep that
       # true instead of merely asserted. Same fork-safety reasoning as
-      # verify-export.sh above: guarded on the checked-out tree because
-      # open-source/ and loop-bootstrap/ are both excluded from what this
-      # workflow itself ships to adopters.
+      # verify-export.sh above: guarded on the repository rather than on the
+      # checked-out tree, because open-source/ and loop-bootstrap/ are both
+      # excluded from what this workflow itself ships to adopters, and a
+      # rename of either script on THIS repo has to be loud (D#1989).
       - name: BOOTSTRAP_PATHS subset check
-        if: hashFiles('open-source/checks/bootstrap_subset.py') != ''
+        if: github.repository == env.EXPORT_AUDIT_REPO
         run: python3 open-source/checks/bootstrap_subset.py
 
       - name: Bootstrap file classification coverage check
-        if: hashFiles('open-source/checks/verify_classification.py') != ''
+        if: github.repository == env.EXPORT_AUDIT_REPO
         run: python3 open-source/checks/verify_classification.py
 
   # Import-smoke gate for backend/ itself (D#1608). Deliberately NOT the full
