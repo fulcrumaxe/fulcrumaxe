@@ -9,12 +9,43 @@
  * git worktree, where the two answers genuinely differ. See "byte-identical
  * with the Python resolver" below.
  *
+ * What this file can and cannot detect, and why the fixture exists
+ * ----------------------------------------------------------------
+ * The parity checks above are only *able* to see a collapsed resolver when
+ * they are run somewhere the two answers actually differ. Collapsing
+ * mainRepoRoot() to `return repoRoot()` and running this file measures:
+ *
+ *   linked git worktree   1 fail  — mainRepoRoot() named the worktree
+ *   plain `git clone`     0 fail  — 10/10 green, the collapse invisible
+ *
+ * That is not flakiness, it is structural. mainRepoRoot() walks
+ * git-common-dir to find the checkout a linked working tree was branched
+ * from; in a plain clone there is nothing for it to find, so a collapsed
+ * implementation returns the right answer for the wrong reason and is
+ * indistinguishable from a correct one.
+ *
+ * The environment that gates merges is the plain-clone case: CI checks the
+ * repo out with actions/checkout@v4, an ordinary (and shallow) checkout. So
+ * for as long as this file only measured the checkout it happened to be
+ * invoked from, the one place a collapsed resolver had to be caught before
+ * reaching main was the one place this file was blind — while its name and
+ * its green result both implied otherwise.
+ *
+ * "mainRepoRoot() — measured against a linked worktree this file builds
+ * itself" below closes that. It runs `git worktree add --detach` into a temp
+ * directory and points the resolver at the result, so the divergence is
+ * supplied by the test rather than inherited from wherever it was run. The
+ * collapse above now fails in both contexts, and the checks stop depending
+ * on the caller's checkout layout to mean anything. It needs a writable
+ * .git (to register the worktree) and removes what it creates, pass or fail.
+ *
  * Run: bun test tests/config/repo-root.test.ts --timeout 60000
  */
 
-import { describe, it, expect, afterEach } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { describe, it, expect, afterEach, afterAll } from "bun:test";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -49,9 +80,13 @@ function resetEnv(): void {
 
 afterEach(resetEnv);
 
-async function runPython(code: string): Promise<string> {
+async function runPython(
+  code: string,
+  extraEnv: Record<string, string> = {}
+): Promise<string> {
   const proc = Bun.spawn(["python3", "-c", code], {
     cwd: REPO_ROOT_FOR_PYTHON,
+    env: { ...process.env, ...extraEnv },
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -98,6 +133,93 @@ describe("repoRoot()/mainRepoRoot() — parity with backend/repo_root.py", () =>
     );
     expect(tsAnswer).toBe(pyAnswer);
   });
+});
+
+// ---------------------------------------------------------------------------
+// The fixture that makes the two parity checks above discriminate in a plain
+// clone — see "What this file can and cannot detect" at the top of the file.
+// ---------------------------------------------------------------------------
+
+function git(args: string[], cwd: string): { status: number; stderr: string } {
+  const proc = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
+  return { status: proc.exitCode, stderr: new TextDecoder().decode(proc.stderr).trim() };
+}
+
+describe("mainRepoRoot() — measured against a linked worktree this file builds itself", () => {
+  let tmpParent: string | null = null;
+  let worktree: string | null = null;
+
+  afterAll(() => {
+    // Registered as a hook, not written inline, so it also runs when an
+    // assertion below fails. A leaked worktree would outlive the run twice
+    // over: as a temp directory, and as an entry in the shared .git.
+    if (worktree !== null) {
+      git(["worktree", "remove", "--force", worktree], REPO_ROOT_FOR_PYTHON);
+      git(["worktree", "prune"], REPO_ROOT_FOR_PYTHON);
+      worktree = null;
+    }
+    if (tmpParent !== null) {
+      rmSync(tmpParent, { recursive: true, force: true });
+      tmpParent = null;
+    }
+  });
+
+  it("names the main checkout while repoRoot() names the worktree", async () => {
+    tmpParent = mkdtempSync(join(tmpdir(), "repo-root-parity-"));
+    // git names the admin entry under <git-common-dir>/worktrees/ after this
+    // path's basename, so the basename has to be unique per run — a fixed one
+    // would have two concurrent suites contending for the same entry.
+    worktree = join(tmpParent, `wt-${basename(tmpParent)}`);
+
+    // --detach keeps this off the branch namespace entirely: nothing to
+    // collide with, and nothing that needs history a shallow clone lacks.
+    const added = git(
+      ["worktree", "add", "--detach", worktree, "HEAD"],
+      REPO_ROOT_FOR_PYTHON
+    );
+    if (added.status !== 0) {
+      throw new Error(`git worktree add failed (${added.status}): ${added.stderr}`);
+    }
+
+    // Point both resolvers at the throwaway worktree with the same override,
+    // so each answers about the tree this test built rather than about the
+    // checkout the suite happened to be invoked from. The override is what
+    // keeps the *in-tree* modules under measurement — the worktree holds
+    // committed content, so importing its copy would silently exempt any
+    // uncommitted change to the resolver from this check.
+    resetEnv();
+    process.env[ENV_REPO_ROOT] = worktree;
+    _clearCaches();
+
+    const tsRepo = normalise(repoRoot());
+    const tsMain = normalise(mainRepoRoot());
+    const pyMain = normalise(
+      await runPython(
+        "from backend.repo_root import main_repo_root; print(main_repo_root())",
+        { [ENV_REPO_ROOT]: worktree }
+      )
+    );
+
+    // Preconditions, asserted rather than assumed: the fixture is pointed at
+    // and the divergence it exists to supply is really there. Without these a
+    // worktree that failed to become a linked tree would make the assertions
+    // below vacuous instead of red.
+    expect(tsRepo).toBe(normalise(worktree));
+    expect(pyMain).not.toBe(normalise(worktree));
+
+    // The relationship, never a literal path: this runs on developer hosts,
+    // in agent worktrees and on ubuntu-latest, and a hardcoded path or prefix
+    // would be green on exactly one of them. A resolver that collapses the
+    // two answers fails here regardless of which checkout the suite ran from.
+    expect(tsMain).not.toBe(tsRepo);
+    expect(tsMain).toBe(pyMain);
+    // The one per-test bound in this file. Not a workaround for a slow
+    // assertion: alone among these tests this one checks out the whole tree,
+    // so its cost tracks repo size and host speed rather than being constant.
+    // The configured suite default (30s, see package.json) already covers it
+    // — this keeps the file honest under a bare `bun test`, whose 5s default
+    // is the one tests/meta/timeout-governs.test.ts exists to detect.
+  }, 60_000);
 });
 
 describe("repoRoot() — environment override precedence", () => {
