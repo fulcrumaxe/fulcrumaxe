@@ -119,6 +119,44 @@ CI_STATUS_FAIL_KIND=""
 CI_CONFLICT_FILES=""
 CI_CONFLICT_FILES_REASON=""
 
+# Outcome of the last ci_probe_mergeable call, as a token so callers branch on
+# a string rather than an exit code alone: conflicting | clear | unknown.
+CI_MERGE_PROBE=""
+# The raw mergeStateStatus GitHub reported, for the operator's benefit. It is
+# NOT on its own what a refusal is decided on -- see ci_probe_mergeable for
+# which states mean what.
+CI_MERGE_STATE_STATUS=""
+# The raw `mergeable` GitHub reported, exported for the same reason as the
+# status above: a caller that wants to tell the operator what was OBSERVED
+# needs both halves, not one half and an assumption about the other.
+CI_MERGE_MERGEABLE=""
+# The single `field=value` that actually drove a refusal, e.g.
+# "mergeable=CONFLICTING" or "mergeStateStatus=DIRTY". Set only on the two
+# branches below that return 1, and cleared otherwise.
+#
+# It exists so a caller never has to re-derive which field fired. Two fields
+# can each refuse, so a message that hardcodes one of them is wrong half the
+# time -- and wrong in the specific way this whole Discussion is about: a
+# diagnostic asserting something other than what was observed. The caller
+# prints this string; it does not reconstruct it.
+CI_MERGE_PROBE_TRIGGER=""
+# Why the probe could not decide, when CI_MERGE_PROBE is `unknown`. Callers
+# that fall through on `unknown` should print this, for the same reason
+# CI_CONFLICT_FILES_REASON exists: an unexplained silence reads as an answer.
+CI_MERGE_PROBE_REASON=""
+# GitHub computes mergeability asynchronously, and the read is what schedules
+# the computation -- so the first read of a freshly-pushed branch is routinely
+# UNKNOWN. Measured on the code plane (fulcrumaxe/fulcrumaxe) on 2026-09-06: a
+# single `gh pr list --json mergeable` over the three open PRs returned
+# UNKNOWN for two of them, and one `gh pr view --json mergeable` on each of
+# those same two moments later returned MERGEABLE|CLEAN. A merge wrapper
+# usually runs shortly after a push, so that first-read UNKNOWN is the common
+# case, not the exotic one, and one short bounded retry is the difference
+# between this probe answering and not answering when it matters. Bounded by
+# construction: at most CI_MERGE_PROBE_ATTEMPTS reads and one fewer sleeps.
+CI_MERGE_PROBE_ATTEMPTS="${CI_MERGE_PROBE_ATTEMPTS:-3}"
+CI_MERGE_PROBE_INTERVAL="${CI_MERGE_PROBE_INTERVAL:-2}"
+
 _CI_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _CI_REPO_ROOT="$(cd "$_CI_LIB_DIR/../.." && pwd)"
 
@@ -606,6 +644,147 @@ ci_conflicting_files() {
     return 0
   fi
   CI_CONFLICT_FILES="$files"
+  return 0
+}
+
+# ── Public: ci_probe_mergeable <pr> <repo> ──────────────────────────────────
+# Answers one question cheaply -- "does GitHub already know this branch cannot
+# merge?" -- so a caller can refuse before spending CI_MAX_WAIT_SECONDS on a
+# wait that can never succeed.
+#
+# Why it has to come first (D#2339): a CONFLICTING PR gets zero check-runs from
+# GitHub, so the CI wait on one always runs to its full 1200-second timeout and
+# then reports "CI wait timed out ... no github-actions check-runs registered
+# yet for this head". That is a misdiagnosis -- the branch conflicts and could
+# never have produced a check-run -- and it is a twenty-minute one.
+#
+# Returns 1 ONLY for a state that certainly cannot merge, and 0 for everything
+# else including its own failures. That fail-open is deliberate: this probe
+# only ever ACCELERATES a refusal the merge itself already produces (GitHub
+# answers HTTP 405 on a conflicting merge, which ci_merge_sha_pinned classifies
+# as `conflict`), so a probe that refused on a transient API blip would add a
+# brand-new way to fail where there was previously only a slow one.
+#
+# The states are not interchangeable, so each gets an explicit decision:
+#   mergeable=CONFLICTING    -> refuse. GitHub's own answer, unambiguous.
+#   mergeStateStatus=DIRTY   -> refuse. The status that means "the merge commit
+#                               cannot be cleanly created". Consulted only when
+#                               `mergeable` did not already say MERGEABLE, so
+#                               it can never contradict the authoritative field.
+#   mergeStateStatus=BLOCKED -> do NOT refuse. It means a required review or
+#                               check is missing, which this script's own label
+#                               and CI-status gates already refuse on, by name.
+#                               Refusing twice for one reason is worse than
+#                               once, and their message is the specific one.
+#   mergeStateStatus=BEHIND  -> do NOT refuse. Behind is still mergeable; a
+#                               squash merge of a behind-but-clean branch
+#                               succeeds, so refusing would block good merges.
+#   UNKNOWN / anything else  -> do NOT refuse. "Not computed yet" is not a
+#                               conflict, and treating it as one would make a
+#                               freshly-pushed branch unmergeable for exactly
+#                               the wrong reason -- the same class of
+#                               misdiagnosis this probe exists to end.
+#
+# Two of those rows refuse, so callers MUST print CI_MERGE_PROBE_TRIGGER rather
+# than naming a field themselves: the DIRTY row is reached precisely when
+# `mergeable` was UNKNOWN, so a message hardcoding "mergeable=CONFLICTING"
+# reports a value GitHub did not return. CI_MERGE_MERGEABLE and
+# CI_MERGE_STATE_STATUS carry the two raw observations alongside it.
+ci_probe_mergeable() {
+  local pr="$1" repo="$2"
+  CI_MERGE_PROBE="unknown"
+  CI_MERGE_STATE_STATUS=""
+  CI_MERGE_MERGEABLE=""
+  CI_MERGE_PROBE_TRIGGER=""
+  CI_MERGE_PROBE_REASON=""
+
+  local attempts="${CI_MERGE_PROBE_ATTEMPTS:-3}"
+  case "$attempts" in
+    ''|*[!0-9]*) attempts=3 ;;
+  esac
+  if [ "$attempts" -lt 1 ]; then
+    attempts=1
+  fi
+
+  local i raw rc mergeable="" state=""
+  for (( i = 1; i <= attempts; i++ )); do
+    rc=0
+    # One call for both fields. `// "UNKNOWN"` because either can come back
+    # null, and a null would otherwise make jq's string concat fail and be
+    # reported as a probe failure rather than as the "not computed yet" it is.
+    raw="$(gh pr view "$pr" --repo "$repo" --json mergeable,mergeStateStatus \
+             --jq '(.mergeable // "UNKNOWN") + "|" + (.mergeStateStatus // "UNKNOWN")' 2>/dev/null)" || rc=$?
+    if [ "$rc" -ne 0 ] || [ -z "$raw" ]; then
+      CI_MERGE_PROBE="unknown"
+      CI_MERGE_PROBE_REASON="gh pr view --json mergeable,mergeStateStatus failed for PR #$pr (rc=$rc)"
+      return 0
+    fi
+    mergeable="${raw%%|*}"
+    state="${raw##*|}"
+    CI_MERGE_STATE_STATUS="$state"
+    CI_MERGE_MERGEABLE="$mergeable"
+
+    case "$mergeable" in
+      CONFLICTING)
+        CI_MERGE_PROBE="conflicting"
+        CI_MERGE_PROBE_TRIGGER="mergeable=CONFLICTING"
+        return 1
+        ;;
+      MERGEABLE)
+        CI_MERGE_PROBE="clear"
+        return 0
+        ;;
+    esac
+    if [ "$state" = "DIRTY" ]; then
+      # Reached only when `mergeable` did NOT say CONFLICTING -- in practice
+      # when it is still UNKNOWN. The trigger records that, so the caller says
+      # mergeStateStatus fired rather than claiming GitHub returned a
+      # `mergeable` value it never returned.
+      CI_MERGE_PROBE="conflicting"
+      CI_MERGE_PROBE_TRIGGER="mergeStateStatus=DIRTY"
+      return 1
+    fi
+    if [ "$i" -lt "$attempts" ]; then
+      sleep "${CI_MERGE_PROBE_INTERVAL:-2}"
+    fi
+  done
+
+  CI_MERGE_PROBE="unknown"
+  CI_MERGE_PROBE_REASON="GitHub still reports mergeable=${mergeable:-UNKNOWN} mergeStateStatus=${state:-UNKNOWN} for PR #$pr after ${attempts} read(s) — mergeability is computed asynchronously"
+  return 0
+}
+
+# ── Public: ci_report_conflict <pr> <repo> <head_ref> ───────────────────────
+# The single place this codebase says "this branch conflicts with its base".
+# Both callers in merge-and-hook.sh -- the pre-wait mergeability probe and the
+# post-merge-failure diagnostic -- print through here, so one condition cannot
+# grow two phrasings for an operator to have to recognise as the same thing.
+#
+# The `[merge-and-hook]` prefix is part of the wording being preserved, not an
+# oversight: it is what the existing direct-merge path prints. If a second
+# caller outside that script ever wants this, parameterise the prefix then.
+#
+# Never fails the caller: it is a diagnostic, and nothing in it may abort
+# before the operator has read it.
+ci_report_conflict() {
+  local pr="$1" repo="$2" head_ref="${3:-}"
+  echo "[merge-and-hook] cause: this branch conflicts with its base and is not mergeable." >&2
+  echo "[merge-and-hook] remedy: merge main into the branch and resolve the conflicts, then re-run this script." >&2
+
+  local base_ref
+  base_ref="$(gh pr view "$pr" --repo "$repo" --json baseRefName --jq .baseRefName 2>/dev/null || true)"
+  if [ -z "$base_ref" ]; then
+    base_ref="main"
+  fi
+  # Best-effort and non-fatal. When the paths cannot be computed we say so AND
+  # say why -- a silently missing list reads as "no conflicts".
+  ci_conflicting_files "$base_ref" "$head_ref" || true
+  if [ -n "$CI_CONFLICT_FILES" ]; then
+    echo "[merge-and-hook] conflicting files:" >&2
+    printf '%s\n' "$CI_CONFLICT_FILES" | sed 's/^/[merge-and-hook]   /' >&2
+  else
+    echo "[merge-and-hook] conflicting files: unavailable (${CI_CONFLICT_FILES_REASON:-reason unknown})" >&2
+  fi
   return 0
 }
 
