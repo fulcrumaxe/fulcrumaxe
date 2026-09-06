@@ -1,0 +1,79 @@
+{
+  "note": "Differences between the two merge paths — scripts/loop-phased-step5.sh (loop auto-merge) and scripts/merge-and-hook.sh (manual) — that are recorded rather than fixed (D#2332). scripts/ci/merge-gate-parity-guard.py derives the loop's gate set from that script's own source and fails the build for any difference no entry here claims, so this file cannot be the place a divergence hides: it can only explain one the guard already found. It also fails an entry that has gone stale — one claiming a label the manual path now enforces, one claiming a label the loop no longer gates, or one whose 'assert' evidence stopped matching the tree. That is what retires an entry; browser-test-passed left this ledger that way when PR #28 gave the manual path the gate, rather than sitting here forever describing a fixed defect. Every entry needs a reason a reviewer can check against the two scripts — 'by design' is not a reason. status is 'open' (a real gap, awaiting a decision) or 'deliberate' (the two paths are meant to differ, and the reason says why). Every entry below is 'open': nothing here has been decided to be acceptable yet, which is itself the finding.",
+
+  "loop_gate_surface": {
+    "note_on_counts": "Pins the derived surface so a change to it has to be looked at. The counts are a tripwire, not a semantic measure — they are how many times scripts/loop-phased-step5.sh reads each label via _has_label. A label already enforced on both paths can still diverge by the loop growing a NEW CONDITION on it (security-review-passed is exactly that: the loop gates it on the pr_state flag, on a live diff-content trigger, and on provenance:external, while the manual path implements only the third), and no presence check can see that. A changed count can. Updating a number here is a one-line edit; the point is that it cannot happen without someone confirming the manual path does not need the new condition.",
+    "has_label_reads": {
+      "browser-test-passed": 1,
+      "code-review-passed": 2,
+      "debater-confirmed": 3,
+      "security-review-passed": 5
+    },
+    "nack_labels": [
+      "security-needs-fix",
+      "security-issue",
+      "security-review-needs-fix",
+      "code-review-needs-fix",
+      "needs-re-review",
+      "acceptance-failed",
+      "do-not-merge",
+      "wip"
+    ]
+  },
+
+  "divergences": {
+    "code-review-passed-unread-by-manual-path": {
+      "labels": ["code-review-passed"],
+      "status": "open",
+      "tracked_as": "D#2452",
+      "reason": "The loop path treats code-review-passed as a hard, unconditional gate: it is the first branch of the merging elif-chain and no flag or condition guards it. scripts/merge-and-hook.sh never reads the label at all — grep for it in that file returns nothing — so on the manual path the only thing standing between an unreviewed PR and main is the operator deciding not to run the command. CLAUDE.md's Team Lead direct-merge exception describes a scoped bypass for changes of 50 lines or fewer, but nothing measures whether the PR being merged fits that description, and unlike the browser-test and CI bypasses this one leaves no audit row because there is no gate to bypass. Recorded rather than fixed here on purpose: adding the check changes what the manual path does to every PR, which is a behaviour change with its own Spec, filed as D#2452. This entry retires itself the moment merge-and-hook.sh mentions the label."
+    },
+
+    "nack-labels-unread-by-manual-path": {
+      "labels": [
+        "security-needs-fix",
+        "security-issue",
+        "security-review-needs-fix",
+        "code-review-needs-fix",
+        "needs-re-review",
+        "acceptance-failed",
+        "do-not-merge",
+        "wip"
+      ],
+      "status": "open",
+      "tracked_as": "unfiled — surfaced by this guard's first run, reported to Team Lead in the PR that added this ledger; needs its own Discussion before anything changes",
+      "reason": "_check_nack_labels makes any of these eight labels a fail-closed veto on the loop path: present means the merge is refused regardless of which pass labels are also on the PR. scripts/merge-and-hook.sh reads none of them, so do-not-merge and wip — labels whose entire purpose is to stop a merge, and the two a human is most likely to reach for — stop the loop and do not stop the manual path. acceptance-failed is the same shape: CLAUDE.md's Merge Gate Protocol calls it 'a veto without quorum', and on the manual path it vetoes nothing. This was not in D#2332's original finding; the guard derived it from _NACK_LABELS on its first run, which is the behaviour the guard exists for. Fixing it is a behaviour change to every manual merge and needs a Spec, not a line in this file."
+    },
+
+    "debater-confirmed-unread-by-manual-path": {
+      "labels": ["debater-confirmed"],
+      "status": "open",
+      "tracked_as": "unfiled — lower severity than the two entries above (the gate it mirrors is off by default); reported to Team Lead in the PR that added this ledger",
+      "reason": "The loop path requires debater-confirmed at the merging phase when gates.debater_pass is on, and will try to consume a pending debater envelope before declaring the gate failed. The manual path has no debater step and never reads the label. Today the gate flag defaults off, so the two paths agree in the default configuration and the difference is latent — which is the reason to write it down rather than the reason not to: flipping gates.debater_pass on would create a one-path gate silently, and this entry is what makes that visible when it happens."
+    },
+
+    "dashboard-touched-predicate-fails-open": {
+      "labels": [],
+      "status": "open",
+      "tracked_as": "unfiled — the remaining route by which a dashboard PR merges untested on EITHER path; reported to Team Lead in the PR that added this ledger",
+      "reason": "Both paths now ask the same question ('does this PR touch dashboard/?') of the same script, which is what stops them drifting — but the answer is fail-open. scripts/check-pr-dashboard-touched.sh ends in `grep -q '^dashboard/' && exit 0 || exit 1`, which collapses two different outcomes into exit 1: the diff genuinely contains no dashboard file, and the diff could not be read at all. A `gh pr diff` that 403s, times out, or hits a rate limit therefore reads as 'not a dashboard PR' and both browser-test gates skip themselves. It is not a divergence between the paths, and it is recorded here because it is the only remaining route by which a dashboard PR reaches main untested now that PR #28 closed the manual-path gap — the file the paths share is where a fix has to go, and a code comment there would not fail any build. Note the same script's code-plane resolution failure already fails CLOSED (it exits 0, 'assume dashboard touched'), so the correct shape is settled and present in the file a few lines above the defect.",
+      "assert": [
+        {"file": "scripts/check-pr-dashboard-touched.sh", "present": "grep -q '\\^dashboard/' && exit 0 \\|\\| exit 1"},
+        {"file": "scripts/loop-phased-step5.sh", "present": "check-pr-dashboard-touched\\.sh"},
+        {"file": "scripts/merge-and-hook.sh", "present": "check-pr-dashboard-touched\\.sh"}
+      ]
+    },
+
+    "security-trigger-unread-by-manual-path": {
+      "labels": [],
+      "status": "open",
+      "tracked_as": "unfiled — reported to Team Lead in the PR that added this ledger; the second half (the unanchored scan) is a defect in the trigger itself and wants its own Discussion",
+      "reason": "security-review-passed reads as enforced on both paths, and it is not: the label appears in merge-and-hook.sh only inside the HG-7 block, which requires it when the originating Discussion carries provenance:external. The loop path requires it under two further conditions the manual path implements neither of — the pr_state needs_security_review flag, and a live content scan of the diff via _check_security_trigger. This is why loop_gate_surface pins read counts: a presence check alone would call this label at parity. The trigger it consults also has a defect of its own. detect_security_trigger greps the output of `gh pr diff` — the whole unified diff, including context lines and removals — rather than added lines only, so an unchanged line anywhere near a change can fire it. Measured: it fired on PR #28 for the word 'secret' in untouched CLAUDE.md prose. That direction is safe (it over-triggers, demanding a review nobody needed) but it makes the gate noisy enough to be worth fixing before anything is built on top of it.",
+      "assert": [
+        {"file": "scripts/loop-phased-step5.sh", "present": "_check_security_trigger \"\\$PR_NUM\""},
+        {"file": "scripts/merge-and-hook.sh", "absent": "detect_security_trigger\\|security-trigger\\.sh"},
+        {"file": "scripts/lib/security-trigger.sh", "present": "echo \"\\$diff_content\" \\| grep -qF \"\\$keyword\""}
+      ]
+    }
+  }
+}
