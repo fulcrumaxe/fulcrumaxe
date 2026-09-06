@@ -54,6 +54,20 @@
 # writes only files that do not already exist, and only inside the backlog
 # directory it was given.
 #
+# A standing warning for whoever edits this file next. Every judgement here
+# about "is there work to do" has been wrong at some point — the format the
+# operator was told to write, the check that decided a backlog conformed, the
+# message it printed, the branch for a finished backlog, and the counter that
+# branch depends on. Five, and the test suite was green for every one of them.
+# The trap is structural, not incidental: this module restates what
+# scripts/import-epic-tasks.py will do, and a restatement drifts silently
+# because both sides still run and both still exit 0.
+#
+# So the standard for a change here is not "the tests pass". It is: run the
+# real importer on the same tree and check the two answers match. The suite
+# does exactly that for the importable count, on purpose, and comparing beat
+# every literal expectation that came before it.
+#
 # No network calls, no gh calls.
 
 set -euo pipefail
@@ -182,9 +196,16 @@ _coldstart_backlog_importable_count() {
     fm="$(_coldstart_backlog_frontmatter "$f")"
     # Same normalisation the importer applies: lowercase, and '_' and ' '
     # both fold to '-', so not_started / not started / not-started all match.
+    #
+    # ORDER MATTERS, and getting it wrong is invisible. Trailing whitespace
+    # and quotes come off BEFORE spaces fold to hyphens — fold first and the
+    # strip has nothing left to strip, because the spaces it was looking for
+    # are hyphens by then. `status: not-started ` became "not-started-" and
+    # counted as done. Same single cause for a trailing comment: the `[^#]*`
+    # capture keeps the space that sat before the `#`.
     st="$(sed -n 's/^status:[[:space:]]*\([^#]*\).*/\1/p' <<<"$fm" | head -n 1 \
-          | tr -d '"'"'"'' | tr '[:upper:]' '[:lower:]' | tr '_ ' '--' \
-          | sed 's/[[:space:]]*$//')"
+          | sed -e 's/[[:space:]]*$//' -e 's/^[[:space:]]*//' -e 's/["'"'"']//g' \
+          | tr '[:upper:]' '[:lower:]' | tr '_ ' '--')"
     case "$st" in
       not-started|in-progress) n=$((n + 1)) ;;
     esac

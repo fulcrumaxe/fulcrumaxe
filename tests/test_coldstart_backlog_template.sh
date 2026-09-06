@@ -167,19 +167,83 @@ echo ""
 echo "=== classify: conforming ==="
 # Conformance is the full required-field set, because that set is the whole of
 # what stands between a file and a Discussion.
+# $1 task number, $2 status text written VERBATIM — callers pass trailing
+# spaces and inline comments on purpose, so this must not tidy the value.
 mk_task() {
-  printf -- '---\nepic: 3\ntask: 1\ntitle: "Proration on plan change"\ntype: feature\nstatus: %s\nestimated_hours: 3\ndepends_on: []\ntags: [epic-3]\n---\n\n# Task: Proration on plan change\n' "$1"
+  printf -- '---\nepic: 3\ntask: %s\ntitle: "Task %s"\ntype: feature\nstatus: %s\nestimated_hours: 3\ndepends_on: []\ntags: [epic-3]\n---\n\n# Task: Task %s\n' \
+    "$1" "$1" "$2" "$1"
 }
 D="$(mkfixture)"; mkdir -p "$D/epics/epic-3-billing"
-mk_task not-started >"$D/epics/epic-3-billing/01.md"
+mk_task 1 not-started >"$D/epics/epic-3-billing/01.md"
 assert_eq "a complete task file classifies as conforming" "$(coldstart_backlog_classify "$D/epics")" "conforming"
 
 D="$(mkfixture)"; mkdir -p "$D/epics/epic-3-billing"
-mk_task completed >"$D/epics/epic-3-billing/01.md"
+mk_task 1 completed >"$D/epics/epic-3-billing/01.md"
 assert_eq "a finished backlog is still well-formed, so still conforming" "$(coldstart_backlog_classify "$D/epics")" "conforming"
 OUT="$(coldstart_backlog_step "$D/epics" "$D" "$TPL_DIR" 2>&1)"
 assert_contains "an all-completed backlog says nothing would import" "would create nothing" "$OUT"
 assert_not_contains "and does not then tell you to run --resume anyway" "Re-run with --resume" "$OUT"
+
+echo ""
+echo "=== the importable count agrees with the real importer ==="
+# Asserted as a COMPARISON, never against a literal. Every defect in this
+# file's lineage has been the module believing something the importer does
+# not do, and a literal expectation cannot see that — it passes forever while
+# the two drift apart. `After status filter: N` is the importer's own answer
+# on the same tree, so this fails the moment they disagree, whatever the
+# number happens to be.
+#
+# The first two spellings are the ones that caught the counter: the fold from
+# spaces to hyphens ran before the trailing-whitespace strip, so
+# `status: not-started ` normalised to "not-started-" and counted as done. An
+# operator with one invisible trailing space on two open tasks was told every
+# task file was already completed. Neither shape was in this suite, which is
+# why it was green with the defect present.
+assert_agrees_with_importer() {
+  local label="$1" root="$2" mine theirs
+  mine="$(_coldstart_backlog_importable_count "$root/epics")"
+  theirs="$(python3 "$IMPORTER" "$root" --repo example-org/example-project --dry-run 2>/dev/null \
+            | sed -n 's/^After status filter: \([0-9]*\) task.*/\1/p' | head -n 1)"
+  # The importer prints no such line when it finds no task files at all.
+  [[ -n "$theirs" ]] || theirs=0
+  if [[ "$mine" == "$theirs" ]]; then
+    ok "$label (both say $mine)"
+  else
+    bad "$label" "module says $mine, importer says $theirs"
+  fi
+}
+
+D="$(mkfixture)"; mkdir -p "$D/epics/epic-3-billing"
+mk_task 1 'not-started ' >"$D/epics/epic-3-billing/01.md"
+assert_agrees_with_importer "status with a trailing space" "$D"
+
+D="$(mkfixture)"; mkdir -p "$D/epics/epic-3-billing"
+mk_task 1 'not-started   # flip to completed when done' >"$D/epics/epic-3-billing/01.md"
+assert_agrees_with_importer "status with an inline comment" "$D"
+
+for s in 'not-started' 'not_started' 'not started' 'Not-Started' 'NOT_STARTED' \
+         'in_progress' 'in-progress' '"not-started"' 'completed' 'superseded'; do
+  D="$(mkfixture)"; mkdir -p "$D/epics/epic-3-billing"
+  mk_task 1 "$s" >"$D/epics/epic-3-billing/01.md"
+  assert_agrees_with_importer "status spelling: $s" "$D"
+done
+
+# A mixed backlog, so the agreed count is neither trivially 0 nor 1.
+D="$(mkfixture)"; mkdir -p "$D/epics/epic-3-billing"
+mk_task 1 'not-started ' >"$D/epics/epic-3-billing/01.md"
+mk_task 2 'in_progress' >"$D/epics/epic-3-billing/02.md"
+mk_task 3 'completed' >"$D/epics/epic-3-billing/03.md"
+mk_task 4 'Not Started  # still open' >"$D/epics/epic-3-billing/04.md"
+assert_agrees_with_importer "a mixed backlog" "$D"
+OUT="$(coldstart_backlog_step "$D/epics" "$D" "$TPL_DIR" 2>&1)"
+assert_contains "a backlog with open work gets the go-ahead" "Re-run with --resume" "$OUT"
+assert_not_contains "and is not told everything is already done" "would create nothing" "$OUT"
+
+# The all-completed branch, compared rather than asserted at a literal 0.
+D="$(mkfixture)"; mkdir -p "$D/epics/epic-3-billing"
+mk_task 1 'completed' >"$D/epics/epic-3-billing/01.md"
+mk_task 2 'superseded' >"$D/epics/epic-3-billing/02.md"
+assert_agrees_with_importer "an all-finished backlog" "$D"
 
 echo ""
 echo "=== classify: incomplete — the old on-screen format ==="
