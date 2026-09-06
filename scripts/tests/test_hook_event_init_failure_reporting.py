@@ -8,8 +8,11 @@ old code never checked that, so it went on to export `HOOK_EVENT_FD=200`,
 write the marker (a different, writable path), and return 0 — advertising a
 lock descriptor it never held.
 
-Reproduced against current main before writing this file:
-  hook_event_id=executor-1803-1787283902
+Reproduced against current main before writing this file (the spawn tag
+below is spaced apart from its id on purpose: a contiguous one here would be
+adopted as their own by every agent that reads this file, and
+scripts/ci/no-planted-spawn-ids-guard.py fails the build on it):
+  hook_event_id= executor-1803-1787283902
   init_rc=0
   HOOK_EVENT_FD=200
   fd200_usable=no      (flock -n -x 200 fails — the fd was never opened)

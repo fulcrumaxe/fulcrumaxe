@@ -11,6 +11,9 @@ Exits 0 (allow) or 2 (block, Claude Code surfaces stderr as the rejection messag
 Telemetry: every decision is appended as a JSON line to
   .autonomous-team/hook-events/blocks-YYYY-MM-DD.jsonl
   Allow decisions are sampled at 10%; blocks are always written.
+  Every line is serialised through _telemetry_line(), which scrubs spawn tags
+  via hooks/spawn_tag_redaction.py (D#1959) — this log records agent prompts
+  verbatim, and agents read this log.
 
 Install:
   bash scripts/install-sandbox-hook.sh
@@ -50,6 +53,7 @@ from hooks.sandbox_rules import (  # noqa: E402
 )
 from hooks.background_rules import classify_background  # noqa: E402
 from hooks.payload_shape import record_payload_shape  # noqa: E402
+from hooks.spawn_tag_redaction import redact_spawn_tags  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Telemetry
@@ -57,6 +61,30 @@ from hooks.payload_shape import record_payload_shape  # noqa: E402
 
 _TELEMETRY_DIR = _REPO_ROOT / ".autonomous-team" / "hook-events"
 _ALLOW_SAMPLE_RATE = 0.10  # 10% of allow decisions are logged
+
+
+def _telemetry_line(entry: dict) -> str:
+    """Serialise one telemetry row, with spawn tags scrubbed (D#1959).
+
+    Every writer below goes through this instead of calling json.dumps
+    directly, so the property is structural rather than a rule each new writer
+    has to remember. There are eight of them today and the fields carrying
+    agent-authored text differ across them — command, command_or_path,
+    attempted_call, attempted_target, reason, matched_pattern — so scrubbing
+    per field would be eight chances to miss one, and a ninth every time a
+    writer is added.
+
+    Redacting the serialised line rather than each field is safe in both
+    directions. The tag prefix and a canonical id are plain ASCII with nothing
+    JSON escapes, so the pattern still matches inside the encoded string; and
+    the replacement introduces no quote or backslash, so the line stays valid
+    JSON. It also catches ids in fields nobody thought of as prompt-bearing.
+
+    Running after the writers' [:300]/[:500] truncation is deliberate too: an
+    id the truncation cut in half is already too short to be canonical, so no
+    extractor takes it, and redacting what survives is the whole job.
+    """
+    return redact_spawn_tags(json.dumps(entry)) + "\n"
 
 
 def _write_telemetry(
@@ -87,7 +115,7 @@ def _write_telemetry(
             "worktree_id": worktree_id,
         }
         with open(log_file, "a") as fh:
-            fh.write(json.dumps(entry) + "\n")
+            fh.write(_telemetry_line(entry))
     except Exception:
         pass  # Swallow all telemetry errors
 
@@ -166,7 +194,7 @@ def _write_claude_spawn_block_event(
             "worktree_id": worktree_id,
         }
         with open(log_file, "a") as fh:
-            fh.write(json.dumps(entry) + "\n")
+            fh.write(_telemetry_line(entry))
     except Exception:
         pass  # Swallow all telemetry errors
 
@@ -199,7 +227,7 @@ def _write_agent_spawn_block_event(
             "attempted_target": str(args.get("prompt", args.get("task_prompt", "")))[:300],
         }
         with open(log_file, "a") as fh:
-            fh.write(json.dumps(entry) + "\n")
+            fh.write(_telemetry_line(entry))
     except Exception:
         pass
 
@@ -230,7 +258,7 @@ def _write_gh_api_mutation_block_event(
             "attempted_call": command[:500],
         }
         with open(log_file, "a") as fh:
-            fh.write(json.dumps(entry) + "\n")
+            fh.write(_telemetry_line(entry))
     except Exception:
         pass
 
@@ -261,7 +289,7 @@ def _write_gh_api_mutation_allow_event(
             "mutation_names": mutation_names,
             "role": role,
         }
-        line = json.dumps(entry) + "\n"
+        line = _telemetry_line(entry)
 
         # Write to daily hook-events file (consistent with other sandbox events)
         _TELEMETRY_DIR.mkdir(parents=True, exist_ok=True)
@@ -310,7 +338,7 @@ def _write_foreign_defer_event(
         _TELEMETRY_DIR.mkdir(parents=True, exist_ok=True)
         log_file = _TELEMETRY_DIR / f"blocks-{date.today().isoformat()}.jsonl"
         with open(log_file, "a") as fh:
-            fh.write(json.dumps(entry) + "\n")
+            fh.write(_telemetry_line(entry))
     except Exception:
         pass
 
@@ -341,7 +369,7 @@ def _write_archive_protocol_warning_event(
             "cwd": cwd,
             "command": command[:500],
         }
-        line = json.dumps(entry) + "\n"
+        line = _telemetry_line(entry)
 
         # Write to daily hook-events file
         _TELEMETRY_DIR.mkdir(parents=True, exist_ok=True)
@@ -396,7 +424,7 @@ def _write_head_flip_warning_event(
             "cwd": cwd,
             "command": command[:500],
         }
-        line = json.dumps(entry) + "\n"
+        line = _telemetry_line(entry)
 
         # Write to daily hook-events file
         _TELEMETRY_DIR.mkdir(parents=True, exist_ok=True)
