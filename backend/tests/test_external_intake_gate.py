@@ -16,6 +16,7 @@ Acceptance criteria coverage (see Discussion #1588 Spec):
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -1424,6 +1425,158 @@ class TestResolveAllowlistIds:
             resolver=lambda _l: {"state": tir.UNKNOWN, "id": None, "created_at": None},
         )
         assert ids == {"U_bot"}
+
+
+# ---------------------------------------------------------------------------
+# D#2423 — the collaborator-cache fix missed the production path. Every test
+# below drives the REAL resolve_allowlist() / resolve_allowlist_ids() with
+# subprocess.run monkeypatched, not an injected collaborators_fetcher /
+# collaborator_id_fetcher test double — a double is exactly what made
+# PR #2420 look complete while the production path stayed broken.
+# ---------------------------------------------------------------------------
+
+
+class _SubprocessResult:
+    def __init__(self, returncode, stdout):
+        self.returncode = returncode
+        self.stdout = stdout
+
+
+def _push_collaborator_login_payload(login: str) -> str:
+    return json.dumps([{"login": login, "permissions": {"push": True}}])
+
+
+def _push_collaborator_id_payload(node_id: str) -> str:
+    return json.dumps([{"node_id": node_id, "permissions": {"push": True}}])
+
+
+class TestLiveFetchFailClosedNoPoisonedCache:
+    def test_ac1_live_id_path_failed_fetch_no_poisoned_write(self, tmp_path, monkeypatch):
+        icpath = tmp_path / "idcache.json"
+        monkeypatch.setattr(subprocess, "run", lambda *_a, **_kw: _SubprocessResult(1, ""))
+        gate.resolve_allowlist_ids(
+            {"bot_account_id": "U_bot"},
+            id_cache_path=icpath,
+            resolver=lambda _l: {"state": tir.UNKNOWN, "id": None, "created_at": None},
+        )
+        assert not icpath.exists()
+
+        monkeypatch.setattr(
+            subprocess, "run", lambda *_a, **_kw: _SubprocessResult(0, _push_collaborator_id_payload("NODE_A"))
+        )
+        ids = gate.resolve_allowlist_ids(
+            {"bot_account_id": "U_bot"},
+            id_cache_path=icpath,
+            resolver=lambda _l: {"state": tir.UNKNOWN, "id": None, "created_at": None},
+        )
+        assert "NODE_A" in ids
+
+    def test_ac2_login_path_failed_fetch_no_poisoned_write(self, tmp_path, monkeypatch):
+        cpath = tmp_path / "cache.json"
+        monkeypatch.setattr(subprocess, "run", lambda *_a, **_kw: _SubprocessResult(1, ""))
+        gate.resolve_allowlist(_BASE_CONFIG, cache_path=cpath)
+        assert not cpath.exists()
+
+        monkeypatch.setattr(
+            subprocess, "run", lambda *_a, **_kw: _SubprocessResult(0, _push_collaborator_login_payload("alice"))
+        )
+        allowlist = gate.resolve_allowlist(_BASE_CONFIG, cache_path=cpath)
+        assert "alice" in allowlist
+
+    def test_ac3_genuine_empty_still_caches_and_suppresses_refetch(self, tmp_path, monkeypatch):
+        calls = {"n": 0}
+
+        def _empty_run(*_a, **_kw):
+            calls["n"] += 1
+            return _SubprocessResult(0, "[]")
+
+        cpath = tmp_path / "cache.json"
+        icpath = tmp_path / "idcache.json"
+        monkeypatch.setattr(subprocess, "run", _empty_run)
+
+        allowlist = gate.resolve_allowlist(_BASE_CONFIG, cache_path=cpath)
+        ids = gate.resolve_allowlist_ids(
+            {"bot_account_id": "U_bot"},
+            id_cache_path=icpath,
+            resolver=lambda _l: {"state": tir.UNKNOWN, "id": None, "created_at": None},
+        )
+        assert cpath.exists()
+        assert icpath.exists()
+        # fail-closed base only — no extra collaborator trust from a genuine empty
+        assert allowlist == {gate.BOT_ACCOUNT, "example-owner", "example-bot"}
+        assert ids == {"U_bot"}
+
+        calls_before_refetch = calls["n"]
+
+        def _counting_run(*_a, **_kw):
+            calls["n"] += 1
+            return _SubprocessResult(0, "[]")
+
+        monkeypatch.setattr(subprocess, "run", _counting_run)
+        gate.resolve_allowlist(_BASE_CONFIG, cache_path=cpath)
+        gate.resolve_allowlist_ids(
+            {"bot_account_id": "U_bot"},
+            id_cache_path=icpath,
+            resolver=lambda _l: {"state": tir.UNKNOWN, "id": None, "created_at": None},
+        )
+        assert calls["n"] == calls_before_refetch, "cached empty must suppress a refetch within the TTL"
+
+    def test_ac4_sentinel_consumed_before_the_coercion(self, tmp_path, monkeypatch):
+        # set(None or []) is set() — a None check placed AFTER the coercion is
+        # a silent no-op that still writes. Assert directly against the
+        # module-level fetchers returning None, not a raise.
+        cpath = tmp_path / "cache.json"
+        icpath = tmp_path / "idcache.json"
+        monkeypatch.setattr(gate, "_fetch_collaborators", lambda *_a, **_kw: None)
+        monkeypatch.setattr(tir, "fetch_collaborator_ids", lambda *_a, **_kw: None)
+
+        gate.resolve_allowlist(_BASE_CONFIG, cache_path=cpath)
+        assert not cpath.exists()
+
+        gate.resolve_allowlist_ids(
+            {"bot_account_id": "U_bot"},
+            id_cache_path=icpath,
+            resolver=lambda _l: {"state": tir.UNKNOWN, "id": None, "created_at": None},
+        )
+        assert not icpath.exists()
+
+    @pytest.mark.parametrize(
+        "make_run",
+        [
+            lambda: (lambda *_a, **_kw: _SubprocessResult(1, "")),
+            lambda: (lambda *_a, **_kw: _SubprocessResult(0, json.dumps({"message": "Not Found"}))),
+            lambda: _raise_timeout,
+        ],
+        ids=["nonzero-exit", "non-list-payload", "raised-timeout"],
+    )
+    def test_ac5_all_three_failure_modes_both_boundaries_no_write_no_raise(self, tmp_path, monkeypatch, make_run):
+        cpath = tmp_path / "cache.json"
+        icpath = tmp_path / "idcache.json"
+        monkeypatch.setattr(subprocess, "run", make_run())
+
+        gate.resolve_allowlist(_BASE_CONFIG, cache_path=cpath)
+        assert not cpath.exists()
+
+        gate.resolve_allowlist_ids(
+            {"bot_account_id": "U_bot"},
+            id_cache_path=icpath,
+            resolver=lambda _l: {"state": tir.UNKNOWN, "id": None, "created_at": None},
+        )
+        assert not icpath.exists()
+
+    def test_ac6_resolve_allowlist_return_type_is_a_plain_set_on_direct_none(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(gate, "_fetch_collaborators", lambda *_a, **_kw: None)
+        result = gate.resolve_allowlist(_BASE_CONFIG, cache_path=tmp_path / "cache.json")
+        assert type(result) is set
+
+    def test_ac6_resolve_allowlist_return_type_is_a_plain_set_on_subprocess_failure(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(subprocess, "run", lambda *_a, **_kw: _SubprocessResult(1, ""))
+        result = gate.resolve_allowlist(_BASE_CONFIG, cache_path=tmp_path / "cache.json")
+        assert type(result) is set
+
+
+def _raise_timeout(*_args, **_kwargs):
+    raise subprocess.TimeoutExpired(cmd="gh", timeout=15)
 
 
 # ---------------------------------------------------------------------------
