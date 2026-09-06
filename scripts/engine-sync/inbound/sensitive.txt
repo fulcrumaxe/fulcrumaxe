@@ -1,0 +1,60 @@
+# engine-sync INBOUND sensitive-content gate.
+#
+# Distinct from ../protected.txt, which answers a different question.
+# protected.txt says "never auto-writable" -- self-protection for the
+# outbound channel's own guard code, so a compromised (or merely buggy)
+# release can never clean-apply over the code that enforces every other
+# guarantee in that channel. This file says "legitimately inside the
+# export surface, but a human must approve this specific hunk before it is
+# applied."
+#
+# The distinction matters because a path allowlist alone cannot protect
+# these paths: they are supposed to be public, so they pass the allowlist
+# by design. The sandbox hook, the spawn scripts, the top-level instruction
+# file, and the role definitions are exactly the highest-value targets for
+# an inbound edit, precisely because nothing about them looks unusual to a
+# path-based check -- an edit to any of them changes what every future
+# agent spawn is told to do, persistently, with no reviewed head ever
+# checked out. Everything in ../archive/, .autonomous-team/, and
+# open-source/ is already unreachable here (outside the export surface
+# entirely); the paths below are the ones that need a second, content-level
+# check because the first one legitimately lets them through.
+#
+# gate.py checks BOTH the reverse-mapped engine-side path (after the
+# agents/ -> .claude/agents/, commands/ -> .claude/commands/ rewrite) AND
+# the raw remote-side path against this list -- belt-and-suspenders, so a
+# bug in the reverse-map does not silently drop the sensitivity check.
+#
+# Any inbound path matching one of these prefixes (or CLAUDE.md exactly) is
+# reported "needs-human-approval" regardless of its hash classification --
+# never auto-applied downstream, whatever the hash-based classifier would
+# otherwise have said. These paths also feed instructions to every future
+# agent that loads them, and nothing upstream of this gate sanitizes
+# untrusted content before that happens -- so they stay quarantined
+# pending human review rather than being trusted just because the path
+# allowlist let them through.
+#
+# One prefix (directory, trailing slash) or one exact filename per line.
+# Blank lines and lines starting with '#' are ignored.
+#
+# A prefix only covers paths that literally start with it. A nested path
+# under a DIFFERENT top-level directory needs its own entry even if it
+# happens to contain a directory of the same name further down: adding
+# "scripts/" does NOT cover "loop-bootstrap/scripts/..." (that path does
+# not start with "scripts/") -- "loop-bootstrap/" is listed below precisely
+# because of this. When adding a new export-surface entry, check it against
+# this list AND against
+# scripts/engine-sync/tests/test_inbound_gate.py's
+# test_every_export_surface_entry_has_a_recorded_sensitivity_decision,
+# which fails loudly if a new entry has no recorded decision either way.
+
+hooks/
+scripts/
+.claude/
+CLAUDE.md
+agents/
+commands/
+.github/workflows/ci.yml
+requirements.txt
+loop-bootstrap/
+.claude-plugin/
