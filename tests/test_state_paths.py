@@ -225,9 +225,10 @@ class TestNoModuleLevelFreeze:
     def test_ac5_no_module_level_state_paths_constant_import(self):
         """AC-5 (import half): no tracked, in-scope source file imports a
         state_paths constant by value at module level."""
-        _, import_offenders, _ = guard.scan(_REPO_ROOT)
-        assert import_offenders == [], (
-            "module-level state_paths constant import(s):\n" + "\n".join(import_offenders)
+        result = guard.scan(_REPO_ROOT)
+        assert result.import_offenders == [], (
+            "module-level state_paths constant import(s):\n"
+            + "\n".join(result.import_offenders)
         )
 
     def test_ac5_no_module_level_freeze_in_db_py(self):
@@ -235,8 +236,16 @@ class TestNoModuleLevelFreeze:
         survives in backend/db.py. This is the one sanctioned D#1810
         crossing into db.py (`_DB_PATH = _resolve_db_path()`) and it must
         not come back."""
-        _, _, freeze_offenders = guard.scan(_REPO_ROOT)
-        assert freeze_offenders == [], freeze_offenders
+        result = guard.scan(_REPO_ROOT)
+        assert result.freeze_offenders == [], result.freeze_offenders
+
+    def test_every_enumerated_file_was_actually_read(self):
+        """Enumerating a file is not reading it. The guard shipped a review
+        round reporting the enumerated total as the scanned total, so a
+        tracked file missing from the working tree left the number unmoved
+        and the verdict green. A pass now means every file was opened."""
+        result = guard.scan(_REPO_ROOT)
+        assert result.read == result.files
 
     def test_scan_reads_the_index_not_the_working_tree(self, tmp_path):
         """The defect this replaced: an untracked file on the checkout was
@@ -251,18 +260,20 @@ class TestNoModuleLevelFreeze:
             "from backend.state_paths import STATS_DB\n", encoding="utf-8"
         )
 
-        _, import_offenders, _ = guard.scan(tmp_path)
+        result = guard.scan(tmp_path)
 
-        assert import_offenders == ["backend/staged.py:1: from backend.state_paths import STATS_DB"]
+        assert result.import_offenders == [
+            "backend/staged.py:1: from backend.state_paths import STATS_DB"
+        ]
 
     def test_scan_of_an_empty_index_raises(self, tmp_path):
         """Zero files scanned must never report zero offenders — a guard that
         can enumerate nothing has to stop, not pass. `match=` is load-bearing:
-        scan() has three separate refusals and a bare `raises` here passed
+        scan() has five separate refusals and a bare `raises` here passed
         against a build with this one deleted, because a later refusal fired
         instead and the test could not tell the difference."""
         _init_repo(tmp_path)
-        with pytest.raises(guard.EmptyScanError, match="empty index"):
+        with pytest.raises(guard.ScanRefusal, match="empty index"):
             guard.scan_files(tmp_path)
 
     def test_scan_of_an_index_with_no_source_files_raises(self, tmp_path):
@@ -270,7 +281,7 @@ class TestNoModuleLevelFreeze:
         same failure wearing a disguise — still zero files scanned."""
         _init_repo(tmp_path)
         _stage(tmp_path, "README.md", "# fixture\n")
-        with pytest.raises(guard.EmptyScanError, match="in-scope"):
+        with pytest.raises(guard.ScanRefusal, match="in-scope"):
             guard.scan_files(tmp_path)
 
     def test_scan_without_a_tracked_db_py_raises(self, tmp_path):
@@ -279,8 +290,52 @@ class TestNoModuleLevelFreeze:
         silently checking a path that no longer exists."""
         _init_repo(tmp_path)
         _stage(tmp_path, "backend/other.py", "x = 1\n")
-        with pytest.raises(guard.EmptyScanError, match="db.py"):
+        with pytest.raises(guard.ScanRefusal, match="db.py"):
             guard.scan(tmp_path)
+
+    def test_scan_refuses_a_tracked_file_it_could_not_read(self, tmp_path):
+        """Staged offender, then removed from the working tree. The blob is
+        still in the index and is what a commit would write, so a guard that
+        skips the unreadable file reports the offender as clean — measured
+        on the real tree before this was fixed: identical index, `FAIL` with
+        the file present and `PASS` with it deleted."""
+        _init_repo(tmp_path)
+        _stage(tmp_path, "backend/db.py", "def _resolve_db_path():\n    return None\n")
+        _stage(tmp_path, "backend/vanished.py", "from backend.state_paths import STATS_DB\n")
+        (tmp_path / "backend" / "vanished.py").unlink()
+
+        with pytest.raises(guard.ScanRefusal, match="could not be read"):
+            guard.scan(tmp_path)
+
+    def test_scan_refuses_when_it_read_nothing_at_all(self, tmp_path):
+        """The same degradation taken to the end: every working-tree copy
+        gone, the index intact. The old code printed the full enumerated
+        total and passed, having opened no file at all."""
+        _init_repo(tmp_path)
+        _stage(tmp_path, "backend/db.py", "def _resolve_db_path():\n    return None\n")
+        _stage(tmp_path, "backend/vanished.py", "from backend.state_paths import STATS_DB\n")
+        (tmp_path / "backend" / "db.py").unlink()
+        (tmp_path / "backend" / "vanished.py").unlink()
+
+        with pytest.raises(guard.ScanRefusal, match="read 0 of 2"):
+            guard.scan(tmp_path)
+
+    def test_scan_names_a_tracked_path_that_escapes_the_checkout(self, tmp_path):
+        """git_tracked_files resolves symlinks, so a tracked symlink pointing
+        outside the checkout used to raise an uncaught ValueError out of
+        relative_to — a traceback where every other stop is a named FAIL."""
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "elsewhere.py").write_text("x = 1\n", encoding="utf-8")
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _init_repo(repo)
+        _stage(repo, "backend/db.py", "def _resolve_db_path():\n    return None\n")
+        (repo / "link.py").symlink_to(outside / "elsewhere.py")
+        subprocess.run(["git", "-C", str(repo), "add", "--", "link.py"], check=True)
+
+        with pytest.raises(guard.ScanRefusal, match="resolve outside"):
+            guard.scan(repo)
 
     def test_db_py_freeze_pattern_still_matches_the_shape_it_bans(self):
         """The regex is the guard's, not a copy — this pins what it matches,

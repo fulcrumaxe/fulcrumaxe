@@ -54,10 +54,30 @@ Scanning nothing is a failure, not a pass
 `git ls-files` exits 0 while printing nothing (a fresh `git init`, an empty
 index), and a scan of zero files reports zero offenders and goes green while
 guarding nothing. This repo has hit that shape repeatedly. So an empty tracked
-set, an empty post-filter set, and a `backend/db.py` that is not tracked are each
-a non-zero exit that says which one happened. A broken `git` raises out of
+set, an empty post-filter set, a `backend/db.py` that is not tracked, a file the
+scan could not read, and a read count of zero are each a non-zero exit that says
+which one happened. A broken `git` raises out of
 `testsupport.git_tracked.git_tracked_files` rather than degrading to an empty
 set, for the same reason.
+
+Enumerating a file is not reading it, and the count printed is the count READ.
+An earlier revision of this guard skipped an unreadable file with a bare
+`continue` and printed the enumerated total, so a tracked file whose working-tree
+copy was missing left the total unmoved and the verdict green — measured: the
+same staged offender reported `604 scanned / FAIL / exit=1` with the file on
+disk and `604 scanned / PASS / exit=0` with it deleted, while the offending blob
+sat in the index and was what `git commit` would have written. It degraded all
+the way down: every working-tree copy removed still printed the full total and
+passed, having read nothing.
+
+An unreadable tracked file is therefore FATAL here, not skipped. The guard cannot
+say anything about a file it did not read, and this repo's dominant defect is a
+check reporting success it never measured. The cost of that choice is a checkout
+where the index and the working tree legitimately disagree — a sparse or partial
+checkout materialises a fraction of what `git ls-files` lists — which now gets a
+loud FAIL naming the files. That is the honest answer for such a checkout ("I
+cannot judge these"), and CI checks out in full, so the required path is
+unaffected.
 
 Usage
 -----
@@ -70,8 +90,8 @@ below are the same code on the same path, so a `--repo-root` run is evidence
 about the real run. It exists because "an empty index must fail" is only
 demonstrable by pointing the real guard at an empty checkout.
 
-Exit 0: every tracked, in-scope file is clean.
-Exit 1: an offender was found, or the scan could not honestly cover anything.
+Exit 0: every tracked, in-scope file was read and is clean.
+Exit 1: an offender was found, or the scan could not honestly cover its subject.
 Exit 2: usage error.
 """
 
@@ -80,6 +100,7 @@ from __future__ import annotations
 import re
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -128,8 +149,29 @@ SCAN_SUFFIXES = frozenset({".py", ".sh"})
 EXCLUDED_DIR_NAMES = frozenset({"archive", "tests", ".claude", "node_modules"})
 
 
-class EmptyScanError(RuntimeError):
-    """The scan could not cover anything, so it cannot vouch for anything."""
+class ScanRefusal(RuntimeError):
+    """The scan could not honestly cover its subject, so it refuses to report.
+
+    One class, five messages — an empty index, an index with nothing in scope, a
+    backend/db.py that is not tracked, a read count of zero, and a file that
+    could not be read. Callers that need to tell them apart match on the message;
+    every one of them is a non-zero exit.
+    """
+
+
+class ScanResult(NamedTuple):
+    """What a scan covered, and what it found.
+
+    `files` is what was enumerated and `read` is what was actually opened. They
+    are separate fields because collapsing them is precisely the bug this guard
+    shipped with: reporting the enumerated total as though it were the total
+    read.
+    """
+
+    files: list[Path]
+    read: list[Path]
+    import_offenders: list[str]
+    freeze_offenders: list[str]
 
 
 def _excluded(rel_parts: tuple[str, ...]) -> bool:
@@ -137,18 +179,39 @@ def _excluded(rel_parts: tuple[str, ...]) -> bool:
     return any(part in EXCLUDED_DIR_NAMES for part in rel_parts[:-1])
 
 
+def _rel(path: Path, repo_root: Path) -> Path | None:
+    """path relative to repo_root, or None when it does not sit under it.
+
+    git_tracked_files resolves symlinks, so a tracked symlink pointing outside
+    the checkout comes back as a path this guard cannot describe in repo terms.
+    That is a refusal like any other rather than an uncaught ValueError — every
+    other way this guard stops names a file on a FAIL line.
+    """
+    try:
+        return path.relative_to(repo_root)
+    except ValueError:
+        return None
+
+
 def scan_files(repo_root: Path) -> list[Path]:
     """Every tracked, in-scope source file under repo_root, sorted.
 
-    Raises EmptyScanError when the answer is empty — a scan of zero files
-    reports zero offenders and would pass forever.
+    Raises ScanRefusal when the answer is empty — a scan of zero files reports
+    zero offenders and would pass forever.
     """
     repo_root = repo_root.resolve()
     tracked = git_tracked_files(repo_root)
     if not tracked:
-        raise EmptyScanError(
+        raise ScanRefusal(
             f"git ls-files reported an empty index for {repo_root} — refusing to "
             f"report zero offenders from zero files scanned"
+        )
+
+    escaped = sorted(str(path) for path in tracked if _rel(path, repo_root) is None)
+    if escaped:
+        raise ScanRefusal(
+            f"{len(escaped)} tracked path(s) resolve outside {repo_root}, so this "
+            f"guard cannot say what part of the repo they are: {', '.join(escaped)}"
         )
 
     files = sorted(
@@ -157,7 +220,7 @@ def scan_files(repo_root: Path) -> list[Path]:
         if path.suffix in SCAN_SUFFIXES and not _excluded(path.relative_to(repo_root).parts)
     )
     if not files:
-        raise EmptyScanError(
+        raise ScanRefusal(
             f"{len(tracked)} tracked file(s) under {repo_root}, none of them an "
             f"in-scope {'/'.join(sorted(SCAN_SUFFIXES))} source file — refusing to "
             f"report zero offenders from zero files scanned"
@@ -165,23 +228,27 @@ def scan_files(repo_root: Path) -> list[Path]:
     return files
 
 
-def scan(repo_root: Path) -> tuple[list[Path], list[str], list[str]]:
-    """(files scanned, banned-import offenders, backend/db.py freeze offenders).
+def scan(repo_root: Path) -> ScanResult:
+    """Read every tracked, in-scope source file and report what is in them.
 
     Offenders are `path:lineno: text` strings, repo-relative, so a CI log names
-    the file a human has to open.
+    the file a human has to open. Raises ScanRefusal rather than returning a
+    partial answer: a file that could not be read is one this guard cannot vouch
+    for, and vouching for it anyway is the whole defect class.
     """
     repo_root = repo_root.resolve()
     files = scan_files(repo_root)
 
     db_py = (repo_root / DB_PY_REL).resolve()
     if db_py not in set(files):
-        raise EmptyScanError(
+        raise ScanRefusal(
             f"{DB_PY_REL} is not a tracked, in-scope file under {repo_root} — the "
             f"module-level-freeze check for it would scan nothing and pass. If the "
             f"file moved, point DB_PY_REL at its new path"
         )
 
+    read: list[Path] = []
+    unreadable: list[str] = []
     import_offenders: list[str] = []
     freeze_offenders: list[str] = []
 
@@ -189,11 +256,14 @@ def scan(repo_root: Path) -> tuple[list[Path], list[str], list[str]]:
         rel = path.relative_to(repo_root)
         try:
             text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            # A tracked path that cannot be read here is a checkout problem, not
-            # an offender. It is reported as neither, which is why the scanned
-            # count is printed alongside the verdict.
+        except (OSError, UnicodeDecodeError) as exc:
+            # git tracks it, so it is repo source; this guard could not read it,
+            # so it has nothing to say about it. Recorded by name and refused
+            # below rather than skipped — a skipped file is an offender this
+            # guard would report as clean.
+            unreadable.append(f"{rel}: {type(exc).__name__}: {exc}")
             continue
+        read.append(path)
         check_freeze = path == db_py
         for lineno, line in enumerate(text.splitlines(), start=1):
             if BANNED_IMPORT_RE.match(line):
@@ -201,7 +271,20 @@ def scan(repo_root: Path) -> tuple[list[Path], list[str], list[str]]:
             if check_freeze and DB_PY_FREEZE_RE.match(line):
                 freeze_offenders.append(f"{rel}:{lineno}: {line.strip()}")
 
-    return files, import_offenders, freeze_offenders
+    if not read:
+        raise ScanRefusal(
+            f"read 0 of {len(files)} tracked source file(s) under {repo_root} — "
+            f"refusing to report zero offenders from zero files read:\n  - "
+            + "\n  - ".join(unreadable)
+        )
+    if unreadable:
+        raise ScanRefusal(
+            f"{len(unreadable)} of {len(files)} tracked source file(s) under "
+            f"{repo_root} could not be read, so this guard cannot vouch for "
+            f"them:\n  - " + "\n  - ".join(unreadable)
+        )
+
+    return ScanResult(files, read, import_offenders, freeze_offenders)
 
 
 REMEDY = (
@@ -224,14 +307,23 @@ def main(argv: list[str]) -> int:
             return 1
 
     try:
-        files, import_offenders, freeze_offenders = scan(repo_root)
-    except (EmptyScanError, RuntimeError) as exc:
+        # ScanRefusal is a RuntimeError, as is the git failure raised out of
+        # git_tracked_files. Both mean the same thing here — the scan cannot be
+        # trusted — and both report the same way.
+        result = scan(repo_root)
+    except RuntimeError as exc:
         print(f"{NAME}: FAIL — {exc}", file=sys.stderr)
         return 1
 
-    print(f"{NAME}: {len(files)} tracked source file(s) scanned in {repo_root}")
+    # Read, not enumerated. These are equal on every path that reaches here,
+    # because an unread file is a refusal above — printing both is what makes
+    # that checkable from a log instead of taken on trust.
+    print(
+        f"{NAME}: read {len(result.read)} of {len(result.files)} tracked "
+        f"source file(s) in {repo_root}"
+    )
 
-    offenders = import_offenders + freeze_offenders
+    offenders = result.import_offenders + result.freeze_offenders
     if offenders:
         print(f"\n{NAME}: FAIL — module-level state_paths freeze(s):", file=sys.stderr)
         for line in offenders:
