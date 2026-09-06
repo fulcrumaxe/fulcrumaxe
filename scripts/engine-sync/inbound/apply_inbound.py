@@ -102,6 +102,58 @@ EXIT_ERROR = 4
 #: Withheld reasons that are not the classifier's own vocabulary.
 WITHHELD_WOULD_OVERWRITE = "withheld:would-overwrite-engine-copy"
 WITHHELD_PROTECTED = "withheld:protected-or-sensitive"
+WITHHELD_BAD_MODE = "withheld:unsupported-file-mode"
+WITHHELD_UNRENDERABLE = "withheld:unrenderable-path"
+
+#: The only two blob modes this channel will write. Everything else is
+#: refused BY NAME rather than carried across verbatim.
+#:
+#: 120000 is a symlink: the path gate inspects the path, but a symlink's
+#: payload is its TARGET, which no path check ever looks at, and
+#: pull.validate_path's own symlink defence tests `is_symlink()` on the engine
+#: filesystem -- False for a path that does not exist yet, so it stops a write
+#: *through* an existing engine symlink and never sees an incoming one.
+#: 160000 is a gitlink (submodule), which points at an entire other repository.
+#: Both would have been reported to a human as an ordinary "(create)".
+ALLOWED_BLOB_MODES = frozenset({"100644", "100755"})
+
+#: Characters a path may not contain if it is going to be named in a PR body.
+#: A backtick closes the code span the path is rendered inside; `<` opens HTML
+#: that GitHub may never terminate, swallowing every entry after it. Since the
+#: PR body is the human checkpoint this design leans on, a path that can hide
+#: its neighbours from that list is refused rather than written -- no
+#: legitimate path in this repo needs one of these.
+_PATH_FORBIDDEN_CHARS = frozenset("`<>\n\r\t|")
+
+
+def path_is_renderable(remote_path: str) -> tuple[bool, str]:
+    """(ok, reason). Refuses a path that could break out of, or hide, the PR
+    body list it will be named in."""
+    for ch in remote_path:
+        if ch in _PATH_FORBIDDEN_CHARS or not ch.isprintable():
+            return False, (
+                f"path contains character U+{ord(ch):04X}, which can break out of the PR body's "
+                "path list and hide the entries after it"
+            )
+    return True, ""
+
+
+def render_path(remote_path: str) -> str:
+    """A path rendered so it cannot alter the markdown around it.
+
+    Every character outside a conservative allowlist becomes a visible
+    `[U+XXXX]` token -- visible, because silently dropping the character would
+    make two different paths render identically, and this list is what a human
+    approves from. Applied to EVERY entry, written or withheld: refusing
+    unrenderable paths from the write set is not enough on its own, since
+    quarantined paths from an untrusted stranger are listed here too."""
+    out = []
+    for ch in remote_path:
+        if ch.isalnum() and ch.isascii() or ch in "._/-+@":
+            out.append(ch)
+        else:
+            out.append(f"[U+{ord(ch):04X}]")
+    return "`" + "".join(out) + "`"
 
 
 class ApplyRefused(RuntimeError):
@@ -118,22 +170,52 @@ def state_path(state_dir: Path) -> Path:
     return state_dir / STATE_FILE_NAME
 
 
-def read_failure_count(state_dir: Path) -> int:
-    """Zero when the file is missing or unreadable. Deliberately permissive:
-    an unreadable counter must not disable the channel, because the counter
-    exists to stop a *failing* channel, and 'I could not read a number' is
-    not evidence of failure. The alarm's own halt is what covers the case
-    where this channel silently stops working."""
+def read_state(state_dir: Path) -> dict:
+    """The module's whole persisted state: the failure counter and the
+    withheld-path debt.
+
+    Missing or unreadable reads as empty. Deliberately permissive for the
+    counter: it exists to stop a *failing* channel, and "I could not read a
+    number" is not evidence of failure. Permissive for `pending` too, but for
+    the opposite reason -- an unreadable debt file must not be able to refuse
+    the run, because the debt's whole job is to keep being re-offered, and a
+    channel that refuses instead offers nothing at all."""
     try:
         data = json.loads(state_path(state_dir).read_text())
-        return int(data.get("consecutive_failures", 0) or 0)
     except Exception:
-        return 0
+        return {"consecutive_failures": 0, "pending": {}}
+    pending = data.get("pending")
+    if not isinstance(pending, dict):
+        pending = {}
+    return {"consecutive_failures": int(data.get("consecutive_failures", 0) or 0), "pending": pending}
+
+
+def write_state(state_dir: Path, *, consecutive_failures: int, pending: dict | None = None) -> None:
+    """Write the counter, and `pending` only when the caller supplies it.
+
+    The default of None means "leave the debt exactly as it is". Every path
+    that touches only the counter goes through here, so none of them can
+    truncate the debt as a side effect -- which is how a persisted-debt design
+    quietly reverts to the lossy one it replaced."""
+    state_dir.mkdir(parents=True, exist_ok=True)
+    current = read_state(state_dir)
+    payload = {
+        "consecutive_failures": int(consecutive_failures),
+        "pending": current["pending"] if pending is None else pending,
+    }
+    state_path(state_dir).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+
+def read_failure_count(state_dir: Path) -> int:
+    return read_state(state_dir)["consecutive_failures"]
 
 
 def write_failure_count(state_dir: Path, count: int) -> None:
-    state_dir.mkdir(parents=True, exist_ok=True)
-    state_path(state_dir).write_text(json.dumps({"consecutive_failures": int(count)}) + "\n")
+    write_state(state_dir, consecutive_failures=count)
+
+
+def read_pending(state_dir: Path) -> dict:
+    return read_state(state_dir)["pending"]
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +253,12 @@ def blob_mode(ref: str, relpath: str, repo_dir: Path) -> str:
     line = _git(["ls-tree", ref, "--", relpath], repo_dir).strip()
     if not line:
         raise ApplyRefused(f"no tree entry for {relpath!r} at {ref}")
-    return line.split()[0]
+    mode = line.split()[0]
+    if mode not in ALLOWED_BLOB_MODES:
+        raise ApplyRefused(
+            f"refusing mode {mode} for {relpath!r}: only {sorted(ALLOWED_BLOB_MODES)} are written by this channel"
+        )
+    return mode
 
 
 # ---------------------------------------------------------------------------
@@ -179,18 +266,28 @@ def blob_mode(ref: str, relpath: str, repo_dir: Path) -> str:
 # ---------------------------------------------------------------------------
 
 
-def partition_write_set(classifications: dict, protected: set[str], sensitive_prefixes: list[str]) -> tuple[dict, dict]:
+def partition_write_set(
+    classifications: dict,
+    protected: set[str],
+    sensitive_prefixes: list[str],
+    *,
+    resolve_mode=None,
+) -> tuple[dict, dict]:
     """(write_set, withheld). write_set maps remote_path -> its classification
     entry; withheld maps remote_path -> {"status", "reason"}.
 
-    A path is written only if BOTH:
+    A path is written only if ALL of:
       * its status is `clean-apply`, or `local-patch` with `local_hash is
-        None` (a create -- there is nothing on the engine to overwrite), and
-      * it is not in the protected set and does not match a sensitive prefix.
+        None` (a create -- there is nothing on the engine to overwrite);
+      * it is not in the protected set and does not match a sensitive prefix;
+      * it is renderable in a PR body without hiding its neighbours;
+      * its blob mode is one this channel writes (`resolve_mode`, when given).
 
-    The second condition is redundant against a correct gate, which is the
-    point of having it: it turns a gate bug into a refusal rather than into
-    a rewritten sandbox hook."""
+    Everything after the first bullet is redundant against a correct gate,
+    which is the point of having it: this function's job is to turn an
+    upstream bug into a refusal. That is also why nothing in here `continue`s
+    past a shape it did not expect -- a skip in the one function whose purpose
+    is refusing is the wrong shape, however unreachable it looks today."""
     write_set: dict[str, dict] = {}
     withheld: dict[str, dict] = {}
 
@@ -217,7 +314,17 @@ def partition_write_set(classifications: dict, protected: set[str], sensitive_pr
         else:
             writable, reason = False, entry.get("reason", "")
 
-        if writable and engine_path is not None:
+        if writable:
+            # No `and engine_path is not None` guard here. A writable entry
+            # carrying a null engine_path is an upstream bug, and skipping the
+            # protected/sensitive re-check for it would send `None` on to the
+            # cacheinfo format string -- writing a file literally named "None"
+            # past the one belt meant to catch exactly this.
+            if engine_path is None:
+                raise ApplyRefused(
+                    f"classifier marked {remote_path!r} writable with a null engine_path; "
+                    "refusing rather than skipping the protected/sensitive re-check for it"
+                )
             if engine_path in protected or gate.is_sensitive(engine_path, sensitive_prefixes):
                 writable = False
                 status = WITHHELD_PROTECTED
@@ -225,6 +332,25 @@ def partition_write_set(classifications: dict, protected: set[str], sensitive_pr
                     "path is in the enforcer protected set or matches a sensitive prefix; "
                     "the gate should already have withheld it, so reaching here means the gate is wrong"
                 )
+
+        if writable:
+            ok, why = path_is_renderable(remote_path)
+            if not ok:
+                writable = False
+                status = WITHHELD_UNRENDERABLE
+                reason = why
+
+        if writable and resolve_mode is not None:
+            try:
+                resolve_mode(remote_path)
+            except ApplyRefused as exc:
+                # Named in the report rather than aborting the run: a single
+                # inbound symlink should not stop every other path, and a
+                # silent skip is what let it be reported as an ordinary
+                # "(create)" in the first place.
+                writable = False
+                status = WITHHELD_BAD_MODE
+                reason = str(exc)
 
         if writable:
             write_set[remote_path] = entry
@@ -237,6 +363,126 @@ def partition_write_set(classifications: dict, protected: set[str], sensitive_pr
             }
 
     return write_set, withheld
+
+
+#: Withholdings that are still OWED: a human (or a later change on either
+#: plane) can still resolve them, so they are carried forward and re-offered
+#: every run until they do.
+#:
+#: `needs-human-approval` and `quarantined` are the whole point -- those are
+#: the sensitive prefixes and the untrusted-provenance paths, the two sets the
+#: design most wants a human to actually see. `out-of-surface` is here because
+#: today it is dominated by `tests/`, which is out of surface only because
+#: MANIFEST.md has no entry for it yet; the day that entry lands, these should
+#: sync rather than have been forgotten. `quarantined` also covers a purely
+#: transient cause -- a GitHub read that failed closed -- which must not cost
+#: a path permanently.
+PENDING_STATUSES = frozenset(
+    {
+        gate.CAT_NEEDS_APPROVAL,
+        gate.CAT_QUARANTINED,
+        gate.CAT_OUT_OF_SURFACE,
+        gate.CAT_COLLISION,
+        pull.STATUS_CONFLICT,
+        pull.STATUS_INTEGRITY_FAIL,
+        WITHHELD_WOULD_OVERWRITE,
+        WITHHELD_PROTECTED,
+        WITHHELD_BAD_MODE,
+        WITHHELD_UNRENDERABLE,
+    }
+)
+
+#: Withholdings that are DECISIONS, not deferrals, and so do not accumulate:
+#: a traversal never becomes safe, an export-generated artifact never gains an
+#: engine-side source, `already-applied` owes nothing, and this channel never
+#: proposes a deletion. Recorded in the run's report, not carried.
+TERMINAL_STATUSES = frozenset(
+    {
+        gate.CAT_PATH_UNSAFE,
+        gate.CAT_GENERATED,
+        pull.STATUS_ALREADY_APPLIED,
+        pull.STATUS_REJECTED,
+    }
+)
+
+
+def build_pending(
+    classifications: dict,
+    withheld: dict,
+    report: dict,
+    previous: dict | None = None,
+    is_settled_on_engine=None,
+) -> dict:
+    """The debt to carry into the next run.
+
+    This is the fix for the channel's sharpest defect: withheld paths used to
+    be named in exactly one PR body and then never re-enter a change set,
+    because the marker had moved past the commits that carried them. 27 paths
+    on the live change set, all of them the sensitive prefixes -- so the
+    human-approval gate had no queue behind it, only a one-shot notice, after
+    which the alarm went quiet. A gate whose backlog empties itself is not a
+    gate.
+
+    Carrying the debt separately from the marker is what lets the marker keep
+    advancing. Blocking the marker on unapplied paths instead was measured
+    against the live backlog and cannot work: every one of the 13 commits
+    carries at least one withheld path, so the marker would never move at all,
+    the change set would grow without bound past the ceiling, and the channel
+    would refuse until it disabled itself.
+
+    A path leaves the debt only by being resolved -- applied, already present
+    on the engine, deleted upstream, or ruled terminal. Nothing here drops a
+    path for being old.
+
+    `is_settled_on_engine(remote_path, engine_path)` is how a debt entry
+    clears, and it exists because the classifier alone cannot clear one. A
+    sensitive path never reaches hash classification at all: `path_gate`
+    short-circuits it to `needs-human-approval` before any hash is computed,
+    so it can never come back `already-applied` however faithfully a human
+    applies it. Without this check the debt would be unable to empty for the
+    27 paths it matters most for, and an inbox that only grows is read exactly
+    as often as one that silently empties. The check is a read-only hash
+    comparison; it does not let the channel WRITE anything the gate withheld."""
+    previous = previous or {}
+    pending: dict[str, dict] = {}
+
+    for remote_path, info in withheld.items():
+        status = info.get("status")
+        # Only a TERMINAL status drops a path. An unrecognised status is
+        # carried, deliberately: forgetting a path because its status was not
+        # on a list is the exact failure this function exists to stop.
+        if status in TERMINAL_STATUSES:
+            continue
+
+        # ...and a path the engine has already ended up with is not owed,
+        # whoever put it there.
+        if is_settled_on_engine is not None and is_settled_on_engine(remote_path, info.get("engine_path")):
+            continue
+
+        entry = classifications.get(remote_path, {})
+        prior = previous.get(remote_path, {})
+
+        # Cache each touching commit's provenance verdict so a carried path
+        # never re-pays a GitHub round trip. Verdicts resolved THIS run win;
+        # anything else is inherited from the previous record, because a
+        # carried path's commits are not in this run's enumeration at all.
+        commit_trust = dict(prior.get("commit_trust") or {})
+        touching = list(entry.get("commits") or prior.get("commits") or [])
+        for c in report.get("commits", []):
+            if c["sha"] in touching:
+                commit_trust[c["sha"]] = [bool(c.get("trusted")), ""]
+
+        pending[remote_path] = {
+            "commits": touching,
+            "statuses": list(entry.get("statuses") or prior.get("statuses") or []),
+            "status": status,
+            "reason": info.get("reason", ""),
+            "engine_path": info.get("engine_path") or prior.get("engine_path"),
+            "commit_trust": commit_trust,
+            "first_seen": prior.get("first_seen") or report.get("remote_ref", ""),
+            "runs_owed": int(prior.get("runs_owed", 0) or 0) + 1,
+        }
+    return pending
 
 
 def assign_paths_to_commits(write_set: dict, commit_order: list[str]) -> dict[str, list[str]]:
@@ -253,7 +499,16 @@ def assign_paths_to_commits(write_set: dict, commit_order: list[str]) -> dict[st
     for remote_path, entry in write_set.items():
         touching = [sha for sha in entry.get("commits", []) if sha in position]
         if not touching:
-            continue
+            # Structurally unreachable while write_set and commit_order come
+            # from the same report -- but a `continue` here drops the path from
+            # the branch while the PR body still lists it under "Written". A
+            # create would be caught by the blob-count invariant; an UPDATE
+            # would not, and would read as applied when it was not. That is the
+            # silent-loss shape this whole change is about.
+            raise ApplyRefused(
+                f"{remote_path!r} is in the write set but none of its commits {entry.get('commits', [])!r} "
+                "are in this run's commit order; refusing rather than dropping it from the branch"
+            )
         last = max(touching, key=lambda s: position[s])
         assignment[last].append(remote_path)
     return {sha: sorted(paths) for sha, paths in assignment.items() if paths}
@@ -361,8 +616,29 @@ def build_branch_commits(
 
 
 def build_pr_body(
-    *, report: dict, write_set: dict, withheld: dict, marker: str, marker_sha: str | None, tip_sha: str
+    *,
+    report: dict,
+    write_set: dict,
+    withheld: dict,
+    marker: str,
+    marker_sha: str | None,
+    tip_sha: str,
+    resolved: list | None = None,
+    carried: set | None = None,
+    blob_modes: dict | None = None,
 ) -> str:
+    """The human checkpoint, rendered so that no entry in it can hide another.
+
+    Every path goes through `render_path`. Path names are contributor-
+    controlled and reach here even from an untrusted stranger, since
+    quarantined paths are listed too; a backtick closes the code span and a
+    `<` opens HTML that GitHub never terminates, and either one swallows the
+    entries that follow. The withheld list is exactly what a human is supposed
+    to act on, so an unprivileged actor being able to hide entries from it
+    defeats the checkpoint the design leans on."""
+    carried = carried or set()
+    resolved = resolved or []
+    blob_modes = blob_modes or {}
     lines: list[str] = []
     lines.append(
         "Automated sync of merged code back into the engine checkout. "
@@ -377,21 +653,32 @@ def build_pr_body(
         f"({report.get('gated_path_count', 0)} paths gated -- a rename counts twice)."
     )
     lines.append("")
+
     lines.append(f"### Written ({len(write_set)})")
     lines.append("")
     if write_set:
+        lines.append("| path | change | mode |")
+        lines.append("|---|---|---|")
         for remote_path in sorted(write_set):
             entry = write_set[remote_path]
             kind = "create" if entry.get("local_hash") is None else "update"
-            lines.append(f"- `{entry['engine_path']}` ({kind})")
+            mode = blob_modes.get(remote_path, "?")
+            # The mode is shown because "create" alone said the same thing for
+            # a regular file, a symlink pointing anywhere on the box, and a
+            # submodule. Only 100644/100755 can reach this list at all now,
+            # but the reviewer should be able to see that rather than trust it.
+            lines.append(f"| {render_path(entry['engine_path'])} | {kind} | `{mode}` |")
     else:
         lines.append("_nothing_")
     lines.append("")
+
     lines.append(f"### Withheld ({len(withheld)})")
     lines.append("")
     lines.append(
-        "These paths are in the change set and are deliberately NOT in this branch. "
-        "They are listed here because a withheld path that nobody names is a dropped path."
+        "In the change set and deliberately NOT in this branch. Every one of these is "
+        "carried forward and re-offered on the next run until it is resolved -- the debt "
+        "lives in the channel's state file, not in this page, so nothing here is a "
+        "one-shot notice."
     )
     lines.append("")
     if withheld:
@@ -399,20 +686,46 @@ def build_pr_body(
         for remote_path, info in sorted(withheld.items()):
             by_status.setdefault(info["status"], []).append(remote_path)
         for status in sorted(by_status):
-            lines.append(f"**{status}**")
+            lines.append(f"**{status}** ({len(by_status[status])})")
             lines.append("")
             for remote_path in by_status[status]:
-                lines.append(f"- `{remote_path}`")
+                age = " _(carried from an earlier run)_" if remote_path in carried else ""
+                lines.append(f"- {render_path(remote_path)}{age}")
             lines.append("")
     else:
         lines.append("_nothing_")
     lines.append("")
+
+    if resolved:
+        lines.append(f"### Resolved since the last run ({len(resolved)})")
+        lines.append("")
+        lines.append("Previously withheld, no longer owed -- applied, already present on the engine, or gone upstream.")
+        lines.append("")
+        for remote_path in resolved:
+            lines.append(f"- {render_path(remote_path)}")
+        lines.append("")
+
     lines.append("### Verification")
     lines.append("")
-    lines.append("Gate 1: PASS — test suite green (see the originating run).")
+    # Gate 1 is N/A, not PASS. This channel runs no test suite: it replays
+    # commits that were already tested on the code plane before they merged.
+    # A constant "Gate 1: PASS" written by the tool that opens the PR would
+    # satisfy the two-gate check for every PR it ever opens while naming no
+    # run at all -- the channel manufacturing its own gate satisfaction.
+    tested_prs = sorted({c["resolved_pr"] for c in report.get("commits", []) if c.get("resolved_pr")})
+    pr_list = ", ".join(f"#{n}" for n in tested_prs) if tested_prs else "none resolved"
     lines.append(
-        "Gate 2: PASS — the built tree's blob count equals the engine base's plus the number of "
-        "paths this run created, checked on the real commit objects before anything was pushed."
+        f"Gate 1: N/A — the sync runs no test suite of its own. Every commit replayed here was "
+        f"tested and reviewed on the code plane before it merged ({pr_list}); this branch adds "
+        f"no new code, only the classified blobs from those commits."
+    )
+    lines.append("")
+    created = sum(1 for e in write_set.values() if e.get("local_hash") is None)
+    lines.append(
+        f"Gate 2: PASS — post-apply invariant, checked on the real commit objects before the push: "
+        f"the built tree holds the engine base's blob count plus exactly the {created} path(s) this "
+        f"run created, so no engine file was removed. Modes were allowlisted to 100644/100755, and "
+        f"{len(withheld)} path(s) were withheld and recorded as owed."
     )
     return "\n".join(lines)
 
@@ -524,6 +837,8 @@ def _run(
     failures: int,
     **classify_kwargs,
 ) -> dict:
+    previous_pending = read_pending(state_dir)
+
     report = classify(
         marker=marker,
         remote=remote,
@@ -535,6 +850,12 @@ def _run(
         do_fetch=do_fetch,
         remote_ref=remote_ref,
         local_ref=local_ref,
+        extra_paths={k: v for k, v in previous_pending.items()},
+        known_commit_trust={
+            sha: tuple(verdict)
+            for entry in previous_pending.values()
+            for sha, verdict in (entry.get("commit_trust") or {}).items()
+        },
         **classify_kwargs,
     )
 
@@ -542,15 +863,34 @@ def _run(
         raise ApplyRefused(f"classify report refused: {report.get('refusal_reason')}")
 
     classifications = report.get("classifications", {})
+    carried = set(report.get("carried_forward") or ())
 
-    # C6. A conflict stops the whole run before a single index entry is
-    # written. Applying the non-conflicting remainder is the failure mode
-    # that looks like success -- half a change set on a branch, with the
-    # other half named only in a PR description nobody re-reads.
+    # A conflict stops the whole run before a single index entry is written.
+    # Applying the non-conflicting remainder is the failure mode that looks
+    # like success -- half a change set on a branch, the other half named only
+    # in a PR description nobody re-reads.
+    #
+    # Scoped by the DEBT, not by whether the path is in this run's
+    # enumeration. A path already recorded as owed is one an earlier run
+    # deliberately withheld -- the engine's own copy is the copy we chose to
+    # keep -- so when the plane later touches it again and the hashes come
+    # back `conflict`, that is the known state re-stating itself, not a new
+    # surprise. Letting it refuse the run is what turned a single withheld
+    # would-overwrite path into a channel-wide landmine: every subsequent run
+    # aborts over it, including unrelated writable work, and three aborts
+    # later the channel disables itself and stops contacting the remote.
+    #
+    # Keying on "is it in this run's commit list" does NOT work and was tried:
+    # the landmine fires precisely because a NEW commit touches the path, so
+    # it is in the enumeration every time.
+    #
+    # A conflict on a path that is NOT in the debt is unexplained, and still
+    # refuses the whole run untouched.
+    known_debt = set(previous_pending)
     conflicted = sorted(
-        p
-        for p, e in classifications.items()
-        if e.get("status") in (pull.STATUS_CONFLICT, pull.STATUS_INTEGRITY_FAIL)
+        path
+        for path, e in classifications.items()
+        if e.get("status") in (pull.STATUS_CONFLICT, pull.STATUS_INTEGRITY_FAIL) and path not in known_debt
     )
     if conflicted:
         write_failure_count(state_dir, failures + 1)
@@ -563,7 +903,32 @@ def _run(
 
     protected = outbound_apply.read_protected_set()
     sensitive_prefixes = gate.read_sensitive_prefixes()
-    write_set, withheld = partition_write_set(classifications, protected, sensitive_prefixes)
+    resolved_remote_ref_for_mode = report.get("remote_ref") or remote_ref or f"{remote}/{remote_branch}"
+    write_set, withheld = partition_write_set(
+        classifications,
+        protected,
+        sensitive_prefixes,
+        resolve_mode=lambda rp: blob_mode(resolved_remote_ref_for_mode, rp, repo_dir),
+    )
+
+    def _settled_on_engine(remote_path: str, engine_path: str | None) -> bool:
+        """True when the engine's copy already equals the code plane's, or the
+        path is gone from the plane entirely -- in both cases nothing is owed."""
+        upstream = changeset.blob_hash_at(resolved_remote_ref_for_mode, remote_path, repo_dir=repo_dir)
+        if upstream is None:
+            return True
+        if engine_path is None:
+            return False
+        return changeset.blob_hash_at(local_ref, engine_path, repo_dir=repo_dir) == upstream
+
+    next_pending = build_pending(
+        classifications,
+        withheld,
+        report,
+        previous=previous_pending,
+        is_settled_on_engine=_settled_on_engine,
+    )
+    resolved_paths = sorted(set(previous_pending) - set(next_pending))
 
     resolved_remote_ref = report.get("remote_ref") or remote_ref or f"{remote}/{remote_branch}"
     tip_sha = changeset.resolve_commit(resolved_remote_ref, repo_dir=repo_dir)
@@ -572,13 +937,17 @@ def _run(
 
     if not write_set:
         # Nothing writable. Not a failure -- the run completed and made a
-        # decision -- but the marker does not move, because moving it would
-        # claim these commits had been dealt with.
-        write_failure_count(state_dir, 0)
+        # decision -- and the marker does not move, because no PR was opened,
+        # so nothing was put in front of a human. The debt IS persisted: this
+        # run classified every carried path, and dropping that result would
+        # lose any path that resolved since the last run.
+        write_state(state_dir, consecutive_failures=0, pending=next_pending)
         return {
             "result": RESULT_NOTHING,
             "reason": "no path in the change set cleared the write-set rules",
             "withheld": withheld,
+            "pending_count": len(next_pending),
+            "resolved": resolved_paths,
             "consecutive_failures": 0,
         }
 
@@ -593,6 +962,8 @@ def _run(
             "write_set": sorted(write_set),
             "withheld": withheld,
         }
+
+    blob_modes = {rp: blob_mode(resolved_remote_ref, rp, repo_dir) for rp in write_set}
 
     commit_sha, created = build_branch_commits(
         repo_dir=repo_dir,
@@ -613,21 +984,34 @@ def _run(
         marker=marker,
         marker_sha=changeset.resolve_commit(marker, repo_dir=repo_dir),
         tip_sha=tip_sha,
+        resolved=resolved_paths,
+        carried=carried,
+        blob_modes=blob_modes,
     )
     pr_url = open_pr(repo_slug=engine_repo_slug, branch=branch, base=local_ref, title=title, body=body)
 
-    # C7. The marker advances only here, after the branch exists on the
-    # remote and the PR is open. Every refusal path above returns before
-    # this line, so none of them can move it.
+    # The debt is written BEFORE the marker, and that order is the point.
     #
-    # It records what the sync has PROPOSED, not what a human has merged.
-    # That is deliberate -- a marker that waited for the merge would
-    # re-propose the same commits every ten minutes until someone acted --
-    # but it does mean an unmerged PR reads as in-sync. The PR is the thing
-    # that carries the content; this ref only says the channel has stopped
-    # owing you a look at these commits.
+    # If the debt lands and the marker does not, the withheld paths are simply
+    # offered twice -- duplicate, harmless, self-correcting. If the marker
+    # landed first and the debt write failed, the marker would have moved past
+    # commits whose withheld paths nothing is holding any more, which is the
+    # permanent silent loss this whole mechanism exists to prevent. Between an
+    # extra offer and a lost one, take the extra offer.
+    write_state(state_dir, consecutive_failures=0, pending=next_pending)
+
+    # The marker advances only here, after the branch exists on the remote and
+    # the PR is open. Every refusal path above returns before this line.
+    #
+    # It records which commits the channel has ENUMERATED AND RULED ON -- not
+    # which content the engine has taken. Those differ whenever anything was
+    # withheld, and the difference is carried by the debt above rather than by
+    # this ref, plus reported as `withheld_debt` in the alarm every loop
+    # iteration. Holding the marker back instead was measured against the live
+    # backlog and cannot work: all 13 commits carry at least one withheld
+    # path, so it would never advance, the change set would grow past the
+    # ceiling, and the channel would refuse until it disabled itself.
     _git(["update-ref", marker, tip_sha], repo_dir)
-    write_failure_count(state_dir, 0)
 
     return {
         "result": RESULT_APPLIED,
@@ -638,6 +1022,8 @@ def _run(
         "written": sorted(write_set),
         "created_count": created,
         "withheld": withheld,
+        "pending_count": len(next_pending),
+        "resolved": resolved_paths,
         "consecutive_failures": 0,
     }
 
@@ -647,9 +1033,62 @@ def _push_branch(*, repo_dir: Path, remote: str, commit_sha: str, branch: str) -
     push target from this channel -- the engine pulls, the public side is
     never written by us, and no credential that can write the engine may
     live on the public side."""
-    if remote == "code-plane":
-        raise ApplyRefused("refusing to push to the code plane: this channel only ever writes the engine")
+    _refuse_if_code_plane(repo_dir, remote)
     _git(["push", remote, f"{commit_sha}:refs/heads/{branch}"], repo_dir, timeout=300)
+
+
+def _remote_urls(repo_dir: Path, remote: str) -> set[str]:
+    """Every URL configured for *remote*, fetch and push, normalised."""
+    out = set()
+    for key in (f"remote.{remote}.url", f"remote.{remote}.pushurl"):
+        proc = subprocess.run(
+            ["git", "config", "--get-all", key], cwd=str(repo_dir), capture_output=True, text=True, timeout=30
+        )
+        for line in proc.stdout.splitlines():
+            url = line.strip()
+            if url:
+                out.add(_normalise_remote_url(url))
+    return out
+
+
+def _normalise_remote_url(url: str) -> str:
+    """Enough normalisation to compare two spellings of the same remote:
+    strip credentials, a trailing `.git`, and a trailing slash, and lowercase.
+    Not a general URL parser -- it only has to make `https://x@host/a/b.git`
+    and `https://host/a/b` compare equal."""
+    u = url.strip().lower()
+    if "://" in u:
+        scheme, rest = u.split("://", 1)
+        if "@" in rest.split("/", 1)[0]:
+            rest = rest.split("@", 1)[1]
+        u = f"{scheme}://{rest}"
+    u = u.rstrip("/")
+    if u.endswith(".git"):
+        u = u[: -len(".git")]
+    return u
+
+
+def _refuse_if_code_plane(repo_dir: Path, remote: str, code_plane_remote: str = "code-plane") -> None:
+    """Refuse to push to whatever the code plane actually IS, not to whatever
+    happens to be spelled `code-plane`.
+
+    Guarding on the remote's NAME was the weaker check: a second remote
+    pointing at the same URL under any other name walked straight past it, and
+    the name is the one part of a remote that carries no authority at all. The
+    engine pulls and the public side is never written by this channel, so the
+    comparison that matters is the URL."""
+    if remote == code_plane_remote:
+        raise ApplyRefused("refusing to push to the code plane: this channel only ever writes the engine")
+    code_plane_urls = _remote_urls(repo_dir, code_plane_remote)
+    if not code_plane_urls:
+        return
+    target_urls = _remote_urls(repo_dir, remote)
+    shared = code_plane_urls & target_urls
+    if shared:
+        raise ApplyRefused(
+            f"refusing to push: remote {remote!r} resolves to the code plane's own URL ({sorted(shared)[0]}); "
+            "this channel only ever writes the engine"
+        )
 
 
 def _open_pr(*, repo_slug: str, branch: str, base: str, title: str, body: str) -> str:

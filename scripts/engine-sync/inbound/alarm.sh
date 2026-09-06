@@ -10,6 +10,17 @@
 #   consecutive_failures  how many runs in a row have come back stale or
 #                         undecidable without a genuine sync in between
 #   halt                  true once that count has reached the threshold
+#   withheld_debt         how many paths the apply step has classified but
+#                         deliberately not written, and still owes
+#
+# `withheld_debt` is reported here because the marker cannot express it. The
+# marker says which commits the channel has ruled on; it does not say the
+# engine took the content, and those differ by exactly the withheld set. A
+# status of in-sync with a non-zero debt is the honest reading of "the channel
+# is keeping up, and N paths are waiting on a human" -- without this field the
+# first half of that sentence is all anyone ever sees. It does NOT feed the
+# halt: the debt is cleared by people, not by the sync, so halting the loop
+# over it would stop all work for a condition the loop cannot fix.
 #
 # The exit code still mirrors staleness.sh's (0 in-sync / 1 stale /
 # 2 undecidable), so a caller that only wants the status can keep reading
@@ -178,10 +189,11 @@ if [ "$SHOULD_NOTIFY" -eq 1 ]; then
   fi
 fi
 
-# Splice the two new fields into staleness.sh's own JSON rather than
-# reformatting it, so every field it emitted survives verbatim.
+# Splice the new fields into staleness.sh's own JSON rather than reformatting
+# it, so every field it emitted survives verbatim.
 OUT_JSON="$(printf '%s' "$STATUS_JSON" | python3 -c '
-import json, sys
+import json, sys, os
+
 try:
     d = json.load(sys.stdin)
 except Exception:
@@ -189,8 +201,20 @@ except Exception:
 d["consecutive_failures"] = int(sys.argv[1])
 d["halt"] = sys.argv[2] == "true"
 d["halt_threshold"] = int(sys.argv[3])
+
+# Read-only, and never fatal: an unreadable debt file reports null rather
+# than blocking the alarm the loop depends on.
+debt = None
+try:
+    with open(os.path.join(sys.argv[4], "engine-sync-inbound-apply.json")) as f:
+        pending = json.load(f).get("pending") or {}
+    debt = len(pending) if isinstance(pending, dict) else None
+except Exception:
+    debt = None
+d["withheld_debt"] = debt
+
 print(json.dumps(d))
-' "$FAILURES" "$HALT" "$HALT_THRESHOLD" 2>/dev/null)"
+' "$FAILURES" "$HALT" "$HALT_THRESHOLD" "$STATE_DIR" 2>/dev/null)"
 [ -z "$OUT_JSON" ] && OUT_JSON="$STATUS_JSON"
 
 printf '%s\n' "$OUT_JSON"

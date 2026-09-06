@@ -271,8 +271,11 @@ if [ "$ENGINE_SYNC_HALT" = "true" ]; then
 import json, sys
 print(json.load(sys.stdin).get('engine_sync', {}).get('consecutive_failures', '?'))
 " 2>/dev/null) consecutive checks — skipping iteration." >&2
-  echo "[loop-preflight] The engine checkout is behind the code plane and the sync is not closing the gap." >&2
-  echo "[loop-preflight] Merge the open engine-sync PR, or run scripts/engine-sync/inbound/apply_inbound.py to open one." >&2
+  echo "[loop-preflight] What was observed: the marker ref has not advanced across those checks." >&2
+  echo "[loop-preflight] That is consistent with the sync failing AND with it succeeding while nobody merges" >&2
+  echo "[loop-preflight] its PRs — the check cannot tell those apart, so do not assume which one it is." >&2
+  echo "[loop-preflight] Look for an open engine-sync PR first; if there is none, run" >&2
+  echo "[loop-preflight] scripts/engine-sync/inbound/apply_inbound.py and read why it refused." >&2
   echo "[loop-preflight] To stand the halt down without a code change, raise ENGINE_SYNC_HALT_THRESHOLD." >&2
   exit 1
 fi

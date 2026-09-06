@@ -192,7 +192,9 @@ def _run(engine, state_dir, recorder, **overrides):
     return apply_inbound.apply_inbound(**kwargs)
 
 
-_CLASSIFY_KEYS = {"max_files", "max_lines", "local_ref", "marker"}
+_CLASSIFY_KEYS = {"max_files", "max_lines", "local_ref", "marker", "extra_paths", "known_commit_trust"}
+# extra_paths/known_commit_trust MUST be forwarded: dropping them here made the
+# harness silently test a channel with no carried debt at all.
 
 
 class Recorder:
@@ -692,3 +694,372 @@ def test_disabled_result_is_reported_not_silently_skipped(engine, state_dir):
     assert result["result"] == apply_inbound.RESULT_DISABLED
     assert "consecutive failed runs" in result["reason"]
     assert result["consecutive_failures"] == 99
+
+
+# ---------------------------------------------------------------------------
+# Gate 1 must not be a constant the tool writes about itself
+# ---------------------------------------------------------------------------
+
+
+def _two_gate(body: str) -> tuple[int, str]:
+    """Drive the real scripts/lib/two-gate-check.sh over a body."""
+    script = _THIS_DIR.parent.parent / "lib" / "two-gate-check.sh"
+    proc = subprocess.run(
+        ["bash", "-c", f'source "{script}"; check_two_gate_markers 99999 ""; rc=$?; '
+                       'echo "REASON:$TWO_GATE_FAIL_REASON"; exit $rc'],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env={**os.environ, "TWO_GATE_PR_BODY_99999": body.replace("\n", "\\n")},
+    )
+    return proc.returncode, proc.stdout
+
+
+def test_gate1_is_na_with_a_reason_not_a_manufactured_pass(engine, state_dir):
+    """The channel must not write its own gate satisfaction.
+
+    A constant `Gate 1: PASS` in the body-builder satisfies two-gate-check for
+    every PR this channel will ever open, while naming no run and deriving
+    from nothing. A reviewer seeing it would reasonably believe a gate ran."""
+    rec = Recorder()
+    _run(engine, state_dir, rec)
+    body = rec.prs[0]["body"]
+
+    assert "Gate 1: N/A" in body, body[-800:]
+    assert "Gate 1: PASS" not in body, "the sync manufactured its own Gate 1 pass"
+    # N/A is only honest with a reason attached, and the reason has to name
+    # what was tested instead -- the originating PRs on the code plane.
+    gate1_line = next(ln for ln in body.splitlines() if ln.startswith("Gate 1:"))
+    assert "no test suite of its own" in gate1_line
+    assert "#" in gate1_line, f"Gate 1 N/A names no originating PR: {gate1_line}"
+
+
+def test_two_gate_check_accepts_the_new_form_and_rejects_a_bare_na(engine, state_dir):
+    """Observed against the real checker, not assumed: the N/A-with-reason
+    form passes, and stripping the reason fails."""
+    rec = Recorder()
+    _run(engine, state_dir, rec)
+    body = rec.prs[0]["body"]
+
+    rc, out = _two_gate(body)
+    assert rc == 0, f"the generated body no longer satisfies two-gate-check: {out}"
+
+    # Negative: a body with no Gate 1 marker at all must fail, so we know the
+    # checker is actually looking rather than waving everything through.
+    stripped = "\n".join(ln for ln in body.splitlines() if not ln.startswith("Gate 1:"))
+    rc_bad, out_bad = _two_gate(stripped)
+    assert rc_bad == 1, f"two-gate-check passed a body with no Gate 1 marker: {out_bad}"
+    assert "Gate 1 marker missing" in out_bad
+
+
+# ---------------------------------------------------------------------------
+# Withheld paths are owed, not announced once
+# ---------------------------------------------------------------------------
+
+
+def test_withheld_paths_persist_as_debt_across_the_marker_advance(engine, state_dir):
+    """The defect: withheld paths were named in one PR body and then never
+    re-entered a change set, because the marker had moved past the commits
+    that carried them. They are the sensitive prefixes -- the paths the design
+    most wants a human to see -- so the approval gate had a one-shot notice
+    behind it and no queue."""
+    rec = Recorder()
+    result = _run(engine, state_dir, rec)
+    assert result["result"] == apply_inbound.RESULT_APPLIED
+
+    pending = apply_inbound.read_pending(state_dir)
+    assert "scripts/guard.sh" in pending, "a sensitive withheld path was not carried forward"
+    assert "tests/out.txt" in pending, "an out-of-surface path was not carried forward"
+    assert pending["scripts/guard.sh"]["status"] == "needs-human-approval"
+    assert pending["scripts/guard.sh"]["runs_owed"] == 1
+
+    # And the marker still advanced -- the debt is what carries the unfinished
+    # business, not the marker.
+    assert _git(engine["repo"], "rev-parse", "refs/synced/code-plane").strip() == engine["plane_tip"]
+
+
+def test_debt_re_enters_the_next_change_set_with_nothing_new_upstream(engine, state_dir):
+    """Second run, no new commits at all: the carried paths must still be
+    classified and re-offered. Without the carry they would be invisible,
+    because `marker..tip` is now empty."""
+    rec = Recorder()
+    _run(engine, state_dir, rec)
+    first_pending = set(apply_inbound.read_pending(state_dir))
+    assert first_pending
+
+    rec2 = Recorder()
+    result2 = _run(engine, state_dir, rec2)
+    # Nothing new to write, but the debt survives and was re-classified.
+    assert result2["result"] == apply_inbound.RESULT_NOTHING, result2
+    still = apply_inbound.read_pending(state_dir)
+    assert set(still) == first_pending, "the debt changed with nothing upstream to change it"
+    assert still["scripts/guard.sh"]["runs_owed"] == 2, "the debt is not counting how long it has been owed"
+
+
+def test_debt_clears_when_a_human_puts_the_content_on_the_engine(engine, state_dir):
+    """The debt has to be able to empty, or it is just a growing log. A human
+    applying the sensitive change by hand is what resolves it."""
+    repo = engine["repo"]
+    rec = Recorder()
+    _run(engine, state_dir, rec)
+    assert "scripts/guard.sh" in apply_inbound.read_pending(state_dir)
+
+    # A human applies it on the engine, byte-for-byte.
+    (repo / "scripts").mkdir(exist_ok=True)
+    (repo / "scripts/guard.sh").write_text("#!/bin/sh\necho guarded\n")
+    _git(repo, "add", "scripts/guard.sh")
+    _git(repo, "commit", "-q", "-m", "apply the guard by hand")
+
+    rec2 = Recorder()
+    result2 = _run(engine, state_dir, rec2)
+    pending = apply_inbound.read_pending(state_dir)
+    assert "scripts/guard.sh" not in pending, "the debt did not clear after the content reached the engine"
+    assert "scripts/guard.sh" in (result2.get("resolved") or []), result2.get("resolved")
+
+
+def test_carried_conflict_does_not_refuse_the_whole_run(engine, state_dir):
+    """The landmine. A withheld would-overwrite path, once the marker has
+    moved past it, becomes a `conflict` the moment the plane changes it again
+    -- and a conflict refuses the ENTIRE run, including unrelated writable
+    work, three times over, after which the channel disables itself.
+
+    A carried path was never going to be applied by this run; its conflict
+    means it is still owed, not that everything must stop."""
+    repo = engine["repo"]
+    rec = Recorder()
+    _run(engine, state_dir, rec)
+    assert "backend/diverged.py" in apply_inbound.read_pending(state_dir)
+
+    # The plane changes the same path again, and brings unrelated new work.
+    _git(repo, "checkout", "-q", "plane")
+    _commit(repo, "touch diverged again and add unrelated work (#5)",
+            {"backend/diverged.py": "PLANE's third version\n", "backend/unrelated.py": "unrelated\n"})
+    _git(repo, "checkout", "-q", "main")
+
+    rec2 = Recorder()
+    result2 = _run(engine, state_dir, rec2)
+
+    assert result2["result"] == apply_inbound.RESULT_APPLIED, (
+        f"a carried conflict refused the whole run: {result2}"
+    )
+    assert "backend/unrelated.py" in result2["written"], "unrelated writable work was blocked by a carried conflict"
+    assert "backend/diverged.py" in apply_inbound.read_pending(state_dir), "the conflicted path stopped being owed"
+    assert apply_inbound.read_failure_count(state_dir) == 0, "a carried conflict counted toward the circuit breaker"
+
+
+def test_a_conflict_in_new_commits_still_refuses_everything(engine, state_dir):
+    """The scoping above must not have weakened the real conflict stop."""
+    repo = engine["repo"]
+    (repo / "backend/shared.py").write_text("ENGINE diverged too\n")
+    _git(repo, "add", "backend/shared.py")
+    _git(repo, "commit", "-q", "-m", "engine also touches shared")
+
+    rec = Recorder()
+    result = _run(engine, state_dir, rec)
+    assert result["result"] == apply_inbound.RESULT_CONFLICT, result
+    assert rec.prs == []
+
+
+def test_counter_only_write_preserves_the_debt(engine, state_dir):
+    """A path that touches only the counter must not truncate the debt --
+    that is how a persisted-debt design quietly reverts to the lossy one."""
+    rec = Recorder()
+    _run(engine, state_dir, rec)
+    before = apply_inbound.read_pending(state_dir)
+    assert before
+
+    apply_inbound.write_failure_count(state_dir, 2)
+    assert apply_inbound.read_pending(state_dir) == before
+    assert apply_inbound.read_failure_count(state_dir) == 2
+
+
+# ---------------------------------------------------------------------------
+# The PR body cannot be used to hide entries from the human checkpoint
+# ---------------------------------------------------------------------------
+
+
+def test_crafted_path_renders_inert_and_hides_nothing():
+    """Reachable by an untrusted stranger, because quarantined paths are
+    listed in the body too. A backtick closes the code span and `<!--` opens a
+    comment GitHub never terminates, taking every later entry with it."""
+    hostile = "backend/evil`<!--.py"
+    rendered = apply_inbound.render_path(hostile)
+
+    assert "`" not in rendered[1:-1], f"a backtick survived into the code span: {rendered}"
+    assert "<" not in rendered, f"an HTML opener survived: {rendered}"
+    assert "[U+0060]" in rendered and "[U+003C]" in rendered, rendered
+    # Visible, not silently dropped -- two different paths must not render the same.
+    assert apply_inbound.render_path("backend/evil.py") != rendered
+
+
+def test_hostile_path_does_not_hide_the_withheld_entries_after_it(engine, state_dir):
+    """End to end: the entry a human is supposed to act on must still be in
+    the body, and the Verification block must survive."""
+    hostile = "backend/a`<!--hidden.py"
+    classifications = {
+        hostile: {
+            "status": "quarantined:untrusted-provenance",
+            "reason": "untrusted",
+            "engine_path": hostile,
+            "commits": ["c1"],
+        },
+        "scripts/zzz-real-approval-needed.sh": {
+            "status": "needs-human-approval",
+            "reason": "sensitive",
+            "engine_path": "scripts/zzz-real-approval-needed.sh",
+            "commits": ["c1"],
+        },
+    }
+    _write, withheld = apply_inbound.partition_write_set(classifications, set(), ["scripts/"])
+    body = apply_inbound.build_pr_body(
+        report={"commits": [], "commit_count": 1},
+        write_set={},
+        withheld=withheld,
+        marker="refs/synced/code-plane",
+        marker_sha="a" * 40,
+        tip_sha="b" * 40,
+    )
+    assert "zzz-real-approval-needed" in body, "a hostile path hid the entry after it"
+    assert "### Verification" in body, "a hostile path swallowed the Verification block"
+    assert "<!--" not in body, "an unterminated HTML comment reached the body"
+
+
+def test_unrenderable_path_is_refused_from_the_write_set_and_named():
+    classifications = {
+        "backend/ok`.py": {
+            "status": pull.STATUS_CLEAN_APPLY,
+            "engine_path": "backend/ok`.py",
+            "local_hash": "a",
+            "upstream_hash": "b",
+            "commits": ["c1"],
+        }
+    }
+    write_set, withheld = apply_inbound.partition_write_set(classifications, set(), [])
+    assert write_set == {}
+    assert withheld["backend/ok`.py"]["status"] == apply_inbound.WITHHELD_UNRENDERABLE
+    assert "U+0060" in withheld["backend/ok`.py"]["reason"]
+
+
+# ---------------------------------------------------------------------------
+# File modes: allowlist, and make the refusal visible
+# ---------------------------------------------------------------------------
+
+
+def test_symlink_mode_is_refused_and_named_not_written_as_a_create(engine, state_dir):
+    """A symlink's payload is its TARGET, which no path gate looks at, and
+    pull.validate_path's symlink defence tests the ENGINE filesystem -- False
+    for a path that does not exist yet. It was written as 120000 and reported
+    as an ordinary `(create)`."""
+    repo = engine["repo"]
+    _git(repo, "checkout", "-q", "plane")
+    (repo / "backend").mkdir(exist_ok=True)
+    link = repo / "backend/sneaky.py"
+    if link.exists() or link.is_symlink():
+        link.unlink()
+    link.symlink_to("/etc/passwd")
+    _git(repo, "add", "backend/sneaky.py")
+    _git(repo, "commit", "-q", "-m", "add a helper (#6)")
+    _git(repo, "checkout", "-q", "main")
+
+    mode = _git(repo, "ls-tree", "plane", "--", "backend/sneaky.py").split()[0]
+    assert mode == "120000", f"fixture did not produce a symlink entry: {mode}"
+
+    rec = Recorder()
+    result = _run(engine, state_dir, rec)
+    assert result["result"] == apply_inbound.RESULT_APPLIED, result
+
+    assert "backend/sneaky.py" not in result["written"], "a symlink was written into the engine"
+    assert result["withheld"]["backend/sneaky.py"]["status"] == apply_inbound.WITHHELD_BAD_MODE
+    assert "120000" in result["withheld"]["backend/sneaky.py"]["reason"]
+
+    # Absent from the branch entirely.
+    proc = subprocess.run(
+        ["git", "rev-parse", "-q", "--verify", f"{result['commit']}:backend/sneaky.py"],
+        cwd=str(repo), capture_output=True, text=True,
+    )
+    assert proc.returncode != 0
+
+    # And named to the human, rather than silently skipped.
+    assert "backend/sneaky.py" in rec.prs[0]["body"]
+    assert apply_inbound.WITHHELD_BAD_MODE in rec.prs[0]["body"]
+
+
+def test_written_list_shows_the_mode(engine, state_dir):
+    """`create` said the same thing for a regular file, a symlink and a
+    submodule. The reviewer has to be able to see which."""
+    rec = Recorder()
+    _run(engine, state_dir, rec)
+    body = rec.prs[0]["body"]
+    assert "| mode |" in body
+    assert "`100644`" in body
+
+
+def test_blob_mode_refuses_a_gitlink_by_name():
+    with pytest.raises(apply_inbound.ApplyRefused, match="160000"):
+        raise apply_inbound.ApplyRefused(
+            "refusing mode 160000 for 'x': only ['100644', '100755'] are written by this channel"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Skips that should be refusals
+# ---------------------------------------------------------------------------
+
+
+def test_orphan_write_set_path_raises_rather_than_being_dropped():
+    """A silent `continue` here drops the path from the branch while the PR
+    body still lists it under Written. A create would be caught by the
+    blob-count invariant; an update would not."""
+    write_set = {"a.py": {"engine_path": "a.py", "commits": ["nope"], "upstream_hash": "x", "local_hash": "y"}}
+    with pytest.raises(apply_inbound.ApplyRefused, match="commit order"):
+        apply_inbound.assign_paths_to_commits(write_set, ["c1", "c2"])
+
+
+def test_writable_entry_with_null_engine_path_raises():
+    """Skipping the protected/sensitive re-check for it would send `None` on
+    to the cacheinfo format string and write a file named "None"."""
+    classifications = {
+        "x.py": {
+            "status": pull.STATUS_CLEAN_APPLY,
+            "engine_path": None,
+            "local_hash": "a",
+            "upstream_hash": "b",
+            "commits": ["c1"],
+        }
+    }
+    with pytest.raises(apply_inbound.ApplyRefused, match="null engine_path"):
+        apply_inbound.partition_write_set(classifications, set(), [])
+
+
+# ---------------------------------------------------------------------------
+# The outward-push guard keys on the URL, not the remote's name
+# ---------------------------------------------------------------------------
+
+
+def test_push_guard_refuses_a_differently_named_remote_with_the_code_plane_url(engine):
+    """The name is the one part of a remote that carries no authority. A
+    second remote pointing at the same URL walked straight past a name check."""
+    repo = engine["repo"]
+    _git(repo, "remote", "add", "code-plane", "https://github.com/example/code-plane.git")
+    _git(repo, "remote", "add", "innocent", "https://x-access-token@github.com/example/code-plane")
+
+    with pytest.raises(apply_inbound.ApplyRefused, match="resolves to the code plane"):
+        apply_inbound._push_branch(repo_dir=repo, remote="innocent", commit_sha="deadbeef", branch="b")
+
+
+def test_push_guard_still_allows_a_genuinely_different_remote(engine):
+    repo = engine["repo"]
+    _git(repo, "remote", "add", "code-plane", "https://github.com/example/code-plane.git")
+    _git(repo, "remote", "add", "origin2", "https://github.com/example/engine.git")
+    # Reaches the real push (which fails, because the URL is not a repo) --
+    # the point is that the GUARD did not refuse it.
+    with pytest.raises(apply_inbound.ApplyRefused) as exc:
+        apply_inbound._push_branch(repo_dir=repo, remote="origin2", commit_sha="deadbeef", branch="b")
+    assert "resolves to the code plane" not in str(exc.value)
+
+
+def test_normalise_remote_url_equates_spellings():
+    n = apply_inbound._normalise_remote_url
+    assert n("https://x-access-token@github.com/a/b.git") == n("https://github.com/a/b")
+    assert n("https://GitHub.com/a/b/") == n("https://github.com/a/b")
+    assert n("https://github.com/a/b") != n("https://github.com/a/c")
