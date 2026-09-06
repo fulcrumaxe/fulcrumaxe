@@ -270,25 +270,35 @@ conversation); there is no equivalent stable address the other way.
 
 This is enforced in `scripts/loop-phased-step5.sh` at the `merging` phase. No manual override needed for the normal path.
 
-**Team Lead direct-merge exception:** When Team Lead needs to merge manually after an explicit code-review pass, most of the merge gate is bypassed by design. This shortcut is only for:
+**Team Lead direct-merge exception:** When Team Lead needs to merge manually after an explicit code-review pass, the conditional part of the merge gate is bypassed by design. This shortcut is only for:
 - Small bug fixes and surgical changes (≤ 50 lines, single concern)
 - Single reviewer pass already confirmed
 - No auth, SQL, secrets, or sandbox-sensitive code touched
 
-The exception is not total, and it is also not what the label names suggest.
-The wrapper reads exactly two labels: `security-review-passed`, forced when the
-originating Discussion is `provenance:external` (HG-7), and — since D#2332 —
-`browser-test-passed`, when the PR touches `dashboard/`. The second was the gap
-that closed: a dashboard PR touching five files merged manually carrying one
-label, and the identical PR would have been blocked at the loop path's merging
-phase.
+The exception is narrower than it sounds, and since D#2455 the label half of
+the gate is not bypassed at all. `scripts/merge-and-hook.sh` refuses a PR
+carrying any NACK label, and refuses one missing `code-review-passed`, reading
+both sets from `scripts/lib/merge-gate-labels.sh` — the same arrays the loop
+path iterates, so neither path can answer the question differently. There is no
+`--force` flag for this gate: unlike CI or a browser test, the remedy is always
+available to whoever is running the merge (remove the label, or get the
+review), and it leaves a visible trail on the PR rather than an audit row.
 
-`code-review-passed` is **not** one of the two. The loop path requires it
-unconditionally; `scripts/merge-and-hook.sh` never reads it at all, so on this
-path it is enforced by whoever is running the merge and by nothing else. That
-is a live divergence between the paths, not a documented exception, and it is
-stated here rather than left implied because a gate everyone believes in and
-nothing checks is worse than no gate — it removes the pressure to look.
+What the exception still covers is the conditional gates around it —
+`security-review-passed` is required here only when the originating Discussion
+is `provenance:external` (HG-7), where the loop path also requires it on a
+`needs_security_review` flag and on a live diff-content trigger, and
+`browser-test-passed` only when the PR touches `dashboard/`. Those remaining
+differences are recorded, with evidence, in
+`scripts/ci/merge-gate-parity-ledger.json`, and
+`scripts/ci/merge-gate-parity-guard.py` fails the build on any difference the
+ledger does not claim.
+
+Both of these gaps were found by that guard rather than by the merges that went
+through them: a five-file dashboard PR merged manually carrying one label, and
+twenty-six PRs merged through a wrapper this document described as requiring a
+code review it never read. A gate everyone believes in and nothing checks is
+worse than no gate — it removes the pressure to look.
 
 **Always use the merge wrapper for manual merges:**
 

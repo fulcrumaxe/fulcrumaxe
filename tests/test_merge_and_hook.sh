@@ -20,6 +20,15 @@ RESOLVE_PR_DISC_LIB="$REPO_ROOT/scripts/lib/resolve-pr-discussion.sh"
 CI_STATUS_LIB="$REPO_ROOT/scripts/lib/ci-status-check.sh"
 PR_DEPENDENTS_LIB="$REPO_ROOT/scripts/lib/pr-dependents.sh"
 DASHBOARD_TOUCHED_SCRIPT="$REPO_ROOT/scripts/check-pr-dashboard-touched.sh"
+MERGE_GATE_LABELS_LIB="$REPO_ROOT/scripts/lib/merge-gate-labels.sh"
+
+# D#2455: the label set under test is read from the shared definition at
+# runtime, never restated. Every case below iterates these arrays, so adding a
+# ninth label to scripts/lib/merge-gate-labels.sh extends this suite's coverage
+# with no edit here — and a count assertion (which would go on passing while
+# the ninth label went unenforced) is never written.
+# shellcheck source=../scripts/lib/merge-gate-labels.sh
+source "$MERGE_GATE_LABELS_LIB"
 
 PASS=0
 FAIL=0
@@ -96,9 +105,23 @@ if [[ "$ARGS" == *"--json body"* ]]; then
 fi
 
 # `gh pr view <PR> --repo ... --json labels --jq '.labels[].name'`
+#
+# Deliberately silent about GH_ARGS, for the same reason the `pr diff` branch
+# below is: since D#2455 the wrapper fetches labels on EVERY run, before any
+# other gate, and several tests here use the absence of "GH_ARGS:" to prove no
+# merge was attempted. Tests that need to count label fetches use
+# STUB_CALL_LOG.
+#
+# code-review-passed is appended by default (D#2455): it is now required on
+# every merge, and every test written before that gate existed expects the
+# merge to proceed. STUB_PR_LABELS_EXACT=1 suppresses the default and hands the
+# wrapper exactly what STUB_PR_LABELS says — which is how the tests for the
+# required-pass gate itself drive a PR that is missing it.
 if [[ "$ARGS" == *"--json labels"* ]]; then
-  echo "GH_ARGS: $ARGS" >&2
   printf '%s\n' "${STUB_PR_LABELS:-}"
+  if [[ "${STUB_PR_LABELS_EXACT:-0}" != "1" ]]; then
+    echo "code-review-passed"
+  fi
   exit 0
 fi
 
@@ -238,6 +261,10 @@ PYEOF
   cp "$RESOLVE_PR_DISC_LIB" "$tmpdir/scripts/lib/resolve-pr-discussion.sh"
   cp "$CI_STATUS_LIB"       "$tmpdir/scripts/lib/ci-status-check.sh"
   cp "$PR_DEPENDENTS_LIB"   "$tmpdir/scripts/lib/pr-dependents.sh"
+  # D#2455: the merge-gate label vocabulary. Copied, never re-declared here —
+  # a test that restated the labels would pass against a wrapper reading a
+  # different list, which is the defect this gate exists to close.
+  cp "$MERGE_GATE_LABELS_LIB" "$tmpdir/scripts/lib/merge-gate-labels.sh"
   # D#2332: the browser-test gate shells out to this, so it has to exist beside
   # the copied merge-and-hook.sh. It resolves the code repo through the copied
   # repo-resolve.sh, which finds no config.json under tmpdir and falls through
@@ -1329,6 +1356,95 @@ assert_contains "MC-12: reports the mergeable value actually observed" "observed
 assert_not_contains "MC-12: no merge happened" "PR #999 merged." "$OUT_MC12"
 unset TWO_GATE_PR_BODY_999 STUB_MERGEABLE_SEQ STUB_MERGEABLE_SEQ_COUNTER STUB_CI_CHECK_RUNS CI_MAX_WAIT_SECONDS CI_POLL_INTERVAL
 rm -rf "$T_MC12"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# D#2455 — the merge-gate label check. Nine labels gated the loop path and none
+# of them gated this one, so a PR held back on purpose merged by hand.
+#
+# Every case below iterates the arrays sourced from
+# scripts/lib/merge-gate-labels.sh at the top of this file. No label string is
+# written out here, and no count is asserted: `assert 8 labels` would keep
+# passing the day someone adds a ninth to the shared source and the wrapper
+# stops enforcing it, which is precisely the failure being guarded against.
+# ─────────────────────────────────────────────────────────────────────────────
+
+echo "Test MGL-1: every NACK label in the shared set refuses the merge, naming itself"
+MGL_ENFORCED=()
+for MGL_LABEL in "${MERGE_GATE_NACK_LABELS[@]}"; do
+  T_MGL=$(mktemp -d)
+  setup_stubs "$T_MGL" 0
+  export TWO_GATE_PR_BODY_999="Gate 1: PASS\nGate 2: PASS"
+  # The stub appends code-review-passed, so the only thing wrong with this PR
+  # is the NACK label — a refusal here cannot be the required-pass gate firing,
+  # and a NACK is proved to outrank a satisfied pass label.
+  export STUB_PR_LABELS="$MGL_LABEL"
+  OUT_MGL=$(run_script "$T_MGL" --pr 999 2>&1)
+  RC_MGL=$?
+  assert_exit "MGL-1[$MGL_LABEL]: exits 1" 1 "$RC_MGL"
+  assert_contains "MGL-1[$MGL_LABEL]: refusal names the label" "carries the '$MGL_LABEL' label" "$OUT_MGL"
+  assert_not_contains "MGL-1[$MGL_LABEL]: no merge happened" "PR #999 merged." "$OUT_MGL"
+  # Refused before any other gate: the label read is the stub's one silent
+  # branch, so a single GH_ARGS line here would mean a later gate ran first.
+  assert_not_contains "MGL-1[$MGL_LABEL]: refused before every other gate" "GH_ARGS:" "$OUT_MGL"
+  if [[ "$RC_MGL" -eq 1 ]] && echo "$OUT_MGL" | grep -qF "carries the '$MGL_LABEL' label"; then
+    MGL_ENFORCED+=("$MGL_LABEL")
+  fi
+  unset TWO_GATE_PR_BODY_999 STUB_PR_LABELS
+  rm -rf "$T_MGL"
+done
+
+# ── Test MGL-2: the set the wrapper enforces equals the shared definition ─────
+#    Both sides are runtime values: the left is what the wrapper actually
+#    refused on above (observed by running it), the right is the array the loop
+#    path iterates. tests/test_merge_gate.sh's MG-EQ makes the same comparison
+#    for the loop path against the same array, so the two paths are equal to
+#    each other by both being equal to the one definition — and neither test
+#    restates a label to check it.
+echo "Test MGL-2: enforced set == shared NACK definition (no restated list, no count)"
+MGL_WANT=$(printf '%s\n' "${MERGE_GATE_NACK_LABELS[@]}" | sort)
+MGL_GOT=$(printf '%s\n' ${MGL_ENFORCED[@]+"${MGL_ENFORCED[@]}"} | sort)
+if [[ "$MGL_WANT" == "$MGL_GOT" ]]; then
+  pass "MGL-2: merge-and-hook.sh enforces exactly the shared NACK set"
+else
+  fail "MGL-2: enforced set differs from the shared NACK set — missing: $(comm -23 <(echo "$MGL_WANT") <(echo "$MGL_GOT") | tr '\n' ' ')"
+fi
+
+# ── Test MGL-3: a missing required pass label refuses the merge (D#2452) ──────
+#    Opposite polarity to MGL-1: not a blocking label present, a required label
+#    absent. STUB_PR_LABELS_EXACT stops the stub appending the default, so the
+#    PR genuinely lacks the label under test.
+echo "Test MGL-3: every required pass label, when absent, refuses the merge"
+for MGL_LABEL in "${MERGE_GATE_REQUIRED_PASS_LABELS[@]}"; do
+  T_MGL3=$(mktemp -d)
+  setup_stubs "$T_MGL3" 0
+  export TWO_GATE_PR_BODY_999="Gate 1: PASS\nGate 2: PASS"
+  export STUB_PR_LABELS_EXACT=1
+  export STUB_PR_LABELS="$(printf '%s\n' "${MERGE_GATE_REQUIRED_PASS_LABELS[@]}" | grep -vxF -- "$MGL_LABEL" || true)"
+  OUT_MGL3=$(run_script "$T_MGL3" --pr 999 2>&1)
+  RC_MGL3=$?
+  assert_exit "MGL-3[$MGL_LABEL]: exits 1" 1 "$RC_MGL3"
+  assert_contains "MGL-3[$MGL_LABEL]: refusal names the missing label" "does not carry the required '$MGL_LABEL' label" "$OUT_MGL3"
+  assert_not_contains "MGL-3[$MGL_LABEL]: no merge happened" "PR #999 merged." "$OUT_MGL3"
+  unset TWO_GATE_PR_BODY_999 STUB_PR_LABELS STUB_PR_LABELS_EXACT
+  rm -rf "$T_MGL3"
+done
+
+# ── Test MGL-4: a PR that satisfies the shared set still merges ───────────────
+#    The gate has to be able to say yes. Without this, a wrapper that refused
+#    every PR unconditionally would pass MGL-1 and MGL-3.
+echo "Test MGL-4: required labels present, no NACK label — merge proceeds"
+T_MGL4=$(mktemp -d)
+setup_stubs "$T_MGL4" 0
+export TWO_GATE_PR_BODY_999="Gate 1: PASS\nGate 2: PASS"
+export STUB_PR_LABELS_EXACT=1
+export STUB_PR_LABELS="$(printf '%s\n' "${MERGE_GATE_REQUIRED_PASS_LABELS[@]}")"
+OUT_MGL4=$(run_script "$T_MGL4" --pr 999 2>&1)
+RC_MGL4=$?
+assert_exit "MGL-4: exits 0" 0 "$RC_MGL4"
+assert_contains "MGL-4: gate reports itself satisfied" "merge-gate labels OK for PR #999" "$OUT_MGL4"
+assert_contains "MGL-4: merge happened" "PR #999 merged." "$OUT_MGL4"
+unset TWO_GATE_PR_BODY_999 STUB_PR_LABELS STUB_PR_LABELS_EXACT
+rm -rf "$T_MGL4"
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""

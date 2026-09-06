@@ -105,6 +105,16 @@ _spawn() {
 # Helper: invoke security-trigger.sh (sourced once here)
 # Returns 0 if triggered, 1 if not.
 # -----------------------------------------------------------------------
+# shellcheck source=scripts/lib/merge-gate-labels.sh
+# D#2455: the merge-gate label vocabulary, shared with scripts/merge-and-hook.sh.
+# Deliberately NOT sourced with the `2>/dev/null || true` its neighbours use:
+# those libraries degrade to a no-op, this one would degrade to a merge gate
+# with nothing in it. Missing means stop.
+if ! source "$SCRIPT_DIR/lib/merge-gate-labels.sh"; then
+  echo "loop-phased-step5: FATAL: cannot source lib/merge-gate-labels.sh — refusing to run a merge gate with no label set" >&2
+  exit 1
+fi
+
 # shellcheck source=scripts/lib/security-trigger.sh
 source "$SCRIPT_DIR/lib/security-trigger.sh" 2>/dev/null || true
 
@@ -286,29 +296,12 @@ _gh_merge() {
 # NACK label list — any of these present on a PR blocks auto-merge,
 # regardless of whether pass-labels are also present.
 #
-# Canonical vocabulary:
-#   security-needs-fix        — security reviewer found issues (canonical name)
-#   security-issue            — deprecated alias; kept here so legacy labels block too
-#   security-review-needs-fix — synonym used by some reviewer versions; all three
-#                               are treated as equivalent NACK signals
-#   code-review-needs-fix     — code reviewer found issues
-#   needs-re-review           — code reviewer requested changes after a fix round;
-#                               executor must push fixes and remove this label, then
-#                               code-reviewer re-reviews and applies code-review-passed
-#   acceptance-failed         — acceptance tests failed
-#   do-not-merge              — manual hold
-#   wip                       — work in progress, not ready
+# D#2455: the list itself now lives in scripts/lib/merge-gate-labels.sh,
+# sourced at the top of this file, because scripts/merge-and-hook.sh enforces
+# the same set and used to enforce none of it. The canonical vocabulary and
+# the reason each name is on the list are documented there, next to the
+# labels, so there is one place to read and one place to change.
 # -----------------------------------------------------------------------
-_NACK_LABELS=(
-  "security-needs-fix"
-  "security-issue"
-  "security-review-needs-fix"
-  "code-review-needs-fix"
-  "needs-re-review"
-  "acceptance-failed"
-  "do-not-merge"
-  "wip"
-)
 
 # -----------------------------------------------------------------------
 # D#1777: pass-labels that go stale on a force-push. A review label is
@@ -321,9 +314,17 @@ _NACK_LABELS=(
 # above for the actual veto) — leaving it green after its siblings go
 # stale would mislead a human reading the PR.
 #
-# Deliberately NOT in this list: anything in _NACK_LABELS. A NACK is
-# fail-closed and must survive a force-push; clearing one here would turn
+# Deliberately NOT in this list: anything in MERGE_GATE_NACK_LABELS. A NACK
+# is fail-closed and must survive a force-push; clearing one here would turn
 # this fix into the bypass it exists to close.
+#
+# This is also deliberately not the merge gate's required-pass set, which is
+# why it stays a literal list here rather than moving into
+# merge-gate-labels.sh beside the NACK array: it is the force-push staleness
+# vocabulary, and acceptance-passed is in it precisely because no gate reads
+# that label. Treating this array as "the labels that gate a merge" would
+# state something false about acceptance-passed and about the three
+# conditional labels beside it.
 # -----------------------------------------------------------------------
 _REVIEW_PASS_LABELS=(
   "code-review-passed"
@@ -339,7 +340,7 @@ _REVIEW_PASS_LABELS=(
 _check_nack_labels() {
   local pr="$1"
   NACK_LABEL_FOUND=""
-  for nack in "${_NACK_LABELS[@]}"; do
+  for nack in "${MERGE_GATE_NACK_LABELS[@]}"; do
     local slug
     slug=$(echo "$nack" | tr '-' '_')
     if [ -n "${SPAWN_AGENT:-}" ]; then
@@ -1469,8 +1470,22 @@ print(entries[0].get('fix_cycle_count', 0) if entries else 0)
         # force-push, before any _has_label read below trusts it.
         _invalidate_stale_pass_labels "$PR_NUM"
 
-        CODE_REVIEW_PASSED=false
-        _has_label "$PR_NUM" "code-review-passed" && CODE_REVIEW_PASSED=true
+        # D#2455: the unconditionally-required pass labels come from
+        # scripts/lib/merge-gate-labels.sh — the same array
+        # scripts/merge-and-hook.sh drives — so adding one there gates both
+        # paths with no second edit. The variable stays named
+        # CODE_REVIEW_PASSED because code-review-passed is the only member
+        # today and the branch below reads better for it; MISSING_REQUIRED_LABEL
+        # is what names the actual cause when there is more than one.
+        CODE_REVIEW_PASSED=true
+        MISSING_REQUIRED_LABEL=""
+        for _req_label in "${MERGE_GATE_REQUIRED_PASS_LABELS[@]}"; do
+          if ! _has_label "$PR_NUM" "$_req_label"; then
+            CODE_REVIEW_PASSED=false
+            MISSING_REQUIRED_LABEL="$_req_label"
+            break
+          fi
+        done
 
         NEEDS_SEC_MERGE=$(echo "$ENTRY_JSON" | python3 -c "
 import json, sys
@@ -1541,7 +1556,7 @@ print('true' if entries and entries[0].get('needs_security_review', False) else 
         _GATE_SHA="${CI_STATUS_HEAD_SHA:-}"
 
         if [ "$CODE_REVIEW_PASSED" = "false" ]; then
-          _log "D#$DISC_NUM PR#$PR_NUM: merging blocked — code-review-passed label missing"
+          _log "D#$DISC_NUM PR#$PR_NUM: merging blocked — ${MISSING_REQUIRED_LABEL:-code-review-passed} label missing"
         elif [ "$SECURITY_PASSED" = "false" ]; then
           # Name the real cause when the trigger told us one. An unresolvable
           # code plane reports "triggered" by design, and calling that "a
