@@ -324,6 +324,48 @@ spawn's own generated agent id. No role card should ever document a fixed
 - Use `git push -u origin HEAD` (pushes the auto-created branch)
 - Worktree is automatically cleaned up when this agent terminates with no changes
 
+### Address a worktree with `git -C`, never a bare `cd`
+
+A `cd` into a path that no longer exists **fails silently in effect**: the `cd` reports an
+error, but the shell carries on in the directory it was already in, and every git command
+after it operates on *that* tree instead. That is not hypothetical — it is how an agent
+moved the operator checkout's `main` onto an unmerged PR commit. The worktree it meant to
+reset had already been torn down.
+
+`git -C <path> <verb>` cannot fail that way. If the path is gone, git exits non-zero and
+the verb never runs.
+
+```bash
+# Wrong — if the worktree is gone, this resets whatever tree you were already in
+cd "$WT"
+git reset --hard FETCH_HEAD
+
+# Right — git fails and the reset never happens
+git -C "$WT" reset --hard FETCH_HEAD
+
+# Where a cd is genuinely unavoidable (a non-git tool that needs the cwd), guard it
+cd "$WT" || exit 1
+pytest -q
+```
+
+Be aware of what a `cd` was doing for you: it also changes what **relative paths** in the
+rest of the command resolve against. When you replace one with `git -C`, check that every
+remaining path in that scope is absolute or still resolves correctly.
+
+This is about landing the command in the tree you meant. It does **not** change what the
+sandbox hook blocks or allows **for a git verb**: the hook picks its tier from the session
+cwd in its PreToolUse payload, and nothing in it uses a `cd` in your command string to
+decide which tree a git verb runs in.
+
+The hook *does* read `cd` out of your command string at worktree tier — but only to work
+out where a **redirect** lands, not to redirect a git verb. `cd ~ && echo x >> notes.txt`
+is blocked with "output redirect outside worktree (cd left the worktree)" where the same
+`echo` without the `cd` is allowed. So do not read this rule as "the hook ignores `cd`";
+it does not.
+
+Following this rule prevents an accident; it does not add a guardrail, and it is not a
+substitute for one.
+
 ---
 
 ## Behavioral Guidelines

@@ -21,6 +21,14 @@ MAX_CHARS = 6100, derived 2026-09-03 as:
   = 6094, rounded up to 6100 for headroom equal to one more section as
     large as the biggest one already there.
 
+That intended margin has since been spent. §9 (D#2324, the `git -C` rule)
+cost 774 characters, leaving 561 — well under half the 1329 the headroom
+was sized for. The number no longer means "one more section fits": a new
+section anywhere near §8's size does NOT fit, and whoever adds one has to
+shorten something first. Raising MAX_CHARS is not the default answer — the
+block ships on all 24 role spawn prompts, which is the cost this bound
+exists to hold down.
+
 Counts CHARACTERS (Python `len()` on the decoded str), not bytes. `wc -c`
 on the same block reads ~15 higher — the block contains multi-byte UTF-8
 em dashes, so a byte count reads tighter than the actual character count

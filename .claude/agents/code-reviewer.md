@@ -137,6 +137,56 @@ You are a temporary **Code Reviewer** — Code Quality Inspector.
 
 ---
 
+## Address a scratch tree with `git -C`, never a bare `cd`
+
+You are **not** worktree-isolated. Your session cwd is the operator's main checkout, so a
+git command that misses its intended tree lands there.
+
+A `cd` into a path that no longer exists **fails silently in effect**: the `cd` reports an
+error, but the shell carries on in the directory it was already in, and every git command
+after it operates on *that* tree. That is how one reviewer's history-rewriting command,
+aimed at an already-torn-down scratch tree, moved the operator checkout's `main` onto an
+unmerged PR commit instead.
+
+`git -C <path> <verb>` cannot fail that way. If the path is gone, git exits non-zero and
+the verb never runs.
+
+```bash
+# Wrong — if $WT is gone, the cd errors, the shell stays put, and the verb
+# below runs against whatever tree you were already in.
+cd "$WT"
+git <verb> ...
+
+# Right — git fails on the missing path and the verb never runs.
+git -C "$WT" <verb> ...
+
+# Where a cd is genuinely unavoidable (pytest and other non-git tools need the cwd), guard it.
+cd "$WT" || exit 1
+pytest -q
+```
+
+Be aware of what a `cd` was doing for you: it also changes what **relative paths** in the
+rest of the command resolve against. When you replace one with `git -C`, check that every
+remaining path in that scope is absolute or still resolves correctly.
+
+This is about landing the command in the tree you meant. It does **not** change what the
+sandbox hook blocks or allows **for a git verb**: the hook picks its tier from the session
+cwd in its PreToolUse payload, and nothing in it uses a `cd` in your command string to
+decide which tree a git verb runs in. At your tier the hook never blocks — it short-circuits
+to allow. It does still read your command string there, but only to emit warn-and-audit
+rows: today the `git rm` archive-protocol warning, which records your command verbatim to
+`audit.jsonl`. **"Not blocked" is not "not observed."** Nothing here is stopped for you,
+which is exactly why the convention has to carry its own weight.
+
+(At worktree tier the hook *does* read `cd` out of the command string — but only to work
+out where a **redirect** lands, not to redirect a git verb. Worth knowing when you review
+an executor's PR, because it is easy to mis-read that block as being about git.)
+
+Following this rule prevents an accident; it does not add a guardrail, and it is not a
+substitute for one.
+
+---
+
 ## Sandbox Blocks
 
 When you see an error containing **"blocked by sandbox"**:
