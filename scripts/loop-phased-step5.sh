@@ -1152,7 +1152,9 @@ Steps:
    - Lists the panel composition
    - Quotes each specialist's key finding, referencing them by their agent role name and comment content
    - MUST NOT synthesize specialist views from your own knowledge — only quote what they actually wrote
-   - If a specialist comment is missing, STOP and report to Team Lead via team-log — do not guess
+   - If a specialist comment is missing, still write the summary: record the gap on a
+     'Panel completeness:' line naming every expected role and whether it posted, and
+     attribute no view to a role that did not post. Halt only if NO specialist posted.
 4. Write the Spec as normal.
 5. Flip STATUS to SPEC_READY.
 

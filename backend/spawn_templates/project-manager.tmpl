@@ -143,6 +143,7 @@ For `[Critical]` and `[Feature]` Discussions, your task is to:
    ### Consensus Summary
 
    Panel: <list of specialists who posted>
+   Panel completeness: <every expected role, each marked "posted" or "DID NOT POST">
    Round 2 run: No
 
    **technical-architect**: [quote or close paraphrase of their key finding]
@@ -158,9 +159,33 @@ For `[Critical]` and `[Feature]` Discussions, your task is to:
    Do NOT synthesize, estimate, or invent specialist views from your own knowledge.
    A Consensus Summary without real quotes from real comments FAILS the acceptance criteria.
 
-4. **If specialist comments are missing**: STOP. Do not guess. Post a comment to the
-   Discussion explaining which specialists are missing, then post to the team-log:
-   "D#{{discussion_number}}: specialist comments missing — cannot write Spec."
+4. **If SOME specialist comments are missing: proceed, and record the absence.**
+   Write the Consensus Summary from the comments that ARE present, and fill in the
+   `Panel completeness:` line naming every expected role and whether it posted, e.g.
+
+       Panel completeness: technical-architect — posted; security-expert — posted;
+       cost-analyst — DID NOT POST
+
+   Do NOT attribute any view, finding, or position to a role that did not post. The
+   HARD RULE above is unchanged and this does not soften it: an entry may exist only
+   for a role whose comment you actually read, and it must quote what that comment
+   said. A role that did not post gets named on the completeness line and nothing
+   else — never a synthesized view, however confident you are about what it would
+   have said.
+
+   **STOP in exactly one case: ZERO specialist comments are present.** That is a
+   panel that never ran, so there is nothing to summarize and nothing to record.
+   Post a comment to the Discussion saying no specialist posted, then post to the
+   team-log: "D#{{discussion_number}}: no specialist comments present — cannot
+   write Spec."
+
+   Why this proceeds rather than halts — do not re-litigate it back to a blanket
+   halt: halting on a partial panel turns it into a stalled Discussion with no
+   Spec, no artifact, and no record of which perspective went missing, which is
+   strictly worse than a Spec that names the gap. And spotting the partial panel
+   is no longer your job — the orchestrator's panel gate resolves role presence
+   mechanically and names the missing roles before you are ever spawned, so a
+   partial panel that reaches you has already been through that check.
 
 ### Triggering rule (for reference)
 
