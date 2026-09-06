@@ -92,6 +92,15 @@ def commit_subject(sha: str, repo_dir: Path = REPO_ROOT) -> str:
 
 
 def extract_pr_number(subject: str) -> int | None:
+    """A commit's subject is attacker-controlled content -- it is whatever
+    the PR's own contributor typed, and the code plane's merge settings
+    (`allow_merge_commit`, `allow_rebase_merge`, both true) let it reach
+    `main` verbatim under either merge method. This is therefore NEVER used
+    on its own to decide provenance; report.py's real commit->PR link is
+    the GitHub `commits/{sha}/pulls` API, and this parse is consulted only
+    as a must-agree cross-check against that -- a subject claiming a PR the
+    API does not confirm is itself grounds to refuse, not evidence of
+    anything."""
     m = _PR_SUBJECT_RE.search(subject)
     return int(m.group(1)) if m else None
 
@@ -99,10 +108,16 @@ def extract_pr_number(subject: str) -> int | None:
 def commit_name_status(sha: str, repo_dir: Path = REPO_ROOT) -> list[tuple[str, str]]:
     """[(status, path), ...] for one commit, via git's own per-commit
     diff-tree (`git show --name-status`), never a two-tree `git diff`.
-    Renames/copies (R###/C###) are reported as a touch on the NEW path only
-    -- this report classifies where content lands, not where it came from;
-    the old path is not separately reported as deleted, since nothing here
-    proposes deleting anything -- read-only."""
+
+    A rename (R###) is reported as TWO touches: the new path with its own
+    status, AND the old path with status "D" -- a rename is a delete of the
+    old path plus a write of the new one, and the old path's content is
+    genuinely gone from that path whether or not new content landed
+    elsewhere. Reporting only the new path let a delete spelled as a rename
+    slip past every deletion-aware check downstream (the ceiling gate's
+    out-of-surface-delete refusal in particular) with no "D" status for it
+    to ever see. A copy (C###) does NOT get this treatment: the source path
+    still exists after a copy, so it is not a deletion."""
     raw = _git(["show", "--format=", "--name-status", sha], repo_dir=repo_dir)
     out: list[tuple[str, str]] = []
     for line in raw.splitlines():
@@ -110,7 +125,10 @@ def commit_name_status(sha: str, repo_dir: Path = REPO_ROOT) -> list[tuple[str, 
             continue
         parts = line.split("\t")
         status = parts[0]
-        if status[0] in ("R", "C") and len(parts) == 3:
+        if status[0] == "R" and len(parts) == 3:
+            out.append((status, parts[2]))
+            out.append(("D", parts[1]))
+        elif status[0] == "C" and len(parts) == 3:
             out.append((status, parts[2]))
         elif len(parts) >= 2:
             out.append((status, parts[1]))
@@ -185,11 +203,11 @@ def build_changeset(marker: str, remote_ref: str, repo_dir: Path = REPO_ROOT) ->
 
     for sha in commits:
         subject = commit_subject(sha, repo_dir=repo_dir)
-        pr_number = extract_pr_number(subject)
+        subject_pr_hint = extract_pr_number(subject)  # untrusted -- see extract_pr_number's docstring
         ins, dele = commit_numstat(sha, repo_dir=repo_dir)
         total_insertions += ins
         total_deletions_lines += dele
-        commit_infos.append({"sha": sha, "subject": subject, "pr": pr_number})
+        commit_infos.append({"sha": sha, "subject": subject, "subject_pr_hint": subject_pr_hint})
 
         for status, path in commit_name_status(sha, repo_dir=repo_dir):
             entry = touched.setdefault(path, {"commits": [], "statuses": []})

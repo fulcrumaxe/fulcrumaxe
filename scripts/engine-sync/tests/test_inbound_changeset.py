@@ -111,6 +111,58 @@ def test_build_changeset_counts_deletions(scratch_repo):
     assert cs["touched_paths"]["gone.txt"]["statuses"] == ["D"]
 
 
+def test_rename_reports_old_path_as_deleted_too(scratch_repo):
+    """A rename must not let a delete slip past every deletion-aware check
+    downstream: git's --name-status reports a plain rename as R### against
+    the NEW path only, with no "D" status anywhere. Without special
+    handling, a delete spelled as a rename would carry no "D" status at all
+    -- the ceiling gate's out-of-surface-delete refusal, which keys off "D"
+    in a path's statuses, would never see it, so a rename is as good as
+    deleting a guard file for free."""
+    content = "line one\nline two\nline three\nline four\nline five\n"
+    _commit(scratch_repo, "seed", {"old.txt": content})
+    seed = _git(scratch_repo, "rev-parse", "HEAD").strip()
+    _git(scratch_repo, "mv", "old.txt", "new.txt")
+    _git(scratch_repo, "commit", "-q", "-m", "rename old to new (#1)")
+    tip = _git(scratch_repo, "rev-parse", "HEAD").strip()
+
+    statuses = changeset.commit_name_status(tip, repo_dir=scratch_repo)
+    status_by_path: dict[str, list[str]] = {}
+    for status, path in statuses:
+        status_by_path.setdefault(path, []).append(status)
+
+    assert "D" in status_by_path.get("old.txt", []), f"no D status for the renamed-away path: {status_by_path}"
+    assert any(s.startswith("R") for s in status_by_path.get("new.txt", [])), status_by_path
+
+    cs = changeset.build_changeset(seed, "HEAD", repo_dir=scratch_repo)
+    assert "old.txt" in cs["touched_paths"]
+    assert "D" in cs["touched_paths"]["old.txt"]["statuses"]
+    assert cs["file_deletions"] >= 1
+
+
+def test_copy_does_not_report_source_as_deleted(scratch_repo):
+    """The mirror check: a COPY (source still exists afterward) must NOT
+    get the rename's synthetic "D" treatment -- only a rename actually
+    removes the old path."""
+    content = "line one\nline two\nline three\nline four\nline five\n"
+    _commit(scratch_repo, "seed", {"src.txt": content})
+    seed = _git(scratch_repo, "rev-parse", "HEAD").strip()
+    (scratch_repo / "copy.txt").write_text(content)
+    _git(scratch_repo, "add", "copy.txt")
+    _git(scratch_repo, "commit", "-q", "-m", "copy src to copy (#2)")
+    tip = _git(scratch_repo, "rev-parse", "HEAD").strip()
+
+    statuses = changeset.commit_name_status(tip, repo_dir=scratch_repo)
+    status_by_path: dict[str, list[str]] = {}
+    for status, path in statuses:
+        status_by_path.setdefault(path, []).append(status)
+
+    # Whether git detects this as a copy (C###) or a plain add (A) depends
+    # on similarity-detection settings; either way "src.txt" (the
+    # still-existing source) must never show a "D".
+    assert "D" not in status_by_path.get("src.txt", [])
+
+
 def test_blob_hash_at_present_and_absent(scratch_repo):
     seed = _commit(scratch_repo, "seed", {"a.txt": "hello\n"})
     tip = _commit(scratch_repo, "add b (#1)", {"b.txt": "world\n"})

@@ -10,17 +10,30 @@ plane's current `main` tip, this classifies every changed path into one of:
 
   plus gate outcomes that stop a path before it ever reaches that table:
   quarantined:untrusted-provenance, rejected:out-of-surface,
-  rejected:path-unsafe, needs-human-approval, and one purely-informational
-  bucket: generated (an export-generated path with no engine-side source).
+  rejected:path-unsafe, rejected:reverse-map-collision, needs-human-approval,
+  and one purely-informational bucket: generated (an export-generated path
+  with no engine-side source).
 
 APPLIES NOTHING. WRITES NOTHING to the working tree, the index, or
-`refs/synced/code-plane`. The only network call this tool makes is one
+`refs/synced/code-plane`. This tool makes two kinds of network call: one
 `git fetch` of the code-plane remote's tracked branch (see
 changeset.ensure_remote_fetched's docstring for why, and why that does not
-change the existing staleness check's own fetch-free contract) and, per
-touched commit, one `gh api repos/<repo>/pulls/<N>` read to resolve that
-PR's GitHub-authenticated author (via pr_intake_gate.fetch_pr_meta -- never
-a second gh call path, never commit metadata).
+change the existing staleness check's own fetch-free contract), and, per
+touched commit, GitHub API reads to resolve provenance -- `GET
+/repos/<repo>/commits/<sha>/pulls` is the SOLE commit->PR link (never a
+commit's own subject line, which is attacker-controlled content that the
+code plane's merge settings let reach `main` verbatim), followed by one PR
+read to resolve that PR's GitHub-authenticated author (via
+pr_intake_gate.fetch_pr_meta). A commit resolving to zero PRs, more than one
+PR, or a PR the subject's own `(#N)` hint disagrees with all refuse that
+commit's paths rather than guess.
+
+Note for anyone checking "does this call the network": the ceiling refusal
+and the deletion-refusal both run AFTER the one `git fetch` above, so
+neither makes a GitHub API call, but neither is "no network" either -- the
+fetch has already written objects and `FETCH_HEAD` by the time either
+refusal is evaluated. Only the `--local-ref` resolution check, which runs
+before the fetch, is genuinely network-free.
 
 Refuses (nonzero exit, no partial report) when the computed change set
 exceeds the file/line ceiling, or when it contains a deletion of a path the
@@ -34,6 +47,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -69,6 +83,41 @@ def _resolve_trust_allowlist():
     return resolve_allowlist()
 
 
+def _prs_for_commit(sha: str, repo_slug: str) -> list[int]:
+    """The SOLE commit->PR link: `GET /repos/<repo_slug>/commits/<sha>/pulls`.
+
+    A commit's own subject line is attacker-controlled -- it is whatever
+    text the contributor typed, and the code plane's merge settings
+    (`allow_merge_commit` and `allow_rebase_merge`, both true) let that
+    subject reach `main` verbatim under either merge method. Parsing a
+    trailing `(#N)` out of it and trusting that number was the whole
+    provenance boundary defeated by typing a number into a commit message:
+    an untrusted contributor's own commit, subject `Tidy up imports (#4)`,
+    would resolve PR #4's (someone else's, trusted) author and inherit
+    their trust. This function never reads the subject at all -- it asks
+    GitHub which PR(s) the commit actually belongs to.
+
+    Fails closed: a read that errors, or a response that is not a JSON
+    list, returns [] (unresolvable) rather than raising or guessing. Empty
+    or ambiguous (more than one PR) are both refused by the caller -- this
+    function only fetches and parses, it does not decide."""
+    proc = subprocess.run(
+        ["gh", "api", f"repos/{repo_slug}/commits/{sha}/pulls", "--jq", "[.[].number]"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if proc.returncode != 0:
+        return []
+    try:
+        result = json.loads(proc.stdout.strip() or "[]")
+    except (ValueError, json.JSONDecodeError):
+        return []
+    if not isinstance(result, list) or not all(isinstance(n, int) for n in result):
+        return []
+    return result
+
+
 def _pr_author(pr_number: int, repo_slug: str) -> str | None:
     from pr_intake_gate import fetch_pr_meta  # noqa: PLC0415
 
@@ -101,25 +150,33 @@ def classify_report(
     is_trusted_author=None,
     resolve_surface_patterns=None,
     resolve_sensitive_prefixes=None,
+    resolve_prs_for_commit=None,
 ) -> dict:
     """The full pipeline. Injectable seams (resolve_trust_allowlist,
     resolve_pr_author, is_trusted_author, resolve_surface_patterns,
-    resolve_sensitive_prefixes) default to the live, real-file-backed
-    implementations; tests supply stubs so provenance and surface/sensitivity
-    matching can be exercised without a network call or a real
-    open-source/MANIFEST.md on disk. `remote_ref` overrides the
+    resolve_sensitive_prefixes, resolve_prs_for_commit) default to the live,
+    real-file-backed implementations; tests supply stubs so provenance and
+    surface/sensitivity matching can be exercised without a network call or
+    a real open-source/MANIFEST.md on disk. `remote_ref` overrides the
     `{remote}/{remote_branch}` join for tests that model "the code plane's
     tip" as a plain local branch rather than a configured git remote.
 
     `local_ref` is what "the engine's own copy" means when hash-classifying
     -- it defaults to `main`, not `HEAD`, specifically so that running this
     tool from a feature branch does not silently shift every classification
-    against a tree nobody else is looking at."""
+    against a tree nobody else is looking at. `repo_dir` is expected to be
+    the ENGINE checkout, not merely "some git repo" -- it is where
+    `local_ref` and the marker ref live, and `path_gate`'s target_root
+    (symlink/on-disk-casing checks) is also resolved there. That coupling
+    is why local_ref's resolvability is checked against `repo_dir` up front:
+    an unresolvable local_ref is usually the signal that repo_dir is not
+    the engine checkout at all."""
     resolve_trust_allowlist = resolve_trust_allowlist or _resolve_trust_allowlist
     resolve_pr_author = resolve_pr_author or (lambda pr: _pr_author(pr, code_repo_slug))
     is_trusted_author = is_trusted_author or _is_trusted_author
     resolve_surface_patterns = resolve_surface_patterns or gate.load_export_surface_patterns
     resolve_sensitive_prefixes = resolve_sensitive_prefixes or gate.read_sensitive_prefixes
+    resolve_prs_for_commit = resolve_prs_for_commit or (lambda sha: _prs_for_commit(sha, code_repo_slug))
 
     # Resolve local_ref up front and refuse if it does not resolve at all.
     # Without this, every blob_hash_at(local_ref, ...) call below silently
@@ -197,22 +254,40 @@ def classify_report(
 
     trust_allowlist = resolve_trust_allowlist()
 
-    # Resolve provenance per commit, once each (not per path).
+    # Resolve provenance per commit, once each (not per path). The SOLE
+    # commit->PR link is resolve_prs_for_commit (GitHub's commits/pulls API
+    # in production) -- a commit's subject is never used to select a PR.
+    # The subject's own `(#N)` hint, if present, is consulted only as a
+    # must-agree cross-check: a subject claiming a PR the API does not
+    # confirm is refused, not trusted either way.
     commit_trust: dict[str, tuple[bool, str]] = {}
     commits_out = []
     for c in cs["commits"]:
-        pr = c["pr"]
-        if pr is None:
-            trusted, reason = False, "commit subject has no trailing PR reference; provenance unresolvable"
-            author = None
+        sha = c["sha"]
+        subject_hint = c.get("subject_pr_hint")
+        prs = resolve_prs_for_commit(sha)
+        author = None
+        resolved_pr = None
+        if len(prs) == 0:
+            trusted, reason = False, f"commit {sha[:8]} resolves to no PR via commits/pulls; provenance unresolvable"
+        elif len(prs) > 1:
+            trusted, reason = False, (
+                f"commit {sha[:8]} resolves to multiple PRs {sorted(prs)} via commits/pulls; ambiguous, fail closed"
+            )
+        elif subject_hint is not None and subject_hint != prs[0]:
+            trusted, reason = False, (
+                f"commit {sha[:8]} subject claims PR #{subject_hint} but commits/pulls resolves PR #{prs[0]} "
+                "-- disagreement between subject and API is itself refused"
+            )
         else:
-            author = resolve_pr_author(pr)
+            resolved_pr = prs[0]
+            author = resolve_pr_author(resolved_pr)
             if author is None:
-                trusted, reason = False, f"PR #{pr} author unreadable"
+                trusted, reason = False, f"PR #{resolved_pr} author unreadable"
             else:
                 trusted, reason = gate.check_provenance(author, trust_allowlist, is_trusted_author=is_trusted_author)
-        commit_trust[c["sha"]] = (trusted, reason)
-        commits_out.append({**c, "author": author, "trusted": trusted})
+        commit_trust[sha] = (trusted, reason)
+        commits_out.append({**c, "resolved_pr": resolved_pr, "author": author, "trusted": trusted})
 
     surface_patterns = resolve_surface_patterns()
     sensitive_prefixes = resolve_sensitive_prefixes()
@@ -227,6 +302,7 @@ def classify_report(
         gate.CAT_PATH_UNSAFE: [],
         gate.CAT_OUT_OF_SURFACE: [],
         gate.CAT_NEEDS_APPROVAL: [],
+        gate.CAT_COLLISION: [],
         pull.STATUS_CLEAN_APPLY: [],
         pull.STATUS_LOCAL_PATCH: [],
         pull.STATUS_ALREADY_APPLIED: [],
@@ -235,6 +311,13 @@ def classify_report(
         pull.STATUS_REJECTED: [],
     }
     classifications: dict[str, dict] = {}
+
+    # Reverse-map collisions: two different remote paths landing on the
+    # same engine path (today only possible via a bug in a future mirror,
+    # not the current two mirrors -- see gate.find_reverse_map_collisions'
+    # own docstring). Computed once over every touched path so a colliding
+    # pair is refused regardless of which one sorts first in the loop below.
+    collisions = gate.find_reverse_map_collisions(list(cs["touched_paths"].keys()))
 
     for remote_path, info in sorted(cs["touched_paths"].items()):
         touching_commits = info["commits"]
@@ -260,6 +343,16 @@ def classify_report(
                 "commits": touching_commits,
             }
             buckets[gate.CAT_GENERATED].append(remote_path)
+            continue
+
+        if engine_path in collisions:
+            classifications[remote_path] = {
+                "status": gate.CAT_COLLISION,
+                "reason": f"reverse-maps to {engine_path!r} along with {collisions[engine_path]!r}; refusing rather than let one silently win",
+                "engine_path": engine_path,
+                "commits": touching_commits,
+            }
+            buckets[gate.CAT_COLLISION].append(remote_path)
             continue
 
         # Gate 2+3: path safety and export-surface membership.

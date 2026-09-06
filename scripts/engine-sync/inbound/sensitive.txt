@@ -36,6 +36,17 @@
 #
 # One prefix (directory, trailing slash) or one exact filename per line.
 # Blank lines and lines starting with '#' are ignored.
+#
+# A prefix only covers paths that literally start with it. A nested path
+# under a DIFFERENT top-level directory needs its own entry even if it
+# happens to contain a directory of the same name further down: adding
+# "scripts/" does NOT cover "loop-bootstrap/scripts/..." (that path does
+# not start with "scripts/") -- "loop-bootstrap/" is listed below precisely
+# because of this. When adding a new export-surface entry, check it against
+# this list AND against
+# scripts/engine-sync/tests/test_inbound_gate.py's
+# test_every_export_surface_entry_has_a_recorded_sensitivity_decision,
+# which fails loudly if a new entry has no recorded decision either way.
 
 hooks/
 scripts/
@@ -43,3 +54,7 @@ scripts/
 CLAUDE.md
 agents/
 commands/
+.github/workflows/ci.yml
+requirements.txt
+loop-bootstrap/
+.claude-plugin/

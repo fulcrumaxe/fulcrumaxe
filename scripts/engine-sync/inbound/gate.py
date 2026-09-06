@@ -44,6 +44,7 @@ CAT_QUARANTINED = "quarantined:untrusted-provenance"
 CAT_PATH_UNSAFE = "rejected:path-unsafe"
 CAT_OUT_OF_SURFACE = "rejected:out-of-surface"
 CAT_NEEDS_APPROVAL = "needs-human-approval"
+CAT_COLLISION = "rejected:reverse-map-collision"
 
 #: The two generated mirrors export.sh produces at the export root, plus the
 #: one fully-synthetic file it bakes with no engine-side source at all.
@@ -76,6 +77,31 @@ def reverse_map_path(remote_path: str) -> tuple[str | None, str]:
         if remote_path.startswith(remote_prefix):
             return engine_prefix + remote_path[len(remote_prefix):], ""
     return remote_path, ""
+
+
+def find_reverse_map_collisions(remote_paths: list[str]) -> dict[str, list[str]]:
+    """{engine_path: [remote_paths]} for every engine_path that more than
+    one distinct remote_path reverse-maps to -- e.g. `agents/executor.md`
+    and `.claude/agents/executor.md` both land on engine
+    `.claude/agents/executor.md`. If those two carry different content,
+    classifying them independently means the LAST one processed silently
+    wins whatever a caller ends up writing, and neither classification's
+    hash comparison has any way to know the other exists. This makes the
+    collision itself detectable so a caller can refuse or flag it, rather
+    than depending on the sensitive-prefix list to happen to cover every
+    colliding pair -- `sensitive.txt` answers a different question and is
+    not a substitute for this check.
+
+    Only genuinely reverse-mapped paths participate: a pure-generated path
+    (CAT_GENERATED, no engine_path at all) can never collide with anything
+    and is excluded."""
+    by_engine_path: dict[str, list[str]] = {}
+    for remote_path in remote_paths:
+        engine_path, category = reverse_map_path(remote_path)
+        if category == CAT_GENERATED:
+            continue
+        by_engine_path.setdefault(engine_path, []).append(remote_path)
+    return {engine_path: sorted(remotes) for engine_path, remotes in by_engine_path.items() if len(remotes) > 1}
 
 
 def _parse_marker_block(text: str, marker: str) -> list[str]:

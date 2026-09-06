@@ -26,6 +26,7 @@ _REPO_ROOT = _ENGINE_SYNC_DIR.parent.parent
 sys.path.insert(0, str(_INBOUND_DIR))
 sys.path.insert(0, str(_ENGINE_SYNC_DIR))
 
+import changeset  # noqa: E402
 import gate  # noqa: E402
 import pull  # noqa: E402
 import report  # noqa: E402
@@ -62,6 +63,31 @@ def test_reverse_map_pure_generated_file_is_reported_not_dropped():
     engine_path, category = gate.reverse_map_path("loop-bootstrap/bootstrap-paths.generated")
     assert engine_path is None
     assert category == gate.CAT_GENERATED
+
+
+def test_find_reverse_map_collisions_detects_many_to_one():
+    """agents/executor.md and .claude/agents/executor.md both reverse-map to
+    engine .claude/agents/executor.md -- a real collision this repo's
+    current two mirrors can produce today (unlike the raw-remote-path
+    sensitivity arm, which needs a FUTURE mirror to be reachable)."""
+    collisions = gate.find_reverse_map_collisions(
+        ["agents/executor.md", ".claude/agents/executor.md", "scripts/unrelated.py"]
+    )
+    assert collisions == {".claude/agents/executor.md": [".claude/agents/executor.md", "agents/executor.md"]}
+
+
+def test_find_reverse_map_collisions_excludes_generated_only_paths():
+    """The pure-generated bootstrap file has no engine_path at all, so it
+    can never collide with anything and must never appear as a phantom
+    collision key (None)."""
+    collisions = gate.find_reverse_map_collisions(
+        ["loop-bootstrap/bootstrap-paths.generated", "scripts/a.py", "scripts/b.py"]
+    )
+    assert collisions == {}
+
+
+def test_find_reverse_map_collisions_empty_when_no_overlap():
+    assert gate.find_reverse_map_collisions(["scripts/a.py", "backend/b.py"]) == {}
 
 
 # --------------------------------------------------------------------------
@@ -128,6 +154,81 @@ def test_sensitive_prefixes_cover_named_examples():
     assert gate.is_sensitive("CLAUDE.md", prefixes)
     assert not gate.is_sensitive("backend/api.py", prefixes)
     assert not gate.is_sensitive("dashboard/src/App.tsx", prefixes)
+
+    # Executable/config surfaces inside the export surface that were
+    # missing until a review found them reproducing as clean-apply on a
+    # trusted-author edit.
+    assert gate.is_sensitive(".github/workflows/ci.yml", prefixes)
+    assert gate.is_sensitive("requirements.txt", prefixes)
+    assert gate.is_sensitive(".claude-plugin/plugin.json", prefixes)
+    # The trap: a "scripts/" prefix does NOT cover a nested directory of the
+    # same name under a different top-level path -- loop-bootstrap/ needs
+    # its own entry, which is exactly what a prefix-only fix would miss.
+    assert gate.is_sensitive("loop-bootstrap/scripts/generate.sh", prefixes)
+    assert gate.is_sensitive("loop-bootstrap/bootstrap.sh", prefixes)
+
+
+# The full real export surface, and which of it is a reviewed decision.
+# Kept here (not production code) because it is test-only completeness
+# bookkeeping, not a runtime gate -- production only ever needs
+# sensitive.txt's prefixes, checked via is_sensitive.
+_REVIEWED_NON_SENSITIVE_PATTERNS = frozenset(
+    {
+        "dashboard/",
+        "ts-backend/",
+        "tui/",
+        "backend/",
+        "LICENSE",
+        "NOTICE",
+        "README.md",
+        "CONTRIBUTING.md",
+        ".github/PULL_REQUEST_TEMPLATE.md",
+    }
+)
+
+
+def _representative_path(raw_pattern: str) -> str:
+    """A concrete relpath standing in for a raw (pre-glob-conversion)
+    MANIFEST.md pattern, so it can be tested against is_sensitive/
+    is_in_export_surface the same way a real touched path would be."""
+    if raw_pattern.endswith("/"):
+        return raw_pattern + "example.txt"
+    if "*" in raw_pattern:
+        return raw_pattern.replace("*", "example")
+    return raw_pattern  # an exact filename, used as-is
+
+
+@pytest.mark.skipif(not _manifest_available(gate.MANIFEST_MD_PATH), reason=_REAL_MANIFEST_SKIP_REASON)
+def test_every_export_surface_entry_has_a_recorded_sensitivity_decision():
+    """Structural completeness check, not four hand-picked examples: every
+    raw PATHS_START/GENERATED_PATHS_START entry in the REAL manifest must
+    be covered by EITHER sensitive.txt (a reviewed sensitive surface) OR
+    _REVIEWED_NON_SENSITIVE_PATTERNS above (a surface someone has actually
+    looked at and decided doesn't need human approval). An entry in neither
+    is a silent gap -- exactly how .github/workflows/ci.yml,
+    requirements.txt, loop-bootstrap/ and .claude-plugin/ were missed the
+    first time: nobody's check ever looked at the FULL list, only at
+    whatever examples someone happened to think of. The next time the
+    export surface grows, this is what stops the new entry from going
+    unreviewed instead of another manual audit."""
+    text = gate.MANIFEST_MD_PATH.read_text()
+    raw_patterns = gate._parse_marker_block(text, "PATHS") + gate._parse_marker_block(text, "GENERATED_PATHS")
+    sensitive_prefixes = gate.read_sensitive_prefixes()
+
+    unrecorded = []
+    for raw in raw_patterns:
+        if raw in _REVIEWED_NON_SENSITIVE_PATTERNS:
+            continue
+        sample = _representative_path(raw)
+        if gate.is_sensitive(sample, sensitive_prefixes):
+            continue
+        unrecorded.append(raw)
+
+    assert not unrecorded, (
+        f"export-surface entries with no recorded sensitivity decision: {unrecorded} -- "
+        "add each to sensitive.txt (if it's an executable/instruction-bearing surface) or to "
+        "_REVIEWED_NON_SENSITIVE_PATTERNS above (if someone has looked and decided it's fine)"
+    )
 
 
 # --------------------------------------------------------------------------
@@ -287,13 +388,30 @@ def scratch_repo(tmp_path) -> Path:
     return repo
 
 
-_STUB_KWARGS = dict(
-    resolve_trust_allowlist=lambda: {"trusted-dev"},
-    resolve_pr_author=lambda pr: "trusted-dev",
-    is_trusted_author=lambda login, allowlist: login in allowlist,
-    resolve_surface_patterns=lambda: _SAMPLE_SURFACE_PATTERNS,
-    resolve_sensitive_prefixes=lambda: ["hooks/", "scripts/", ".claude/", "CLAUDE.md", "agents/", "commands/"],
-)
+def _resolve_prs_matching_subject_hint(sha: str, repo_dir: Path) -> list[int]:
+    """Test-only stand-in for the real commits/pulls API: returns [N] where
+    N is the commit's own subject `(#N)` hint (or [999] if there is none).
+    This deliberately makes the stub AGREE with whatever
+    changeset.extract_pr_number parses from the subject, so tests that
+    are not specifically exercising the provenance mechanism itself don't
+    each need a hand-wired resolver matching whatever PR number they
+    happened to put in a commit message. Tests that DO exercise the
+    mechanism (the subject-forgery case, the two-distinct-authors case)
+    override resolve_prs_for_commit explicitly instead of using this."""
+    subject = changeset.commit_subject(sha, repo_dir=repo_dir)
+    hint = changeset.extract_pr_number(subject)
+    return [hint] if hint is not None else [999]
+
+
+def _stub_kwargs(repo_dir: Path) -> dict:
+    return dict(
+        resolve_trust_allowlist=lambda: {"trusted-dev"},
+        resolve_pr_author=lambda pr: "trusted-dev",
+        is_trusted_author=lambda login, allowlist: login in allowlist,
+        resolve_surface_patterns=lambda: _SAMPLE_SURFACE_PATTERNS,
+        resolve_sensitive_prefixes=lambda: ["hooks/", "scripts/", ".claude/", "CLAUDE.md", "agents/", "commands/"],
+        resolve_prs_for_commit=lambda sha: _resolve_prs_matching_subject_hint(sha, repo_dir),
+    )
 
 
 def test_report_classifies_clean_apply_and_already_applied(scratch_repo):
@@ -310,7 +428,7 @@ def test_report_classifies_clean_apply_and_already_applied(scratch_repo):
         max_files=50,
         max_lines=500,
         do_fetch=False,
-        **_STUB_KWARGS,
+        **_stub_kwargs(scratch_repo),
     )
 
     assert result["refused"] is False
@@ -326,23 +444,22 @@ def test_report_classifies_clean_apply_and_already_applied(scratch_repo):
     )
 
 
-def test_report_quarantines_untrusted_provenance_regardless_of_commit_metadata(scratch_repo):
-    """The same commit, forged Co-Authored-By/committer naming a trusted
-    login, must STILL quarantine -- because provenance here is resolved by
-    an injected PR-author lookup that never reads the commit at all."""
+def test_report_refuses_reverse_map_collision(scratch_repo):
+    """agents/executor.md (the generated mirror) and .claude/agents/executor.md
+    (its real source) both reverse-map to the same engine path. If a single
+    commit touches both with DIFFERENT content, classifying them
+    independently would let whichever one a caller happens to write last
+    silently win -- this must instead refuse both as a named collision."""
     seed = _commit(scratch_repo, "seed", {"engine.txt": "v1\n"})
     tip = _commit(
         scratch_repo,
-        "sneaky change (#77)",
-        {"payload.txt": "danger\n"},
-        committer_email="trusted-dev@example.com",
-        trailer="Co-Authored-By: Trusted Dev <trusted-dev@example.com>",
+        "touches both the mirror and its source (#23)",
+        {
+            "agents/executor.md": "mirror version\n",
+            ".claude/agents/executor.md": "source version, different content\n",
+        },
     )
 
-    # resolve_pr_author is a stub that always resolves PR #77's GitHub-
-    # authenticated author as "someone-else" -- deliberately NOT reading
-    # anything from the commit above, which is the point.
-    stub_kwargs = {**_STUB_KWARGS, "resolve_pr_author": lambda pr: "someone-else"}
     result = report.classify_report(
         marker=seed,
         remote="unused",
@@ -353,11 +470,170 @@ def test_report_quarantines_untrusted_provenance_regardless_of_commit_metadata(s
         max_files=50,
         max_lines=500,
         do_fetch=False,
-        **stub_kwargs,
+        **_stub_kwargs(scratch_repo),
+    )
+
+    assert result["refused"] is False  # a per-path finding, not a whole-report refusal
+    assert result["classifications"]["agents/executor.md"]["status"] == gate.CAT_COLLISION
+    assert result["classifications"][".claude/agents/executor.md"]["status"] == gate.CAT_COLLISION
+    assert "agents/executor.md" in result["buckets"][gate.CAT_COLLISION]
+    assert ".claude/agents/executor.md" in result["buckets"][gate.CAT_COLLISION]
+    # Neither ever reaches hash classification once flagged as a collision.
+    assert "agents/executor.md" not in result["buckets"][pull.STATUS_CLEAN_APPLY]
+    assert ".claude/agents/executor.md" not in result["buckets"][pull.STATUS_CLEAN_APPLY]
+
+
+def test_report_quarantines_untrusted_provenance_regardless_of_commit_metadata(scratch_repo):
+    """The same commit, forged Co-Authored-By/committer naming a trusted
+    login, must STILL quarantine -- because provenance is resolved entirely
+    through resolve_prs_for_commit + resolve_pr_author, neither of which
+    ever reads the commit's own content.
+
+    Modelled with TWO DISTINCT PRs and TWO DISTINCT real authors (#4 ->
+    trusted-dev, #77 -> attacker), not a constant resolve_pr_author -- a
+    stub that returns the same author regardless of which PR is asked about
+    would pass this test even if the code resolved the WRONG PR, which is
+    exactly the false-green shape a subject-varying-only version of this
+    test had before: it varied Co-Authored-By/committer email (fields
+    nothing reads) while holding a constant-author stub, so it could never
+    have caught a wrong PR selection either."""
+    seed = _commit(scratch_repo, "seed", {"engine.txt": "v1\n"})
+    tip = _commit(
+        scratch_repo,
+        "sneaky change",  # no (#N) at all -- nothing to cross-check against
+        {"payload.txt": "danger\n"},
+        committer_email="trusted-dev@example.com",
+        trailer="Co-Authored-By: Trusted Dev <trusted-dev@example.com>",
+    )
+
+    def resolve_prs_for_commit(_sha):
+        # The real (stubbed) commits/pulls resolution for this commit,
+        # deliberately independent of the commit's own content: it really
+        # belongs to PR #77, an untrusted contributor's own PR.
+        return [77]
+
+    def resolve_pr_author(pr):
+        return {4: "trusted-dev", 77: "attacker"}[pr]
+
+    result = report.classify_report(
+        marker=seed,
+        remote="unused",
+        remote_branch="unused",
+        remote_ref=tip,
+        repo_dir=scratch_repo,
+        code_repo_slug="irrelevant/irrelevant",
+        max_files=50,
+        max_lines=500,
+        do_fetch=False,
+        resolve_trust_allowlist=lambda: {"trusted-dev"},
+        resolve_pr_author=resolve_pr_author,
+        is_trusted_author=lambda login, allowlist: login in allowlist,
+        resolve_surface_patterns=lambda: _SAMPLE_SURFACE_PATTERNS,
+        resolve_sensitive_prefixes=lambda: ["hooks/", "scripts/", ".claude/", "CLAUDE.md", "agents/", "commands/"],
+        resolve_prs_for_commit=resolve_prs_for_commit,
     )
 
     assert result["classifications"]["payload.txt"]["status"] == gate.CAT_QUARANTINED
     assert "payload.txt" in result["buckets"][gate.CAT_QUARANTINED]
+
+
+def test_report_refuses_subject_pr_number_that_disagrees_with_the_real_api(scratch_repo):
+    """The exact live-repro shape: an untrusted contributor writes a commit
+    subject that NAMES a real, trusted PR -- `Tidy up imports (#4)`, say,
+    where PR #4 genuinely belongs to a trusted contributor -- but this
+    commit itself actually belongs to a different PR entirely. Before the
+    commits/pulls API became the sole commit->PR link, the subject's own
+    number was trusted directly: this exact shape resolved `trusted=True`
+    and reached clean-apply, with the whole provenance boundary defeated by
+    typing a number into a commit message.
+
+    Modelled with two distinct real PRs/authors so the mismatch is the
+    thing being tested, not an author stub that would agree regardless."""
+    seed = _commit(scratch_repo, "seed", {"engine.txt": "v1\n"})
+    tip = _commit(scratch_repo, "Tidy up imports (#4)", {"payload.txt": "danger\n"})
+
+    def resolve_prs_for_commit(_sha):
+        # The real API resolution: this commit actually belongs to PR
+        # #999 (the attacker's own), never the #4 its subject claims.
+        return [999]
+
+    def resolve_pr_author(pr):
+        return {4: "trusted-dev", 999: "attacker"}[pr]
+
+    result = report.classify_report(
+        marker=seed,
+        remote="unused",
+        remote_branch="unused",
+        remote_ref=tip,
+        repo_dir=scratch_repo,
+        code_repo_slug="irrelevant/irrelevant",
+        max_files=50,
+        max_lines=500,
+        do_fetch=False,
+        resolve_trust_allowlist=lambda: {"trusted-dev"},
+        resolve_pr_author=resolve_pr_author,
+        is_trusted_author=lambda login, allowlist: login in allowlist,
+        resolve_surface_patterns=lambda: _SAMPLE_SURFACE_PATTERNS,
+        resolve_sensitive_prefixes=lambda: ["hooks/", "scripts/", ".claude/", "CLAUDE.md", "agents/", "commands/"],
+        resolve_prs_for_commit=resolve_prs_for_commit,
+    )
+
+    assert result["classifications"]["payload.txt"]["status"] == gate.CAT_QUARANTINED
+    # The reason must name the disagreement itself, not merely "untrusted" --
+    # proving the mismatch was what triggered the refusal, not a coincidence.
+    assert "disagreement" in result["classifications"]["payload.txt"]["reason"]
+    assert "payload.txt" not in result["buckets"][pull.STATUS_CLEAN_APPLY]
+
+
+def test_report_refuses_zero_and_ambiguous_pr_resolutions(scratch_repo):
+    """commits/pulls resolving to zero PRs, or to more than one, must both
+    refuse rather than guess -- fail closed on an unreadable or ambiguous
+    link exactly as on a mismatched one."""
+    seed = _commit(scratch_repo, "seed", {"engine.txt": "v1\n"})
+    tip_zero = _commit(scratch_repo, "orphan commit", {"zero.txt": "x\n"})
+
+    result = report.classify_report(
+        marker=seed,
+        remote="unused",
+        remote_branch="unused",
+        remote_ref=tip_zero,
+        repo_dir=scratch_repo,
+        code_repo_slug="irrelevant/irrelevant",
+        max_files=50,
+        max_lines=500,
+        do_fetch=False,
+        resolve_trust_allowlist=lambda: {"trusted-dev"},
+        resolve_pr_author=lambda pr: "trusted-dev",
+        is_trusted_author=lambda login, allowlist: login in allowlist,
+        resolve_surface_patterns=lambda: _SAMPLE_SURFACE_PATTERNS,
+        resolve_sensitive_prefixes=lambda: ["hooks/", "scripts/", ".claude/", "CLAUDE.md", "agents/", "commands/"],
+        resolve_prs_for_commit=lambda _sha: [],
+    )
+    assert result["classifications"]["zero.txt"]["status"] == gate.CAT_QUARANTINED
+    assert "no PR" in result["classifications"]["zero.txt"]["reason"]
+
+    _git(scratch_repo, "checkout", "-q", "-b", "another-branch")
+    tip_ambiguous = _commit(scratch_repo, "ambiguous commit", {"ambiguous.txt": "x\n"})
+
+    result2 = report.classify_report(
+        marker=seed,
+        remote="unused",
+        remote_branch="unused",
+        remote_ref=tip_ambiguous,
+        repo_dir=scratch_repo,
+        code_repo_slug="irrelevant/irrelevant",
+        max_files=50,
+        max_lines=500,
+        do_fetch=False,
+        resolve_trust_allowlist=lambda: {"trusted-dev"},
+        resolve_pr_author=lambda pr: "trusted-dev",
+        is_trusted_author=lambda login, allowlist: login in allowlist,
+        resolve_surface_patterns=lambda: _SAMPLE_SURFACE_PATTERNS,
+        resolve_sensitive_prefixes=lambda: ["hooks/", "scripts/", ".claude/", "CLAUDE.md", "agents/", "commands/"],
+        resolve_prs_for_commit=lambda _sha: [5, 6],
+    )
+    assert result2["classifications"]["ambiguous.txt"]["status"] == gate.CAT_QUARANTINED
+    assert "ambiguous" in result2["classifications"]["ambiguous.txt"]["reason"]
 
 
 def test_report_refuses_above_ceiling_and_writes_nothing(scratch_repo):
@@ -377,7 +653,7 @@ def test_report_refuses_above_ceiling_and_writes_nothing(scratch_repo):
         max_files=1,
         max_lines=500,
         do_fetch=False,
-        **_STUB_KWARGS,
+        **_stub_kwargs(scratch_repo),
     )
 
     assert result["refused"] is True
@@ -408,7 +684,7 @@ def test_report_writes_nothing_on_success_either(scratch_repo):
         max_files=50,
         max_lines=500,
         do_fetch=False,
-        **_STUB_KWARGS,
+        **_stub_kwargs(scratch_repo),
     )
     assert result["refused"] is False
 
@@ -446,7 +722,41 @@ def test_report_refuses_deletion_of_out_of_surface_engine_path(scratch_repo):
         max_lines=500,
         do_fetch=False,
         local_ref="main",
-        **_STUB_KWARGS,
+        **_stub_kwargs(scratch_repo),
+    )
+
+    assert result["refused"] is True
+    assert "outside the" in result["refusal_reason"]
+    assert "archive/old/keepsake.txt" in result["refusal_reason"]
+
+
+def test_report_refuses_delete_spelled_as_rename(scratch_repo):
+    """A delete spelled as a rename must be caught by the same deletion
+    refusal as a plain delete -- git's --name-status would otherwise report
+    only an R### against the new path, with no "D" anywhere, and the
+    refusal (which keys off "D" in a path's statuses) would never see it.
+    changeset.commit_name_status's synthetic "D" for the renamed-away path
+    is what closes this; this test exercises it through the real refusal,
+    not just at the changeset level."""
+    content = "line one\nline two\nline three\nline four\nline five\n"
+    seed = _commit(scratch_repo, "seed", {"engine.txt": "v1\n", "archive/old/keepsake.txt": content})
+    _git(scratch_repo, "checkout", "-q", "-b", "code-plane-main")
+    _git(scratch_repo, "mv", "archive/old/keepsake.txt", "archive/old/renamed-keepsake.txt")
+    _git(scratch_repo, "commit", "-q", "-m", "rename the keepsake away (#22)")
+    tip = _git(scratch_repo, "rev-parse", "HEAD").strip()
+
+    result = report.classify_report(
+        marker=seed,
+        remote="unused",
+        remote_branch="unused",
+        remote_ref=tip,
+        repo_dir=scratch_repo,
+        code_repo_slug="irrelevant/irrelevant",
+        max_files=50,
+        max_lines=500,
+        do_fetch=False,
+        local_ref="main",
+        **_stub_kwargs(scratch_repo),
     )
 
     assert result["refused"] is True
@@ -475,7 +785,7 @@ def test_report_allows_deletion_of_in_surface_engine_path(scratch_repo):
         max_lines=500,
         do_fetch=False,
         local_ref="main",
-        **_STUB_KWARGS,
+        **_stub_kwargs(scratch_repo),
     )
 
     assert result["refused"] is False
@@ -515,7 +825,7 @@ def test_report_reads_local_copy_from_local_ref_not_head(scratch_repo):
         max_lines=500,
         do_fetch=False,
         local_ref="main",
-        **_STUB_KWARGS,
+        **_stub_kwargs(scratch_repo),
     )
 
     # main still has the seed content -> local == base != upstream -> clean-apply.
@@ -547,7 +857,7 @@ def test_report_refuses_when_local_ref_does_not_resolve(scratch_repo):
         max_lines=500,
         do_fetch=False,
         local_ref="refs/heads/definitely-not-a-real-branch",
-        **_STUB_KWARGS,
+        **_stub_kwargs(scratch_repo),
     )
 
     assert result["refused"] is True
@@ -577,7 +887,7 @@ def test_report_with_a_real_local_ref_still_classifies_normally(scratch_repo):
         max_lines=500,
         do_fetch=False,
         local_ref="main",
-        **_STUB_KWARGS,
+        **_stub_kwargs(scratch_repo),
     )
 
     assert result["refused"] is False
