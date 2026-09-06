@@ -543,12 +543,12 @@ rm -rf "$STUB_DIR2"
 # -----------------------------------------------------------------------
 # CS-16 (AC-5): absent-and-skipped checks with CI ENABLED do not stand down.
 #
-# Deliberately asserts `!= disabled`, NOT `!= pass`. Today an all-skipped
-# required set returns pass — that is a separate, known hole (a PR can
-# suppress its own required checks with a false job-level `if:`), and
-# tightening it here would make merging stricter in the same change that is
-# meant to unblock it. This pins the boundary this change owns and nothing
-# more.
+# This used to assert `!= disabled` and deliberately NOT `!= pass`, because an
+# all-skipped required set really did return pass and tightening it inside
+# D#1944 would have made merging stricter in the change meant to unblock it.
+# D#1987 is the sequenced change that closes that hole, so the `!= pass` half
+# is no longer withheld: both are asserted here now, and the full three-state
+# behaviour is CS-18 below.
 # -----------------------------------------------------------------------
 echo ""
 echo "=== CS-16: all-skipped checks with CI enabled are not a stand-down ==="
@@ -557,6 +557,8 @@ export CI_STATUS_OVERRIDE_20151="$ALL_SKIPPED"
 export CI_STATUS_HEAD_SHA_20151="deadbeef51"
 OUT=$(_run_status 20151); RC=$?
 assert_not_contains "CS-16: STATE is not disabled (only the variable can do that)" "STATE:disabled" "$OUT"
+assert_not_contains "CS-16: STATE is not pass either (D#1987 — skipped is not green)" "STATE:pass" "$OUT"
+assert_exit_1 "CS-16: an all-skipped required set blocks the merge" "$RC"
 unset CI_STATUS_OVERRIDE_20151 CI_STATUS_HEAD_SHA_20151
 
 # -----------------------------------------------------------------------
@@ -588,16 +590,201 @@ if [ $? -eq 0 ]; then
 else
   echo "  FAIL: CI_REQUIRED_CHECKS is not the pinned set"; FAIL=$((FAIL + 1))
 fi
+# D#1987 inverted this assertion. It used to require the accept set to still
+# read `not in ("success", "skipped")` — a deliberate hold saying "the
+# tightening is a separate, sequenced change". This IS that change, so the pin
+# now points the other way and holds the tightening in place: `skipped` must
+# never reappear beside `success`. Kept as a source-level pin (the behaviour is
+# covered by CS-18) because a future edit could re-widen the accept set without
+# any single behavioural test obviously going red.
 if grep -qF 'not in ("success", "skipped")' "$CI_LIB"; then
-  echo "  PASS: the conclusion accept set is untouched (out of scope here)"; PASS=$((PASS + 1))
+  echo "  FAIL: 'skipped' is back in the conclusion accept set — a required check that did not run would read as green again (D#1987)"; FAIL=$((FAIL + 1))
 else
-  echo "  FAIL: the conclusion accept set changed — that tightening is a separate, sequenced change"; FAIL=$((FAIL + 1))
+  echo "  PASS: 'skipped' is not in the conclusion accept set"; PASS=$((PASS + 1))
 fi
 if python3 -c "import yaml,sys; yaml.safe_load(open(sys.argv[1]))" "$REAL_REPO_ROOT/.github/workflows/ci.yml" 2>/dev/null; then
   echo "  PASS: .github/workflows/ci.yml still parses as YAML"; PASS=$((PASS + 1))
 else
   echo "  FAIL: .github/workflows/ci.yml does not parse as YAML"; FAIL=$((FAIL + 1))
 fi
+
+# ═══════════════════════════════════════════════════════════════════════════
+# D#1987 — a required check that did not run is not a required check that
+# passed.
+#
+# The hole: `skipped` sat in the evaluator's accept set beside `success`. For
+# `pull_request`, GitHub runs the workflow definition from the PR's HEAD, so a
+# PR that keeps the required job names but adds any false job-level `if:`
+# produces correctly-named `completed/skipped` check-runs, the gate returns 0,
+# and the PR merges itself through the gate it just created with zero code
+# tested.
+#
+# The distinction that matters, and the reason this is safe to tighten: a JOB
+# skipped by its own job-level `if:` registers a check-run whose conclusion is
+# `skipped` — that is the laundering path closed here. A STEP skipped inside a
+# job that ran does not: the job's own conclusion is `success`, which this
+# change does not touch and cannot see.
+# ═══════════════════════════════════════════════════════════════════════════
+
+_reason_of() { printf '%s\n' "$1" | grep '^REASON:' | head -1; }
+
+# -----------------------------------------------------------------------
+# CS-18 (SEC-1): failed / absent / skipped are three states, not two.
+# -----------------------------------------------------------------------
+echo ""
+echo "=== CS-18: a skipped required check blocks, distinctly from failed and absent ==="
+export CI_KILL_SWITCH_OVERRIDE=HTTP_404
+
+# 18a — every required name completed/skipped. This is the self-suppression
+# shape, and before D#1987 it returned rc=0/STATE=pass.
+export CI_STATUS_OVERRIDE_20161="$ALL_SKIPPED"
+export CI_STATUS_HEAD_SHA_20161="deadbeef61"
+OUT_SKIPPED=$(_run_status 20161); RC=$?
+assert_exit_1 "CS-18a: all-skipped required set is blocked" "$RC"
+assert_contains "CS-18a: STATE is the distinct 'skipped' token" "STATE:skipped" "$OUT_SKIPPED"
+assert_not_contains "CS-18a: STATE is never laundered to pass" "STATE:pass" "$OUT_SKIPPED"
+assert_contains "CS-18a: every skipped name is surfaced in FAILING" "open-source export audit" "$OUT_SKIPPED"
+unset CI_STATUS_OVERRIDE_20161 CI_STATUS_HEAD_SHA_20161
+
+# 18b — a single skipped name among four green ones. The realistic shape: one
+# job turned off, not the whole workflow.
+ONE_SKIPPED='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"','"$(_gha 'backend (import-smoke)' success)"','"$(_gha 'open-source export audit' skipped)"']'
+export CI_STATUS_OVERRIDE_20162="$ONE_SKIPPED"
+export CI_STATUS_HEAD_SHA_20162="deadbeef62"
+OUT=$(_run_status 20162); RC=$?
+assert_exit_1 "CS-18b: one skipped name among four green is still blocked" "$RC"
+assert_contains "CS-18b: STATE is skipped" "STATE:skipped" "$OUT"
+assert_contains "CS-18b: the reason names the one check that did not run" "open-source export audit" "$OUT"
+unset CI_STATUS_OVERRIDE_20162 CI_STATUS_HEAD_SHA_20162
+
+# 18c — the three reasons are asserted to differ FROM EACH OTHER, not to equal
+# three hardcoded strings. A literal assertion keeps passing forever if two of
+# these later converge on the same text, which is the exact defect (three
+# causes collapsing into one operator-visible string) one layer up.
+FAILED_SET='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"','"$(_gha 'backend (import-smoke)' failure 'https://x/y/runs/9')"','"$(_gha 'open-source export audit' success)"']'
+ABSENT_SET='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"','"$(_gha 'open-source export audit' success)"']'
+
+export CI_STATUS_OVERRIDE_20163="$FAILED_SET"; export CI_STATUS_HEAD_SHA_20163="deadbeef63"
+OUT_FAILED=$(_run_status 20163); RC_FAILED=$?
+unset CI_STATUS_OVERRIDE_20163 CI_STATUS_HEAD_SHA_20163
+
+export CI_STATUS_OVERRIDE_20164="$ABSENT_SET"; export CI_STATUS_HEAD_SHA_20164="deadbeef64"
+OUT_ABSENT=$(_run_status 20164); RC_ABSENT=$?
+unset CI_STATUS_OVERRIDE_20164 CI_STATUS_HEAD_SHA_20164
+
+R_SKIPPED="$(_reason_of "$OUT_SKIPPED")"
+R_FAILED="$(_reason_of "$OUT_FAILED")"
+R_ABSENT="$(_reason_of "$OUT_ABSENT")"
+
+echo "  observed reason (failed):  $R_FAILED"
+echo "  observed reason (absent):  $R_ABSENT"
+echo "  observed reason (skipped): $R_SKIPPED"
+
+for _pair in "skipped/absent:$R_SKIPPED:$R_ABSENT" "skipped/failed:$R_SKIPPED:$R_FAILED" "absent/failed:$R_ABSENT:$R_FAILED"; do
+  _label="${_pair%%:*}"; _rest="${_pair#*:}"; _a="${_rest%%:*}"; _b="${_rest#*:}"
+  if [ -n "$_a" ] && [ -n "$_b" ] && [ "$_a" != "$_b" ]; then
+    echo "  PASS: CS-18c: reasons differ ($_label)"; PASS=$((PASS + 1))
+  else
+    echo "  FAIL: CS-18c: reasons for $_label are identical or empty"
+    echo "        a: $_a"; echo "        b: $_b"; FAIL=$((FAIL + 1))
+  fi
+done
+assert_exit_1 "CS-18c: the failed set blocks" "$RC_FAILED"
+assert_exit_1 "CS-18c: the absent set blocks" "$RC_ABSENT"
+
+# 18d — the conclusions the D#1987 body measured as ALREADY correct stay
+# correct. This item exists to prove the change did not disturb them, and to
+# keep them distinct from the new `skipped` state.
+echo ""
+echo "=== CS-18d: cancelled / timed_out / neutral / stale still fail, and are not 'skipped' ==="
+_pr=20170
+for _c in cancelled timed_out neutral stale; do
+  _pr=$((_pr + 1))
+  _SET='['"$(_gha tui "$_c")"','"$(_gha dashboard "$_c")"','"$(_gha ts-backend "$_c")"','"$(_gha 'backend (import-smoke)' "$_c")"','"$(_gha 'open-source export audit' "$_c")"']'
+  export "CI_STATUS_OVERRIDE_${_pr}=$_SET"
+  export "CI_STATUS_HEAD_SHA_${_pr}=deadbeef${_pr}"
+  OUT=$(_run_status "$_pr"); RC=$?
+  assert_exit_1 "CS-18d/$_c: still blocked" "$RC"
+  assert_contains "CS-18d/$_c: STATE is fail, not skipped" "STATE:fail" "$OUT"
+  unset "CI_STATUS_OVERRIDE_${_pr}" "CI_STATUS_HEAD_SHA_${_pr}"
+done
+
+# -----------------------------------------------------------------------
+# CS-19 (SEC-2): the kill switch and a skipped check never trade places.
+#
+# `disabled` is reached before any check-run is fetched, so it cannot be
+# produced by check-run input; `skipped` is derived only from check-run input,
+# so it cannot be produced by the variable. Asserting both directions is what
+# keeps a future edit from letting CI_DISABLED='true' launder into a pass.
+# -----------------------------------------------------------------------
+echo ""
+echo "=== CS-19: CI_DISABLED and a skipped check are independent states ==="
+_sec2_row() { # label, kill-switch, want_rc, want_state
+  local label="$1" ks="$2" want_rc="$3" want_state="$4" pr="$5"
+  export CI_KILL_SWITCH_OVERRIDE="$ks"
+  export "CI_STATUS_OVERRIDE_${pr}=$ALL_SKIPPED"
+  export "CI_STATUS_HEAD_SHA_${pr}=deadbeef${pr}"
+  local out rc
+  out=$(_run_status "$pr"); rc=$?
+  if [ "$rc" -eq "$want_rc" ]; then
+    echo "  PASS: $label rc=$want_rc"; PASS=$((PASS + 1))
+  else
+    echo "  FAIL: $label expected rc=$want_rc, got $rc"; FAIL=$((FAIL + 1))
+  fi
+  assert_contains "$label STATE=$want_state" "STATE:$want_state" "$out"
+  unset "CI_STATUS_OVERRIDE_${pr}" "CI_STATUS_HEAD_SHA_${pr}"
+}
+# Switch OFF (false, and authoritatively absent): a skipped required check has
+# no legitimate explanation left, so it blocks.
+_sec2_row "CS-19/false + all-skipped:"    false    1 skipped  20181
+_sec2_row "CS-19/HTTP_404 + all-skipped:" HTTP_404 1 skipped  20182
+# Switch ON: still the D#1944 stand-down, exit 2, unchanged. A PR that turns
+# this into a pass fails D#1987's Spec explicitly.
+_sec2_row "CS-19/true + all-skipped:"     true     2 disabled 20183
+export CI_KILL_SWITCH_OVERRIDE=HTTP_404
+
+# -----------------------------------------------------------------------
+# CS-20 (SEC-3): while CI is switched off, a PR touching .github/workflows/**
+# is blocked regardless of provenance — and that block self-removes when the
+# switch goes off. Both halves are asserted: a blanket refusal to edit
+# workflows would pass the first assertion and fail the second.
+# -----------------------------------------------------------------------
+echo ""
+echo "=== CS-20: workflow edits are blocked while CI_DISABLED='true' ==="
+_prov_row() { # label, want_rc, files, kill-switch, provenance-blocked, pr, disc
+  local label="$1" want_rc="$2" files="$3" ks="$4" prov="$5" pr="$6" disc="$7"
+  export CI_KILL_SWITCH_OVERRIDE="$ks"
+  export "CI_PR_FILES_${pr}=$files"
+  export "CI_PROVENANCE_BLOCKED_${disc}=$prov"
+  local rc=0
+  ( source "$CI_LIB"; check_ci_provenance_gate "$pr" "test-owner/test-repo" "$disc" ) >/dev/null 2>&1 || rc=$?
+  if [ "$rc" -eq "$want_rc" ]; then
+    echo "  PASS: $label (exit $want_rc)"; PASS=$((PASS + 1))
+  else
+    echo "  FAIL: $label expected exit $want_rc, got $rc"; FAIL=$((FAIL + 1))
+  fi
+  unset "CI_PR_FILES_${pr}" "CI_PROVENANCE_BLOCKED_${disc}"
+}
+_WF_FILES=$'.github/workflows/ci.yml\nscripts/lib/ci-status-check.sh'
+_NO_WF_FILES=$'scripts/lib/ci-status-check.sh\ntests/test_ci_status_check.sh'
+
+# Switch ON — the new block. "no" is an internal PR: the pre-existing
+# provenance gate would have cleared it, which is what makes this row prove the
+# block is independent of provenance rather than riding on it.
+_prov_row "CS-20a: internal PR touching workflows/** is blocked while CI is off" \
+          1 "$_WF_FILES" true no 40011 8011
+# Scoped, not blanket: the same switch state, a PR touching no workflow file.
+_prov_row "CS-20b: internal PR touching no workflow file is unaffected" \
+          0 "$_NO_WF_FILES" true no 40012 8012
+# Self-removal: the identical workflow-touching PR once CI is back on.
+_prov_row "CS-20c: the block self-removes when CI_DISABLED is not 'true'" \
+          0 "$_WF_FILES" false no 40013 8013
+# The pre-existing D#1588 external block is undisturbed in both switch states.
+_prov_row "CS-20d: provenance:external + workflows/** still blocked (switch off)" \
+          1 "$_WF_FILES" false yes 40014 8014
+_prov_row "CS-20e: provenance:external touching no workflow file still passes" \
+          0 "$_NO_WF_FILES" false yes 40015 8015
+export CI_KILL_SWITCH_OVERRIDE=HTTP_404
 
 # -----------------------------------------------------------------------
 # Summary

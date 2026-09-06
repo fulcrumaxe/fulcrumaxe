@@ -403,6 +403,34 @@ jobs:
         if: ${{ !cancelled() }}
         run: bash tests/test_merge_and_hook.sh
 
+      # D#1987: tests/test_ci_status_check.sh drives the real
+      # scripts/lib/ci-status-check.sh — the CI-status merge gate itself —
+      # through its own CI_STATUS_OVERRIDE_<pr> / CI_KILL_SWITCH_OVERRIDE mock
+      # seams. Until this step, no CI job invoked it: the only tests/ path
+      # referenced anywhere in this file was test_merge_and_hook.sh above, so a
+      # change to the gate that decides what reaches main failed nothing. That
+      # is the same "a check that gates nothing" shape as the step above, and
+      # it gets the same answer rather than the same silence one layer down.
+      #
+      # A separate step rather than a file in scripts/ci/, for the two reasons
+      # written out above: run-guards.sh discovers that directory and
+      # guard-registry-check.py fails a file that is both discovered and
+      # separately invoked, and this is a tests/ suite that EXECUTES the script
+      # under review rather than statically scanning its source. So it is in
+      # neither the discovered set nor guard-ledger.json and needs no ledger
+      # entry.
+      #
+      # Fails the build the ordinary way: a non-zero exit fails this step,
+      # which fails this job, whose name — "backend (import-smoke)" — is one of
+      # the five exact strings in CI_REQUIRED_CHECKS
+      # (scripts/lib/ci-status-check.sh), so a red run blocks the merge gate on
+      # both merge paths. Hermetic: CI_STATUS_TEST_MODE=1 routes every fetch
+      # through the mock seams, so no network, no GH_TOKEN, and zero GitHub API
+      # calls.
+      - name: CI-status merge gate suite (ci-status-check)
+        if: ${{ !cancelled() }}
+        run: bash tests/test_ci_status_check.sh
+
       # No ruff/flake8 config exists in the repo today (checked
       # pyproject.toml / setup.cfg) — Python lint is intentionally omitted
       # rather than adding new lint config as part of this Spec.

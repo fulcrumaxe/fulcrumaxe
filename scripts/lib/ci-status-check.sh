@@ -13,16 +13,22 @@
 #         exactly "true", so no check-run can ever appear for this head.
 #         This is a STAND-DOWN, not a pass: callers must proceed loudly and
 #         record it (ci_gate_stood_down), never treat it as a green signal.
-#     Sets on return: CI_STATUS_STATE (pass|fail|pending|disabled),
+#     Sets on return: CI_STATUS_STATE (pass|fail|skipped|pending|disabled),
 #                      CI_STATUS_FAIL_REASON, CI_STATUS_FAILING_CHECKS,
 #                      CI_STATUS_RUN_URL, CI_STATUS_HEAD_SHA (head SHA evaluated)
 #
 #   check_ci_provenance_gate <pr> <repo> <discussion>
 #     0 = CI result may be honored
-#     1 = PR traces to a provenance:external Discussion, touches
-#         .github/workflows/**, and the D#1588 intake-approved human gate has
-#         not cleared — CI's own self-reported green is not trustworthy here.
-#     Delegates to scripts/lib/external_intake_gate.py — does not reinvent it.
+#     1 = either of two cases, both of which require the PR to touch
+#         .github/workflows/** (a PR touching none always returns 0):
+#           - CI_DISABLED='true' — the gate has stood down, so no check-run can
+#             exist to verify a workflow edit. Blocked regardless of provenance
+#             (D#1987 SEC-3). Self-removes when the switch goes off.
+#           - the PR traces to a provenance:external Discussion and the D#1588
+#             intake-approved human gate has not cleared — CI's own
+#             self-reported green is not trustworthy here.
+#     Delegates the provenance half to scripts/lib/external_intake_gate.py —
+#     does not reinvent it.
 #
 #   ci_merge_sha_pinned <pr> <repo> <sha> [delete_branch_mode]
 #     0 = merged (SHA-pinned via `gh pr merge --match-head-commit`)
@@ -106,9 +112,17 @@ CI_STATUS_FAILING_CHECKS=""
 CI_STATUS_RUN_URL=""
 CI_STATUS_HEAD_SHA=""
 # Outcome of the last check_ci_status call as a token, so callers branch on a
-# string instead of an exit code alone: pass | fail | pending | disabled.
+# string instead of an exit code alone:
+#   pass | fail | skipped | pending | disabled.
 # `disabled` is deliberately NOT a value any check-run input can produce — it
 # is derived only from the repo variable (see _ci_kill_switch_state).
+# `skipped` (D#1987) is its opposite number: derived ONLY from check-run
+# conclusions and never from the variable. Three causes that used to collapse
+# into two strings now have one each — the check went red (`fail`), the check
+# is missing (`fail`, "required check absent"), and the check did not run
+# (`skipped`, "required check(s) did not run") — because they are three
+# different operator actions. `skipped` returns exit 1 like `fail`; the token
+# is what distinguishes them, not the code.
 CI_STATUS_STATE=""
 # Coarse classification of the last merge failure, so callers branch on a token
 # instead of grepping prose: conflict | head-moved | permissions | api | unknown.
@@ -292,17 +306,33 @@ for r in trusted:
     if name in required:
         by_name[name] = r  # last occurrence wins (reruns appear later)
 
-missing, pending, failing = [], [], []
+# Four buckets, not three. `skipped` was in the accept set beside `success`
+# until D#1987 — a required check that never ran read as a required check that
+# passed. `success` is now the only conclusion that clears a required name, and
+# `skipped` gets a bucket of its own rather than being folded into `failing`,
+# because "the check went red" and "the check did not run" are different
+# operator actions and want different first moves.
+missing, pending, failing, did_not_run = [], [], [], []
 for name in required:
     r = by_name.get(name)
     if r is None:
         missing.append(name)
         continue
+    conclusion = r.get("conclusion")
     if r.get("status") != "completed":
         pending.append(name)
-    elif r.get("conclusion") not in ("success", "skipped"):
+    elif conclusion == "success":
+        continue
+    elif conclusion == "skipped":
+        did_not_run.append((name, r.get("html_url") or ""))
+    else:
+        # cancelled / timed_out / neutral / stale / action_required / failure
+        # and anything GitHub adds later: unknown conclusions fail closed.
         failing.append((name, r.get("html_url") or ""))
 
+# Report order: absent, then red, then did-not-run, then pending. A red check
+# outranks a skipped one on a mixed set because it is the more concrete signal
+# — the skipped names still travel in FAILING so nothing is hidden.
 if missing:
     print("STATUS=fail")
     print("REASON=required check absent: " + ", ".join(missing))
@@ -313,6 +343,13 @@ elif failing:
     url = next((u for _, u in failing if u), "")
     print("STATUS=fail")
     print("REASON=required check(s) failed: " + names)
+    print("FAILING=" + names)
+    print("URL=" + url)
+elif did_not_run:
+    names = ",".join(n for n, _ in did_not_run)
+    url = next((u for _, u in did_not_run if u), "")
+    print("STATUS=skipped")
+    print("REASON=required check(s) did not run: " + names)
     print("FAILING=" + names)
     print("URL=" + url)
 elif pending:
@@ -413,6 +450,29 @@ check_ci_status() {
         CI_STATUS_RUN_URL="$url"
         return 1
         ;;
+      skipped)
+        # SEC-2 (D#1987). Reaching this branch already proves the kill switch
+        # is OFF: the CI_DISABLED read happens at the top of this function and
+        # returns 2 before any check-run is fetched, so `disabled` and
+        # `skipped` can never be confused for one another. With the switch off,
+        # a required check reporting `skipped` has no legitimate explanation
+        # left — the job registered, so it was not path-filtered away (that
+        # yields an ABSENT check-run, handled above), and nothing turned CI
+        # off. What remains is a workflow edit that added a false job-level
+        # `if:`, which is exactly the self-suppression this state exists to
+        # catch.
+        #
+        # Exit code stays 1 on purpose. Every caller already treats "not 0 and
+        # not 2" as a block, so a new code would buy nothing and would risk a
+        # caller that enumerates codes letting this through. The distinction
+        # lives in CI_STATUS_STATE and CI_STATUS_FAIL_REASON, which is where a
+        # human reading the block needs it.
+        CI_STATUS_STATE="skipped"
+        CI_STATUS_FAIL_REASON="$reason"
+        CI_STATUS_FAILING_CHECKS="$failing"
+        CI_STATUS_RUN_URL="$url"
+        return 1
+        ;;
       pending)
         CI_STATUS_STATE="pending"
         if [ "$wait_mode" = "--wait" ] && [ "$i" -lt "$max_iters" ]; then
@@ -463,6 +523,27 @@ check_ci_provenance_gate() {
 
   if [ "$touches_workflows" != "true" ]; then
     return 0
+  fi
+
+  # SEC-3 (D#1987). While the kill switch is ON, no check-run exists for this
+  # head, so nothing can contradict a workflow edit: the gate has already stood
+  # down (rc=2) and is merging on trust. A PR that rewrites `.github/workflows/**`
+  # in that window is editing the very thing that will decide the next PR's fate,
+  # with the only instrument that could have caught it switched off. So it is
+  # blocked here regardless of provenance — the provenance check below only ever
+  # covered `provenance:external` PRs, which left every internal agent PR
+  # touching a workflow unexamined, and an internal agent "fixing CI" by turning
+  # a job off is the realistic actor in this model, not an outside attacker.
+  #
+  # This is scoped, not a blanket refusal, in two directions: it fires only for
+  # PRs that touch a workflow file (a PR touching none returned 0 above), and it
+  # SELF-REMOVES the moment CI_DISABLED goes back to something other than the
+  # byte string `true`. It is not a standing restriction on editing workflows —
+  # it is a restriction on editing them while the referee is off the field. Turn
+  # CI back on with scripts/set-ci-kill-switch.sh and the PR proceeds.
+  if [ "$(_ci_kill_switch_state "$repo")" = "disabled" ]; then
+    CI_STATUS_FAIL_REASON="CI_DISABLED='true' and this PR modifies .github/workflows/** — no check-run can exist to verify the edit, so the change is blocked until CI is switched back on (D#1987 SEC-3; applies regardless of provenance)"
+    return 1
   fi
 
   local gate_mock="CI_PROVENANCE_BLOCKED_${disc}"
