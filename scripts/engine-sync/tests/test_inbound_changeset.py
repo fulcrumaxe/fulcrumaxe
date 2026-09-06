@@ -47,7 +47,10 @@ def _commit(repo: Path, message: str, files: dict[str, str | None]) -> str:
 def scratch_repo(tmp_path) -> Path:
     repo = tmp_path / "scratch"
     repo.mkdir()
-    _git(repo, "init", "-q")
+    # Pin the initial branch name -- git's own default (init.defaultBranch,
+    # unset here) is "master" on this host, and at least one test below
+    # checks a literal "main".
+    _git(repo, "init", "-q", "-b", "main")
     _git(repo, "config", "user.email", "test@example.com")
     _git(repo, "config", "user.name", "Test")
     return repo
@@ -119,6 +122,14 @@ def test_blob_hash_at_present_and_absent(scratch_repo):
     assert changeset.blob_hash_at(seed, "a.txt", repo_dir=scratch_repo) == changeset.blob_hash_at(
         tip, "a.txt", repo_dir=scratch_repo
     )
+
+
+def test_resolve_commit_present_and_absent(scratch_repo):
+    seed = _commit(scratch_repo, "seed", {"a.txt": "hello\n"})
+    assert changeset.resolve_commit(seed, repo_dir=scratch_repo) == seed
+    assert changeset.resolve_commit("main", repo_dir=scratch_repo) == seed
+    assert changeset.resolve_commit("refs/heads/definitely-not-a-real-branch", repo_dir=scratch_repo) is None
+    assert changeset.resolve_commit("0" * 40, repo_dir=scratch_repo) is None
 
 
 def test_never_calls_two_tree_diff(scratch_repo, tmp_path, monkeypatch):

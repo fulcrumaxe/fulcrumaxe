@@ -187,7 +187,18 @@ def path_gate(
     *remote_path* -- belt-and-suspenders, so a bug in the reverse-map (or a
     future generated mirror this module doesn't know about yet) cannot
     silently drop the sensitivity check just because the mapped path
-    happened not to look sensitive."""
+    happened not to look sensitive.
+
+    With today's mirror map this second arm is not reachable in production:
+    both `agents/` and `commands/` reverse-map under `.claude/`, which is
+    itself a sensitive prefix, so the mapped-path check above always fires
+    first for the only two mirrors that exist. It only starts doing real
+    work the day a new generated mirror is added whose reverse-mapped
+    destination is not already sensitive -- which is exactly the case a
+    single-argument version of this check would silently mishandle. Keep
+    this in mind reading the test that exercises it: that test proves the
+    logic is correct by constructing exactly that not-yet-real case, not
+    that today's inputs exercise it."""
     valid, reason = pull.validate_path(engine_path, target_root, surface_patterns, excludes=[])
     if not valid:
         # pull.validate_path's own reasons distinguish "not covered by any

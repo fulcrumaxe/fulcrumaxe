@@ -136,6 +136,25 @@ def commit_numstat(sha: str, repo_dir: Path = REPO_ROOT) -> tuple[int, int]:
     return insertions, deletions
 
 
+def resolve_commit(ref: str, repo_dir: Path = REPO_ROOT) -> str | None:
+    """The commit object *ref* names, or None if *ref* does not resolve at
+    all. Callers that are about to treat a ref as "the tree to read" (as
+    opposed to "one more path that may or may not exist there") must check
+    this first: `blob_hash_at` returning None for every path in an unresolvable
+    tree is indistinguishable from every path genuinely being absent, which is
+    exactly the silent-wrong-answer shape this whole tool exists to avoid."""
+    proc = subprocess.run(
+        ["git", "rev-parse", "-q", "--verify", f"{ref}^{{commit}}"],
+        cwd=str(repo_dir),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip() or None
+
+
 def blob_hash_at(ref: str, relpath: str, repo_dir: Path = REPO_ROOT) -> str | None:
     """The blob object id of *relpath* at *ref*, or None if it does not
     exist there. A single `<ref>:<path>` lookup -- never a tree walk, never

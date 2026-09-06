@@ -522,3 +522,63 @@ def test_report_reads_local_copy_from_local_ref_not_head(scratch_repo):
     # If this read HEAD (the feature branch) instead, it would see the
     # feature-branch edit and report local-patch/conflict instead.
     assert result["classifications"]["backend/shared.py"]["status"] == pull.STATUS_CLEAN_APPLY
+
+
+def test_report_refuses_when_local_ref_does_not_resolve(scratch_repo):
+    """An unresolvable --local-ref must refuse cleanly, not silently
+    misclassify. Before this check existed, blob_hash_at(local_ref, ...)
+    returned None for every path against a nonexistent ref -- indistinguishable
+    from every engine path genuinely being absent -- so every genuine
+    clean-apply path came back conflict instead, with exit 0 and a
+    confident-looking report. Confirmed that failure mode directly against
+    report.py on the command line before adding the check in classify_report."""
+    seed = _commit(scratch_repo, "seed", {"engine.txt": "v1\n", "backend/shared.py": "same\n"})
+    _git(scratch_repo, "checkout", "-q", "-b", "code-plane-main")
+    tip = _commit(scratch_repo, "upstream change (#40)", {"backend/shared.py": "upstream-version\n"})
+
+    result = report.classify_report(
+        marker=seed,
+        remote="unused",
+        remote_branch="unused",
+        remote_ref=tip,
+        repo_dir=scratch_repo,
+        code_repo_slug="irrelevant/irrelevant",
+        max_files=50,
+        max_lines=500,
+        do_fetch=False,
+        local_ref="refs/heads/definitely-not-a-real-branch",
+        **_STUB_KWARGS,
+    )
+
+    assert result["refused"] is True
+    assert "definitely-not-a-real-branch" in result["refusal_reason"]
+    # It must refuse BEFORE producing any classification -- not a report that
+    # happens to also set refused=True alongside a wrong buckets dict.
+    assert "classifications" not in result
+    assert "buckets" not in result
+
+
+def test_report_with_a_real_local_ref_still_classifies_normally(scratch_repo):
+    """The mirror check: a --local-ref that DOES resolve must behave exactly
+    as before -- this guards against the resolution check itself becoming
+    the thing that breaks the normal path."""
+    seed = _commit(scratch_repo, "seed", {"engine.txt": "v1\n", "backend/shared.py": "same\n"})
+    _git(scratch_repo, "checkout", "-q", "-b", "code-plane-main")
+    tip = _commit(scratch_repo, "upstream change (#41)", {"backend/shared.py": "upstream-version\n"})
+
+    result = report.classify_report(
+        marker=seed,
+        remote="unused",
+        remote_branch="unused",
+        remote_ref=tip,
+        repo_dir=scratch_repo,
+        code_repo_slug="irrelevant/irrelevant",
+        max_files=50,
+        max_lines=500,
+        do_fetch=False,
+        local_ref="main",
+        **_STUB_KWARGS,
+    )
+
+    assert result["refused"] is False
+    assert result["classifications"]["backend/shared.py"]["status"] == pull.STATUS_CLEAN_APPLY

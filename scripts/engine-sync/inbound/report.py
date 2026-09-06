@@ -121,6 +121,20 @@ def classify_report(
     resolve_surface_patterns = resolve_surface_patterns or gate.load_export_surface_patterns
     resolve_sensitive_prefixes = resolve_sensitive_prefixes or gate.read_sensitive_prefixes
 
+    # Resolve local_ref up front and refuse if it does not resolve at all.
+    # Without this, every blob_hash_at(local_ref, ...) call below silently
+    # returns None for a nonexistent ref -- indistinguishable from every
+    # engine path genuinely being absent -- and every clean-apply path comes
+    # back misclassified conflict instead. Checked before the fetch and
+    # before anything else runs, so a bad --local-ref fails fast and never
+    # produces a confident-looking wrong report.
+    if changeset.resolve_commit(local_ref, repo_dir=repo_dir) is None:
+        return {
+            "marker": marker,
+            "refused": True,
+            "refusal_reason": f"local_ref does not resolve to a commit: {local_ref!r}",
+        }
+
     remote_ref = remote_ref or f"{remote}/{remote_branch}"
 
     if do_fetch:
