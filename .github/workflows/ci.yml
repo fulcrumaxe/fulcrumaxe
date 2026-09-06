@@ -510,6 +510,33 @@ jobs:
       - name: Repo-plane cutover guard
         run: python3 scripts/ci/repo-plane-cutover-guard.py
 
+      # D#1900 PR 1: pytest must stay declared in requirements.txt with a
+      # lower bound, not merely ambient via pytest-testmon. A real
+      # requirement parser, not a grep — see the guard's own docstring for
+      # the fixture that satisfies `grep -q pytest` while declaring no such
+      # thing.
+      #
+      # Same naming caveat as every guard above: this job's name is
+      # string-matched by CI_REQUIRED_CHECKS in scripts/lib/ci-status-check.sh
+      # — add steps here freely, do not rename the job.
+      - name: Test dependency declaration guard
+        run: python3 scripts/ci/verify-test-deps-declared.py
+
+      # D#1900 PR 1: this workflow must not cite a Python test-failure count
+      # nobody can reconstruct — the defect this PR itself fixed just above,
+      # a stale figure tied to a migration that had already closed months
+      # earlier. Lives here rather than pr-gates.yml: unlike that workflow's
+      # two jobs, this guard reads ci.yml's own committed content, which only
+      # changes on a new commit — it gets nothing from pr-gates.yml's extra
+      # `edited` trigger, and belongs with the other content-invariant guards
+      # in this job (same shape as the repo-plane cutover guard just above).
+      #
+      # Same naming caveat as every guard above: this job's name is
+      # string-matched by CI_REQUIRED_CHECKS in scripts/lib/ci-status-check.sh
+      # — add steps here freely, do not rename the job.
+      - name: No unreproducible test-failure counts guard
+        run: python3 scripts/ci/verify-no-unreproducible-counts.py
+
       # D#2339 PR-a: reconciles scripts/ci/ against this workflow. Every one
       # of the guards above is a step at the same insertion point in this
       # one job, so resolving a merge conflict here by taking one side drops
