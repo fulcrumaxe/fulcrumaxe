@@ -6,7 +6,8 @@
 #
 #   1. The body must carry a machine-readable closing reference in the
 #      `D#NNNN` form.
-#   2. The body must not contain a `github.com/<private-owner>` substring.
+#   2. The body must not contain a `github.com/` URL naming any owner other
+#      than the code plane's own.
 #
 # Both come out of the same decision: PRs become public, Discussions stay
 # private. A public PR body that links a private Discussion by URL publishes
@@ -21,28 +22,55 @@
 # commit content is a separate, pre-push mechanism (D#2348 PR-g) rather than
 # another job in this workflow.
 #
-# THE OWNER NAME IS NOT WRITTEN DOWN IN THIS FILE
+# RULE 2 IS AN ALLOWLIST, NOT A DENYLIST — AND NEEDS NO PRIVATE NAME
 #
-# It is read at run time from IDENTIFIER-RULES.txt's OLD_OWNER, the same way
-# and from the same key as scripts/ci/repo-target-gate.sh. Three reasons, in
-# order of how much they matter:
+# This gate runs on the public code plane, which never contains a private
+# owner name to hunt (the old denylist form read IDENTIFIER-RULES.txt, which
+# open-source/export.sh deliberately excludes from the export — so the gate
+# needed a name that could never exist in the tree it ran in, and failed
+# closed on every PR the public repo has ever had). Rule 2 instead compares
+# against the code plane's OWN owner: a URL naming any other owner is
+# rejected. The public owner is, by definition, safe to write down and to
+# resolve at run time — no secret, no export-excluded file.
 #
-#   1. This file ships. A gate that hunts a private owner name by spelling it
-#      out lands that name in the published tree — the gate becoming the leak
-#      it was written to prevent. D#2348 PR-i hit this exact shape.
-#   2. The export's rewrite pass rewrites OLD_OWNER to the public owner in
-#      every text file it touches. A hard-coded literal here would come out
-#      of an export inverted: hunting the PUBLIC owner, so it would block
-#      every legitimate link and pass every private one, silently.
-#   3. One source for the name means the gate and the rewrite table cannot
-#      disagree about who "we" are.
+# This is also strictly stronger than the old rule: it catches a link into
+# *any* foreign repo, not just the one owner it happened to be told about,
+# and it keeps working across a rename.
 #
-# Two candidate locations are searched, because D#2348 PR-i moves that file
-# from open-source/ to scripts/ci/ and this reader has to survive the move.
-# If neither resolves, PRIVATE_REPO_OWNER can supply the name directly. If
-# nothing supplies it, this FAILS — it does not skip. A gate that cannot name
-# what it is hunting must not report a pass; that is the specific defect
-# (SKIP-on-missing-input) this cutover has already shipped three times.
+# OWNER RESOLUTION, FIRST HIT WINS
+#
+#   1. $PR_LINK_POLICY_CODE_OWNER — an explicit override, for the test suite
+#      and for local runs that want to pin the answer.
+#   2. $GITHUB_REPOSITORY — "owner/name" of the *base* repo on a pull_request
+#      event. This is the source that makes the gate decidable on a fork PR:
+#      it is a plain environment variable, not an Actions secret, so GitHub
+#      populates it on workflow runs triggered by a fork's pull_request event
+#      (secrets are withheld there by design). A secret-backed owner would
+#      leave the gate undecidable on exactly the external-contributor PRs the
+#      public code plane exists to accept.
+#   3. code_repo from .autonomous-team/config.json — local and private-plane
+#      runs only. Never the only source: that directory is excluded from the
+#      export, so it does not exist in the tree this gate runs in on the
+#      public plane.
+#   4. Otherwise this FAILS — it does not skip. A gate that cannot name what
+#      it is comparing against must not report a pass; that is the specific
+#      defect (SKIP-on-missing-input) this cutover has already shipped three
+#      times.
+#
+# HOST MATCHING IS EXACT, NOT A SUBDOMAIN WILDCARD
+#
+# Only the host "github.com" (a leading "www." is tolerated) is treated as a
+# repo URL. "*.github.com" is deliberately NOT matched: docs.github.com/en/...
+# would parse "en" as an owner and reject a documentation link — a realistic
+# false positive on a PR about CI, and false positives are how a guardrail
+# gets routed around.
+#
+# Known gap, accepted rather than silently dropped: the old substring match
+# (`github.com/$OWNER`) also caught gist.github.com/<owner>/... links; exact
+# host matching does not. Same tradeoff scripts/ci/publish-denylist.sh makes
+# for its rename blind spot — a realistic false positive costs more than a
+# false negative nobody here produces. Not gold-plated into a subdomain
+# allowlist to close it.
 #
 # INPUT — $PR_BODY_FILE IN CI, $PR_BODY ONLY FOR LOCAL USE
 #
@@ -86,32 +114,29 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # ---------------------------------------------------------------------------
-# Resolve the private owner name.
+# Resolve the code plane's own owner. See the header for why this order.
 # ---------------------------------------------------------------------------
-OWNER="${PRIVATE_REPO_OWNER:-}"
-RULES_SOURCE="\$PRIVATE_REPO_OWNER"
-if [[ -z "$OWNER" ]]; then
-  for candidate in \
-    "$REPO_ROOT/scripts/ci/IDENTIFIER-RULES.txt" \
-    "$REPO_ROOT/open-source/IDENTIFIER-RULES.txt"; do
-    if [[ -f "$candidate" ]]; then
-      OWNER="$(sed -n 's/^[[:space:]]*OLD_OWNER=\(.*\)$/\1/p' "$candidate" | head -1)"
-      OWNER="${OWNER%"${OWNER##*[![:space:]]}"}"
-      RULES_SOURCE="$candidate"
-      [[ -n "$OWNER" ]] && break
-    fi
-  done
+OWNER="${PR_LINK_POLICY_CODE_OWNER:-}"
+OWNER_SOURCE="\$PR_LINK_POLICY_CODE_OWNER"
+
+if [[ -z "$OWNER" && -n "${GITHUB_REPOSITORY:-}" ]]; then
+  OWNER="${GITHUB_REPOSITORY%%/*}"
+  OWNER_SOURCE="\$GITHUB_REPOSITORY"
+fi
+
+if [[ -z "$OWNER" && -f "$REPO_ROOT/.autonomous-team/config.json" ]]; then
+  OWNER="$(sed -n 's/.*"code_repo"[[:space:]]*:[[:space:]]*"\([^\/"]*\)\/[^"]*".*/\1/p' \
+    "$REPO_ROOT/.autonomous-team/config.json" | head -1)"
+  [[ -n "$OWNER" ]] && OWNER_SOURCE="$REPO_ROOT/.autonomous-team/config.json"
 fi
 
 if [[ -z "$OWNER" ]]; then
-  echo "FAIL: could not resolve the private owner name." >&2
-  echo "      Looked for OLD_OWNER in scripts/ci/IDENTIFIER-RULES.txt and" >&2
-  echo "      open-source/IDENTIFIER-RULES.txt, and at \$PRIVATE_REPO_OWNER." >&2
+  echo "FAIL: could not resolve the code plane's own owner." >&2
+  echo "      Looked at \$PR_LINK_POLICY_CODE_OWNER, \$GITHUB_REPOSITORY, and" >&2
+  echo "      code_repo in .autonomous-team/config.json." >&2
   echo "      Refusing to report a pass on a rule this gate cannot evaluate." >&2
   exit 1
 fi
-
-FORBIDDEN_HOST_PREFIX="github.com/$OWNER"
 
 # Rule 1's pattern. Deliberately the same three verbs, with the same
 # case-insensitive first letter, that scripts/lib/resolve-pr-discussion.sh
@@ -121,8 +146,36 @@ FORBIDDEN_HOST_PREFIX="github.com/$OWNER"
 # `#N`, which is an Issue reference and is not what this rule is about.
 CLOSES_RE='([Cc]loses|[Rr]esolves|[Ff]ixes) D#[0-9]+'
 
+# Rule 2's pattern: a github.com (or www.github.com) URL, host matched
+# exactly — not *.github.com — followed by the owner segment, terminated by
+# "/", whitespace, ")", "]", ">", '"', or end of line. Markdown link syntax
+# and plain URLs both take this shape.
+GITHUB_URL_RE='https?://(www\.)?github\.com/[^]/[:space:])>"]+'
+
 has_closes_ref() { printf '%s' "$1" | grep -Eq "$CLOSES_RE"; }
-has_private_url() { printf '%s' "$1" | grep -Fqi "$FORBIDDEN_HOST_PREFIX"; }
+
+# Extracts every github.com/<segment> match and compares <segment>
+# case-insensitively against the resolved code-plane owner. Returns success
+# (0) the moment any match names a different owner — that is a foreign-owner
+# URL and rule 2 fails the body.
+has_foreign_owner_url() {
+  local body="$1" match segment owner_lc restore_nocasematch=0
+  owner_lc="${OWNER,,}"
+  shopt -q nocasematch || restore_nocasematch=1
+  shopt -s nocasematch
+  while IFS= read -r match; do
+    [[ -z "$match" ]] && continue
+    if [[ "$match" =~ ^https?://(www\.)?github\.com/(.+)$ ]]; then
+      segment="${BASH_REMATCH[2]}"
+      if [[ "${segment,,}" != "$owner_lc" ]]; then
+        [[ $restore_nocasematch -eq 1 ]] && shopt -u nocasematch
+        return 0
+      fi
+    fi
+  done < <(printf '%s' "$body" | grep -oiE "$GITHUB_URL_RE")
+  [[ $restore_nocasematch -eq 1 ]] && shopt -u nocasematch
+  return 1
+}
 
 # ---------------------------------------------------------------------------
 # Self-test, before the real body, on every run.
@@ -146,13 +199,23 @@ self_test() {
     has_closes_ref "$bad_body" && { echo "SELF-TEST FAIL: closing-reference rule accepted '$bad_body'" >&2; bad=1; }
   done
 
-  # Rule 2 must catch the private host prefix, in either case, and must not
-  # fire on a body that merely names the Discussion without a URL.
-  local leak="see https://$FORBIDDEN_HOST_PREFIX/repo/discussions/2348"
-  has_private_url "$leak" || { echo "SELF-TEST FAIL: private-URL rule missed a private Discussion URL" >&2; bad=1; }
-  has_private_url "SEE HTTPS://${FORBIDDEN_HOST_PREFIX^^}/REPO" || { echo "SELF-TEST FAIL: private-URL rule is case-sensitive" >&2; bad=1; }
-  has_private_url "Closes D#2348" && { echo "SELF-TEST FAIL: private-URL rule fired on a bare D# reference" >&2; bad=1; }
-  has_private_url "see https://github.com/some-other-org/thing" && { echo "SELF-TEST FAIL: private-URL rule fired on an unrelated GitHub URL" >&2; bad=1; }
+  # Rule 2 (allowlist) must catch a github.com URL naming any owner other than
+  # the resolved code-plane owner, case-insensitively on both the host and
+  # the owner segment; must accept a URL into the code plane's own repo; must
+  # not fire on a bare D# reference or a body with no URL at all; and must
+  # not false-positive on a GitHub *documentation* host, whose first path
+  # segment is a locale, not an owner.
+  local foreign_owner="${OWNER}-not-us"
+  has_foreign_owner_url "see https://github.com/$foreign_owner/repo" \
+    || { echo "SELF-TEST FAIL: foreign-owner rule missed a foreign github.com URL" >&2; bad=1; }
+  has_foreign_owner_url "SEE HTTPS://GITHUB.COM/${foreign_owner^^}/REPO" \
+    || { echo "SELF-TEST FAIL: foreign-owner rule is not case-insensitive" >&2; bad=1; }
+  has_foreign_owner_url "Closes D#2348" \
+    && { echo "SELF-TEST FAIL: foreign-owner rule fired on a bare D# reference" >&2; bad=1; }
+  has_foreign_owner_url "see https://github.com/$OWNER/repo" \
+    && { echo "SELF-TEST FAIL: foreign-owner rule fired on the code plane's own repo" >&2; bad=1; }
+  has_foreign_owner_url "See https://docs.github.com/en/actions/security-guides/encrypted-secrets" \
+    && { echo "SELF-TEST FAIL: foreign-owner rule false-positived on a GitHub documentation host" >&2; bad=1; }
 
   if [[ $bad -ne 0 ]]; then
     echo "FAIL: pr-link-policy self-test failed — the matchers no longer discriminate, so their verdict on the real body means nothing" >&2
@@ -187,7 +250,7 @@ fi
 
 # Deliberately reports the LENGTH, never the content. This script must not be
 # the thing that puts a violating body into a log.
-echo "pr-link-policy: owner resolved from $RULES_SOURCE, body from $BODY_SOURCE, ${#PR_BODY} chars"
+echo "pr-link-policy: owner '$OWNER' resolved from $OWNER_SOURCE, body from $BODY_SOURCE, ${#PR_BODY} chars"
 
 VIOLATIONS=0
 
@@ -200,14 +263,15 @@ if ! has_closes_ref "$PR_BODY"; then
   VIOLATIONS=$((VIOLATIONS + 1))
 fi
 
-if has_private_url "$PR_BODY"; then
-  echo "FAIL: the PR body contains a URL pointing at the private engine repo."
-  echo "      Once PRs are public this publishes a 404 that also leaks the"
-  echo "      private repository's existence, size and numbering. Cite the"
-  echo "      Discussion as a bare 'Closes D#<number>' instead — no URL."
-  echo "      Offending line(s), with the owner name redacted:"
-  printf '%s' "$PR_BODY" | grep -Fin "$FORBIDDEN_HOST_PREFIX" \
-    | sed "s|$OWNER|<private-owner>|g" | sed 's/^/        /'
+if has_foreign_owner_url "$PR_BODY"; then
+  echo "FAIL: the PR body contains a github.com URL whose owner is not '$OWNER'."
+  echo "      A public PR body linking a repo we don't own can publish a dead"
+  echo "      link or leak the existence, shape and numbering of a private"
+  echo "      twin. Cite the Discussion as a bare 'Closes D#<number>' instead"
+  echo "      — no URL. Offending line(s):"
+  while IFS= read -r offending_line; do
+    has_foreign_owner_url "$offending_line" && printf '        %s\n' "$offending_line"
+  done <<<"$PR_BODY"
   VIOLATIONS=$((VIOLATIONS + 1))
 fi
 
@@ -219,5 +283,5 @@ if [[ $VIOLATIONS -gt 0 ]]; then
   exit 1
 fi
 
-echo "PASS: the PR body carries a bare D# closing reference and no private-repo URL."
+echo "PASS: the PR body carries a bare D# closing reference and no foreign-owner github.com URL."
 exit 0

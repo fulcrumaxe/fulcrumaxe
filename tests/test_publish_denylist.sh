@@ -19,9 +19,12 @@
 # can tell a working gate from a broken one. A negative test that still
 # passes against a gutted implementation is measuring nothing.
 #
-# The private owner name is not written down anywhere in this file. Both
-# gates resolve it at run time, and every fixture here supplies a synthetic
-# one instead — which is a stronger assertion than using the real name would
+# No real owner name — private or public — is written down anywhere in this
+# file. publish-denylist.sh's private owner and pr-link-policy.sh's
+# code-plane owner (D#2438: an allowlist, not a denylist, since the private
+# name it used to hunt is export-excluded and so never resolvable where the
+# gate runs) both resolve at run time; every fixture here supplies a
+# synthetic name instead — a stronger assertion than using a real one would
 # be, since a hard-coded literal in either script would make these fail.
 #
 # Run: bash tests/test_publish_denylist.sh
@@ -276,9 +279,13 @@ fi
 echo
 echo "=== pr-link-policy.sh ==="
 
+# The owner under test is now the code plane's OWN owner (an allowlist), not
+# a private name to hunt (D#2438). FIXTURE_OWNER stands in for that public
+# owner here — the suite's existing discipline (no real private owner name
+# anywhere in this file) holds either way, since neither name is real.
 run_link() {
   local body="$1"
-  PRIVATE_REPO_OWNER="$FIXTURE_OWNER" PR_BODY="$body" bash "$LINKPOLICY" 2>&1
+  PR_LINK_POLICY_CODE_OWNER="$FIXTURE_OWNER" PR_BODY="$body" bash "$LINKPOLICY" 2>&1
 }
 
 # --- 8. A bare closing reference passes ------------------------------------
@@ -292,17 +299,43 @@ else
   pass "a bare D# closing reference with no URL passes"
 fi
 
-# --- 9. A private-repo URL fails, and the message redacts the owner --------
+# --- 9. A foreign-owner URL fails, naming the offending line ---------------
+# D#2438: rule 2 inverted from denylist to allowlist. A github.com URL naming
+# any owner other than the resolved code-plane owner is rejected — the gate
+# no longer needs, or knows, a "private" name to redact.
 out="$(run_link "Closes D#2348
 
-Context: https://github.com/$FIXTURE_OWNER/somerepo/discussions/2348")"
+Context: https://github.com/some-foreign-org/somerepo/discussions/2348")"
 rc=$?
 if [[ $rc -eq 0 ]]; then
-  fail "a body containing a private-repo URL must fail, got exit 0"
-elif printf '%s' "$out" | grep -Fq "$FIXTURE_OWNER"; then
-  fail "the failure message echoed the private owner name back instead of redacting it"
+  fail "a body containing a foreign-owner github.com URL must fail, got exit 0"
+elif ! printf '%s' "$out" | grep -Fq "some-foreign-org"; then
+  fail "the failure output did not name the offending line: $out"
 else
-  pass "a private-repo URL fails, with the owner name redacted from the output"
+  pass "a foreign-owner URL fails, naming the offending line"
+fi
+
+# A URL into the code plane's own repo (the resolved owner) must pass.
+out="$(run_link "Closes D#2348
+
+Supersedes https://github.com/$FIXTURE_OWNER/somerepo/pull/4")"
+rc=$?
+if [[ $rc -ne 0 ]]; then
+  fail "a URL into the code plane's own repo should pass, got $rc: $out"
+else
+  pass "a URL into the code plane's own repo passes"
+fi
+
+# A GitHub documentation host must not be parsed as a foreign owner — its
+# first path segment is a locale, not an owner.
+out="$(run_link "Closes D#2348
+
+See https://docs.github.com/en/actions/security-guides/encrypted-secrets")"
+rc=$?
+if [[ $rc -ne 0 ]]; then
+  fail "a GitHub documentation-host URL must not be a false positive, got $rc: $out"
+else
+  pass "a docs.github.com URL is not parsed as a foreign owner"
 fi
 
 # --- 10. Missing and Issue-only references fail ----------------------------
@@ -333,7 +366,7 @@ else
   pass "an empty PR body fails rule 1"
 fi
 
-out="$(PRIVATE_REPO_OWNER="$FIXTURE_OWNER" bash "$LINKPOLICY" 2>&1)"
+out="$(PR_LINK_POLICY_CODE_OWNER="$FIXTURE_OWNER" bash "$LINKPOLICY" 2>&1)"
 rc=$?
 if [[ $rc -ne 2 ]]; then
   fail "with no body input at all the gate should exit 2, got $rc: $out"
@@ -350,7 +383,7 @@ fi
 # own output must never contain the body.
 BODYFILE="$SCRATCH/pr-body.txt"
 printf 'Adds a thing.\n\nCloses D#2348\n' >"$BODYFILE"
-out="$(PRIVATE_REPO_OWNER="$FIXTURE_OWNER" PR_BODY_FILE="$BODYFILE" bash "$LINKPOLICY" 2>&1)"
+out="$(PR_LINK_POLICY_CODE_OWNER="$FIXTURE_OWNER" PR_BODY_FILE="$BODYFILE" bash "$LINKPOLICY" 2>&1)"
 rc=$?
 if [[ $rc -ne 0 ]]; then
   fail "a compliant body supplied via PR_BODY_FILE should pass, got $rc: $out"
@@ -362,8 +395,8 @@ fi
 # offending line is the gate's job and is wanted; reproducing the rest of the
 # body is not.
 SECRET_MARKER="unique-marker-that-must-not-be-logged"
-printf 'Closes D#2348\n%s\nsee https://github.com/%s/x\n' "$SECRET_MARKER" "$FIXTURE_OWNER" >"$BODYFILE"
-out="$(PRIVATE_REPO_OWNER="$FIXTURE_OWNER" PR_BODY_FILE="$BODYFILE" bash "$LINKPOLICY" 2>&1)"
+printf 'Closes D#2348\n%s\nsee https://github.com/some-foreign-org/x\n' "$SECRET_MARKER" >"$BODYFILE"
+out="$(PR_LINK_POLICY_CODE_OWNER="$FIXTURE_OWNER" PR_BODY_FILE="$BODYFILE" bash "$LINKPOLICY" 2>&1)"
 rc=$?
 if [[ $rc -eq 0 ]]; then
   fail "a violating body via PR_BODY_FILE should fail, got exit 0"
@@ -373,7 +406,7 @@ else
   pass "a violating body via PR_BODY_FILE fails without echoing the whole body"
 fi
 
-out="$(PRIVATE_REPO_OWNER="$FIXTURE_OWNER" PR_BODY_FILE="$SCRATCH/does-not-exist" bash "$LINKPOLICY" 2>&1)"
+out="$(PR_LINK_POLICY_CODE_OWNER="$FIXTURE_OWNER" PR_BODY_FILE="$SCRATCH/does-not-exist" bash "$LINKPOLICY" 2>&1)"
 rc=$?
 if [[ $rc -ne 2 ]]; then
   fail "an unreadable PR_BODY_FILE should be a wiring error (exit 2), got $rc: $out"
@@ -381,44 +414,61 @@ else
   pass "an unreadable PR_BODY_FILE exits 2 rather than passing"
 fi
 
-# --- 12. The owner comes from the rules file, and its absence FAILS -------
+# --- 12. The owner comes from the resolved code plane, and its absence FAILS
+#
+# D#2438: rule 2's owner is no longer hunted from IDENTIFIER-RULES.txt — that
+# behaviour is removed, not merely relocated. This replaces the old assertion
+# (which asserted the gate hunted the owner named by a private rules file)
+# with one covering the new resolution order: an explicit override, then
+# $GITHUB_REPOSITORY, then .autonomous-team/config.json, failing closed if
+# none resolve.
 #
 # Copies the real script into a synthetic tree so REPO_ROOT resolves there,
-# then runs it with no rules file and no environment override. The branch
-# under test is the one this cutover has already shipped wrong three times:
-# a missing input must produce a red verdict, not a green skip.
+# then runs it with no override, no $GITHUB_REPOSITORY, and no
+# .autonomous-team/config.json. The branch under test is the one this
+# cutover has already shipped wrong three times: a missing input must
+# produce a red verdict, not a green skip.
 TREE="$SCRATCH/tree/scripts/ci"
 mkdir -p "$TREE"
 cp "$LINKPOLICY" "$TREE/pr-link-policy.sh"
-out="$(PR_BODY="Closes D#1" bash "$TREE/pr-link-policy.sh" 2>&1)"
+out="$(
+  unset GITHUB_REPOSITORY PR_LINK_POLICY_CODE_OWNER
+  PR_BODY="Closes D#1" bash "$TREE/pr-link-policy.sh" 2>&1
+)"
 rc=$?
 if [[ $rc -eq 0 ]]; then
-  fail "with no rules file and no override the gate passed — a gate that cannot name its target must not report a pass"
-elif ! printf '%s' "$out" | grep -q "could not resolve the private owner"; then
+  fail "with no resolvable owner the gate passed — a gate that cannot name its target must not report a pass"
+elif ! printf '%s' "$out" | grep -q "could not resolve the code plane's own owner"; then
   fail "no-owner case failed but did not say why: $out"
 else
   pass "with no resolvable owner the gate fails rather than skipping"
 fi
 
-# And with a rules file present at the post-PR-i location, it reads OLD_OWNER
-# from there — proving the name is data, not a literal in the script.
-printf 'OLD_OWNER=%s\n' "$FIXTURE_OWNER" >"$TREE/IDENTIFIER-RULES.txt"
-out="$(PR_BODY="Closes D#1 https://github.com/$FIXTURE_OWNER/x" bash "$TREE/pr-link-policy.sh" 2>&1)"
+# With $GITHUB_REPOSITORY set (the source that works on a fork-triggered
+# pull_request run, per D#2438), the gate resolves its owner from that and
+# compares against it — proving the owner is data resolved at run time, not
+# a literal in the script, and that it no longer depends on any rules file.
+out="$(
+  unset PR_LINK_POLICY_CODE_OWNER
+  GITHUB_REPOSITORY="$FIXTURE_OWNER/somerepo" PR_BODY="Closes D#1 https://github.com/some-foreign-org/x" bash "$TREE/pr-link-policy.sh" 2>&1
+)"
 rc=$?
 if [[ $rc -eq 0 ]]; then
-  fail "the gate did not hunt the owner named by the rules file it found"
+  fail "the gate did not compare against the resolved \$GITHUB_REPOSITORY owner"
 else
-  pass "the owner is read from IDENTIFIER-RULES.txt, not hard-coded"
+  pass "the owner is resolved from \$GITHUB_REPOSITORY, not a rules file"
 fi
 
-# A body citing a DIFFERENT owner must pass — otherwise the rule is matching
-# 'github.com/' rather than the owner, and would block every legitimate link.
-out="$(PR_BODY="Closes D#1 https://github.com/some-other-org/x" bash "$TREE/pr-link-policy.sh" 2>&1)"
+# A body citing the resolved code-plane owner's own repo must still pass.
+out="$(
+  unset PR_LINK_POLICY_CODE_OWNER
+  GITHUB_REPOSITORY="$FIXTURE_OWNER/somerepo" PR_BODY="Closes D#1 https://github.com/$FIXTURE_OWNER/x" bash "$TREE/pr-link-policy.sh" 2>&1
+)"
 rc=$?
 if [[ $rc -ne 0 ]]; then
-  fail "an unrelated GitHub URL should pass, got $rc: $out"
+  fail "a URL naming the resolved \$GITHUB_REPOSITORY owner should pass, got $rc: $out"
 else
-  pass "an unrelated GitHub URL passes — the rule is owner-scoped, not host-scoped"
+  pass "a URL naming the resolved code-plane owner passes"
 fi
 
 echo
