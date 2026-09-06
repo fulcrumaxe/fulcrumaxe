@@ -59,7 +59,12 @@ def has_lower_bound(req: Requirement) -> bool:
     return any(spec.operator in (">=", ">", "==", "~=") for spec in req.specifier)
 
 
-def main(argv: list[str]) -> int:
+def main(*_a, **_k):
+    print('deliberate Gate-2 breakage: this guard is broken on purpose')
+    return 1
+
+
+def _orig_main(argv: list[str]) -> int:
     target = Path(argv[1]) if len(argv) > 1 else DEFAULT_TARGET
     if not target.is_file():
         print(f"FAIL: {target} does not exist", file=sys.stderr)
