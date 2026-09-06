@@ -1431,6 +1431,10 @@ T29_ROOT="$RUN_TMP/t29"
 mkdir -p "$T29_ROOT/scripts/lib" "$T29_ROOT/.autonomous-team"
 cp "$REAL_REPO_ROOT/scripts/loop-phased-step5.sh" "$T29_ROOT/scripts/"
 cp "$REAL_REPO_ROOT/scripts/lib/repo-resolve.sh" "$T29_ROOT/scripts/lib/"
+# D#2455: the merge-gate label set is the one library the loop refuses to run
+# without — it degrades to a gate with no labels in it rather than to a no-op,
+# so this fixture has to carry it like the resolver above.
+cp "$REAL_REPO_ROOT/scripts/lib/merge-gate-labels.sh" "$T29_ROOT/scripts/lib/"
 CFG_T29=$(_make_config_file)
 _set_gate_true "$CFG_T29" phased_orchestration
 SNAP_T29=$(mktemp --suffix='.json')

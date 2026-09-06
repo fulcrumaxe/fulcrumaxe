@@ -45,6 +45,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 CLAUDE_MD = REPO_ROOT / "CLAUDE.md"
 LOOP_SCRIPT = REPO_ROOT / "scripts" / "loop-phased-step5.sh"
+# D#2455: the NACK array both merge paths read.
+NACK_LABELS_LIB = REPO_ROOT / "scripts" / "lib" / "merge-gate-labels.sh"
 SWEEP_SCRIPT = REPO_ROOT / "scripts" / "sweep-stuck-prs.sh"
 AGENTS_DIR = REPO_ROOT / ".claude" / "agents"
 SPAWN_TEMPLATES_DIR = REPO_ROOT / "backend" / "spawn_templates"
@@ -102,9 +104,17 @@ def _extract_has_label_call_sites(loop_script_text: str) -> set[str]:
     return set(re.findall(r'_has_label\s+"\$PR_NUM"\s+"([a-z0-9-]+)"', loop_script_text))
 
 
-def _extract_nack_labels(loop_script_text: str) -> set[str]:
-    m = re.search(r"_NACK_LABELS=\((.*?)\)", loop_script_text, re.DOTALL)
-    assert m, "scripts/loop-phased-step5.sh must define _NACK_LABELS"
+def _extract_nack_labels(nack_source_text: str) -> set[str]:
+    """The NACK array's labels.
+
+    D#2455 moved the array out of the loop script into
+    scripts/lib/merge-gate-labels.sh, so that both merge paths read one
+    definition. The extraction is unchanged; it is pointed at the file that
+    now holds the array, and accepts either name so the negative fixture below
+    keeps exercising the mechanism rather than the file layout.
+    """
+    m = re.search(r"(?:_NACK_LABELS|MERGE_GATE_NACK_LABELS)=\((.*?)\)", nack_source_text, re.DOTALL)
+    assert m, "the NACK label array must be defined in scripts/lib/merge-gate-labels.sh"
     return set(re.findall(r'"([a-zA-Z0-9_-]+)"', m.group(1)))
 
 
@@ -132,13 +142,20 @@ def _extract_created_labels(bootstrap_script_text: str) -> set[str]:
     )
 
 
-def _known_label_union(loop_script_text: str, sweep_script_text: str) -> set[str]:
-    """Union of the loop's _has_label call-site labels, its _NACK_LABELS,
+def _known_label_union(
+    loop_script_text: str, sweep_script_text: str, nack_source_text: str
+) -> set[str]:
+    """Union of the loop's _has_label call-site labels, the shared NACK array,
     and the sweep script's _KNOWN_LABELS — the full vocabulary something
-    downstream actually reads."""
+    downstream actually reads.
+
+    The NACK text is a separate argument since D#2455: the array lives in
+    scripts/lib/merge-gate-labels.sh now, and the negative fixture below
+    supplies its own.
+    """
     return (
         _extract_has_label_call_sites(loop_script_text)
-        | _extract_nack_labels(loop_script_text)
+        | _extract_nack_labels(nack_source_text)
         | _extract_known_labels(sweep_script_text)
     )
 
@@ -261,7 +278,9 @@ def test_applied_labels_extraction_nonempty_and_exact_count():
 
 def test_applied_labels_are_all_known():
     applied = _all_applied_labels()
-    known = _known_label_union(LOOP_SCRIPT.read_text(), SWEEP_SCRIPT.read_text())
+    known = _known_label_union(
+        LOOP_SCRIPT.read_text(), SWEEP_SCRIPT.read_text(), NACK_LABELS_LIB.read_text()
+    )
     unknown = applied - known
     assert not unknown, (
         f'labels[]="<x>" literal(s) {unknown} are applied by a role .md or '
@@ -299,7 +318,7 @@ def test_unknown_applied_label_fixture_fails():
         ')\n'
     )
     applied = _extract_applied_labels(fixture_md)
-    known = _known_label_union(fixture_loop, fixture_sweep)
+    known = _known_label_union(fixture_loop, fixture_sweep, fixture_loop)
     unknown = applied - known
     assert unknown == {"security-passed"}
 

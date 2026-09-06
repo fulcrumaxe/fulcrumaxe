@@ -40,7 +40,7 @@ _verdict_label_map() {
 # label (D#2066). Each pair here is a mutually-exclusive statement about the
 # same PR; accumulating both is the bug this relay exists to fix.
 #
-# The security group covers the three negative synonyms _NACK_LABELS already
+# The security group covers the three negative synonyms MERGE_GATE_NACK_LABELS already
 # treats as equivalent (scripts/loop-phased-step5.sh:206-215) — clearing only
 # one of them would leave a different NACK label standing and the PR stuck
 # regardless.

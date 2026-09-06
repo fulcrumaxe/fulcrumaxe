@@ -14,6 +14,12 @@ set -uo pipefail
 
 REAL_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="$REAL_REPO_ROOT/scripts/loop-phased-step5.sh"
+# D#2455: the NACK vocabulary the loop iterates. Sourced rather than restated —
+# MG-EQ below drives every label it holds, so the suite's coverage follows the
+# definition instead of a copy of it that can fall behind.
+MERGE_GATE_LABELS_LIB="$REAL_REPO_ROOT/scripts/lib/merge-gate-labels.sh"
+# shellcheck source=../scripts/lib/merge-gate-labels.sh
+source "$MERGE_GATE_LABELS_LIB"
 # shellcheck source=lib/blackboard-fixture.sh
 source "$REAL_REPO_ROOT/tests/lib/blackboard-fixture.sh"
 # D#2283: redirect AUTONOMOUS_TEAM_STATE_DIR to a scratch dir for the life of
@@ -665,8 +671,70 @@ _remove_pr_state_entry 10112
 rm -f "$CFG_MG16" "$SNAP_MG16"
 
 # -----------------------------------------------------------------------
+# Test MG-EQ (D#2455): the loop path blocks on exactly the shared NACK set.
+#
+# MG-1..MG-7 above each name one label. This drives every label the shared
+# definition holds, so a ninth added to scripts/lib/merge-gate-labels.sh is
+# covered here with no edit to this file — and no count is asserted, because
+# `== 8` would pass unchanged on the day a ninth label went unenforced.
+#
+# tests/test_merge_and_hook.sh MGL-2 makes the same comparison for the manual
+# path against the same array. The two paths are equal to each other by both
+# being equal to the one definition; neither test restates a label to check it.
+# -----------------------------------------------------------------------
+echo ""
+echo "=== MG-EQ: loop path blocks on exactly the shared NACK set ==="
+
+MGEQ_ENFORCED=()
+MGEQ_PR=10200
+for MGEQ_LABEL in "${MERGE_GATE_NACK_LABELS[@]}"; do
+  MGEQ_PR=$((MGEQ_PR + 2))
+  MGEQ_DISC=$((MGEQ_PR + 1))
+  CFG_MGEQ=$(_make_config_file)
+  SNAP_MGEQ=$(mktemp --suffix='.json')
+  _write_snapshot_spec_ready "$SNAP_MGEQ" "$MGEQ_DISC"
+  _write_pr_state_merging "$MGEQ_PR" "$MGEQ_DISC" "False"
+  MGEQ_SLUG=$(echo "$MGEQ_LABEL" | tr '-' '_')
+  # Satisfy every required pass label, derived from the same shared source, so
+  # a block here can only be the NACK check and not a missing pass label.
+  MGEQ_ENV=()
+  for MGEQ_REQ in "${MERGE_GATE_REQUIRED_PASS_LABELS[@]}"; do
+    MGEQ_ENV+=("HAS_LABEL_${MGEQ_PR}_$(echo "$MGEQ_REQ" | tr '-' '_')=yes")
+  done
+
+  OUTPUT_MGEQ=$(env AF_CONTROL_PLANE_CONFIG="$CFG_MGEQ" SNAPSHOT_PATH="$SNAP_MGEQ" \
+    SPAWN_AGENT=echo GH_MERGE=echo HOOKS_DISABLED=1 \
+    DASHBOARD_TOUCHED=no SECURITY_TRIGGER_RESULT=no \
+    DISCUSSING_MOCK='[]' \
+    "NACK_LABEL_${MGEQ_PR}_${MGEQ_SLUG}=yes" \
+    "${MGEQ_ENV[@]}" \
+    REPO_ROOT="$REAL_REPO_ROOT" \
+    bash "$SCRIPT" 2>&1)
+
+  assert_not_contains "MG-EQ[$MGEQ_LABEL]: gh pr merge NOT called" "GH_MERGE_ARGS" "$OUTPUT_MGEQ"
+  assert_contains "MG-EQ[$MGEQ_LABEL]: block message names the label" "NACK label present: $MGEQ_LABEL" "$OUTPUT_MGEQ"
+  if echo "$OUTPUT_MGEQ" | grep -qF "NACK label present: $MGEQ_LABEL" \
+     && ! echo "$OUTPUT_MGEQ" | grep -qF "GH_MERGE_ARGS"; then
+    MGEQ_ENFORCED+=("$MGEQ_LABEL")
+  fi
+
+  _remove_pr_state_entry "$MGEQ_PR"
+  rm -f "$CFG_MGEQ" "$SNAP_MGEQ"
+done
+
+MGEQ_WANT=$(printf '%s\n' "${MERGE_GATE_NACK_LABELS[@]}" | sort)
+MGEQ_GOT=$(printf '%s\n' ${MGEQ_ENFORCED[@]+"${MGEQ_ENFORCED[@]}"} | sort)
+if [ "$MGEQ_WANT" = "$MGEQ_GOT" ]; then
+  echo "  PASS: MG-EQ: loop path blocks on exactly the shared NACK set"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: MG-EQ: loop-enforced set differs from the shared NACK set — missing: $(comm -23 <(echo "$MGEQ_WANT") <(echo "$MGEQ_GOT") | tr '\n' ' ')"
+  FAIL=$((FAIL + 1))
+fi
+
+# -----------------------------------------------------------------------
 # Test META-1 (D#1777 code-review fix): _REVIEW_PASS_LABELS must never
-# contain a _NACK_LABELS entry.
+# contain a NACK entry.
 #
 # MG-13 above drives the merging phase end-to-end and proves ordering —
 # it does not, and structurally cannot, prove this. A mutation test
@@ -692,7 +760,7 @@ rm -f "$CFG_MG16" "$SNAP_MG16"
 # keeping that suppression from being possible.
 # -----------------------------------------------------------------------
 echo ""
-echo "=== META-1: _REVIEW_PASS_LABELS must not contain any _NACK_LABELS entry ==="
+echo "=== META-1: _REVIEW_PASS_LABELS must not contain any NACK entry ==="
 
 _extract_bash_array() {
   # $1 = array name (e.g. _NACK_LABELS), $2 = script path.
@@ -704,11 +772,16 @@ _extract_bash_array() {
   ' "$2"
 }
 
-NACK_SET=$(_extract_bash_array "_NACK_LABELS" "$SCRIPT" | sort)
+# D#2455: the NACK array moved to scripts/lib/merge-gate-labels.sh, so it is
+# extracted from there. _REVIEW_PASS_LABELS stays in the loop script — it is
+# the force-push staleness vocabulary rather than the merge gate's label set,
+# which is why the two arrays live in different files and why this
+# intersection check is still worth making.
+NACK_SET=$(_extract_bash_array "MERGE_GATE_NACK_LABELS" "$MERGE_GATE_LABELS_LIB" | sort)
 PASS_SET=$(_extract_bash_array "_REVIEW_PASS_LABELS" "$SCRIPT" | sort)
 
 if [ -z "$NACK_SET" ] || [ -z "$PASS_SET" ]; then
-  echo "  FAIL: META-1: could not extract _NACK_LABELS and/or _REVIEW_PASS_LABELS from $SCRIPT"
+  echo "  FAIL: META-1: could not extract MERGE_GATE_NACK_LABELS and/or _REVIEW_PASS_LABELS"
   FAIL=$((FAIL + 1))
 else
   META1_INTERSECTION=$(comm -12 <(echo "$NACK_SET") <(echo "$PASS_SET"))

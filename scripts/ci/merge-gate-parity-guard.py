@@ -49,16 +49,26 @@ stripped:
   ``_check_nack_labels``. A subject set taken from the array would call it a
   required gate, which is simply false.
 
-* **NACK labels** — the ``_NACK_LABELS`` array. These are hard gates in the
-  fail-closed direction: any one of them present blocks the loop merge.
+* **NACK labels** — the ``MERGE_GATE_NACK_LABELS`` array in
+  ``scripts/lib/merge-gate-labels.sh``. These are hard gates in the fail-closed
+  direction: any one of them present blocks the merge. It lived in the loop
+  script until D#2455 moved it to a library both merge paths read; the array is
+  still the subject set, it is now read from where it is defined.
 
 A label is "enforced on the manual path" when its literal appears in
-``scripts/merge-and-hook.sh`` with comments stripped. The subject is that one
-file and **not** the libraries it sources, on purpose: ``pr-dependents.sh``
-mentions ``code-review-passed`` while doing something unrelated to this PR's
-gate, and counting that as enforcement is exactly how a guard ends up
-certifying parity that does not exist. Every real gate in the manual path is
-invoked from that file, so every real gate leaves a mark in it.
+``scripts/merge-and-hook.sh`` with comments stripped, **or** when that file
+iterates a shared array from ``merge-gate-labels.sh`` that contains it. The
+second clause is new with D#2455 and is what makes a shared definition
+expressible here at all: the manual path enforces nine labels by iterating two
+arrays, and spells none of them out, so a literal-only check would report nine
+unrecorded divergences against a file that enforces every one of them.
+
+The subject is still those two files and **not** the other libraries the
+wrapper sources: ``pr-dependents.sh`` mentions ``code-review-passed`` while
+doing something unrelated to any gate, and counting that as enforcement is how
+a guard ends up certifying parity that does not exist. ``merge-gate-labels.sh``
+is different in kind — it is the definition itself, and the wrapper naming one
+of its arrays is a gate, not a passing mention.
 
 The ledger, and what stops it going stale
 -----------------------------------------
@@ -125,6 +135,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 LOOP_PATH = REPO_ROOT / "scripts" / "loop-phased-step5.sh"
 MANUAL_PATH = REPO_ROOT / "scripts" / "merge-and-hook.sh"
+LABELS_PATH = REPO_ROOT / "scripts" / "lib" / "merge-gate-labels.sh"
 LEDGER_PATH = REPO_ROOT / "scripts" / "ci" / "merge-gate-parity-ledger.json"
 
 LEDGER_KEYS = {"note", "loop_gate_surface", "divergences"}
@@ -304,8 +315,30 @@ def evaluate_assertions(entry_id: str, entry: dict) -> list[str]:
     return failures
 
 
+def make_manual_enforced(manual_text: str, shared: dict[str, list[str]]):
+    """Is `label` enforced by scripts/merge-and-hook.sh?
+
+    Two ways, and the second is the point (D#2455). Either the wrapper names
+    the label itself, or it iterates a shared array from merge-gate-labels.sh
+    that contains it — which is how nine labels are enforced by a file that
+    spells out none of them. Requiring the literal would have made a shared
+    definition unrepresentable: the fix and the unfixed state would look
+    identical to this guard, and it would fail the fix.
+    """
+
+    def enforced(label: str) -> bool:
+        if mentions(label, manual_text):
+            return True
+        return any(
+            label in members and mentions(array_name, manual_text)
+            for array_name, members in shared.items()
+        )
+
+    return enforced
+
+
 def build_table(reads: dict[str, int], nacks: list[str], review_pass: list[str],
-                manual_text: str, claimed: dict[str, str]) -> str:
+                enforced_fn, claimed: dict[str, str]) -> str:
     """The parity table, derived — never hand-maintained (D#2332 item 10)."""
     rows = []
     seen = []
@@ -325,7 +358,7 @@ def build_table(reads: dict[str, int], nacks: list[str], review_pass: list[str],
         if not is_nack and not count:
             manual = "not read — and not a gate on either path"
             deliberate = "n/a — not a gate"
-        elif mentions(label, manual_text):
+        elif enforced_fn(label):
             manual = "read by `merge-and-hook.sh`"
             deliberate = "no divergence"
         elif label in claimed:
@@ -353,19 +386,33 @@ def main() -> int:
     manual_text, errs = read_stripped(MANUAL_PATH)
     failures.extend(errs)
 
+    labels_text, errs = read_stripped(LABELS_PATH)
+    failures.extend(errs)
+
     reads = dict(collections.Counter(HAS_LABEL_RE.findall(loop_text)))
-    nacks = bash_array(loop_text, "_NACK_LABELS")
+    nacks = bash_array(labels_text, "MERGE_GATE_NACK_LABELS")
+    required = bash_array(labels_text, "MERGE_GATE_REQUIRED_PASS_LABELS")
     review_pass = bash_array(loop_text, "_REVIEW_PASS_LABELS")
 
-    for name, value in (("_NACK_LABELS", nacks), ("_REVIEW_PASS_LABELS", review_pass)):
+    for name, value, where in (
+        ("MERGE_GATE_NACK_LABELS", nacks, "scripts/lib/merge-gate-labels.sh"),
+        ("MERGE_GATE_REQUIRED_PASS_LABELS", required, "scripts/lib/merge-gate-labels.sh"),
+        ("_REVIEW_PASS_LABELS", review_pass, "scripts/loop-phased-step5.sh"),
+    ):
         if value is None:
             failures.append(
-                f"could not find the {name} array in scripts/loop-phased-step5.sh — the loop's "
-                f"gate vocabulary is where this guard's subject set comes from, and without it "
+                f"could not find the {name} array in {where} — the merge gate's "
+                f"vocabulary is where this guard's subject set comes from, and without it "
                 f"a green run would mean nothing"
             )
     nacks = nacks or []
+    required = required or []
     review_pass = review_pass or []
+    shared_arrays = {
+        "MERGE_GATE_NACK_LABELS": nacks,
+        "MERGE_GATE_REQUIRED_PASS_LABELS": required,
+    }
+    manual_enforced = make_manual_enforced(manual_text, shared_arrays)
 
     # An empty subject set is the silent pass this guard exists to prevent: it
     # would reconcile nothing and report parity.
@@ -432,7 +479,7 @@ def main() -> int:
 
         # The half that finds UNRECORDED divergence.
         for label in sorted(set(reads) | set(nacks)):
-            enforced = mentions(label, manual_text)
+            enforced = manual_enforced(label)
             entry_id = claimed.get(label)
             if enforced and entry_id:
                 failures.append(
@@ -459,7 +506,7 @@ def main() -> int:
             failures.extend(evaluate_assertions(entry_id, entry))
 
     if len(sys.argv) == 2:
-        print(build_table(reads, nacks, review_pass, manual_text, claimed))
+        print(build_table(reads, nacks, review_pass, manual_enforced, claimed))
         return 1 if failures else 0
 
     if failures:
@@ -472,7 +519,7 @@ def main() -> int:
         )
         return 1
 
-    enforced_count = sum(1 for label in set(reads) | set(nacks) if mentions(label, manual_text))
+    enforced_count = sum(1 for label in set(reads) | set(nacks) if manual_enforced(label))
     print(
         f"merge-gate-parity: OK — {len(set(reads) | set(nacks))} gate label(s) on the loop path "
         f"({enforced_count} also enforced by merge-and-hook.sh, "

@@ -6,6 +6,13 @@
 #                                        [--force-no-ci [--bypass-reason <text>]]
 #                                        [--force-no-browser-test --bypass-reason <text>]
 #
+# 0-. Merge-gate label check (D#2455): refuses a PR carrying any label from the
+#    shared NACK set, or missing any label from the shared required-pass set —
+#    both read from scripts/lib/merge-gate-labels.sh, the same arrays
+#    loop-phased-step5.sh drives, so the two paths cannot answer differently.
+#    Nine labels gated the loop path and none of them gated this one. First of
+#    all the gates: one API call, no diff, no override flag. The refusal names
+#    the label that caused it.
 # 0. Browser-test gate (D#2332): a PR that touches dashboard/ must carry
 #    browser-test-passed. The loop auto-merge path has enforced this at its
 #    merging phase for a while; this path did not, so a five-file dashboard PR
@@ -83,6 +90,8 @@ source "$SCRIPT_DIR/lib/resolve-pr-discussion.sh"
 source "$SCRIPT_DIR/lib/ci-status-check.sh"
 # shellcheck source=scripts/lib/pr-dependents.sh
 source "$SCRIPT_DIR/lib/pr-dependents.sh"
+# shellcheck source=scripts/lib/merge-gate-labels.sh
+source "$SCRIPT_DIR/lib/merge-gate-labels.sh"
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
 PR=""
@@ -137,6 +146,69 @@ fi
 LOG_DIR="${MERGE_AND_HOOK_LOG_DIR:-$REPO_ROOT/.autonomous-team/dashboard-logs}"
 mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/manual-merge-${PR}.log"
+
+# ── Step 0-: merge-gate label check (D#2455) ─────────────────────────────────
+# The loop auto-merge path refuses a PR carrying any of the eight NACK labels,
+# and refuses one missing an unconditionally-required pass label. This path
+# refused neither: nine labels, zero reads, so a PR could be correctly marked
+# unmergeable, correctly refused by the loop, and then merged by hand. Two of
+# the eight exist for no purpose other than stopping a merge, and they stopped
+# nothing here.
+#
+# No label name is spelled out anywhere in this file, comments included. That
+# is checkable rather than stylistic: grep this file for any of the nine and
+# the only thing that comes back is the source line below. The label set comes
+# from
+# scripts/lib/merge-gate-labels.sh, which is the same array the loop iterates —
+# two lists that have to agree is what produced this gap, and a ninth label
+# added there gates both paths without touching either script.
+#
+# This runs before every other gate, ahead of the browser-test gate that used
+# to hold that spot: it is one API call, needs no diff, and a PR someone has
+# explicitly marked as held should not cost a Two-Gate audit row or a
+# 20-minute CI wait before being refused. One fetch serves all nine labels —
+# no per-label round trip.
+#
+# There is deliberately NO --force flag here, unlike the CI, Two-Gate and
+# browser-test gates below. Those three override a signal an operator may be
+# unable to obtain: CI can be switched off, a browser-tester may not be
+# spawnable. A label gate has no such failure mode — the remedy is to remove
+# the label or get the review, both always available to whoever is running the
+# merge, and both leave a visible trail on the PR itself rather than an audit
+# row nobody reads. An override would be a strictly worse record of the same
+# decision. The mergeability probe below already has no --force for the same
+# shape of reason. This makes the two hold-only labels un-overridable on this
+# path, which is the correct answer for two labels that mean nothing else.
+_GATE_LABELS="$(gh pr view "$PR" --repo "$_CODE_REPO" --json labels --jq '.labels[].name' 2>/dev/null || echo "")"
+
+_NACK_FOUND=""
+for _gate_label in "${MERGE_GATE_NACK_LABELS[@]}"; do
+  if grep -qx -- "$_gate_label" <<<"$_GATE_LABELS"; then
+    _NACK_FOUND="$_gate_label"
+    break
+  fi
+done
+if [[ -n "$_NACK_FOUND" ]]; then
+  echo "[merge-and-hook] ERROR: PR #$PR carries the '$_NACK_FOUND' label, which blocks a merge. Refusing to merge." >&2
+  echo "[merge-and-hook] The loop auto-merge path refuses this same PR at its merging phase; this path now does too." >&2
+  echo "[merge-and-hook] There is no override flag: remove '$_NACK_FOUND' from the PR once the reason for it is resolved, and run this again." >&2
+  exit 1
+fi
+
+_REQUIRED_MISSING=""
+for _gate_label in "${MERGE_GATE_REQUIRED_PASS_LABELS[@]}"; do
+  if ! grep -qx -- "$_gate_label" <<<"$_GATE_LABELS"; then
+    _REQUIRED_MISSING="$_gate_label"
+    break
+  fi
+done
+if [[ -n "$_REQUIRED_MISSING" ]]; then
+  echo "[merge-and-hook] ERROR: PR #$PR does not carry the required '$_REQUIRED_MISSING' label. Refusing to merge." >&2
+  echo "[merge-and-hook] The loop auto-merge path requires it unconditionally, and CLAUDE.md's Merge Gate Protocol has always described it as required here too." >&2
+  echo "[merge-and-hook] Spawn a code-reviewer and let it label the PR. There is no override flag." >&2
+  exit 1
+fi
+echo "[merge-and-hook] merge-gate labels OK for PR #$PR — no blocking label present, every required label present."
 
 # ── Step 0a: browser-test gate (D#2332) ───────────────────────────────────────
 # This runs before every other gate on purpose. It is two API calls at most, it
@@ -217,7 +289,7 @@ fi
 # or whether the diff itself looks trivial. --force-no-two-gate does not bypass
 # this check; it only bypasses the Two-Gate marker check above.
 #
-# Security-needs-fix (D#1588 Batch B round 2): this check used to be skippable
+# Security review finding (D#1588 Batch B round 2): this check used to be skippable
 # just by omitting --discussion — an optional flag on this script. Now, when
 # --discussion isn't passed, we derive the Discussion number from the PR body's
 # own Closes/Fixes/Resolves D#N reference (same resolver post-merge-hook.sh
