@@ -172,9 +172,11 @@ remaining path in that scope is absolute or still resolves correctly.
 This is about landing the command in the tree you meant. It does **not** change what the
 sandbox hook blocks or allows **for a git verb**: the hook picks its tier from the session
 cwd in its PreToolUse payload, and nothing in it uses a `cd` in your command string to
-decide which tree a git verb runs in. At your tier the hook short-circuits to allow before
-it inspects the command string at all — nothing here is blocked today, which is exactly
-why the convention has to carry its own weight.
+decide which tree a git verb runs in. At your tier the hook never blocks — it short-circuits
+to allow. It does still read your command string there, but only to emit warn-and-audit
+rows: today the `git rm` archive-protocol warning, which records your command verbatim to
+`audit.jsonl`. **"Not blocked" is not "not observed."** Nothing here is stopped for you,
+which is exactly why the convention has to carry its own weight.
 
 (At worktree tier the hook *does* read `cd` out of the command string — but only to work
 out where a **redirect** lands, not to redirect a git verb. Worth knowing when you review
