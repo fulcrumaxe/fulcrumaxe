@@ -13,8 +13,10 @@
 #   bash scripts/cron/backfill-agent-runs.sh --sessions-dir /path/to/sessions
 #   bash scripts/cron/backfill-agent-runs.sh --dry-run
 #
-# Also wraps the existing backfill-agent-runs.sh (audit.jsonl path) for a full
-# reconciliation pass in one invocation.
+# Also runs the audit.jsonl backfill pass (backend.agent_run_tracker backfill —
+# the same module scripts/backfill-agent-runs.sh wraps, called directly here,
+# not by shelling out to that script) so one invocation does a full
+# reconciliation.
 #
 # Exit codes:
 #   0 — completed (rows updated count printed to stdout)
@@ -24,6 +26,23 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+# `python3 -m backend...` resolves `backend` from sys.path[0], which is the
+# caller's working directory. This script is built to run from cron, whose cwd
+# is / or $HOME, so the module call below found no package and the whole
+# audit-trail pass reported a WARN and did nothing. REPO_ROOT was already being
+# computed two lines up; nothing ever applied it.
+#
+# Hoisted once here rather than prefixed onto the one call site below, so a
+# call added later in this file is correct without anyone remembering.
+#
+# PYTHONPATH rather than the `cd "$REPO_ROOT"` its sibling
+# scripts/backfill-agent-runs.sh does at :41: this script accepts
+# --sessions-dir, and a cd would silently re-anchor a caller's relative path to
+# the repo root. Prepend rather than overwrite — the interpreter's own
+# site-packages can already be on PYTHONPATH, and the transcript pass needs
+# duckdb from it.
+export PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
 # Default sessions root: ~/.claude/projects/*/sessions/
 # Claude Code stores sessions under a per-project directory named after the
