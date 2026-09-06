@@ -28,6 +28,10 @@ REPO_ROOT="${REPO_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 
 # Source shared helpers
 source "$SCRIPT_DIR/lib/orphan-triage.sh"
+# pc_stat_mtime: GNU/BSD `stat` flag styles, probed once per process and
+# cached. Used by discard-older-than so reading a patch's age costs no
+# interpreter spawn per patch (D#2133).
+source "$SCRIPT_DIR/lib/platform-compat.sh"
 
 ORPHAN_DIFF_DIR="${REPO_ROOT}/archive/orphan-diffs"
 WORKTREES_JSON="${REPO_ROOT}/.autonomous-team/worktrees.json"
@@ -369,40 +373,103 @@ cmd_discard_older_than() {
     return 0
   fi
 
-  # Find candidate patches
+  # Probe the host's `stat` flavour once, up front. pc_stat_mtime caches a
+  # successful probe but not a failed one, so a host where neither GNU
+  # `stat -c` nor BSD `stat -f` works would otherwise re-probe once per patch.
+  # If we cannot read mtimes at all, every patch's age is unknown, so refuse
+  # rather than discard on a guess.
+  if ! pc_stat_mtime "$ORPHAN_DIFF_DIR" >/dev/null 2>&1; then
+    echo "ERROR: cannot read file mtimes on this host — neither GNU 'stat -c' nor BSD 'stat -f' works. Refusing to discard anything, because every patch's age would be unknown." >&2
+    return 1
+  fi
+
+  # Find candidate patches (D#2133).
+  #
+  # Two passes, and neither spawns an interpreter per patch. Pass 1 partitions
+  # the pile with shell builtins and `stat`; pass 2 hands every sidecar that
+  # actually exists to a single interpreter.
   local candidates=()
+  local with_meta=()
+  local unreadable=()
   shopt -s nullglob
   for patch in "${ORPHAN_DIFF_DIR}"/*.patch; do
     [[ -f "$patch" ]] || continue
 
-    # Check mtime
+    # Check mtime. pc_stat_mtime supplies no fallback of its own on purpose,
+    # so the caller picks the safe default: a patch whose age we cannot
+    # establish is treated as too recent and kept. Keeping a patch we could
+    # have discarded costs disk; discarding one we could not age costs
+    # somebody their work.
     local mtime
-    mtime=$(python3 -c "import os; print(int(os.path.getmtime('$patch')))" 2>/dev/null \
-      || stat -c %Y "$patch" 2>/dev/null \
-      || echo 9999999999)
+    if ! mtime=$(pc_stat_mtime "$patch"); then
+      continue
+    fi
 
     if [[ "$mtime" -ge "$cutoff" ]]; then
       continue  # too recent
     fi
 
-    # Check status — only discard untriaged or missing meta
-    local status
-    status=$(python3 -c "
-import json, sys
-try:
-    d = json.load(open(sys.argv[1]))
-    print(d.get('status', 'untriaged'))
-except Exception:
-    print('untriaged')
-" "${patch}.meta.json" 2>/dev/null || echo "untriaged")
-
-    if [[ "$status" != "untriaged" ]]; then
-      continue  # already marked, skip
+    # An absent sidecar is the ordinary case and means untriaged — 100% of the
+    # patches on the operator checkout take this branch, and it costs no
+    # process at all. `-e` rather than `-f`: a sidecar path that exists but is
+    # not a readable regular file is a sidecar we could not read, not one that
+    # is missing, and those two must not end up in the same bucket.
+    if [[ ! -e "${patch}.meta.json" ]]; then
+      candidates+=("$patch")
+      continue
     fi
 
-    candidates+=("$patch")
+    with_meta+=("$patch")
   done
   shopt -u nullglob
+
+  # Pass 2 — one interpreter for every sidecar that exists, not one each.
+  if [[ ${#with_meta[@]} -gt 0 ]]; then
+    local meta_out=""
+    if ! meta_out=$(printf '%s.meta.json\0' "${with_meta[@]}" | _ot_read_meta_statuses); then
+      : # partial output is still usable; unreported patches are caught below
+    fi
+
+    local seen=$'\n'
+    local kind status meta_path patch_path
+    while IFS=$'\t' read -r kind status meta_path; do
+      [[ -n "$kind" ]] || continue
+      patch_path="${meta_path%.meta.json}"
+      seen+="${patch_path}"$'\n'
+      if [[ "$kind" == "R" && "$status" == "untriaged" ]]; then
+        candidates+=("$patch_path")
+      elif [[ "$kind" != "R" ]]; then
+        unreadable+=("$patch_path")
+      fi
+      # kind=R with any other status: already triaged, leave it alone.
+    done <<< "$meta_out"
+
+    # A reader that died part-way leaves patches with no line at all. They are
+    # unreadable by the same argument as an explicit U line: we did not learn
+    # the status, so we must not treat the patch as untriaged. This
+    # reconciliation only runs when the line count is short, so it costs
+    # nothing on the ordinary path.
+    local reported
+    reported=$(grep -c . <<< "$meta_out") || reported=0
+    if [[ "$reported" -ne "${#with_meta[@]}" ]]; then
+      for patch in "${with_meta[@]}"; do
+        if [[ "$seen" != *$'\n'"$patch"$'\n'* ]]; then
+          unreadable+=("$patch")
+        fi
+      done
+    fi
+  fi
+
+  # Say so out loud. A sidecar we could not read is a patch we deliberately
+  # kept, not a patch that quietly did not come up — the whole defect being
+  # fixed here is an unreadable sidecar reading as a clean "untriaged".
+  if [[ ${#unreadable[@]} -gt 0 ]]; then
+    echo "WARNING: ${#unreadable[@]} patch(es) have a sidecar that could not be read or parsed. Keeping them — an unreadable sidecar is not 'untriaged' and is never discard-eligible:" >&2
+    local u
+    for u in "${unreadable[@]}"; do
+      echo "  ${u##*/} — ${u##*/}.meta.json is unreadable or not valid JSON" >&2
+    done
+  fi
 
   if [[ ${#candidates[@]} -eq 0 ]]; then
     echo "No untriaged patches older than ${duration} found — nothing to discard."

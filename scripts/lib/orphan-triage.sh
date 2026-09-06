@@ -41,6 +41,53 @@ _ot_meta_read() {
 }
 
 # ---------------------------------------------------------------------------
+# _ot_read_meta_statuses
+#   Reads MANY sidecars with ONE interpreter (D#2133).
+#
+#   Reads NUL-separated sidecar paths on stdin and writes one TAB-separated
+#   line per input path to stdout:
+#
+#       R<TAB><status><TAB><path>   sidecar was opened and parsed
+#       U<TAB>-<TAB><path>          sidecar could not be opened or parsed
+#
+#   Why the kind is its own field, rather than a third value in <status>:
+#   folding "could not read it" into the status string is precisely how the
+#   collapse this replaces happened. The old per-patch read answered
+#   `except Exception -> 'untriaged'`, which made an unreadable sidecar
+#   indistinguishable from an absent one — and 'untriaged' is the single
+#   value that makes a patch eligible for discard. A caller can now branch on
+#   the kind without ever having to recognise a magic status string.
+#
+#   Callers MUST seed every path they send as unreadable and upgrade only the
+#   paths that come back on an R line. If the interpreter dies part-way
+#   through, the paths whose lines never arrived stay seeded — which is the
+#   safe direction, because unreadable is never discard-eligible.
+# ---------------------------------------------------------------------------
+_ot_read_meta_statuses() {
+  python3 -c '
+import json, sys
+
+for raw in sys.stdin.buffer.read().split(b"\0"):
+    if not raw:
+        continue
+    path = raw.decode("utf-8", "surrogateescape")
+    try:
+        with open(path, "rb") as fh:
+            doc = json.loads(fh.read().decode("utf-8"))
+        if not isinstance(doc, dict):
+            raise ValueError("sidecar is not a JSON object")
+        status = doc.get("status", "untriaged")
+        if not isinstance(status, str) or not status.strip():
+            raise ValueError("sidecar has no usable status")
+        clean = status.strip().replace("\t", " ").replace("\n", " ")
+        sys.stdout.write("R\t%s\t%s\n" % (clean, path))
+    except Exception:
+        sys.stdout.write("U\t-\t%s\n" % path)
+sys.stdout.flush()
+'
+}
+
+# ---------------------------------------------------------------------------
 # _ot_meta_write <patch_path> <status> <note> [<tagged_by>]
 #   Writes/overwrites the sidecar JSON for <patch_path>.
 # ---------------------------------------------------------------------------
