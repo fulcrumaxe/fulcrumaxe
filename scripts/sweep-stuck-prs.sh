@@ -189,6 +189,25 @@ def get_discussion_for_pr(pr_num):
         pass
     return None
 
+def pr_gate_blocked(pr_num):
+    """D#2404 — the same author gate the loop's PR pickup path applies.
+
+    A PR whose author is outside the trust set is inert to automation: this
+    sweeper must not enqueue an executor respawn for it, because that respawn
+    is an agent spawn on a stranger's branch. Fail closed — a gate that cannot
+    be read blocks.
+    """
+    result = run(["python3", f"{repo_root}/scripts/lib/pr_intake_gate.py",
+                  "check-pr", str(pr_num)])
+    if result.returncode == 0:
+        return False, ""
+    try:
+        verdict = json.loads(result.stdout or "{}")
+        return bool(verdict.get("blocked", True)), verdict.get("reason", "gate_check_failed")
+    except Exception:
+        return True, "gate_check_failed"
+
+
 def get_reviewer_feedback(pr_num):
     """Fetch last 5 PR comments as context."""
     result = run(["gh", "pr", "view", str(pr_num),
@@ -214,6 +233,14 @@ for pr_info in data:
     count    = entry.get("count", 0)
 
     print(f"  PR #{pr_num}  age={age_min:.0f}min  respawns={count}")
+
+    blocked, gate_reason = pr_gate_blocked(pr_num)
+    if blocked:
+        # Not escalated and not counted — a gated PR is not "stuck", it is
+        # waiting on a human, and bumping its respawn counter would eventually
+        # slap needs-boss on a stranger's PR.
+        print(f"    -> gated: {gate_reason} — no respawn, awaiting intake-approved")
+        continue
 
     if count >= MAX_RESPAWNS:
         # Escalate
