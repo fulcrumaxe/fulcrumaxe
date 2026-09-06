@@ -20,6 +20,14 @@
 # 1. Checks that the PR body contains Two-Gate markers (Gate 1 + Gate 2).
 #    Abort with exit 1 if markers are absent.
 #    --force-no-two-gate bypasses the check but logs loudly + writes an audit row.
+# 1b. Mergeability probe (D#2339): a PR GitHub already reports as CONFLICTING
+#    is refused here, in one API call, instead of at the far end of the CI
+#    wait below. A conflicting branch registers no check-runs at all, so that
+#    wait always ran to its full CI_MAX_WAIT_SECONDS and then blamed slow CI
+#    for a branch that could never have merged. No --force flag: GitHub
+#    refuses a conflicting merge regardless, so an override buys nothing but
+#    the timeout back. UNKNOWN (mergeability is computed asynchronously) is
+#    not a refusal — it falls through, and the CI gate re-probes on timeout.
 # 2. CI-status gate (D#1614): blocks the merge unless every required GitHub
 #    Actions check-run (tui, dashboard, ts-backend, backend (import-smoke)) is
 #    present and green on the current head. --force-no-ci bypasses this but
@@ -266,7 +274,35 @@ if [[ "$_EXTERNAL_FORCES_SEC" == "true" ]]; then
   echo "[merge-and-hook] security-review-passed present — HG-7 requirement satisfied."
 fi
 
-# ── Step 0c: CI-status gate (D#1614) ──────────────────────────────────────────
+# ── Step 0c: mergeability probe (D#2339) ──────────────────────────────────────
+# A CONFLICTING PR gets zero check-runs from GitHub, so the CI wait below can
+# never succeed on one: it burns the full CI_MAX_WAIT_SECONDS and then reports
+# "CI wait timed out ... no github-actions check-runs registered yet for this
+# head", which blames slow CI for a branch that simply conflicts. That cost
+# twenty minutes on a real merge and a reviewer found the actual cause by hand.
+# Asking GitHub the question directly costs one API call and answers it in
+# under a second, so it goes before the wait rather than after it.
+#
+# No --force flag for this one, deliberately, unlike the CI, Two-Gate and
+# browser-test gates beside it: there is nothing here for an operator to weigh.
+# GitHub refuses the merge of a conflicting branch regardless of what this
+# script decides, so an override would buy back the 1200-second timeout and
+# nothing else. The remedy is to rebase, which is not a bypass.
+if ! ci_probe_mergeable "$PR" "$_CODE_REPO"; then
+  echo "[merge-and-hook] ERROR: PR #$PR cannot be merged — GitHub reports it as conflicting (mergeable=CONFLICTING, mergeStateStatus=${CI_MERGE_STATE_STATUS:-unknown}). Refusing to merge, without waiting on CI." >&2
+  echo "[merge-and-hook] A conflicting branch never registers a check-run, so the CI wait below would have timed out after ${CI_MAX_WAIT_SECONDS}s and blamed slow CI." >&2
+  _CONFLICT_HEAD="$(gh pr view "$PR" --repo "$_CODE_REPO" --json headRefOid --jq .headRefOid 2>/dev/null || true)"
+  ci_report_conflict "$PR" "$_CODE_REPO" "${_CONFLICT_HEAD:-}"
+  exit 1
+fi
+if [[ "$CI_MERGE_PROBE" == "unknown" ]]; then
+  # Not a refusal. GitHub computes mergeability asynchronously, so "not
+  # computed yet" is the expected answer for a branch pushed moments ago, and
+  # the CI-status gate below re-checks on timeout anyway.
+  echo "[merge-and-hook] mergeability probe inconclusive for PR #$PR (${CI_MERGE_PROBE_REASON:-no reason given}) — proceeding; the CI-status gate re-checks mergeability before reporting a timeout." >&2
+fi
+
+# ── Step 0d: CI-status gate (D#1614) ──────────────────────────────────────────
 # Real GitHub Actions CI must gate the merge, not run decoratively after it —
 # GitHub-native required-status-checks is unavailable on this repo tier (403).
 _CI_GREEN_SHA=""
@@ -325,6 +361,18 @@ elif [[ "$_CI_RC" -eq 2 ]]; then
   _CI_AUDIT_WRITTEN=true
   echo "[merge-and-hook] Audit row written: kind=ci_gate_stood_down pr=$PR" >&2
 elif [[ "$_CI_RC" -ne 0 ]]; then
+  # D#2339: main moves while we poll, so a branch that was mergeable when Step
+  # 0c ran can be conflicting by the time the wait ends. Re-probe once before
+  # reporting — otherwise the operator is handed a timeout that is true in form
+  # and wrong in substance, which is the misdiagnosis this whole path is about.
+  # The timeout wording is deliberately NOT printed on this branch: the cause is
+  # the conflict, and naming both would leave the reader to guess which.
+  if ! ci_probe_mergeable "$PR" "$_CODE_REPO"; then
+    echo "[merge-and-hook] ERROR: PR #$PR became conflicting while waiting on CI — GitHub now reports mergeable=CONFLICTING (mergeStateStatus=${CI_MERGE_STATE_STATUS:-unknown}). Refusing to merge." >&2
+    ci_report_conflict "$PR" "$_CODE_REPO" "${CI_STATUS_HEAD_SHA:-}"
+    ci_write_audit "ci_gate_block" "$PR" "$CI_STATUS_HEAD_SHA" "$CI_STATUS_FAILING_CHECKS" "$CI_STATUS_RUN_URL" "branch conflicts with its base — no check-run can register on a conflicting head"
+    exit 1
+  fi
   echo "[merge-and-hook] CI-status gate FAILED for PR #$PR: $CI_STATUS_FAIL_REASON" >&2
   [[ -n "$CI_STATUS_FAILING_CHECKS" ]] && echo "[merge-and-hook] failing check(s): $CI_STATUS_FAILING_CHECKS" >&2
   [[ -n "$CI_STATUS_RUN_URL" ]] && echo "[merge-and-hook] run: $CI_STATUS_RUN_URL" >&2
@@ -406,23 +454,10 @@ for _MERGE_ATTEMPT in 1 2; do
   else
     echo "[merge-and-hook] ERROR: merge failed for PR #$PR: $CI_STATUS_FAIL_REASON" >&2
     if [[ "${CI_STATUS_FAIL_KIND:-}" == "conflict" ]]; then
-      echo "[merge-and-hook] cause: this branch conflicts with its base and is not mergeable." >&2
-      echo "[merge-and-hook] remedy: merge main into the branch and resolve the conflicts, then re-run this script." >&2
-      _BASE_REF="$(gh pr view "$PR" --repo "$_CODE_REPO" --json baseRefName --jq .baseRefName 2>/dev/null || true)"
-      if [[ -z "$_BASE_REF" ]]; then
-        _BASE_REF="main"
-      fi
-      # Best-effort and non-fatal. When the paths cannot be computed we say so
-      # AND say why -- a silently missing list reads as "no conflicts".
-      # `|| true` for the same reason as the guard on the merge call above:
-      # nothing in this diagnostic path may abort before the operator reads it.
-      ci_conflicting_files "$_BASE_REF" "$_MERGE_SHA" || true
-      if [[ -n "$CI_CONFLICT_FILES" ]]; then
-        echo "[merge-and-hook] conflicting files:" >&2
-        printf '%s\n' "$CI_CONFLICT_FILES" | sed 's/^/[merge-and-hook]   /' >&2
-      else
-        echo "[merge-and-hook] conflicting files: unavailable (${CI_CONFLICT_FILES_REASON:-reason unknown})" >&2
-      fi
+      # D#2339: this wording used to live inline here, and the pre-wait probe
+      # in Step 0c would have been a second place to phrase the same condition.
+      # One function, both callers, so an operator meets one message.
+      ci_report_conflict "$PR" "$_CODE_REPO" "$_MERGE_SHA"
     fi
     exit 1
   fi
