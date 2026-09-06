@@ -337,6 +337,33 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 scripts/ci/guard-registry-check.py
 
+      # D#2332: tests/test_merge_and_hook.sh drives the real
+      # scripts/merge-and-hook.sh against stubbed gh/post-merge-hook, and it is
+      # where the manual merge path's gates — Two-Gate, HG-7, CI-status, and
+      # now browser-test — are held in place. Until this step, no CI job ran
+      # it: only scripts/run-pr-tests.sh routed to it, which is loop-side, not
+      # CI, so deleting a gate from that script failed nothing. That is the
+      # same "a check that gates nothing" shape D#2332 is about, so the gate it
+      # adds gets a runner rather than the same silence one layer down.
+      #
+      # A separate step rather than a file in scripts/ci/, deliberately: the
+      # runner above discovers that directory, and guard-registry-check.py
+      # fails a file that is both runner-discovered and separately invoked.
+      # This is a tests/ suite, so it is in neither set and needs no ledger
+      # entry. It is also not a static scan of source text — it executes the
+      # script under review — which is the other reason it does not belong
+      # among the behavioral guards.
+      #
+      # Fails the build the ordinary way: a non-zero exit fails this step,
+      # which fails this job, whose name is one of the four exact strings in
+      # CI_REQUIRED_CHECKS (scripts/lib/ci-status-check.sh), so a red run
+      # blocks the merge gate on both merge paths. Hermetic: no network, no
+      # GH_TOKEN, no dependency beyond bash + python3, everything written
+      # under mktemp.
+      - name: Manual-merge gate suite (merge-and-hook)
+        if: ${{ !cancelled() }}
+        run: bash tests/test_merge_and_hook.sh
+
       # No ruff/flake8 config exists in the repo today (checked
       # pyproject.toml / setup.cfg) — Python lint is intentionally omitted
       # rather than adding new lint config as part of this Spec.

@@ -4,7 +4,19 @@
 # Usage: bash scripts/merge-and-hook.sh --pr <PR_NUMBER> [--discussion <DISC_NUMBER>]
 #                                        [--force-no-two-gate [--bypass-reason <text>]]
 #                                        [--force-no-ci [--bypass-reason <text>]]
+#                                        [--force-no-browser-test --bypass-reason <text>]
 #
+# 0. Browser-test gate (D#2332): a PR that touches dashboard/ must carry
+#    browser-test-passed. The loop auto-merge path has enforced this at its
+#    merging phase for a while; this path did not, so a five-file dashboard PR
+#    reached main carrying exactly one label. Same gate now, deriving
+#    "touches the dashboard" from the same check-pr-dashboard-touched.sh the
+#    loop calls, so the two cannot drift into two answers.
+#    --force-no-browser-test bypasses it but REQUIRES a non-empty
+#    --bypass-reason and writes an audit row (kind:
+#    manual_merge_browser_test_bypass). This runs first, before any other
+#    gate's side effects and long before the CI wait below, so a refusal
+#    costs two API calls and leaves nothing behind.
 # 1. Checks that the PR body contains Two-Gate markers (Gate 1 + Gate 2).
 #    Abort with exit 1 if markers are absent.
 #    --force-no-two-gate bypasses the check but logs loudly + writes an audit row.
@@ -69,6 +81,7 @@ PR=""
 DISC=""
 FORCE_NO_TWO_GATE=false
 FORCE_NO_CI=false
+FORCE_NO_BROWSER_TEST=false
 BYPASS_REASON=""
 
 while [[ $# -gt 0 ]]; do
@@ -77,10 +90,11 @@ while [[ $# -gt 0 ]]; do
     --discussion)       DISC="$2";          shift 2 ;;
     --force-no-two-gate) FORCE_NO_TWO_GATE=true; shift 1 ;;
     --force-no-ci)      FORCE_NO_CI=true;    shift 1 ;;
+    --force-no-browser-test) FORCE_NO_BROWSER_TEST=true; shift 1 ;;
     --bypass-reason)    BYPASS_REASON="$2"; shift 2 ;;
     *)
       echo "[merge-and-hook] unknown argument: $1" >&2
-      echo "Usage: $0 --pr <PR_NUMBER> [--discussion <DISC_NUMBER>] [--force-no-two-gate [--bypass-reason <text>]] [--force-no-ci [--bypass-reason <text>]]" >&2
+      echo "Usage: $0 --pr <PR_NUMBER> [--discussion <DISC_NUMBER>] [--force-no-two-gate [--bypass-reason <text>]] [--force-no-ci [--bypass-reason <text>]] [--force-no-browser-test --bypass-reason <text>]" >&2
       exit 1
       ;;
   esac
@@ -101,9 +115,65 @@ if [[ "$FORCE_NO_CI" == "true" && -z "${BYPASS_REASON//[[:space:]]/}" ]]; then
   exit 1
 fi
 
+# Same contract for --force-no-browser-test, and validated in the same place
+# and for the same reason: before ANY side effect, so a rejected invocation
+# leaves no audit row at all. An unexplained bypass records that a dashboard PR
+# merged untested and nothing about why, which is the silent skip this gate
+# exists to end.
+if [[ "$FORCE_NO_BROWSER_TEST" == "true" && -z "${BYPASS_REASON//[[:space:]]/}" ]]; then
+  echo "[merge-and-hook] ERROR: --force-no-browser-test requires --bypass-reason <text> (non-empty). Refusing to merge PR #$PR." >&2
+  echo "[merge-and-hook] Say what you are overriding and why — the audit row is the only record this dashboard PR was never browser-tested." >&2
+  exit 1
+fi
+
 LOG_DIR="${MERGE_AND_HOOK_LOG_DIR:-$REPO_ROOT/.autonomous-team/dashboard-logs}"
 mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/manual-merge-${PR}.log"
+
+# ── Step 0a: browser-test gate (D#2332) ───────────────────────────────────────
+# This runs before every other gate on purpose. It is two API calls at most, it
+# is the cheapest refusal in the script, and running it first means a blocked
+# dashboard merge never gets as far as the Two-Gate bypass audit row or the
+# 20-minute CI wait.
+#
+# The "does this PR touch the dashboard" decision is delegated to
+# check-pr-dashboard-touched.sh — the same script loop-phased-step5.sh's
+# _dashboard_touched wrapper calls. Deliberately not reimplemented here: two
+# implementations of one predicate is how the two paths would drift back apart,
+# which is the defect this is fixing.
+#
+# Known limitation, inherited from that script and shared with the loop path: it
+# collapses "the diff says no dashboard files" and "the diff could not be read"
+# into the same exit 1. A network failure therefore reads as "not a dashboard
+# PR" here exactly as it does on the loop path. Fixing that means changing the
+# predicate's exit-code contract for both callers, which is a separate change.
+# The one case it does distinguish — an unresolvable code repo — it already
+# fails closed by reporting "touched", and so do we below.
+_BROWSER_GATE_SCRIPT="$SCRIPT_DIR/check-pr-dashboard-touched.sh"
+if [[ ! -f "$_BROWSER_GATE_SCRIPT" ]]; then
+  echo "[merge-and-hook] ERROR: $_BROWSER_GATE_SCRIPT is missing — cannot tell whether PR #$PR touches the dashboard. Refusing to merge rather than assuming it does not." >&2
+  exit 1
+fi
+if bash "$_BROWSER_GATE_SCRIPT" "$PR"; then
+  _BROWSER_LABELS="$(gh pr view "$PR" --repo "$_CODE_REPO" --json labels --jq '.labels[].name' 2>/dev/null || echo "")"
+  if grep -qx "browser-test-passed" <<<"$_BROWSER_LABELS"; then
+    echo "[merge-and-hook] PR #$PR touches dashboard/ and carries browser-test-passed — browser-test gate satisfied."
+  elif [[ "$FORCE_NO_BROWSER_TEST" == "true" ]]; then
+    echo "[merge-and-hook] WARNING: --force-no-browser-test used for PR #$PR — merging a dashboard PR that was never browser-tested!" >&2
+    echo "[merge-and-hook] WARNING: This bypass is logged to the audit trail. Use sparingly." >&2
+    echo "[merge-and-hook] Bypass reason: $BYPASS_REASON" >&2
+    # Reuses ci_write_audit rather than hand-rolling a second JSON writer: it
+    # escapes the reason text properly and resolves the same audit path every
+    # other row in this script lands in. The kind is what carries the meaning.
+    ci_write_audit "manual_merge_browser_test_bypass" "$PR" "" "" "" "$BYPASS_REASON"
+    echo "[merge-and-hook] Audit row written: kind=manual_merge_browser_test_bypass pr=$PR" >&2
+  else
+    echo "[merge-and-hook] ERROR: PR #$PR touches dashboard/ but does not carry the browser-test-passed label. Refusing to merge." >&2
+    echo "[merge-and-hook] The loop auto-merge path blocks this same PR at its merging phase; this path now does too." >&2
+    echo "[merge-and-hook] Spawn a browser-tester and let it label the PR, or override with --force-no-browser-test --bypass-reason \"<why>\" (logged to the audit trail)." >&2
+    exit 1
+  fi
+fi
 
 # ── Step 0: Two-Gate marker check ─────────────────────────────────────────────
 if [[ "$FORCE_NO_TWO_GATE" == "true" ]]; then
