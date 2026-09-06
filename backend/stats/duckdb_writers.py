@@ -9,10 +9,25 @@ Returns a list of processes currently holding an open file descriptor on
 stats.duckdb, so the dashboard can surface lock-holder visibility without
 requiring the operator to run lsof manually.
 
-Uses lsof -F pcfan -- <abs_path> parsed line-by-line. No extra deps.
+Two sources answer the same question, tried in order (D#2326):
+
+  1. /proc/<pid>/fd, via backend.stats.duckdb_writers_proc — preferred on
+     Linux. No dependency, no subprocess per poll, and it reports how many
+     pids it could not inspect so a partial answer is visible as partial.
+  2. lsof -F pcfan -- <abs_path>, parsed line-by-line — the fallback where
+     /proc does not exist, which is the macOS case.
+  3. Neither available → ([], warning) naming both missing sources.
+
+lsof is deliberately kept: the two platforms are disjoint, and removing it
+would break the tile on macOS to fix it on Linux.
+
+Note that lsof shares /proc's permission blind spot — run as a normal user
+it cannot see another user's processes either — but its output gives no way
+to count what it missed, so the lsof path reports uninspected_pids as None
+("not reported") rather than a misleading 0.
+
 Age is derived from /proc/<pid>/stat start-time on Linux; on non-Linux
-systems the field is omitted (returned as None). Returns [] when lsof is
-missing on PATH.
+systems the field is omitted (returned as None).
 
 lsof 4.95.0 format (verified on Ubuntu 24.04):
   Special fds (cwd, txt, mem, rtd): f<type>\na \nn<path>
@@ -29,6 +44,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from backend.stats.duckdb_writers_proc import scan_proc_for_holders
 
 log = logging.getLogger(__name__)
 
@@ -123,18 +140,28 @@ def _parse_lsof_output(output: str) -> list[dict[str, Any]]:
     return rows
 
 
-def get_duckdb_writers() -> tuple[list[dict[str, Any]], str | None]:
-    """Return (rows, warning).
+def _meta(
+    source: str | None,
+    inspected: int | None = None,
+    uninspected: int | None = None,
+    capped: bool = False,
+) -> dict[str, Any]:
+    """Provenance for one answer: which source produced it, and how complete.
 
-    rows  — list of dicts with pid/cmd/age_seconds/fd_mode.
-    warning — non-fatal diagnostic string when lsof is unavailable, else None.
+    ``uninspected`` is None — "not reported" — rather than 0 whenever the
+    source cannot count what it missed. 0 is a claim of completeness and must
+    only be made by a source that can back it.
     """
-    db_path = _stats_db_path()
-    if not db_path.exists():
-        return [], None
+    return {
+        "source": source,
+        "inspected_pids": inspected,
+        "uninspected_pids": uninspected,
+        "capped": capped,
+    }
 
-    abs_path = str(db_path.resolve())
 
+def _lsof_writers(abs_path: str) -> tuple[list[dict[str, Any]], str | None, dict[str, Any]]:
+    """Fallback source: shell out to lsof. Unchanged parsing (D#2326)."""
     try:
         result = subprocess.run(
             ["lsof", "-F", "pcfan", "--", abs_path],
@@ -143,15 +170,58 @@ def get_duckdb_writers() -> tuple[list[dict[str, Any]], str | None]:
             timeout=5,
         )
         # lsof exits 1 when no processes hold the file — that's fine.
-        rows = _parse_lsof_output(result.stdout)
-        return rows, None
+        return _parse_lsof_output(result.stdout), None, _meta("lsof")
 
     except FileNotFoundError:
         # lsof not on PATH — non-fatal, return empty
-        return [], "lsof not found on PATH"
+        return [], "lsof not found on PATH", _meta(None)
     except subprocess.TimeoutExpired:
         log.warning("duckdb_writers: lsof timed out")
-        return [], "lsof timed out"
+        return [], "lsof timed out", _meta(None)
     except Exception as exc:
         log.warning("duckdb_writers: unexpected error: %s", exc)
-        return [], str(exc)
+        return [], str(exc), _meta(None)
+
+
+def get_duckdb_writers(
+    proc_root: str = "/proc",
+) -> tuple[list[dict[str, Any]], str | None, dict[str, Any]]:
+    """Return (rows, warning, meta).
+
+    rows    — list of dicts with pid/cmd/age_seconds/fd_mode.
+    warning — non-None exactly when the answer could NOT be determined, i.e.
+              no source was available. A partial answer is not a warning: it
+              is a determined answer plus a count of what it could not see,
+              carried in meta["uninspected_pids"].
+    meta    — {"source", "inspected_pids", "uninspected_pids", "capped"}.
+
+    ``proc_root`` is a parameter so the no-/proc platform (macOS) can be
+    exercised for real rather than mocked.
+    """
+    db_path = _stats_db_path()
+    if not db_path.exists():
+        # No database, so nothing can hold it open. This is a determined
+        # answer about the file, not a failure to look.
+        return [], None, _meta(None)
+
+    abs_path = str(db_path.resolve())
+
+    if os.path.isdir(proc_root):
+        try:
+            scan = scan_proc_for_holders(abs_path, proc_root=proc_root)
+        except OSError as exc:
+            # /proc exists but could not be listed — fall through to lsof
+            # rather than reporting an empty list we never established.
+            log.warning("duckdb_writers: /proc scan failed (%s); trying lsof", exc)
+        else:
+            return scan.rows, None, _meta(
+                "proc",
+                inspected=scan.inspected_pids,
+                uninspected=scan.uninspected_pids,
+                capped=scan.capped,
+            )
+
+    rows, warning, meta = _lsof_writers(abs_path)
+    if warning == "lsof not found on PATH" and not os.path.isdir(proc_root):
+        warning = f"no source available: {proc_root} does not exist and lsof is not on PATH"
+    return rows, warning, meta

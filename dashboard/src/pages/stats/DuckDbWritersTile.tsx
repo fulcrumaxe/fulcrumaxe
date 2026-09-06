@@ -7,7 +7,18 @@
  *
  * Calls stats_duckdb_writers RPC, refreshes every 60s.
  * Shows PID, truncated cmd, humanized age, and FD-mode badge per writer.
- * Empty state: "no active writers".
+ *
+ * Four distinct states, deliberately kept apart (D#2326). The tile used to
+ * render the empty state and the warning together, so a host where the
+ * backend could not look at all still headlined a confident "no active
+ * writers" with the reason demoted to a footnote:
+ *
+ *   determined  — writers empty, nothing unlooked-at → "no active writers"
+ *   partial     — some pids could not be inspected; the rows found are shown
+ *                 alongside the count that was not looked at. Not a zero.
+ *   undetermined— no source could answer; the reason is shown INSTEAD of an
+ *                 empty state, never beside it.
+ *   populated   — the writer table.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -18,13 +29,24 @@ export interface DuckDbWriter {
   pid: number
   cmd: string
   age_seconds: number | null
-  fd_mode: string
+  /** null when the source could not determine the mode — render as unknown. */
+  fd_mode: string | null
 }
 
 export interface DuckDbWritersResponse {
   writers: DuckDbWriter[]
   checked_at: string
+  /** Non-null ONLY when no source could answer at all. */
   warning: string | null
+  source?: string | null
+  inspected_pids?: number | null
+  /**
+   * Pids the scan could not inspect — another user's processes, mostly.
+   * `null`/absent means the source cannot count them, which is not the same
+   * as zero and must not be rendered as a confirmed complete answer.
+   */
+  uninspected_pids?: number | null
+  capped?: boolean
 }
 
 interface Props {
@@ -38,7 +60,25 @@ function humanAge(seconds: number | null): string {
   return `${(seconds / 3600).toFixed(1)}h`
 }
 
-function fdModeBadge(mode: string): React.ReactNode {
+function fdModeBadge(mode: string | null): React.ReactNode {
+  // An unknown mode is rendered as unknown. Defaulting it to 'r' would
+  // understate a write lock, which is the thing this tile exists to surface.
+  if (mode === null || mode === undefined || mode === '') {
+    return (
+      <span style={{
+        display: 'inline-block',
+        padding: '1px 6px',
+        borderRadius: 4,
+        fontSize: 11,
+        fontWeight: 600,
+        border: '1px dashed #6b7280',
+        color: '#9ca3af',
+        fontFamily: 'monospace',
+      }}>
+        not reported
+      </span>
+    )
+  }
   const color = mode === 'w' || mode === 'rw' ? '#ef4444' : '#6b7280'
   return (
     <span style={{
@@ -96,6 +136,11 @@ export default function DuckDbWritersTile({ refreshSignal }: Props) {
     }
   }, [fetchData, refreshSignal])
 
+  // A null/absent uninspected_pids means the source cannot count what it
+  // missed (the lsof path). That is "not reported", not "nothing missed" —
+  // it leaves the tile reading exactly as it did before this field existed.
+  const partial = !!data && !data.warning && (data.uninspected_pids ?? 0) > 0
+
   return (
     <section style={styles.section} aria-label="DuckDB Writers">
       <h2 style={styles.sectionHeading}>DuckDB Writers</h2>
@@ -107,9 +152,29 @@ export default function DuckDbWritersTile({ refreshSignal }: Props) {
         <div style={{ ...styles.state, color: '#ef4444' }} role="alert">{error}</div>
       )}
 
-      {data && data.writers.length === 0 && (
+      {/* Undetermined — no source could answer. The reason replaces the
+          empty state rather than sitting under it. */}
+      {data && data.warning && (
+        <div
+          style={{ ...styles.state, color: '#f59e0b' }}
+          role="status"
+          data-testid="duckdb-writers-undetermined"
+        >
+          could not determine writers — {data.warning}
+        </div>
+      )}
+
+      {/* Determined and genuinely empty. */}
+      {data && !data.warning && data.writers.length === 0 && !partial && (
         <div style={styles.state} role="status" data-testid="duckdb-writers-empty">
           no active writers
+        </div>
+      )}
+
+      {/* Partial and empty — looked, found none, but did not see everything. */}
+      {data && !data.warning && data.writers.length === 0 && partial && (
+        <div style={styles.state} role="status" data-testid="duckdb-writers-partial-empty">
+          no writers among the {data.inspected_pids ?? 0} processes visible here
         </div>
       )}
 
@@ -138,9 +203,15 @@ export default function DuckDbWritersTile({ refreshSignal }: Props) {
         </table>
       )}
 
-      {data?.warning && (
-        <div style={styles.warn} data-testid="duckdb-writers-warning">
-          {data.warning}
+      {/* Partial-answer note. Shown whether or not rows were found, because
+          "here is what I found" and "here is what I did not look at" are
+          both part of the same answer. */}
+      {data && partial && (
+        <div style={styles.warn} data-testid="duckdb-writers-partial">
+          {data.uninspected_pids} of {(data.inspected_pids ?? 0) + (data.uninspected_pids ?? 0)}
+          {' '}processes could not be inspected
+          {data.capped ? ' (scan capped)' : ' (owned by another user, or exited mid-scan)'}
+          {' '}— this is not a confirmed complete list.
         </div>
       )}
     </section>

@@ -632,13 +632,28 @@ EXTRA_PARAMS: dict[str, dict] = {
 }
 
 # Methods whose own return value legitimately changes on every call
-# regardless of project (a write endpoint returning a monotonic counter) —
-# the leak-probe's "warm A, call B, expect B's own answer" design assumes an
-# idempotent read, which does not hold here. These are genuinely
-# discriminable (ref_A != ref_B) but must skip the leak-probe step rather
-# than have normal mutation misreported as a leak; see their NON_DISCRIMINABLE
-# ledger entries for the specific reasoning.
-NO_LEAK_PROBE: frozenset[str] = frozenset({"auth_retry.record"})
+# regardless of project — the leak-probe's "warm A, call B, expect B's own
+# answer" design assumes an idempotent read, which does not hold here. The
+# probe reads ref_A != ref_B as evidence of project discriminability, but for
+# these methods that inequality carries no such information, so the probe is
+# skipped rather than have normal call-to-call variation misreported as a
+# leak; see their NON_DISCRIMINABLE ledger entries for the specific reasoning.
+#
+# Two causes so far:
+#   auth_retry.record      — a write endpoint returning a monotonic counter.
+#   stats_duckdb_writers   — reports a live count of processes on the host it
+#                            could not inspect (D#2326). Processes come and go
+#                            between two calls, so two calls for the SAME
+#                            project differ: measured on nixos, back-to-back
+#                            calls returned uninspected_pids 325 then 327 with
+#                            an identical (empty) writers list. Its ledger
+#                            entry — live process state, not project-stored
+#                            data — is unchanged and still the reason it is
+#                            non-discriminable.
+NO_LEAK_PROBE: frozenset[str] = frozenset({
+    "auth_retry.record",
+    "stats_duckdb_writers",
+})
 
 
 # ---------------------------------------------------------------------------
@@ -698,7 +713,11 @@ def probe_method(dispatch_scoped, method, handler, extra_params):
         return "not-discriminable", None
 
     if method in NO_LEAK_PROBE:
-        return "not-discriminable", "mutating endpoint — leak-probe skipped, see NON_DISCRIMINABLE ledger"
+        return (
+            "not-discriminable",
+            "response varies between calls independently of project — "
+            "leak-probe skipped, see NON_DISCRIMINABLE ledger",
+        )
 
     clear_all_caches()
     safe_call(dispatch_scoped, method, params_a, handler)  # warm alpha's caches
