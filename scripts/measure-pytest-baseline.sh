@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # scripts/measure-pytest-baseline.sh --arm idle|contended --out DIR
+#   [--junit-out PATH] [--cap-seconds N]
 #
 # One bounded, serialised full-suite pytest run, emitted as a single JSON
 # record file under --out. D#2403 PR 2 of 5 — measurement only, fixes no
@@ -11,6 +12,21 @@
 #
 # Caps: 1800s idle arm, 2700s contended arm (D#2006 — timeout without
 # --kill-after left three pytest suites running 5+ hours on this host).
+#
+# Optional flags (D#1900 PR 2, both additive — omit them and this script
+# behaves exactly as it did before they existed):
+#   --junit-out PATH    write the run's junit-xml to PATH and keep it, instead
+#     of a mktemp file that is deleted once the record has been built. The
+#     record only carries the outcomes parsed out of that XML; a caller that
+#     has to publish the raw evidence (the portability probe uploads it as a
+#     CI artifact) needs the file itself to survive.
+#   --cap-seconds N     override the arm's timeout cap for a real measurement
+#     on a host whose speed the arm caps were not chosen for. The caps above
+#     were picked against a 12-vCPU host; a 2-vCPU GitHub runner is a
+#     different regime, not a slower one, and 1800s is a guess there rather
+#     than a bound. This is deliberately NOT the PYTEST_BASELINE_TEST_*
+#     env overrides below: those stay test-only, and a real run that needed a
+#     different cap should not have to borrow the fixture escape hatch.
 #
 # Test-only overrides (used by tests/test_pytest_baseline.sh against a
 # fixture "sleeping stub", never by a real measurement run):
@@ -27,10 +43,14 @@ cd "$REPO_ROOT" || exit 1
 
 ARM=""
 OUT_DIR=""
+JUNIT_OUT=""
+CAP_SECONDS=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --arm) ARM="$2"; shift 2 ;;
     --out) OUT_DIR="$2"; shift 2 ;;
+    --junit-out) JUNIT_OUT="$2"; shift 2 ;;
+    --cap-seconds) CAP_SECONDS="$2"; shift 2 ;;
     *) echo "[measure-pytest-baseline] unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -42,6 +62,17 @@ fi
 if [ -z "$OUT_DIR" ]; then
   echo "[measure-pytest-baseline] --out DIR is required" >&2
   exit 2
+fi
+if [ -n "$CAP_SECONDS" ]; then
+  case "$CAP_SECONDS" in
+    ''|*[!0-9]*)
+      echo "[measure-pytest-baseline] --cap-seconds must be a positive integer (got: ${CAP_SECONDS})" >&2
+      exit 2 ;;
+  esac
+  if [ "$CAP_SECONDS" -lt 1 ]; then
+    echo "[measure-pytest-baseline] --cap-seconds must be a positive integer (got: ${CAP_SECONDS})" >&2
+    exit 2
+  fi
 fi
 mkdir -p "$OUT_DIR"
 
@@ -85,6 +116,9 @@ if [ "$ARM" = "idle" ]; then
 else
   CAP=2700
 fi
+if [ -n "$CAP_SECONDS" ]; then
+  CAP="$CAP_SECONDS"
+fi
 if [ -n "${PYTEST_BASELINE_TEST_CAP_SECONDS:-}" ]; then
   CAP="$PYTEST_BASELINE_TEST_CAP_SECONDS"
 fi
@@ -120,7 +154,12 @@ else
 fi
 
 HOST=$(hostname)
-JUNIT_XML=$(mktemp --suffix=.xml)
+if [ -n "$JUNIT_OUT" ]; then
+  mkdir -p "$(dirname "$JUNIT_OUT")"
+  JUNIT_XML="$JUNIT_OUT"
+else
+  JUNIT_XML=$(mktemp --suffix=.xml)
+fi
 
 # path_scope.argv — the actual argv, not a label for it. archive/ is excluded
 # via explicit --ignore; --continue-on-collection-errors is deliberately NOT
@@ -276,7 +315,12 @@ python3 "$REPO_ROOT/scripts/lib/pytest_baseline.py" record \
   --context "$CONTEXT_FILE" > "$RECORD_FILE"
 RC=$?
 
-rm -f "$CONTEXT_FILE" "$JUNIT_XML"
+rm -f "$CONTEXT_FILE"
+# Keep the junit-xml only when the caller asked for it by path; the mktemp
+# spelling is scratch and is still cleaned up.
+if [ -z "$JUNIT_OUT" ]; then
+  rm -f "$JUNIT_XML"
+fi
 
 if [ "$RC" -ne 0 ]; then
   echo "[measure-pytest-baseline] record generation failed (rc=$RC)" >&2
