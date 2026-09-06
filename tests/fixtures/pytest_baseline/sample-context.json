@@ -1,0 +1,27 @@
+{
+  "host": "test-host",
+  "path_scope": {
+    "argv": "python3 -m pytest tests/ backend/tests/ --ignore=archive/ --ignore=tests/test_next_work.py -q --tb=no -p no:cacheprovider"
+  },
+  "checkout": {
+    "sha": "aa9ec34b0000000000000000000000000000000",
+    "clean": true,
+    "dirty_paths": []
+  },
+  "load": {
+    "samples": [
+      {"at": "2026-09-06T00:00:00Z", "one_min": 3.1, "five_min": 3.3},
+      {"at": "2026-09-06T00:06:40Z", "one_min": 3.4, "five_min": 3.3},
+      {"at": "2026-09-06T00:13:20Z", "one_min": 3.2, "five_min": 3.2}
+    ],
+    "nproc": 12,
+    "arm": "idle",
+    "contention_method": ""
+  },
+  "other_pytest_running": false,
+  "state_dir": "/tmp/pytest-baseline-scratch-fixture",
+  "duration_seconds": 800,
+  "complete": true,
+  "exit_code": 1,
+  "timed_out": false
+}
