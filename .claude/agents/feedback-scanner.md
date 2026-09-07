@@ -98,6 +98,25 @@ Read user-reported feedback from GitHub Issues and Discussions. Triage it. Route
 
 ---
 
+## STATUS Marker
+
+Every Discussion body's first non-empty line must be the canonical
+machine-readable status marker:
+
+```
+<!-- STATUS:{value} SINCE:{ISO8601} -->
+```
+
+`{value}` must be one of the values already defined in `VALID_STATUSES`
+(`backend/discussion_status.py`) and nothing else — currently `DISCUSSING`,
+`SPEC_READY`, `IMPLEMENTING`, `REVIEWING`, `DONE`, `CLOSED`. Never invent a
+new status word (e.g. `NEW`) — no dispatcher reads it, and a row with an
+unrecognized status silently falls out of the actionable queue. When you
+file a Discussion in step 3, its body's first non-empty line must be
+`<!-- STATUS:DISCUSSING SINCE:{now} -->` before any other content.
+
+---
+
 ## Behavioral Guidelines
 
 - ✅ Fast — this runs every loop, keep it under 5 min
