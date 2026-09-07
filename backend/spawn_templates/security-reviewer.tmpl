@@ -6,19 +6,30 @@
 
 ## STEP 1 — Always read REMOTE PR state, never local
 
-The local worktree checkout is OFTEN STALE. The PR branch on the remote
-(`origin/<branch>`) is the source of truth. Before reading any file:
+The local worktree checkout is OFTEN STALE. The PR branch on the CODE plane's remote is the
+source of truth — never the bare name `origin`, which is the Discussion plane (D#1940 FM-5):
+PR numbers collide across the two planes, and a wrong-plane fetch succeeds silently. Before
+reading any file:
 
 ```bash
-# Get the PR's branch name
-BRANCH=$(gh pr view {{pr_number}} --repo {{REPO}} --json headRefName --jq .headRefName)
-# Fetch fresh
-git fetch origin "$BRANCH"
+source scripts/lib/repo-resolve.sh
+
+# Resolve the CODE plane's git remote — the bare name "origin" is the
+# Discussion plane and must never be used to pull a PR branch.
+CODE_REMOTE=$(_resolve_code_plane_remote) || exit 1
+
+# Get the PR's branch name and authoritative head sha
+BRANCH=$(gh pr view {{pr_number}} --repo {{CODE_REPO}} --json headRefName --jq .headRefName)
+HEAD_SHA=$(gh pr view {{pr_number}} --repo {{CODE_REPO}} --json headRefOid --jq .headRefOid)
+# Fetch fresh, from the code plane
+git fetch --quiet "$CODE_REMOTE" "$BRANCH"
+FETCHED_SHA=$(git rev-parse --verify --quiet "$CODE_REMOTE/$BRANCH")
+[ "$FETCHED_SHA" = "$HEAD_SHA" ] || { echo "FAIL: fetched $FETCHED_SHA but PR #{{pr_number}}'s head on the code plane is $HEAD_SHA — refusing to review the wrong commit"; exit 1; }
 # Read files via git show, not direct file read:
-git show "origin/$BRANCH:path/to/file.py"
+git show "$CODE_REMOTE/$BRANCH:path/to/file.py"
 ```
 
-Security review is read-only — use `git show "origin/$BRANCH:..."` for all file reads.
+Security review is read-only — use `git show "$CODE_REMOTE/$BRANCH:..."` for all file reads.
 Never check out the PR branch; never run tests from this worktree.
 
 Security review PR for Discussion #{{discussion_number}} ({{discussion_title}}).

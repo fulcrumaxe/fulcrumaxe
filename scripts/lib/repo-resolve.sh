@@ -137,3 +137,63 @@ _require_code_repo() {
   fi
   printf '%s\n' "$r"
 }
+
+# _resolve_code_plane_remote [dir] — the git remote NAME whose URL points at
+# the code plane, or abort without printing one (D#1940 FM-5).
+#
+# Every tree-provisioning path used to fetch PR refs/branches from the git
+# remote literally named "origin", which is the Discussion plane. PR numbers
+# collide across the two planes, and that fetch SUCCEEDS — silently landing
+# the wrong plane's commit under a matching PR number. `code_repo` resolves a
+# *slug* ("fulcrumaxe/fulcrumaxe"); git fetch needs a *remote name*. This
+# bridges the two by matching each configured remote's URL against the
+# resolved slug, rather than hardcoding the remote name "code-plane" — this
+# checkout's convention is not a guarantee for every checkout.
+#
+# Prints the remote name on stdout and returns 0; on failure prints nothing
+# on stdout, an actionable message on stderr, and returns 1 — never guesses
+# "origin" as a fallback, because a wrong-plane fetch that succeeds silently
+# is exactly the defect this exists to close.
+#
+# [dir] defaults to the current directory; pass the parent/worktree repo path
+# when resolving for a tree other than the one this file lives in.
+#
+# CODE_PLANE_REMOTE_OVERRIDE — test-only escape hatch, mirrors the
+# WTC_*_OVERRIDE convention in scripts/lib/worktree-claims.sh: when set, its
+# value is returned as-is with no remote lookup and no _require_code_repo
+# call, so fixtures can exercise the fetch logic against synthetic local
+# repos without a real "fulcrumaxe/fulcrumaxe" GitHub remote configured.
+#
+# Deliberately gated on `-n` alone, not also on PYTEST_CURRENT_TEST: the only
+# consumers of this override are the bash suites in tests/ (invoked directly
+# via `bash tests/...sh`, never through pytest), so PYTEST_CURRENT_TEST is
+# never set in the context that legitimately needs this override. Adding
+# that check would not add safety in production (the var is already unset
+# there either way) and would break the bash fixtures that are this
+# override's actual reason to exist. Matches the WTC_* convention exactly
+# for the same reason WTC_* uses it: the -n check plus this being a var no
+# operator has reason to export is the whole guard.
+_resolve_code_plane_remote() {
+  local dir="${1:-.}" repo remote
+
+  if [[ -n "${CODE_PLANE_REMOTE_OVERRIDE:-}" ]]; then
+    printf '%s\n' "$CODE_PLANE_REMOTE_OVERRIDE"
+    return 0
+  fi
+
+  repo="$(_require_code_repo "_resolve_code_plane_remote")" || return 1
+
+  # Match on URL, not name: "https://github.com/OWNER/NAME(.git)?" or the
+  # scp-like "git@github.com:OWNER/NAME(.git)?" form both end in "[:/]OWNER/NAME"
+  # optionally followed by ".git". Anchored at $ so e.g. "fulcrumaxe/fulcrumaxe"
+  # does not also match a sibling repo like "fulcrumaxe/fulcrumaxe-internal".
+  remote="$(git -C "$dir" remote -v 2>/dev/null | awk -v repo="$repo" '
+    { url = $2 }
+    url ~ ("[:/]" repo "(\\.git)?$") { print $1; exit }
+  ')"
+  if [[ -z "$remote" ]]; then
+    echo "error: _resolve_code_plane_remote: no git remote in '$dir' has a URL matching the code plane '$repo' (checked: $(git -C "$dir" remote 2>/dev/null | tr '\n' ' '))" >&2
+    return 1
+  fi
+  printf '%s\n' "$remote"
+}
