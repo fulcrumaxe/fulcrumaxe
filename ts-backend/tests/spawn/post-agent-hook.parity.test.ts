@@ -39,7 +39,7 @@
  * Run: cd ts-backend && bun test tests/spawn/post-agent-hook.parity.test.ts
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, spyOn } from "bun:test";
 import { mkdirSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -477,6 +477,7 @@ describe("TS CLI: stdout format (programmatic)", () => {
       "memory", "training_mine", "cost_summary", "post_agent_cleanup",
       "worktree_registry", "self_observe_check", "scope_drift_check",
       "anomaly_check", "reap_worktrees", "team_log",
+      "branch_contamination_recovery",
     ]) {
       tracker.mark(step);
     }
@@ -543,6 +544,7 @@ describe("StepTracker: idempotency", () => {
     tracker.mark("anomaly_check");
     tracker.mark("reap_worktrees");
     tracker.mark("team_log");
+    tracker.mark("branch_contamination_recovery");
 
     const origDb = process.env["STATS_DB_PATH"];
     process.env["STATS_DB_PATH"] = join(tsDir, "stats.duckdb");
@@ -566,6 +568,115 @@ describe("StepTracker: idempotency", () => {
     // No rows should have been written since complete_run was pre-marked
     const rows = await readRows(tsDir);
     expect(rows.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Test 6b: branch-contamination recovery — proves pre-marking actually
+// suppresses the git subprocess, not just the tracker bookkeeping.
+//
+// D#2342: this step used to run unconditionally (no tracker gate at all),
+// so every OTHER step could be pre-marked "no-op" while this one still shot
+// out real `git symbolic-ref` / `git fetch` / `git reset --hard` calls
+// against repoRoot(). Adding "branch_contamination_recovery" to a pre-marked
+// list (as the two tests above now do) is silent unless something asserts
+// the subprocess itself never fires — a test that only checks the tracker
+// bookkeeping would still pass if the source fix were reverted but the
+// pre-mark entries were kept, which is exactly the "quieter, not tested"
+// trap this test exists to close.
+//
+// Interception method: spyOn(Bun, "spawn") rather than a fake binary on
+// PATH. A PATH shim is the usual move in this file (see
+// loop-phased-step5-snapshot.test.ts's fake `gh`), but that technique
+// relies on node:child_process's spawnSync, which re-resolves PATH from
+// live process.env at call time. stepBranchContaminationRecovery's
+// runShell() uses Bun.spawn with an explicit `env` object, and on this
+// Bun version that combination does not re-resolve a bare command name
+// against a runtime-mutated PATH at all (verified directly: it throws
+// ENOENT even when the target binary is genuinely first on PATH) — so a
+// PATH shim here would either silently miss every call or break every call
+// depending on whether env is customized, neither of which is the "prove
+// zero invocations" signal this test needs. Spying on the global Bun.spawn
+// function itself sidesteps Bun's PATH-resolution behavior entirely: git
+// calls are recorded and answered without a real subprocess ever spawning,
+// non-git calls (e.g. stepFleetUnregister's python3 invocation, which runs
+// unconditionally like this step used to) pass through to the real
+// Bun.spawn unchanged. The spy is restored in a finally block so it never
+// outlives this one test, unlike mock.module which the comment above
+// deliberately avoids for its process-wide registry effect.
+//
+// The mock answers the step's own guard queries (rev-parse --git-dir /
+// --git-common-dir come back equal and non-empty → "not a linked
+// worktree"; branch --show-current comes back "master") so that if the
+// tracker gate were removed, the step would actually reach and call
+// `git reset --hard` — proving the zero-calls result below is the tracker
+// gate's doing, not an accidental early return inside the step itself.
+// ---------------------------------------------------------------------------
+
+describe("branch-contamination recovery — pre-marked step never shells out", () => {
+  it("invokes no git subprocess when branch_contamination_recovery is pre-marked", async () => {
+    const gitCalls: string[][] = [];
+    const realSpawn = Bun.spawn.bind(Bun);
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (...args: any[]) => {
+        const [cmd, opts] = args;
+        if (Array.isArray(cmd) && cmd[0] === "git") {
+          gitCalls.push(cmd as string[]);
+          const argv = (cmd as string[]).join(" ");
+          let stdout = "";
+          if (argv.includes("rev-parse --git-dir")) stdout = "/fake/.git\n";
+          else if (argv.includes("rev-parse --git-common-dir")) stdout = "/fake/.git\n";
+          else if (argv.includes("branch --show-current")) stdout = "master\n";
+          return {
+            exited: Promise.resolve(0),
+            exitCode: 0,
+            kill: () => {},
+            stdout: new Response(stdout).body,
+            stderr: new Response("").body,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          } as any;
+        }
+        return realSpawn(cmd, opts);
+      }
+    );
+
+    const origDb = process.env["STATS_DB_PATH"];
+    process.env["STATS_DB_PATH"] = join(tsDir, "stats.duckdb");
+
+    const tracker = new StepTracker();
+    for (const step of [
+      "agent_feed", "team_substrate", "budget", "circuit_breaker", "kpi",
+      "audit", "role_verdict_metric", "complete_run", "verdict_overturn",
+      "pr_artifacts", "memory", "training_mine", "cost_summary",
+      "post_agent_cleanup", "worktree_registry", "self_observe_check",
+      "scope_drift_check", "anomaly_check", "reap_worktrees", "team_log",
+      "branch_contamination_recovery",
+    ]) {
+      tracker.mark(step);
+    }
+
+    try {
+      const hookArgs = parseArgs([
+        "--role", "executor",
+        "--verdict", "done",
+        "--input-tokens", "1000",
+        "--output-tokens", "200",
+        "--event-id", `branch-guard-${Date.now()}`,
+      ]);
+      const { runPostAgentHook } = await import("../../src/spawn/post-agent-hook.js");
+      await runPostAgentHook(hookArgs, tracker);
+    } finally {
+      spawnSpy.mockRestore();
+      if (origDb !== undefined) process.env["STATS_DB_PATH"] = origDb;
+      else delete process.env["STATS_DB_PATH"];
+    }
+
+    // Every git call in stepBranchContaminationRecovery would have been
+    // recorded here, and the mock would have answered "proceed" to every
+    // guard check. Zero calls means the tracker gate suppressed the step
+    // entirely, not that the step ran and its own logic declined to act.
+    expect(gitCalls.length).toBe(0);
   });
 });
 

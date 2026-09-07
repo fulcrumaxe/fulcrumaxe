@@ -986,7 +986,10 @@ export async function runPostAgentHook(
     tracker.mark("team_log");
   }
 
-  await stepBranchContaminationRecovery(args);
+  if (!tracker.has("branch_contamination_recovery")) {
+    await stepBranchContaminationRecovery(args);
+    tracker.mark("branch_contamination_recovery");
+  }
 
   process.stdout.write("[post-agent-hook] Done.\n");
 }
