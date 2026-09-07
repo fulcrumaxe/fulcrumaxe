@@ -285,8 +285,17 @@ import sys
 path = sys.argv[1]
 with open(path) as f:
     text = f.read()
-marker = '          if [[ "$git_tracked_removed_this_pass" -ge "$gt_removal_cap" ]]; then\n'
-replacement = '          if [[ "$dry_run" == "false" && "$git_tracked_removed_this_pass" -ge "$gt_removal_cap" ]]; then\n'
+# D#1917 renamed the git-tracked-only gt_removal_cap / git_tracked_removed_this_pass
+# to step-neutral removal_cap / removed_this_pass, shared with Step 5's own cap
+# checks above this one in the file -- so the bare "if [[ ... ]]; then" line is no
+# longer unique to Step 6 (it now also appears verbatim, at other indent levels,
+# in Step 5's wiki-rescue preview, archive-then-prune, and clean-and-pushed
+# branches). Anchor on the Step 6 cap-check line together with the
+# "(git-tracked)" echo that immediately follows it -- that pairing is unique to
+# this one call site, so the mutation still targets exactly the un-hoisting this
+# proof exists to catch, not one of Step 5's cap checks.
+marker = '          if [[ "$removed_this_pass" -ge "$removal_cap" ]]; then\n            echo "  skipped-cap-reached (git-tracked): $(basename "$_gt_path_i")" >&2\n'
+replacement = '          if [[ "$dry_run" == "false" && "$removed_this_pass" -ge "$removal_cap" ]]; then\n            echo "  skipped-cap-reached (git-tracked): $(basename "$_gt_path_i")" >&2\n'
 assert text.count(marker) == 1, f"mutation-2 anchor not found exactly once (found {text.count(marker)}) -- source shape changed"
 text = text.replace(marker, replacement, 1)
 with open(path, "w") as f:

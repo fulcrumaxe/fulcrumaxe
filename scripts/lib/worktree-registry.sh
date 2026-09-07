@@ -34,7 +34,16 @@
 # opt-in, --dry-run's "would-remove" preview is capped by the same
 # WORKTREE_REAP_MAX_PER_PASS a real run enforces. See
 # scripts/reap-worktrees.sh's header for the full classification table.
-# Real removals are capped per pass (default 25, WORKTREE_REAP_MAX_PER_PASS).
+#
+# D#1917: WORKTREE_REAP_MAX_PER_PASS (default 25) bounds the TOTAL number of
+# directories a single reap pass may remove, counting Step 5 (the
+# no-registry-entry back-compat path, which runs unconditionally on every
+# live invocation) and Step 6 (git-tracked removal, opt-in only) together
+# against one shared counter. Step 5 used to be uncapped -- it is the path
+# that actually runs live (post-agent-hook.sh's reap-worktrees.sh --quiet
+# call never passes --enable-git-tracked-removal), so a cap that only
+# bounded Step 6 bounded a path nothing calls. See the D#1917 Discussion
+# for the measurement.
 #
 # A dry-run is not sufficient Gate 2 evidence for a change to this file's
 # rm -rf path (the :1273-class path guards, reachable only in the real,
@@ -831,11 +840,15 @@ _cmd_reap() {
     esac
   done
 
-  # D#2001 PR2 AC-13: real removals of git-tracked worktrees are capped per
-  # pass so a first real run cannot delete the whole eligible population in
-  # one action. Reporting (--dry-run) is uncapped -- it is not destructive.
-  local gt_removal_cap="${WORKTREE_REAP_MAX_PER_PASS:-25}"
-  local git_tracked_removed_this_pass=0
+  # D#2001 PR2 AC-13 / D#1917: removals are capped per pass so a single run
+  # cannot delete the whole eligible population in one action. `removal_cap`
+  # and `removed_this_pass` are shared across Step 5 (below) and Step 6 --
+  # one budget for the whole pass, not one per step, so charging Step 5
+  # first (it runs before Step 6) leaves Step 6 whatever remains. A
+  # --dry-run preview is charged the same as a real removal (D#2149), so a
+  # capped preview and a capped real run stop at the same candidate.
+  local removal_cap="${WORKTREE_REAP_MAX_PER_PASS:-25}"
+  local removed_this_pass=0
 
   local ttl_sec=$(( ttl_min * 60 ))
   local now_epoch
@@ -858,6 +871,11 @@ _cmd_reap() {
   local newly_orphaned=0
   local patches_archived=0
   local reaped=0
+  # D#1917: count of dirs Step 5 actually evaluated for removal (passed the
+  # registry-absence, git-tracked-absence and self-exclusion checks) --
+  # distinct from `reaped`, so a pass that found nothing to evaluate reports
+  # differently from a pass that evaluated candidates but capped all of them.
+  local step5_candidates=0
 
   # Build set of on-disk worktrees (names under .claude/worktrees/)
   local on_disk_ids=()
@@ -1055,6 +1073,7 @@ print('no')
 
     # Candidate: absent from registry AND absent from git worktree list.
     # Now evaluate safety predicates before any removal.
+    step5_candidates=$((step5_candidates + 1))
 
     # Condition 3: clean working tree (no uncommitted tracked changes)
     local status_output
@@ -1135,8 +1154,16 @@ PYEOF
       if [[ "$rescue_ok" == "ok" ]]; then
         # Predicate holds: discard ONLY the two named generated reports.
         if [[ "$dry_run" == "true" ]]; then
+          # D#1917: cap check hoisted above the preview (mirrors Step 6's
+          # D#2149 placement) so a --dry-run rescue preview never promises
+          # a removal the shared per-pass budget would refuse.
+          if [[ "$removed_this_pass" -ge "$removal_cap" ]]; then
+            echo "  skipped-cap-reached: $on_disk_id" >&2
+            continue
+          fi
           echo "  would-clean-generated-wiki: $on_disk_id (would check out 2 named reports, then remove)"
           reaped=$((reaped + 1))
+          removed_this_pass=$((removed_this_pass + 1))
           continue
         fi
 
@@ -1192,6 +1219,16 @@ PYEOF
         skip_reason="unpushed"
       fi
 
+      # D#1917: cap check hoisted above both the real archive-and-remove arm
+      # and the --dry-run preview arm below (mirrors Step 6's D#2149
+      # placement) -- a capped candidate must not be archived-but-kept (that
+      # would leave a patch file implying a removal that never happened), so
+      # this runs before the patch is written, not just before the rm -rf.
+      if [[ "$removed_this_pass" -ge "$removal_cap" ]]; then
+        echo "  skipped-cap-reached: $on_disk_id" >&2
+        continue
+      fi
+
       local uncommitted
       uncommitted=$(git -C "$abs_path" diff HEAD 2>/dev/null || true)
       local unpushed_log
@@ -1237,6 +1274,7 @@ PYEOF
           fi
 
           reaped=$((reaped + 1))
+          removed_this_pass=$((removed_this_pass + 1))
           echo "  pruned-after-archive (no-registry+${skip_reason}): $on_disk_id"
         else
           # Patch write failed (empty file) — do NOT remove the dir; preserve for safety.
@@ -1247,14 +1285,25 @@ PYEOF
         echo "  would-archive (no-registry+${skip_reason}): $on_disk_id"
         echo "  would-prune-after-archive (no-registry+${skip_reason}): $on_disk_id"
         reaped=$((reaped + 1))
+        removed_this_pass=$((removed_this_pass + 1))
       fi
       continue
     fi
 
     # All four conditions satisfied — safe to remove.
+    # D#1917: cap check hoisted above the --dry-run preview branch below
+    # (mirrors Step 6's D#2149 placement and the archive-then-prune check
+    # above) so a --dry-run preview never promises a removal the shared
+    # per-pass budget would refuse.
+    if [[ "$removed_this_pass" -ge "$removal_cap" ]]; then
+      echo "  skipped-cap-reached: $on_disk_id" >&2
+      continue
+    fi
+
     if [[ "$dry_run" == "true" ]]; then
       echo "  would-remove (no-registry+untracked+clean+pushed): $on_disk_id"
       reaped=$((reaped + 1))
+      removed_this_pass=$((removed_this_pass + 1))
       continue
     fi
 
@@ -1287,8 +1336,17 @@ PYEOF
     fi
 
     reaped=$((reaped + 1))
+    removed_this_pass=$((removed_this_pass + 1))
     echo "  discarded (no-registry+untracked): $on_disk_id"
   done
+
+  # D#1917: Step 5's candidate report -- distinguishes "found nothing to
+  # evaluate" (step5_candidates=0, e.g. every on-disk dir is still
+  # git-tracked and deferred to Step 6) from "evaluated candidates but the
+  # shared cap skipped some or all of them" (step5_candidates>0 with
+  # skipped-cap-reached lines above). Mirrors Step 6's own "enumerated="
+  # report below.
+  echo "step5-candidates=${step5_candidates} (on-disk dirs absent from registry and git worktree list, evaluated for removal)" >&2
 
   # ── Step 6: Enumeration + skip-reason report, now the git-tracked-removal
   #    handler (D#2001 PR1 added the report; PR2 adds the removal) ──────────
@@ -1612,11 +1670,12 @@ for line in sys.stdin:
           # branch (was below it, in the real-only arm) so a
           # --dry-run --enable-git-tracked-removal preview respects the
           # same per-pass cap a real run enforces, instead of promising
-          # unbounded removals. Applies to both arms --
-          # $git_tracked_removed_this_pass counts previewed and actually
-          # removed candidates alike, so a capped dry-run and a capped
+          # unbounded removals. Applies to both arms -- D#1917 made this
+          # counter and cap shared with Step 5 above (was git-tracked-only),
+          # so $removed_this_pass counts previewed and actually removed
+          # candidates from BOTH steps, and a capped dry-run and a capped
           # real run stop at the same candidate.
-          if [[ "$git_tracked_removed_this_pass" -ge "$gt_removal_cap" ]]; then
+          if [[ "$removed_this_pass" -ge "$removal_cap" ]]; then
             echo "  skipped-cap-reached (git-tracked): $(basename "$_gt_path_i")" >&2
             skip_git_tracked=$((skip_git_tracked + 1))
             continue
@@ -1625,7 +1684,7 @@ for line in sys.stdin:
           if [[ "$dry_run" == "true" ]]; then
             echo "  would-remove (git-tracked): $(basename "$_gt_path_i") (branch=${_gt_branch:-<detached>})"
             reaped=$((reaped + 1))
-            git_tracked_removed_this_pass=$((git_tracked_removed_this_pass + 1))
+            removed_this_pass=$((removed_this_pass + 1))
             continue
           fi
 
@@ -1649,7 +1708,7 @@ row = {
 print(json.dumps(row))
 " "$_gt_path_i" "$_gt_branch" "$_gt_audit_ts" >> "$_WTR_AUDIT_FILE"
             reaped=$((reaped + 1))
-            git_tracked_removed_this_pass=$((git_tracked_removed_this_pass + 1))
+            removed_this_pass=$((removed_this_pass + 1))
             echo "  removed (git-tracked): $(basename "$_gt_path_i")"
           else
             echo "  WARN: git worktree remove --force failed for $(basename "$_gt_path_i")" >&2
