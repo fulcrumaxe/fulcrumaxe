@@ -441,6 +441,248 @@ def test_c4_line_ceiling_also_refuses(engine, state_dir):
 
 
 # ---------------------------------------------------------------------------
+# D#2454 PR 2 -- a re-rooted/disjoint marker refuses under its own name
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def reroot_engine(tmp_path) -> dict:
+    """Models the REAL D#2454 defect shape, not merely 'two unrelated
+    repos': the marker is a commit whose tree survived whole into a LATER,
+    separately-rooted history's own parentless root (a GitHub squash-merge
+    onto an empty base does exactly this) -- so `git diff --name-status
+    marker root` has zero D entries even though `git merge-base` is empty.
+
+        marker-line:   marker (backend/shared.py = "shared v1")
+        reroot-plane:  root R (#99)  -- backend/shared.py = "shared v1"
+                                         backend/extra.py  = "brand new"  (superset, zero D)
+                       tip C  (#100) -- backend/shared.py = "shared v2"
+
+    refs/synced/code-plane is set to `marker`, wholly disjoint from
+    reroot-plane (no shared commit at all)."""
+    repo = tmp_path / "reroot_engine"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "engine@example.com")
+    _git(repo, "config", "user.name", "Engine")
+
+    # The engine's own copy of backend/shared.py matches the MARKER's
+    # content exactly (both "shared v1") -- the realistic case: the marker
+    # records what the engine already has, so this path clean-applies once
+    # the reroot refusal is out of the way, rather than manufacturing an
+    # unrelated three-way conflict that has nothing to do with this PR.
+    _commit(
+        repo,
+        "engine seed",
+        {"keep/engine-only.txt": "engine only, never exported\n", "backend/shared.py": "shared v1\n"},
+    )
+    engine_main = _git(repo, "rev-parse", "HEAD").strip()
+
+    _git(repo, "checkout", "-q", "--orphan", "marker-line")
+    _git(repo, "rm", "-rq", "--cached", ".")
+    (repo / "keep/engine-only.txt").unlink()
+    (repo / "backend/shared.py").unlink()
+    marker_sha = _commit(repo, "marker seed", {"backend/shared.py": "shared v1\n"})
+
+    _git(repo, "checkout", "-q", "--orphan", "reroot-plane")
+    _git(repo, "rm", "-rq", "--cached", ".")
+    (repo / "backend/shared.py").unlink()
+    root_sha = _commit(
+        repo,
+        "squash merge (#99)",
+        {"backend/shared.py": "shared v1\n", "backend/extra.py": "brand new\n"},
+    )
+    tip_sha = _commit(repo, "more work (#100)", {"backend/shared.py": "shared v2\n"})
+
+    _git(repo, "checkout", "-q", "main")
+    _git(repo, "update-ref", "refs/synced/code-plane", marker_sha)
+
+    return {
+        "repo": repo,
+        "main": engine_main,
+        "marker_sha": marker_sha,
+        "root_sha": root_sha,
+        "tip_sha": tip_sha,
+    }
+
+
+def _classify_reroot(reroot_engine: dict, **overrides):
+    """Same shape as `_classify` above, but defaulting remote_ref to the
+    reroot_engine fixture's disjoint 'reroot-plane' branch instead of
+    'plane'."""
+    import changeset
+    import report as report_mod
+
+    def _prs_for_commit(sha: str) -> list[int]:
+        subject = changeset.commit_subject(sha, repo_dir=reroot_engine["repo"])
+        hint = changeset.extract_pr_number(subject)
+        return [hint] if hint is not None else []
+
+    kwargs = dict(
+        marker="refs/synced/code-plane",
+        remote="code-plane",
+        remote_branch="main",
+        repo_dir=reroot_engine["repo"],
+        code_repo_slug="example/code",
+        max_files=50,
+        max_lines=500,
+        do_fetch=False,
+        remote_ref="reroot-plane",
+        local_ref="main",
+        resolve_trust_allowlist=lambda: {"trusted"},
+        resolve_prs_for_commit=_prs_for_commit,
+        resolve_pr_author=lambda pr: "trusted",
+        is_trusted_author=lambda login, allowlist: login in allowlist,
+        resolve_surface_patterns=lambda: SURFACE_PATTERNS,
+        resolve_sensitive_prefixes=lambda: SENSITIVE_PREFIXES,
+    )
+    kwargs.update(overrides)
+    return report_mod.classify_report(**kwargs)
+
+
+def test_reroot_marker_refuses_named_reroot_not_ceiling(reroot_engine):
+    """Items 7-9: the refusal names re-rooted/unrelated history (never
+    'ceiling'), names both commits, states no merge-base exists, and
+    additionally names the absorbing root commit."""
+    result = _classify_reroot(reroot_engine)
+
+    assert result["refused"] is True, result
+    reason = result["refusal_reason"]
+    assert "ceiling" not in reason, reason
+    assert "re-root" in reason or "re-rooted" in reason, reason
+    assert reroot_engine["marker_sha"] in reason, reason
+    assert reroot_engine["tip_sha"] in reason, reason
+    assert "merge-base" in reason.lower(), reason
+    assert "no merge-base exists" in reason.lower(), reason
+    assert reroot_engine["root_sha"] in reason, reason
+    assert "disjoint_marker_bypass" not in result
+
+
+def test_reroot_marker_names_a_genuinely_unrelated_history_differently(reroot_engine):
+    """The counterpart to the re-root case: a marker that shares NO content
+    with remote_ref's root (not even by coincidence) must still refuse --
+    but the message must not claim a re-root it cannot support."""
+    # Branching from "main" here (the fixture leaves the repo checked out
+    # there), so the only tracked file to clear is main's own.
+    _git(reroot_engine["repo"], "checkout", "-q", "--orphan", "wholly-unrelated")
+    _git(reroot_engine["repo"], "rm", "-rq", "--cached", ".")
+    (reroot_engine["repo"] / "keep/engine-only.txt").unlink()
+    (reroot_engine["repo"] / "backend/shared.py").unlink()
+    _commit(reroot_engine["repo"], "totally unrelated (#7)", {"nothing/alike.txt": "z\n"})
+    _git(reroot_engine["repo"], "checkout", "-q", "main")
+
+    result = _classify_reroot(reroot_engine, remote_ref="wholly-unrelated")
+    assert result["refused"] is True, result
+    reason = result["refusal_reason"]
+    assert "ceiling" not in reason, reason
+    assert "re-root" in reason or "re-rooted" in reason, reason
+    assert "unrelated history" in reason.lower(), reason
+    assert reroot_engine["root_sha"] not in reason, reason
+
+
+def test_healthy_marker_still_reaches_ceiling_check_unchanged(engine, state_dir):
+    """Item 13: a marker that IS a proper ancestor of remote_ref must pass
+    straight through the shared-history check -- proved directly against
+    changeset.marker_is_ancestor, and against the ceiling refusal still
+    firing (and still saying 'ceiling', never 're-root') on this fixture."""
+    import changeset
+
+    assert changeset.marker_is_ancestor("refs/synced/code-plane", "plane", repo_dir=engine["repo"]) is True
+
+    result = _classify(engine, max_files=1)
+    assert result["refused"] is True, result
+    assert "ceiling" in result["refusal_reason"], result["refusal_reason"]
+    assert "re-root" not in result["refusal_reason"], result["refusal_reason"]
+    assert "disjoint_marker_bypass" not in result
+
+
+def test_allow_disjoint_marker_without_dry_run_refuses_before_classify_ever_runs(reroot_engine, state_dir):
+    """Item 11, second half: outside a dry run, --allow-disjoint-marker is
+    refused before classify() is ever called -- no remote contact, no
+    bypass record, no failure-counter write."""
+    calls = []
+
+    def _counting_classify(**kw):
+        calls.append(kw)
+        return _classify_reroot(reroot_engine, **{k: v for k, v in kw.items() if k in _CLASSIFY_KEYS | {"allow_disjoint_marker"}})
+
+    rec = Recorder()
+    result = apply_inbound.apply_inbound(
+        repo_dir=reroot_engine["repo"],
+        state_dir=state_dir,
+        engine_remote="origin",
+        engine_repo_slug="example/engine",
+        code_repo_slug="example/code",
+        local_ref="main",
+        max_files=50,
+        max_lines=500,
+        do_fetch=False,
+        remote_ref="reroot-plane",
+        classify=_counting_classify,
+        push_branch=rec.push,
+        open_pr=rec.open_pr,
+        dry_run=False,
+        allow_disjoint_marker=True,
+    )
+
+    assert result["result"] == apply_inbound.RESULT_REFUSED, result
+    assert "--dry-run" in result["reason"], result["reason"]
+    assert calls == [], "classify() must never run when the flag/dry-run pairing is invalid"
+    assert rec.pushes == [] and rec.prs == []
+    assert not apply_inbound.state_path(state_dir).exists()
+    assert not apply_inbound.disjoint_bypass_log_path(state_dir).exists()
+
+
+def test_allow_disjoint_marker_with_dry_run_proceeds_and_writes_bypass_record(reroot_engine, state_dir):
+    """Items 11 (first half) and 12: with both flags, the tool proceeds past
+    the re-root refusal, produces its report (this fixture's tiny change set
+    clears the unchanged 50-file/500-line ceiling too), and writes exactly
+    one bypass record naming both SHAs."""
+    rec = Recorder()
+    result = apply_inbound.apply_inbound(
+        repo_dir=reroot_engine["repo"],
+        state_dir=state_dir,
+        engine_remote="origin",
+        engine_repo_slug="example/engine",
+        code_repo_slug="example/code",
+        local_ref="main",
+        max_files=50,
+        max_lines=500,
+        do_fetch=False,
+        remote_ref="reroot-plane",
+        classify=lambda **kw: _classify_reroot(
+            reroot_engine, **{k: v for k, v in kw.items() if k in _CLASSIFY_KEYS | {"allow_disjoint_marker"}}
+        ),
+        push_branch=rec.push,
+        open_pr=rec.open_pr,
+        dry_run=True,
+        allow_disjoint_marker=True,
+    )
+
+    assert result["result"] == "dry-run", result
+    assert rec.pushes == [] and rec.prs == []
+    assert not apply_inbound.state_path(state_dir).exists(), "dry-run must still write no operational state"
+
+    bypass_log = apply_inbound.disjoint_bypass_log_path(state_dir)
+    assert bypass_log.exists(), "the flag was used but wrote no record"
+    lines = [line for line in bypass_log.read_text().splitlines() if line.strip()]
+    assert len(lines) == 1, lines
+    record = json.loads(lines[0])
+    assert record["marker_sha"] == reroot_engine["marker_sha"], record
+    assert record["remote_sha"] == reroot_engine["tip_sha"], record
+    assert "re-root" in record["bypassed_reason"] or "re-rooted" in record["bypassed_reason"], record
+
+
+def test_allow_disjoint_marker_writes_no_record_when_marker_is_healthy(engine, state_dir):
+    """The flag is a no-op when there is nothing to bypass -- must not write
+    a record claiming a bypass that never happened."""
+    rec = Recorder()
+    result = _run(engine, state_dir, rec, dry_run=True, allow_disjoint_marker=True)
+    assert result["result"] != apply_inbound.RESULT_REFUSED or "re-root" not in result.get("reason", ""), result
+    assert not apply_inbound.disjoint_bypass_log_path(state_dir).exists()
+
+
+# ---------------------------------------------------------------------------
 # C5 -- the failure counter disables, and a success resets it
 # ---------------------------------------------------------------------------
 

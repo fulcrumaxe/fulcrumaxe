@@ -65,6 +65,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 _INBOUND_DIR = Path(__file__).resolve().parent
@@ -216,6 +217,40 @@ def write_failure_count(state_dir: Path, count: int) -> None:
 
 def read_pending(state_dir: Path) -> dict:
     return read_state(state_dir)["pending"]
+
+
+#: A separate, append-only file from STATE_FILE_NAME above -- deliberately
+#: not folded into the failure-counter/pending state, because a bypass
+#: record is a log of what an operator did, not state the channel itself
+#: reasons about on the next run. Kept apart from write_state/write_state's
+#: "come out byte-identical" contract for the SAME reason a real apply's own
+#: writes are (D#2454 PR 1's --dry-run promise): that promise is about the
+#: channel's own decision state, not about the record this flag's own use
+#: is required to leave (item 12) -- a `--dry-run` run that used the flag is
+#: still required to prove it did, which is the whole point of the record.
+DISJOINT_BYPASS_LOG_NAME = "engine-sync-inbound-disjoint-bypass.jsonl"
+
+
+def disjoint_bypass_log_path(state_dir: Path) -> Path:
+    return state_dir / DISJOINT_BYPASS_LOG_NAME
+
+
+def write_disjoint_bypass_record(state_dir: Path, bypass: dict) -> None:
+    """Append one line naming what --allow-disjoint-marker bypassed and both
+    SHAs (D#2454 PR 2 item 12). Called once per run that actually exercised
+    the flag -- never when the flag was passed but the marker turned out to
+    be a healthy ancestor, since nothing was bypassed in that case."""
+    state_dir.mkdir(parents=True, exist_ok=True)
+    record = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "marker": bypass.get("marker"),
+        "marker_sha": bypass.get("marker_sha"),
+        "remote_ref": bypass.get("remote_ref"),
+        "remote_sha": bypass.get("remote_sha"),
+        "bypassed_reason": bypass.get("bypassed_reason"),
+    }
+    with disjoint_bypass_log_path(state_dir).open("a") as f:
+        f.write(json.dumps(record, sort_keys=True) + "\n")
 
 
 # ---------------------------------------------------------------------------
@@ -752,6 +787,7 @@ def apply_inbound(
     do_fetch: bool = True,
     remote_ref: str | None = None,
     dry_run: bool = False,
+    allow_disjoint_marker: bool = False,
     classify=None,
     push_branch=None,
     open_pr=None,
@@ -761,7 +797,30 @@ def apply_inbound(
 
     `classify`, `push_branch` and `open_pr` are injectable so tests can drive
     the decision logic against scratch repositories without a network. They
-    default to the live implementations."""
+    default to the live implementations.
+
+    `allow_disjoint_marker` (D#2454 PR 2) is diagnostic-only: report.py
+    refuses a marker that is not an ancestor of remote_ref by naming the
+    re-root/unrelated-history reason (never "ceiling"), and this flag can
+    make report.py proceed past that refusal to show the change set anyway.
+    It is accepted ONLY together with `dry_run` -- outside a dry run this
+    would be an escape hatch that lets a disjoint marker's misleading
+    change set reach the write-set/apply machinery below, which is exactly
+    the failure condition D#2454 rules out. Enforced here, first, before
+    the failure counter is even read: a bad flag combination is a usage
+    error, not an operational failure, so it costs no strike."""
+    if allow_disjoint_marker and not dry_run:
+        return {
+            "result": RESULT_REFUSED,
+            "reason": (
+                "--allow-disjoint-marker is diagnostic-only and is accepted only together with "
+                "--dry-run; refusing a real run rather than let a disjoint marker's change set "
+                "reach the apply machinery. To actually adopt content from a re-rooted marker, "
+                "use the re-root bridge (--allow-reroot-from) once available -- that repairs the "
+                "enumeration itself rather than bypassing the refusal about it."
+            ),
+        }
+
     classify = classify or report_mod.classify_report
     push_branch = push_branch or _push_branch
     open_pr = open_pr or _open_pr
@@ -801,6 +860,7 @@ def apply_inbound(
             push_branch=push_branch,
             open_pr=open_pr,
             failures=failures,
+            allow_disjoint_marker=allow_disjoint_marker,
             **classify_kwargs,
         )
     except ApplyRefused as exc:
@@ -873,6 +933,14 @@ def _run(
         },
         **classify_kwargs,
     )
+
+    # D#2454 PR 2 item 12: every use of --allow-disjoint-marker writes a
+    # record naming what was bypassed and both SHAs -- present here only
+    # when the marker actually WAS disjoint and the flag actually was what
+    # got the run past that refusal (never when the flag was merely passed
+    # but the marker turned out to be a healthy ancestor).
+    if report.get("disjoint_marker_bypass"):
+        write_disjoint_bypass_record(state_dir, report["disjoint_marker_bypass"])
 
     if report.get("refused"):
         raise ApplyRefused(f"classify report refused: {report.get('refusal_reason')}")
@@ -1167,6 +1235,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="print the write set and stop before building anything. NOT evidence about a real run: "
         "it returns before every line that writes.",
     )
+    parser.add_argument(
+        "--allow-disjoint-marker",
+        action="store_true",
+        help="diagnostic-only (D#2454 PR 2): proceed past the re-rooted/unrelated-marker refusal "
+        "to see the change set it would otherwise refuse before printing. Accepted ONLY together "
+        "with --dry-run -- a real run with this flag is refused before touching the remote.",
+    )
     return parser
 
 
@@ -1199,6 +1274,7 @@ def main(argv: list[str] | None = None) -> int:
         max_lines=args.max_lines,
         do_fetch=not args.no_fetch,
         dry_run=args.dry_run,
+        allow_disjoint_marker=args.allow_disjoint_marker,
     )
     print(json.dumps(result, indent=2, sort_keys=True))
     if result["result"] in (RESULT_APPLIED, RESULT_NOTHING, "dry-run"):

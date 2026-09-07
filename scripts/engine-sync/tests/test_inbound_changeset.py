@@ -197,6 +197,66 @@ def test_resolve_commit_present_and_absent(scratch_repo):
     assert changeset.resolve_commit("0" * 40, repo_dir=scratch_repo) is None
 
 
+# ---------------------------------------------------------------------------
+# D#2454 PR 2 -- shared-history check (marker_is_ancestor / merge_base)
+# ---------------------------------------------------------------------------
+
+
+def _orphan_root(repo: Path, branch: str, message: str, files: dict[str, str]) -> str:
+    """A second, disjoint root commit in the same scratch repo -- models the
+    real marker/remote-tip pair, which share no history at all."""
+    _git(repo, "checkout", "-q", "--orphan", branch)
+    _git(repo, "rm", "-rq", "--cached", ".")
+    for p in list(repo.glob("*")):
+        if p.name != ".git":
+            if p.is_dir():
+                for sub in p.rglob("*"):
+                    if sub.is_file():
+                        sub.unlink()
+            else:
+                p.unlink()
+    return _commit(repo, message, files)
+
+
+def test_marker_is_ancestor_true_for_healthy_marker(scratch_repo):
+    seed = _commit(scratch_repo, "seed", {"a.txt": "1\n"})
+    _commit(scratch_repo, "add b (#1)", {"b.txt": "1\n"})
+    assert changeset.marker_is_ancestor(seed, "HEAD", repo_dir=scratch_repo) is True
+
+
+def test_marker_is_ancestor_false_for_disjoint_history(scratch_repo):
+    seed = _commit(scratch_repo, "seed", {"a.txt": "1\n"})
+    _orphan_root(scratch_repo, "unrelated", "unrelated root", {"z.txt": "z\n"})
+    assert changeset.marker_is_ancestor(seed, "unrelated", repo_dir=scratch_repo) is False
+
+
+def test_marker_is_ancestor_false_when_marker_diverged_from_shared_ancestor(scratch_repo):
+    """Shared history is not sufficient -- the marker must be REACHABLE from
+    remote_ref. A common ancestor with the marker off on its own branch
+    still collapses `A..B` to 'all of B' the same way a wholly disjoint pair
+    does, so this must refuse identically."""
+    common = _commit(scratch_repo, "common ancestor", {"a.txt": "1\n"})
+    _git(scratch_repo, "checkout", "-q", "-b", "marker-branch")
+    marker = _commit(scratch_repo, "marker's own commit (#9)", {"marker-only.txt": "m\n"})
+    _git(scratch_repo, "checkout", "-q", "main")
+    _commit(scratch_repo, "main's own commit (#1)", {"main-only.txt": "n\n"})
+
+    assert changeset.merge_base(marker, "main", repo_dir=scratch_repo) == common
+    assert changeset.marker_is_ancestor(marker, "main", repo_dir=scratch_repo) is False
+
+
+def test_merge_base_present_for_healthy_history(scratch_repo):
+    seed = _commit(scratch_repo, "seed", {"a.txt": "1\n"})
+    _commit(scratch_repo, "add b (#1)", {"b.txt": "1\n"})
+    assert changeset.merge_base(seed, "HEAD", repo_dir=scratch_repo) == seed
+
+
+def test_merge_base_none_for_disjoint_history(scratch_repo):
+    seed = _commit(scratch_repo, "seed", {"a.txt": "1\n"})
+    _orphan_root(scratch_repo, "unrelated", "unrelated root", {"z.txt": "z\n"})
+    assert changeset.merge_base(seed, "unrelated", repo_dir=scratch_repo) is None
+
+
 def test_never_calls_two_tree_diff(scratch_repo, tmp_path, monkeypatch):
     """Tree-diff-trap regression guard: a fake `git` earlier on PATH fails
     loudly if invoked with `diff <ref-a> <ref-b>` OR `diff-tree <ref-a>

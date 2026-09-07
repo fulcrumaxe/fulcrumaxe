@@ -133,6 +133,109 @@ def _is_trusted_author(login, allowlist):
     return is_trusted_author(login, allowlist)
 
 
+def _find_absorbing_root(marker: str, remote_ref: str, repo_dir: Path) -> str | None:
+    """When *marker* and *remote_ref* share no history at all, look for the
+    shape this channel has actually hit (D#2454): a single root commit of
+    *remote_ref*'s own history whose tree already contains every path the
+    marker's tree has. `git diff --name-status marker root` with zero `D`
+    entries means the marker's CONTENT survived into that commit whole --
+    typically a GitHub squash-merge landed on an empty base, which discards
+    commit identity (no parent, no shared history) but not the tree.
+
+    Returns the absorbing root's sha, or None when remote_ref does not have
+    exactly one root, or that root does not pass the zero-D test (a
+    genuinely unrelated history, not a re-root).
+
+    This is an INTRA-plane comparison -- marker and remote_ref are both
+    code-plane refs -- not the cross-plane `git diff <a> <b>` that
+    changeset.py's module docstring forbids for change-set ENUMERATION.
+    That prohibition is about comparing one plane's tip against the
+    other's, where the export filter guarantees thousands of manufactured
+    differences no amount of D-counting could explain away. A same-plane
+    candidate root either passes zero-D or it doesn't; there is no filter
+    here to fool it, and the result is used only to word a refusal message
+    -- never to enumerate or apply anything, and it runs at most once per
+    call, only when the shared-history check has already decided to
+    refuse."""
+    try:
+        roots_out = subprocess.run(
+            ["git", "rev-list", "--max-parents=0", remote_ref],
+            cwd=str(repo_dir),
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except Exception:  # noqa: BLE001 -- diagnostic best-effort, never blocks the refusal itself
+        return None
+    if roots_out.returncode != 0:
+        return None
+    roots = [line for line in roots_out.stdout.split() if line.strip()]
+    if len(roots) != 1:
+        return None
+    root = roots[0]
+    diff = subprocess.run(
+        ["git", "diff", "--name-status", marker, root],
+        cwd=str(repo_dir),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if diff.returncode != 0:
+        return None
+    statuses = {line.split("\t", 1)[0] for line in diff.stdout.splitlines() if line.strip()}
+    if "D" in statuses:
+        return None
+    return root
+
+
+def _reroot_refusal_reason(
+    *,
+    marker: str,
+    marker_sha: str | None,
+    remote_ref: str,
+    remote_sha: str | None,
+    merge_base_sha: str | None,
+    reroot_sha: str | None,
+) -> str:
+    """The refusal string for a disjoint/re-rooted marker (D#2454 PR 2,
+    items 7-9). Deliberately never contains the word "ceiling" -- it is a
+    different refusal, for a different reason, and must read as one."""
+    marker_desc = f"{marker!r} ({marker_sha})" if marker_sha else f"{marker!r} (unresolved)"
+    remote_desc = f"{remote_ref!r} ({remote_sha})" if remote_sha else f"{remote_ref!r} (unresolved)"
+    reason = f"marker {marker_desc} is not an ancestor of {remote_desc}"
+    if merge_base_sha is None:
+        reason += f" -- no merge-base exists between {marker_sha} and {remote_sha}"
+    else:
+        reason += (
+            f" -- their merge-base is {merge_base_sha}, but the marker is not reachable from "
+            f"{remote_ref!r}"
+        )
+    reason += (
+        "; the commit-range walk this tool relies on (`git rev-list marker..remote`) silently "
+        "degenerates to 'every commit reachable from remote' when this happens, including "
+        "remote's own parentless root, which reports its whole tree as one giant addition"
+    )
+    if reroot_sha:
+        reason += (
+            f". This is a RE-ROOT, not merely unrelated history: {marker!r}'s lineage was "
+            f"absorbed by a commit with no parent at the root of {remote_ref!r}'s own history "
+            f"({reroot_sha}) -- `git diff --name-status {marker_sha} {reroot_sha}` has zero D "
+            f"entries, so the marker's CONTENT is present in {reroot_sha} whole; only its COMMIT "
+            "identity is unreachable. Re-pointing the marker at that commit is not the fix (it "
+            "would permanently stop re-enumerating every path unique to the marker's own "
+            "lineage -- see D#2454 Q1); use the re-root bridge (--allow-reroot-from) once "
+            "available, or pass --allow-disjoint-marker together with --dry-run to inspect the "
+            "disjoint enumeration without adopting any of it"
+        )
+    else:
+        reason += (
+            ". No re-rooting shape was detected (remote_ref does not have exactly one root, or "
+            "its root does not contain the marker's content) -- this looks like genuinely "
+            "unrelated history, not a re-root"
+        )
+    return "re-rooted or unrelated marker history: " + reason
+
+
 def classify_report(
     *,
     marker: str,
@@ -153,6 +256,7 @@ def classify_report(
     resolve_prs_for_commit=None,
     extra_paths: dict | None = None,
     known_commit_trust: dict | None = None,
+    allow_disjoint_marker: bool = False,
 ) -> dict:
     """The full pipeline. Injectable seams (resolve_trust_allowlist,
     resolve_pr_author, is_trusted_author, resolve_surface_patterns,
@@ -162,6 +266,16 @@ def classify_report(
     a real open-source/MANIFEST.md on disk. `remote_ref` overrides the
     `{remote}/{remote_branch}` join for tests that model "the code plane's
     tip" as a plain local branch rather than a configured git remote.
+
+    `allow_disjoint_marker` is diagnostic-only (D#2454 PR 2): when *marker*
+    is not an ancestor of *remote_ref*, the normal behaviour is to refuse
+    naming the re-root/unrelated-history reason (see the shared-history
+    check below) rather than let the enumeration silently degenerate to
+    "all of remote_ref". This flag proceeds past that refusal so the
+    caller can still see what the (misleadingly large) change set looks
+    like -- it never widens what gets classified as writable, and this
+    function never writes anything regardless of it. The pairing with
+    apply_inbound.py's `--dry-run` is enforced by that caller, not here.
 
     `local_ref` is what "the engine's own copy" means when hash-classifying
     -- it defaults to `main`, not `HEAD`, specifically so that running this
@@ -199,6 +313,60 @@ def classify_report(
     if do_fetch:
         changeset.ensure_remote_fetched(remote, remote_branch, repo_dir=repo_dir)
 
+    # --- Shared-history check: `list_commits`'s `A..B` walk (inside
+    # build_changeset below) silently assumes marker is an ancestor of
+    # remote_ref. When it isn't, `A..B` collapses to "all of remote_ref",
+    # including remote_ref's own parentless root -- whose --name-status
+    # against the empty tree reports its whole tree as one giant addition
+    # (D#2454). Checked BEFORE build_changeset, both so the refusal is cheap
+    # in the common (healthy) case -- item 13 -- and so a genuinely disjoint
+    # marker never pays for the expensive per-commit walk unless an operator
+    # explicitly asked to see it via allow_disjoint_marker. ---
+    disjoint_bypass: dict | None = None
+    if not changeset.marker_is_ancestor(marker, remote_ref, repo_dir=repo_dir):
+        marker_sha = changeset.resolve_commit(marker, repo_dir=repo_dir)
+        remote_sha = changeset.resolve_commit(remote_ref, repo_dir=repo_dir)
+        merge_base_sha = changeset.merge_base(marker, remote_ref, repo_dir=repo_dir)
+        reroot_sha = None
+        if merge_base_sha is None:
+            reroot_sha = _find_absorbing_root(marker, remote_ref, repo_dir=repo_dir)
+        reroot_reason = _reroot_refusal_reason(
+            marker=marker,
+            marker_sha=marker_sha,
+            remote_ref=remote_ref,
+            remote_sha=remote_sha,
+            merge_base_sha=merge_base_sha,
+            reroot_sha=reroot_sha,
+        )
+        if not allow_disjoint_marker:
+            return {
+                "marker": marker,
+                "remote_ref": remote_ref,
+                "refused": True,
+                "refusal_reason": reroot_reason,
+            }
+        # --allow-disjoint-marker: diagnostic-only escape (D#2454 PR 2). This
+        # function does not itself know about --dry-run -- report.py never
+        # writes anything regardless of the flag (see module docstring); the
+        # pairing with --dry-run is enforced by apply_inbound.py, the only
+        # caller that can actually write. Proceeds past the refusal so the
+        # operator sees the (misleadingly large) change set the marker
+        # actually produces; every other check below, ceiling included,
+        # still runs completely unchanged.
+        disjoint_bypass = {
+            "used": True,
+            "marker": marker,
+            "marker_sha": marker_sha,
+            "remote_ref": remote_ref,
+            "remote_sha": remote_sha,
+            "bypassed_reason": reroot_reason,
+        }
+
+    def _with_bypass(d: dict) -> dict:
+        if disjoint_bypass is not None:
+            d["disjoint_marker_bypass"] = disjoint_bypass
+        return d
+
     cs = changeset.build_changeset(marker, remote_ref, repo_dir=repo_dir)
 
     # --- Ceiling check: a change set this large, from commit enumeration
@@ -206,7 +374,7 @@ def classify_report(
     # is badly stale) -- refuse rather than print a report nobody asked for
     # at this size. ---
     if cs["gated_path_count"] > max_files or cs["total_insertions"] + cs["total_deletion_lines"] > max_lines:
-        return {
+        return _with_bypass({
             "marker": marker,
             "remote_ref": remote_ref,
             "refused": True,
@@ -223,7 +391,7 @@ def classify_report(
             "commit_count": cs["commit_count"],
             "gated_path_count": cs["gated_path_count"],
             "files_changed_count": cs["files_changed_count"],
-        }
+        })
 
     # --- Deletion-refusal check: the tree-diff trap this whole module
     # exists to avoid. Commit enumeration cannot manufacture a phantom
@@ -248,7 +416,7 @@ def classify_report(
             if engine_exists and not in_surface:
                 unsafe_deletions.append(remote_path)
         if unsafe_deletions:
-            return {
+            return _with_bypass({
                 "marker": marker,
                 "remote_ref": remote_ref,
                 "refused": True,
@@ -259,7 +427,7 @@ def classify_report(
                 "commit_count": cs["commit_count"],
                 "gated_path_count": cs["gated_path_count"],
                 "files_changed_count": cs["files_changed_count"],
-            }
+            })
 
     trust_allowlist = resolve_trust_allowlist()
 
@@ -446,7 +614,7 @@ def classify_report(
         if remote_path in classifications:
             classifications[remote_path]["carried_forward"] = True
 
-    return {
+    return _with_bypass({
         "marker": marker,
         "remote_ref": remote_ref,
         "refused": False,
@@ -458,7 +626,7 @@ def classify_report(
         "file_deletions": cs["file_deletions"],
         "classifications": classifications,
         "buckets": {k: sorted(v) for k, v in buckets.items()},
-    }
+    })
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -477,6 +645,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="what 'the engine's own copy' means when hash-classifying (default: main, not HEAD -- "
         "running from a feature branch must not silently change what gets reported)",
     )
+    parser.add_argument(
+        "--allow-disjoint-marker",
+        action="store_true",
+        help="diagnostic-only (D#2454 PR 2): proceed past the re-rooted/unrelated-marker refusal "
+        "and print the change set anyway, instead of refusing under that name. This tool never "
+        "writes anything regardless of this flag; the pairing with --dry-run that "
+        "apply_inbound.py enforces does not apply here.",
+    )
     return parser
 
 
@@ -494,6 +670,7 @@ def main(argv: list[str] | None = None) -> int:
             max_lines=args.max_lines,
             do_fetch=not args.no_fetch,
             local_ref=args.local_ref,
+            allow_disjoint_marker=args.allow_disjoint_marker,
         )
     except changeset.GitError as exc:
         # Fail closed, but readably: an operator (or the loop) reading this
