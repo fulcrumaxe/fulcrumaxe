@@ -10,17 +10,54 @@
 #   consecutive_failures  how many runs in a row have come back stale or
 #                         undecidable without a genuine sync in between
 #   halt                  true once that count has reached the threshold
-#   withheld_debt         how many paths the apply step has classified but
-#                         deliberately not written, and still owes
+#   withheld_debt         how many paths the code plane has that the
+#                         engine does not, among paths this channel has
+#                         classified -- null when it could not be measured
+#   withheld_debt_error   why withheld_debt is null (absent when it is not)
 #
 # `withheld_debt` is reported here because the marker cannot express it. The
 # marker says which commits the channel has ruled on; it does not say the
-# engine took the content, and those differ by exactly the withheld set. A
-# status of in-sync with a non-zero debt is the honest reading of "the channel
-# is keeping up, and N paths are waiting on a human" -- without this field the
-# first half of that sentence is all anyone ever sees. It does NOT feed the
-# halt: the debt is cleared by people, not by the sync, so halting the loop
-# over it would stop all work for a condition the loop cannot fix.
+# engine took the content -- and those differ by more than the withheld set.
+# A status of in-sync with a non-zero debt is the honest reading of "the
+# channel is keeping up, and N paths have not actually landed on the engine"
+# -- without this field the first half of that sentence is all anyone ever
+# sees. It does NOT feed the halt: the debt is cleared by people, not by the
+# sync, so halting the loop over it would stop all work for a condition the
+# loop cannot fix.
+#
+# The count is two things added together, because a path can be missing
+# from the engine for either reason and the reader does not care which:
+#
+#   * WITHHELD -- apply_inbound.py classified it and deliberately did not
+#     write it (untrusted provenance, a sensitive prefix, a human-approval
+#     gate, ...). Read from its own state file, engine-sync-inbound-apply.json.
+#   * APPLIED BUT UNMERGED -- apply_inbound.py wrote it to an
+#     `engine-sync/inbound-*` branch and opened a PR, and nobody has merged
+#     it yet. This half used to be invisible: the withheld-only count read
+#     `in-sync` / `withheld_debt: 0` while nine such paths sat on an open,
+#     unmerged PR (D#2445 -- found by the security re-review of the change
+#     that added this field, after both review gates had already passed on
+#     it). Computed fresh every run by unmerged.py, which lists the engine's
+#     own open `engine-sync/inbound-*` branches and diffs each one,
+#     merge-base-relative, against `local_ref` -- see its module docstring
+#     for why that is not the two-tree diff changeset.py's own docstring
+#     warns against.
+#
+# What it does NOT see, so a reader does not assume more than this measures:
+# code-plane content this channel has never classified at all (nothing has
+# run apply_inbound.py against it yet -- see D#2445's PR description for
+# where that stands), and a sync PR that was closed WITHOUT merging once its
+# branch has been deleted. Both of those read as "nothing owed" here, same
+# as a genuinely clean channel -- narrower than "the engine is in sync",
+# which this field has never claimed to prove on its own.
+#
+# `withheld_debt_error` distinguishes WHY a null count could not be
+# measured, so "never run" and "corrupt state file" are not the same signal
+# any more (D#2445 item 7):
+#   state-file-absent          engine-sync-inbound-apply.json does not exist
+#   state-file-corrupt         it exists but is not the JSON shape expected
+#   engine-check-unavailable   the state file was fine, but unmerged.py could
+#                              not complete (network, an unresolvable ref, ...)
 #
 # The exit code still mirrors staleness.sh's (0 in-sync / 1 stale /
 # 2 undecidable), so a caller that only wants the status can keep reading
@@ -83,6 +120,12 @@
 #   ENGINE_SYNC_NOTIFY_CMD        a command run with the status JSON as its
 #                                 only argument. Default: append one line to
 #                                 $STATE_DIR/engine-sync-inbound-notifications.log
+#   ENGINE_SYNC_ENGINE_REMOTE     remote to check for open engine-sync/inbound-*
+#                                 branches, default "origin" (apply_inbound.py's
+#                                 own --engine-remote default)
+#   ENGINE_SYNC_LOCAL_REF         what "the engine's own copy" means for the
+#                                 unmerged half of withheld_debt, default "main"
+#                                 (apply_inbound.py's own --local-ref default)
 
 set -uo pipefail
 
@@ -189,6 +232,19 @@ if [ "$SHOULD_NOTIFY" -eq 1 ]; then
   fi
 fi
 
+# The applied-but-unmerged half of withheld_debt (see header comment).
+# Read-only, and never fatal: a failure here reports "unavailable" to the
+# python splice below rather than blocking the alarm the loop depends on.
+# Cheap in the common case -- ls-remote plus, only when a sync branch is
+# actually open, one fetch per branch -- not the near-zero cost
+# staleness.sh's own check holds itself to, and deliberately so: that is
+# the cost of this half actually measuring something (D#2445).
+UNMERGED_JSON="$(python3 "$SCRIPT_DIR/unmerged.py" \
+  --remote "${ENGINE_SYNC_ENGINE_REMOTE:-origin}" \
+  --local-ref "${ENGINE_SYNC_LOCAL_REF:-main}" \
+  --repo-dir "$GIT_C_DIR" 2>/dev/null)"
+UNMERGED_RC=$?
+
 # Splice the new fields into staleness.sh's own JSON rather than reformatting
 # it, so every field it emitted survives verbatim.
 OUT_JSON="$(printf '%s' "$STATUS_JSON" | python3 -c '
@@ -202,19 +258,51 @@ d["consecutive_failures"] = int(sys.argv[1])
 d["halt"] = sys.argv[2] == "true"
 d["halt_threshold"] = int(sys.argv[3])
 
-# Read-only, and never fatal: an unreadable debt file reports null rather
-# than blocking the alarm the loop depends on.
-debt = None
+# withheld_debt = pending (withheld) + unmerged (applied, not yet merged).
+# See the module header for what each half means and what neither sees.
+# Absent and corrupt are now different errors, never the same None
+# (D#2445 item 7) -- FileNotFoundError is the only one that means "this
+# channel has never run"; anything else reading the file means it ran and
+# left something this code cannot parse, which is a different problem.
+pending_count = None
+withheld_debt_error = None
 try:
     with open(os.path.join(sys.argv[4], "engine-sync-inbound-apply.json")) as f:
-        pending = json.load(f).get("pending") or {}
-    debt = len(pending) if isinstance(pending, dict) else None
+        raw = f.read()
+except FileNotFoundError:
+    withheld_debt_error = "state-file-absent"
 except Exception:
-    debt = None
+    withheld_debt_error = "state-file-corrupt"
+else:
+    try:
+        pending = json.loads(raw).get("pending")
+    except Exception:
+        pending = None
+    if isinstance(pending, dict):
+        pending_count = len(pending)
+    else:
+        withheld_debt_error = "state-file-corrupt"
+
+debt = None
+if pending_count is not None:
+    unmerged_rc = sys.argv[6]
+    unmerged_count = None
+    if unmerged_rc == "0":
+        try:
+            unmerged_count = json.loads(sys.argv[5]).get("count")
+        except Exception:
+            unmerged_count = None
+    if isinstance(unmerged_count, int):
+        debt = pending_count + unmerged_count
+    else:
+        withheld_debt_error = "engine-check-unavailable"
+
 d["withheld_debt"] = debt
+if withheld_debt_error is not None:
+    d["withheld_debt_error"] = withheld_debt_error
 
 print(json.dumps(d))
-' "$FAILURES" "$HALT" "$HALT_THRESHOLD" "$STATE_DIR" 2>/dev/null)"
+' "$FAILURES" "$HALT" "$HALT_THRESHOLD" "$STATE_DIR" "$UNMERGED_JSON" "$UNMERGED_RC" 2>/dev/null)"
 [ -z "$OUT_JSON" ] && OUT_JSON="$STATUS_JSON"
 
 printf '%s\n' "$OUT_JSON"
