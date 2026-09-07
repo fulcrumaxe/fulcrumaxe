@@ -19,6 +19,7 @@ Coverage:
 from __future__ import annotations
 
 import json
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -51,7 +52,17 @@ def _gh_fake(*, author="drive-by", labels=(), events=None, fail_pr=False, fail_e
     ``head_sha`` (D#2421) rides along on the same `pulls/{pr}` response —
     defaults to a fixed value so every pre-existing call site keeps working
     unchanged; tests that care about head movement pass distinct SHAs.
+
+    D#2433 — the events endpoint is now paged: this models it by slicing
+    *events* according to the ``page=``/``per_page=`` query params the real
+    code sends, rather than returning the whole list on every call. Every
+    pre-existing caller passes a small (<100-item) *events* list and never
+    reads ``page=``/``per_page=`` values, so it still gets the whole list
+    back on page 1 and nothing on later pages — unchanged behaviour. A test
+    that cares about paging (D#2433) passes a longer *events* list and lets
+    this slice it for real.
     """
+    all_events = list(events or [])
 
     def _call(args):
         if record_calls is not None:
@@ -75,7 +86,12 @@ def _gh_fake(*, author="drive-by", labels=(), events=None, fail_pr=False, fail_e
         if "/events" in joined:
             if fail_events:
                 raise RuntimeError("gh api failed (exit 1): timeline unavailable")
-            return json.dumps(events or [])
+            page_match = re.search(r"[?&]page=(\d+)", joined)
+            per_page_match = re.search(r"[?&]per_page=(\d+)", joined)
+            page = int(page_match.group(1)) if page_match else 1
+            per_page = int(per_page_match.group(1)) if per_page_match else (len(all_events) or 1)
+            start = (page - 1) * per_page
+            return json.dumps(all_events[start:start + per_page])
         raise AssertionError(f"unexpected gh call: {joined}")
 
     return _call
@@ -374,7 +390,11 @@ def test_ac3_sha_equality_and_zero_net_new_api_calls(tmp_path):
     assert r2["blocked"] is True
     assert calls == [
         ["api", f"repos/{SLUG}/pulls/7"],
-        ["api", "--paginate", f"repos/{SLUG}/issues/7/events"],
+        [
+            "api",
+            f"repos/{SLUG}/issues/7/events"
+            f"?per_page={gate.INTAKE_TIMELINE_PER_PAGE}&page=1",
+        ],
     ]
 
 
@@ -878,7 +898,11 @@ def test_pr3_ac10_exactly_two_api_calls_in_both_freshness_cases(tmp_path, events
     )
     assert calls == [
         ["api", f"repos/{SLUG}/pulls/7"],
-        ["api", "--paginate", f"repos/{SLUG}/issues/7/events"],
+        [
+            "api",
+            f"repos/{SLUG}/issues/7/events"
+            f"?per_page={gate.INTAKE_TIMELINE_PER_PAGE}&page=1",
+        ],
     ]
 
 
@@ -902,3 +926,228 @@ def test_pr3_ac14_security_required_stays_true_for_the_new_outcomes(tmp_path):
     )
     assert unreadable["reason"] == gate.REASON_TIMELINE_UNREADABLE
     assert unreadable["security_required"] is True
+
+
+# ---------------------------------------------------------------------------
+# D#2433 — bound the issue-events timeline read `intake_approval_actor` makes.
+# Events come back oldest-first, and the timeline is externally inflatable
+# (any account that can comment on, or reference from another repo, a public
+# PR appends to it), so the fix is refuse-on-cap, never truncate-and-answer:
+# "keep the first N pages" and "keep the last N pages" are each wrong against
+# one of the two inflation orderings.
+# ---------------------------------------------------------------------------
+
+
+def _noise_events(n, start_id=1, event="mentioned"):
+    """*n* timeline events that are not `labeled` events at all -- modelling
+    the comment- and cross-reference-derived noise that dominates a real
+    timeline 32:1 over the one event type this module reads. Padding for the
+    page-budget tests; never a winner candidate."""
+    return [{"id": start_id + i, "event": event} for i in range(n)]
+
+
+def test_2433_no_pagination_flag_remains():
+    """Spec item 1, as a fast in-suite guard mirroring the shell grep check:
+    the explicit page loop and the auto-follow-all-pages flag must not
+    coexist, because that flag would silently defeat an explicit page bound."""
+    src = Path(gate.__file__).read_text()
+    assert "paginate" not in src
+
+
+def test_2433_page_budget_constants_are_importable_integers():
+    """Spec item 2 -- the budget is a module-level named constant, importable
+    by the test, not a magic number buried in the loop."""
+    assert isinstance(gate.INTAKE_TIMELINE_PAGE_CAP, int)
+    assert isinstance(gate.INTAKE_TIMELINE_PER_PAGE, int)
+    assert gate.INTAKE_TIMELINE_PAGE_CAP > 0
+    assert gate.INTAKE_TIMELINE_PER_PAGE > 0
+
+
+def test_2433_fits_budget_unchanged_behaviour_no_matching_event():
+    """Spec item 3, third clause -- a timeline with no matching `labeled`
+    event still yields (None, True): read successfully, no approver found.
+    The trusted/untrusted-approver clauses are already exercised by
+    test_human_approved_external_pr_flows_and_forces_security_review and
+    test_intake_approved_applied_by_the_pr_author_is_not_an_approval; this
+    one covers the third clause on its own."""
+    events = _noise_events(5) + [_labeled_event("example-owner", name="needs-boss")]
+    actor, read_ok, labeled_at = gate.intake_approval_actor(7, SLUG, gh=_gh_fake(events=events))
+    assert (actor, read_ok, labeled_at) == (None, True, None)
+
+
+def test_2433_reason_too_large_is_distinct_from_unreadable():
+    """Spec item 8. An operator seeing 'unreadable' would go hunting for a
+    network fault that did not happen -- the two reasons must not collide."""
+    assert gate.REASON_TIMELINE_TOO_LARGE != gate.REASON_TIMELINE_UNREADABLE
+    assert gate.REASON_TIMELINE_TOO_LARGE == "intake_approval_actor_timeline_too_large"
+
+
+def test_2433_ordering_survives_paging_trusted_early_untrusted_late(tmp_path):
+    """Spec item 4, arm 1. The `intake-approved` `labeled` event applied by a
+    TRUSTED actor lands on page 1; a LATER re-application of the same label
+    by an UNTRUSTED actor lands on page 2, both inside the budget. The
+    untrusted, more-recent application must win -- proving pages after the
+    first are actually read and the recency comparison spans them."""
+    per_page = gate.INTAKE_TIMELINE_PER_PAGE
+    trusted_early = _labeled_event("example-owner", _label_age(7200), event_id=1)
+    untrusted_late = _labeled_event("drive-by", _label_age(60), event_id=per_page + 50)
+    page_one = [trusted_early] + _noise_events(per_page - 1, start_id=2)
+    page_two = _noise_events(9, start_id=per_page + 1) + [untrusted_late]
+    events = page_one + page_two
+    assert len(page_one) == per_page  # this fixture must genuinely span 2 pages
+    assert len(events) < gate.INTAKE_TIMELINE_PAGE_CAP * per_page
+
+    r = gate.check_pr(
+        7, SLUG,
+        gh=_gh_fake(labels=("intake-approved",), events=events, head_sha=HEAD_A),
+        allowlist=TRUST, baseline_path=tmp_path / "pr-baselines.json",
+    )
+    assert r["blocked"] is True
+    assert r["reason"] == gate.REASON_UNTRUSTED_APPROVER
+
+
+def test_2433_ordering_survives_paging_untrusted_early_trusted_late(tmp_path):
+    """Spec item 4, arm 2 (the mirror). Untrusted early, trusted late ->
+    REASON_APPROVED. One arm alone does not catch the ordering trap; both are
+    required."""
+    per_page = gate.INTAKE_TIMELINE_PER_PAGE
+    untrusted_early = _labeled_event("drive-by", _label_age(7200), event_id=1)
+    trusted_late = _labeled_event("example-owner", _label_age(60), event_id=per_page + 50)
+    page_one = [untrusted_early] + _noise_events(per_page - 1, start_id=2)
+    page_two = _noise_events(9, start_id=per_page + 1) + [trusted_late]
+    events = page_one + page_two
+    assert len(page_one) == per_page
+    assert len(events) < gate.INTAKE_TIMELINE_PAGE_CAP * per_page
+
+    r = gate.check_pr(
+        7, SLUG,
+        gh=_gh_fake(labels=("intake-approved",), events=events, head_sha=HEAD_A),
+        allowlist=TRUST, baseline_path=tmp_path / "pr-baselines.json",
+    )
+    assert r["blocked"] is False
+    assert r["reason"] == gate.REASON_APPROVED
+
+
+def test_2433_exceeds_budget_refuses_never_truncates(tmp_path):
+    """Spec item 5 (the single most important item here) and item 7. A
+    timeline strictly larger than PAGE_CAP*PER_PAGE, whose intake-approved
+    labeled event by a TRUSTED actor sits BEYOND the cap. `check_pr` must
+    refuse -- never REASON_APPROVED, never a login-bearing decision made from
+    a partial read -- and the number of /events requests actually made is
+    asserted, not assumed."""
+    per_page = gate.INTAKE_TIMELINE_PER_PAGE
+    cap_total = gate.INTAKE_TIMELINE_PAGE_CAP * per_page
+    trusted_beyond_cap = _labeled_event("example-owner", _label_age(60), event_id=cap_total + 50)
+    events = _noise_events(cap_total + 5, start_id=1) + [trusted_beyond_cap]
+    # Prove the fixture actually exceeds the cap, rather than assuming it does.
+    assert len(events) > cap_total
+
+    calls: list = []
+    r = gate.check_pr(
+        7, SLUG,
+        gh=_gh_fake(labels=("intake-approved",), events=events, head_sha=HEAD_A,
+                    record_calls=calls),
+        allowlist=TRUST, baseline_path=tmp_path / "pr-baselines.json",
+    )
+    assert r["blocked"] is True
+    assert r["reason"] == gate.REASON_TIMELINE_TOO_LARGE
+    assert r["reason"] != gate.REASON_APPROVED
+
+    events_calls = [c for c in calls if "/events" in " ".join(c)]
+    assert len(events_calls) <= gate.INTAKE_TIMELINE_PAGE_CAP + 1
+
+
+def test_2433_exact_boundary_reads_completely_both_sides(tmp_path):
+    """Spec item 6. Exactly PAGE_CAP*PER_PAGE events is read completely and
+    answered normally (read_ok=True) -- the cap must not refuse a timeline it
+    could have read in full. PAGE_CAP*PER_PAGE + 1 events refuses. Both sides
+    asserted via `intake_approval_actor` (the read) and `check_pr` (the
+    verdict)."""
+    per_page = gate.INTAKE_TIMELINE_PER_PAGE
+    cap_total = gate.INTAKE_TIMELINE_PAGE_CAP * per_page
+
+    approving = _labeled_event("example-owner", _label_age(60), event_id=cap_total)
+    exact = _noise_events(cap_total - 1, start_id=1) + [approving]
+    assert len(exact) == cap_total
+
+    actor, read_ok, _ = gate.intake_approval_actor(7, SLUG, gh=_gh_fake(events=exact))
+    assert read_ok is True
+    assert actor == "example-owner"
+
+    r = gate.check_pr(
+        7, SLUG,
+        gh=_gh_fake(labels=("intake-approved",), events=exact, head_sha=HEAD_A),
+        allowlist=TRUST, baseline_path=tmp_path / "pr-baselines-exact.json",
+    )
+    assert r["blocked"] is False
+    assert r["reason"] == gate.REASON_APPROVED
+
+    over = exact + _noise_events(1, start_id=cap_total + 1)
+    assert len(over) == cap_total + 1
+
+    actor2, read_ok2, _ = gate.intake_approval_actor(7, SLUG, gh=_gh_fake(events=over))
+    assert read_ok2 is False
+    assert actor2 is None
+
+    r2 = gate.check_pr(
+        7, SLUG,
+        gh=_gh_fake(labels=("intake-approved",), events=over, head_sha=HEAD_A),
+        allowlist=TRUST, baseline_path=tmp_path / "pr-baselines-over.json",
+    )
+    assert r2["blocked"] is True
+    assert r2["reason"] == gate.REASON_TIMELINE_TOO_LARGE
+
+
+def test_2433_refusal_is_recorded_to_audit_log(tmp_path, monkeypatch):
+    """Spec item 9. The over-budget path appends one row to audit.jsonl
+    (backend.state_paths.AUDIT_LOG) carrying kind/event, pr, repo,
+    pages_fetched, and the cap. Observing the actual row -- not merely the
+    refusal -- is the point: PR #50 shipped a refusal whose record half
+    silently did not fire in one band."""
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    monkeypatch.setenv("AUTONOMOUS_TEAM_STATE_DIR", str(state_dir))
+
+    per_page = gate.INTAKE_TIMELINE_PER_PAGE
+    cap_total = gate.INTAKE_TIMELINE_PAGE_CAP * per_page
+    events = _noise_events(cap_total + 5, start_id=1)
+
+    r = gate.check_pr(
+        123, SLUG,
+        gh=_gh_fake(labels=("intake-approved",), events=events, head_sha=HEAD_A, pr=123),
+        allowlist=TRUST, baseline_path=tmp_path / "pr-baselines.json",
+    )
+    assert r["blocked"] is True
+    assert r["reason"] == gate.REASON_TIMELINE_TOO_LARGE
+
+    audit_log = state_dir / "audit.jsonl"
+    assert audit_log.exists()
+    rows = [json.loads(line) for line in audit_log.read_text().splitlines() if line.strip()]
+    matching = [row for row in rows if row.get("pr") == 123]
+    assert len(matching) == 1
+    row = matching[0]
+    assert row.get("kind") == "pr_intake_timeline_too_large"
+    assert row.get("event") == "pr_intake_timeline_too_large"
+    assert row["repo"] == SLUG
+    assert row["pages_fetched"] == gate.INTAKE_TIMELINE_PAGE_CAP + 1
+    assert row["cap"] == gate.INTAKE_TIMELINE_PAGE_CAP
+
+
+def test_2433_audit_write_failure_is_not_fatal_to_the_refusal(tmp_path, monkeypatch):
+    """Spec item 11. With AUDIT_LOG pointed at an unwritable path (its parent
+    directory does not exist), the over-budget case still returns
+    blocked: true -- a failure to record the refusal must never turn it into
+    an allow."""
+    monkeypatch.setenv("AUTONOMOUS_TEAM_STATE_DIR", str(tmp_path / "does-not-exist"))
+
+    per_page = gate.INTAKE_TIMELINE_PER_PAGE
+    cap_total = gate.INTAKE_TIMELINE_PAGE_CAP * per_page
+    events = _noise_events(cap_total + 5, start_id=1)
+
+    r = gate.check_pr(
+        7, SLUG,
+        gh=_gh_fake(labels=("intake-approved",), events=events, head_sha=HEAD_A),
+        allowlist=TRUST, baseline_path=tmp_path / "pr-baselines.json",
+    )
+    assert r["blocked"] is True
+    assert r["reason"] == gate.REASON_TIMELINE_TOO_LARGE
