@@ -804,8 +804,17 @@ def apply_inbound(
             **classify_kwargs,
         )
     except ApplyRefused as exc:
-        write_failure_count(state_dir, failures + 1)
-        return {"result": RESULT_REFUSED, "reason": str(exc), "consecutive_failures": failures + 1}
+        # --dry-run promises to return before every line that writes (see the
+        # --dry-run help text below). A classify/ceiling refusal is raised
+        # here, upstream of the `if dry_run` branch inside `_run`, so without
+        # this guard a dry run would still bump the circuit breaker.
+        if not dry_run:
+            write_failure_count(state_dir, failures + 1)
+        return {
+            "result": RESULT_REFUSED,
+            "reason": str(exc),
+            "consecutive_failures": failures if dry_run else failures + 1,
+        }
     except Exception as exc:  # noqa: BLE001 -- an unexpected failure is still a failure
         write_failure_count(state_dir, failures + 1)
         return {
@@ -893,12 +902,16 @@ def _run(
         if e.get("status") in (pull.STATUS_CONFLICT, pull.STATUS_INTEGRITY_FAIL) and path not in known_debt
     )
     if conflicted:
-        write_failure_count(state_dir, failures + 1)
+        # Same --dry-run promise as the classify/ceiling refusal above: this
+        # is the second of the two write_failure_count call sites that ran
+        # ahead of the `if dry_run` branch further down.
+        if not dry_run:
+            write_failure_count(state_dir, failures + 1)
         return {
             "result": RESULT_CONFLICT,
             "reason": f"change set contains unresolved conflicts: {conflicted}",
             "conflicted": conflicted,
-            "consecutive_failures": failures + 1,
+            "consecutive_failures": failures if dry_run else failures + 1,
         }
 
     protected = outbound_apply.read_protected_set()

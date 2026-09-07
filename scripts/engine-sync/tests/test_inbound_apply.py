@@ -531,6 +531,82 @@ def test_c6_conflict_applies_nothing_and_leaves_the_tree_untouched(engine, state
 
 
 # ---------------------------------------------------------------------------
+# PR 1 (D#2454) -- --dry-run must not write
+# ---------------------------------------------------------------------------
+
+
+def test_dry_run_ceiling_refusal_leaves_no_state_file(engine, state_dir):
+    """The classify/ceiling refusal raises ApplyRefused upstream of the
+    `if dry_run` branch inside `_run`. Three consecutive --dry-run
+    invocations against a scratch state dir that never had a state file must
+    leave it absent -- not present holding 0, absent."""
+    state_file = apply_inbound.state_path(state_dir)
+    assert not state_file.exists()
+
+    rec = Recorder()
+    for _ in range(3):
+        result = _run(engine, state_dir, rec, max_files=1, dry_run=True)
+        assert result["result"] == apply_inbound.RESULT_REFUSED, result
+        assert "ceiling" in result["reason"]
+
+    assert not state_file.exists(), "a dry-run ceiling refusal wrote the state file"
+    assert rec.pushes == [] and rec.prs == []
+
+
+def test_dry_run_ceiling_refusal_leaves_existing_state_byte_identical(engine, state_dir):
+    """Same refusal, starting from a state file that already exists: it must
+    come out byte-identical, not merely holding the same number again."""
+    apply_inbound.write_failure_count(state_dir, 0)
+    state_file = apply_inbound.state_path(state_dir)
+    before = state_file.read_bytes()
+
+    rec = Recorder()
+    for _ in range(3):
+        result = _run(engine, state_dir, rec, max_files=1, dry_run=True)
+        assert result["result"] == apply_inbound.RESULT_REFUSED, result
+
+    assert state_file.read_bytes() == before
+    assert apply_inbound.read_failure_count(state_dir) == 0
+
+
+def test_dry_run_conflict_refusal_leaves_no_state_file(engine, state_dir):
+    """Same promise, the other write_failure_count call site: a conflict
+    must not touch the state file under --dry-run either. Fixing only the
+    ceiling path would leave this one live."""
+    repo = engine["repo"]
+    (repo / "backend/shared.py").write_text("ENGINE diverged too\n")
+    _git(repo, "add", "backend/shared.py")
+    _git(repo, "commit", "-q", "-m", "engine also touches shared")
+
+    state_file = apply_inbound.state_path(state_dir)
+    assert not state_file.exists()
+
+    rec = Recorder()
+    for _ in range(3):
+        result = _run(engine, state_dir, rec, local_ref="main", dry_run=True)
+        assert result["result"] == apply_inbound.RESULT_CONFLICT, result
+        assert "backend/shared.py" in result["conflicted"]
+
+    assert not state_file.exists(), "a dry-run conflict refusal wrote the state file"
+    assert rec.pushes == [] and rec.prs == []
+
+
+def test_dry_run_does_not_disarm_the_circuit_breaker_for_a_real_refusal(engine, state_dir):
+    """The fix must be scoped to dry_run, not weaken the real breaker. A dry
+    run costs nothing; a real refusal right after it must still count --
+    proving the guard is `if not dry_run`, not a change to when a refusal is
+    raised at all."""
+    rec = Recorder()
+    dry = _run(engine, state_dir, rec, max_files=1, dry_run=True)
+    assert dry["result"] == apply_inbound.RESULT_REFUSED
+    assert apply_inbound.read_failure_count(state_dir) == 0
+
+    real = _run(engine, state_dir, rec, max_files=1, dry_run=False)
+    assert real["result"] == apply_inbound.RESULT_REFUSED
+    assert apply_inbound.read_failure_count(state_dir) == 1
+
+
+# ---------------------------------------------------------------------------
 # C7 -- the marker advances only after a completed apply
 # ---------------------------------------------------------------------------
 
