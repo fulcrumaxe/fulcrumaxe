@@ -41,6 +41,29 @@ print(BLACKBOARD_DIR)
     printf 'tests/lib/blackboard-fixture.sh: could not resolve the blackboard root via backend.state_paths.BLACKBOARD_DIR from %s\n%s\n' "$repo_root" "$root" >&2
     return 1
   }
+  # python3 exiting 0 is not enough. BLACKBOARD_DIR is resolved lazily, so if
+  # it ever stops being a path — a callable, a config object, None — print()
+  # still succeeds and the exit status is still 0. The `|| return 1` above
+  # never fires, and we would hand the caller something like
+  # "<function <lambda> at 0x7f...>/pr_state", which contains no "/" and no
+  # NUL and is therefore a perfectly legal directory name: mkdir -p succeeds,
+  # the fixture lands in it, and the code under test reads the real path and
+  # finds nothing. That is the fixture-invisible-to-the-reader failure D#2119
+  # measured at 52 false failures, and it is silent — the repr embeds a memory
+  # address, so the garbage directory even carries a different name each run.
+  # Require a non-empty absolute path and fail loudly otherwise, which
+  # collapses that case into the resolution-failure case above. (D#2138)
+  #
+  # This also rejects a captured Python traceback: the branch above merges
+  # stderr into $root via 2>&1, and a traceback's first line does not begin
+  # with "/".
+  case "$root" in
+    /*) ;;
+    *)
+      printf 'tests/lib/blackboard-fixture.sh: backend.state_paths.BLACKBOARD_DIR resolved to a value that is not a non-empty absolute path (from %s); refusing to build a fixture directory from it: %s\n' "$repo_root" "$root" >&2
+      return 1
+      ;;
+  esac
   printf '%s/pr_state\n' "$root"
 }
 
