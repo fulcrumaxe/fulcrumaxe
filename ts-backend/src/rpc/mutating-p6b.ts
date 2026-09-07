@@ -53,6 +53,7 @@ import { homedir } from "node:os";
 import { createHash } from "node:crypto";
 import { Database } from "bun:sqlite";
 import { stateDir as sharedStateDir } from "../config/state-paths.js";
+import { SOURCE_NOT_ALLOWLISTED_REMEDY } from "../spawn/dial-messages.js";
 
 // ---------------------------------------------------------------------------
 // Path helpers
@@ -362,10 +363,7 @@ export function handleDialSet(
     // itself. See the mirror in backend/dial_registry.py for the full note.
     throw new Error(
       `source ${JSON.stringify(DASHBOARD_SOURCE)} is not in the directive allowlist. ` +
-        "A caller cannot authorize itself — ask an operator to run " +
-        "`bash scripts/provision-dial-allowlist.sh`, or to add an entry to " +
-        "<STATE_DIR>/dial-directive-allowlist.json by hand. Ceilings stay " +
-        "enforced either way."
+        SOURCE_NOT_ALLOWLISTED_REMEDY
     );
   }
 

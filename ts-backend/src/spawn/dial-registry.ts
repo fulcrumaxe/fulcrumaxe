@@ -41,6 +41,7 @@ import {
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { stateDir as sharedStateDir } from "../config/state-paths.js";
+import { SOURCE_NOT_ALLOWLISTED_REMEDY } from "./dial-messages.js";
 
 // ---------------------------------------------------------------------------
 // Exceptions
@@ -572,10 +573,7 @@ export function setDial(
     // itself. See the mirror in backend/dial_registry.py for the full note.
     throw new Error(
       `source ${JSON.stringify(source)} is not in the directive allowlist. ` +
-      "A caller cannot authorize itself — ask an operator to run " +
-      "`bash scripts/provision-dial-allowlist.sh`, or to add an entry to " +
-      "<STATE_DIR>/dial-directive-allowlist.json by hand. Ceilings stay " +
-      "enforced either way."
+      SOURCE_NOT_ALLOWLISTED_REMEDY
     );
   }
 
