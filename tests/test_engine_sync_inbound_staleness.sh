@@ -353,6 +353,191 @@ set_marker "$TIP_SHA"
 # A6: the nine gpg-dependent test_fetch.py failures are now shutil.which
 # ("gpg")-gated skips, not xfail/deletion/a passing stub. 0 failed overall.
 # ---------------------------------------------------------------------------
+# B: withheld_debt (D#2445) -- it used to only ever count paths
+# apply_inbound.py explicitly WITHHELD, so a run that applied paths onto an
+# open, unmerged engine-sync/inbound-* branch reported withheld_debt: 0
+# while the engine was missing every one of them. It is now the sum of
+# withheld (read from apply_inbound.py's own state file) and
+# applied-but-unmerged (computed fresh by unmerged.py against the engine's
+# open sync branches) -- see alarm.sh's own header for the split.
+#
+# A self-contained fixture, separate from A1-A6's WORK/PUBLIC above (which
+# by this point in the file has been mutated through many marker moves and
+# extra commits) -- an "engine" repo with its own `main`, plus a second bare
+# repo standing in for its `origin` remote, matching the two-repo shape
+# apply_inbound.py's --engine-remote actually pushes sync branches into.
+# ---------------------------------------------------------------------------
+B_ROOT="$TMP_ROOT/debt"
+mkdir -p "$B_ROOT"
+B_ENGINE_ORIGIN="$B_ROOT/engine-origin.git"
+B_ENGINE="$B_ROOT/engine"
+git init -q --bare "$B_ENGINE_ORIGIN"
+git -C "$B_ENGINE_ORIGIN" symbolic-ref HEAD refs/heads/main
+git init -q -b main "$B_ENGINE"
+git -C "$B_ENGINE" config user.email t@example.com
+git -C "$B_ENGINE" config user.name t
+echo seed >"$B_ENGINE/f.txt"
+git -C "$B_ENGINE" add f.txt
+git -C "$B_ENGINE" commit -q -m seed
+B_TIP_SHA="$(git -C "$B_ENGINE" rev-parse HEAD)"
+git -C "$B_ENGINE" remote add origin "$B_ENGINE_ORIGIN"
+git -C "$B_ENGINE" push -q origin main
+# staleness.sh's own remote (default "code-plane") -- same bare repo, a
+# different remote name, so B3's "status" can genuinely be exercised
+# (in-sync: this test's whole point is that in-sync alongside a real gap is
+# exactly the misreading D#2445 is about) rather than left at whatever an
+# unconfigured remote defaults to.
+git -C "$B_ENGINE" remote add code-plane "$B_ENGINE_ORIGIN"
+git -C "$B_ENGINE" update-ref refs/synced/code-plane "$B_TIP_SHA"
+
+# push_sync_branch <label> <path> <content> -- builds a commit on top of
+# B_TIP_SHA carrying one path via a private temporary index (never a
+# checkout of B_ENGINE's own working tree), and pushes it to the engine
+# origin as engine-sync/inbound-<sha>, exactly the shape
+# apply_inbound.py's build_branch_commits produces.
+push_sync_branch() {
+  local path="$1" content="$2" index_file sha
+  index_file="$B_ROOT/index-$RANDOM"
+  GIT_INDEX_FILE="$index_file" git -C "$B_ENGINE" read-tree "$B_TIP_SHA"
+  local blob
+  blob="$(printf '%s\n' "$content" | GIT_INDEX_FILE="$index_file" git -C "$B_ENGINE" hash-object -w --stdin)"
+  GIT_INDEX_FILE="$index_file" git -C "$B_ENGINE" update-index --add --cacheinfo "100644,$blob,$path"
+  local tree
+  tree="$(GIT_INDEX_FILE="$index_file" git -C "$B_ENGINE" write-tree)"
+  sha="$(git -C "$B_ENGINE" commit-tree "$tree" -p "$B_TIP_SHA" -m "sync $path")"
+  git -C "$B_ENGINE" push -q origin "$sha:refs/heads/engine-sync/inbound-$sha"
+  rm -f "$index_file"
+}
+
+write_apply_state() {
+  # write_apply_state <state-dir> <pending-json> -- pending-json is a raw
+  # JSON object literal, e.g. '{}' or '{"a/b.py": {}}'.
+  mkdir -p "$1"
+  printf '{"consecutive_failures": 0, "pending": %s}\n' "$2" >"$1/engine-sync-inbound-apply.json"
+}
+
+run_alarm_debt() {
+  # run_alarm_debt <state-dir> -- stdout is the alarm's JSON.
+  ENGINE_SYNC_GIT_DIR="$B_ENGINE" ENGINE_SYNC_STATE_DIR="$1" \
+    ENGINE_SYNC_ENGINE_REMOTE=origin ENGINE_SYNC_LOCAL_REF=main \
+    bash "$ALARM" 2>/dev/null
+}
+
+run_alarm_debt_with() {
+  # run_alarm_debt_with <state-dir> <engine-remote> <local-ref> <no-fetch> --
+  # same as run_alarm_debt but every knob the unmerged-check reads is
+  # overridable, for exercising ITS OWN failure modes (as opposed to the
+  # state file's, which B5/B6 above already cover).
+  ENGINE_SYNC_GIT_DIR="$B_ENGINE" ENGINE_SYNC_STATE_DIR="$1" \
+    ENGINE_SYNC_ENGINE_REMOTE="$2" ENGINE_SYNC_LOCAL_REF="$3" ENGINE_SYNC_NO_FETCH="$4" \
+    bash "$ALARM" 2>/dev/null
+}
+
+# B1: nothing owed either way -> 0, not null, and no error field.
+B1_STATE="$B_ROOT/state-b1"
+write_apply_state "$B1_STATE" '{}'
+OUT="$(run_alarm_debt "$B1_STATE")"
+[ "$(json_field "$OUT" withheld_debt)" = "0" ] && [ "$(json_field "$OUT" withheld_debt_error)" = "" ]
+check "B1 nothing owed -> withheld_debt=0, no error" $?
+
+# B2: withheld-only (apply_inbound.py's own state file), no open branches --
+# the pre-D#2445 half, still correct. Driven from the fixture's own size,
+# never a hardcoded literal.
+B2_STATE="$B_ROOT/state-b2"
+write_apply_state "$B2_STATE" '{"scripts/guard.sh": {}, "tests/out.txt": {}}'
+EXPECTED_B2=2
+OUT="$(run_alarm_debt "$B2_STATE")"
+[ "$(json_field "$OUT" withheld_debt)" = "$EXPECTED_B2" ]
+check "B2 withheld-only -> withheld_debt == pending count ($EXPECTED_B2)" $?
+
+# B3: THE D#2445 REGRESSION ITSELF -- applied-but-unmerged only. pending is
+# empty (exactly what a real apply run leaves when nothing was withheld),
+# but an engine-sync/inbound-* branch nobody has merged carries one path
+# main does not have. This is "a run that applies paths into a sync PR that
+# is not merged" from the Discussion body, constructed directly.
+push_sync_branch "backend/new_from_sync.py" "brand new synced content"
+B3_STATE="$B_ROOT/state-b3"
+write_apply_state "$B3_STATE" '{}'
+GROUND_TRUTH_B3="$(git -C "$B_ENGINE" ls-remote --heads origin 'engine-sync/inbound-*' | wc -l | tr -d ' ')"
+OUT="$(run_alarm_debt "$B3_STATE")"
+[ "$(json_field "$OUT" status)" = "in-sync" ] && [ "$(json_field "$OUT" withheld_debt)" = "1" ] && [ "$GROUND_TRUTH_B3" = "1" ]
+check "B3 applied-but-unmerged path, pending empty -> withheld_debt=1 (not 0)" $?
+
+# B4: both halves nonzero at once -- summed, neither shadows the other.
+B4_STATE="$B_ROOT/state-b4"
+write_apply_state "$B4_STATE" '{"scripts/guard.sh": {}}'
+OUT="$(run_alarm_debt "$B4_STATE")"
+[ "$(json_field "$OUT" withheld_debt)" = "2" ]
+check "B4 withheld(1) + applied-but-unmerged(1) -> withheld_debt=2 (summed)" $?
+
+# B5/B6: state-file-absent vs state-file-corrupt are now different errors,
+# not the same None (D#2445 item 7).
+B5_STATE="$B_ROOT/state-b5"
+mkdir -p "$B5_STATE" # no engine-sync-inbound-apply.json written at all
+OUT="$(run_alarm_debt "$B5_STATE")"
+ERR_ABSENT="$(json_field "$OUT" withheld_debt_error)"
+[ "$(json_field "$OUT" withheld_debt)" = "None" ] && [ "$ERR_ABSENT" = "state-file-absent" ]
+check "B5 apply state file never written -> withheld_debt=null, error=state-file-absent" $?
+
+B6_STATE="$B_ROOT/state-b6"
+mkdir -p "$B6_STATE"
+printf 'not json{{{' >"$B6_STATE/engine-sync-inbound-apply.json"
+OUT="$(run_alarm_debt "$B6_STATE")"
+ERR_CORRUPT="$(json_field "$OUT" withheld_debt_error)"
+[ "$(json_field "$OUT" withheld_debt)" = "None" ] && [ "$ERR_CORRUPT" = "state-file-corrupt" ]
+check "B6 apply state file is not valid JSON -> withheld_debt=null, error=state-file-corrupt" $?
+
+[ "$ERR_ABSENT" != "$ERR_CORRUPT" ]
+check "B5 vs B6: absent and corrupt are DIFFERENT errors, not the same null" $?
+
+# B7: negative -- local_ref moving forward on work unrelated to the sync
+# branch (a real content change, not an empty commit -- an empty commit
+# would not exercise a tip-to-tip diff either way) must not inflate the
+# count. This is the tree-diff-trap-shaped failure unmerged.py's own
+# docstring exists to avoid: a naive `git diff` of the two tips would
+# report f.txt's own later, unrelated change as "missing" alongside the
+# genuinely-missing path.
+echo "unrelated engine-side change" >>"$B_ENGINE/f.txt"
+git -C "$B_ENGINE" commit -q -am "unrelated later engine work"
+B7_STATE="$B_ROOT/state-b7"
+write_apply_state "$B7_STATE" '{}'
+OUT="$(run_alarm_debt "$B7_STATE")"
+[ "$(json_field "$OUT" withheld_debt)" = "1" ]
+check "B7 local_ref moved forward on unrelated work -> count unchanged, still 1" $?
+
+# B8/B9/B10: the unmerged-check's OWN failure modes, asserted through the
+# real alarm.sh (not just unmerged.py's unit tests, which only check that it
+# raises or exits non-zero -- never this exact string end to end). All three
+# use a clean, readable pending={} state file, so a failure here is
+# unambiguously the engine-check's, not the state file's -- and there is a
+# real open sync branch on origin the whole time (from B3/B7), so a bug that
+# collapsed any of these to 0 would be silently dropping a genuine path,
+# exactly the shape D#2445 is about.
+#
+# B8: negative -- local_ref itself does not resolve.
+B8_STATE="$B_ROOT/state-b8"
+write_apply_state "$B8_STATE" '{}'
+OUT="$(run_alarm_debt_with "$B8_STATE" origin does-not-exist-ref 0)"
+[ "$(json_field "$OUT" withheld_debt)" = "None" ] && [ "$(json_field "$OUT" withheld_debt_error)" = "engine-check-unavailable" ]
+check "B8 unresolvable ENGINE_SYNC_LOCAL_REF -> withheld_debt=null, error=engine-check-unavailable" $?
+
+# B9: negative -- the engine remote itself is not configured.
+B9_STATE="$B_ROOT/state-b9"
+write_apply_state "$B9_STATE" '{}'
+OUT="$(run_alarm_debt_with "$B9_STATE" no-such-remote main 0)"
+[ "$(json_field "$OUT" withheld_debt)" = "None" ] && [ "$(json_field "$OUT" withheld_debt_error)" = "engine-check-unavailable" ]
+check "B9 nonexistent ENGINE_SYNC_ENGINE_REMOTE -> withheld_debt=null, error=engine-check-unavailable" $?
+
+# B10: negative -- ENGINE_SYNC_NO_FETCH=1 must not fall back to 0. A real
+# open branch (from B3/B7) would be counted if this actually ran the check;
+# skipping it must read as "couldn't tell", never as "nothing owed".
+B10_STATE="$B_ROOT/state-b10"
+write_apply_state "$B10_STATE" '{}'
+OUT="$(run_alarm_debt_with "$B10_STATE" origin main 1)"
+[ "$(json_field "$OUT" withheld_debt)" = "None" ] && [ "$(json_field "$OUT" withheld_debt_error)" = "engine-check-unavailable" ]
+check "B10 ENGINE_SYNC_NO_FETCH=1 -> withheld_debt=null, error=engine-check-unavailable (never 0)" $?
+
+# ---------------------------------------------------------------------------
 A6_STATE_DIR="$(mktemp -d)"
 A6_OUT="$(AUTONOMOUS_TEAM_STATE_DIR="$A6_STATE_DIR" timeout --kill-after=5s 120s python3 -m pytest "$REPO_DIR/scripts/engine-sync/tests" -q 2>&1)"
 A6_RC=$?
