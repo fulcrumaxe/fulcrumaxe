@@ -241,6 +241,82 @@ def test_parse_status_no_comment_defaults_to_discussing(tmp_path: Path):
     assert reg._parse_status("## Some discussion body") == "DISCUSSING"
 
 
+# ---------------------------------------------------------------------------
+# D#2145 PR-b — _parse_status routed through the shared anchored parser
+# ---------------------------------------------------------------------------
+#
+# Before PR-b, _parse_status() ran its own private regex
+# (`_STATUS_RE = re.compile(r"<!--\s*STATUS:(\w+)(?:[^>]*)-->")`) over the
+# WHOLE body. `[^>]*` crosses fences and paragraphs freely: on D#2145's own
+# pre-Spec body it matched a 1466-character span starting inside a fenced
+# code block and terminating on a "-->" that lived in an unrelated prose
+# sentence, misreading the body as SPEC_READY. PR-b routes _parse_status
+# through backend.discussion_status.extract_status_anchored(), which reads
+# only the first non-empty line — the authoritative marker — so neither
+# fixture below can fool it the way the old whole-body regex could.
+
+
+def test_parse_status_fenced_decoy_not_authoritative(tmp_path: Path):
+    """Positive control — D#2145's own pre-Spec shape (acceptance item 10).
+
+    Reconstructed verbatim from this Discussion's body by deleting the line-1
+    marker: the first non-empty line is prose (no STATUS marker at all), and
+    a fenced code block later in the body contains a bare
+    `<!-- STATUS:SPEC_READY` decoy, with the terminating `-->` sitting in a
+    later, unrelated prose sentence — exactly the shape that let the old
+    `_STATUS_RE` span 1466 characters and misread SPEC_READY. With no marker
+    on the authoritative line, this must classify as DISCUSSING, never
+    SPEC_READY.
+    """
+    reg = _make_registry(tmp_path)
+    body = (
+        "Filed on D#1941's own explicit recommendation. That Discussion excluded\n"
+        "this deliberately and asked for it to be filed separately.\n"
+        "\n"
+        "## The gate\n"
+        "\n"
+        "`backend/discussion_status.py:17`:\n"
+        "\n"
+        "```python\n"
+        "_STATUS_PATTERN = re.compile(r\"<!--\\s*STATUS:(\\w+)\")\n"
+        "```\n"
+        "\n"
+        "There is no `-->` in that pattern. An unterminated marker opens the gate:\n"
+        "\n"
+        "```\n"
+        "$ printf '<!-- STATUS:SPEC_READY\\n\\nbody text\\n' \\\n"
+        "    | python3 backend/discussion_status.py extract-status --stdin\n"
+        "SPEC_READY\n"
+        "```\n"
+        "\n"
+        "Whether requiring `-->` is right at all is what this Spec settles. -->\n"
+    )
+    assert reg._parse_status(body) == "DISCUSSING"
+
+
+def test_parse_status_done_over_fenced_decoy(tmp_path: Path):
+    """Positive control — the DONE-over-fence shape (acceptance item 11).
+
+    This is the shape D#2145's own body will have once it is closed, and the
+    shape that produced the D#2453 symptom: a well-formed, terminated marker
+    on line 1 (DONE) plus a fenced code block later in the body that quotes a
+    different, terminated SPEC_READY marker as documentation. The line-1
+    marker is authoritative; the fenced quote must not override it.
+    """
+    reg = _make_registry(tmp_path)
+    body = (
+        "<!-- STATUS:DONE SINCE:2026-09-07T12:00:00Z -->\n"
+        "\n"
+        "This Discussion is closed. For reference, the fail-open marker looked\n"
+        "like this:\n"
+        "\n"
+        "```\n"
+        "<!-- STATUS:SPEC_READY -->\n"
+        "```\n"
+    )
+    assert reg._parse_status(body) == "DONE"
+
+
 def test_parse_pr_extracts_number(tmp_path: Path):
     reg = _make_registry(tmp_path)
     body = "<!-- STATUS:DONE PR:#42 SINCE:2026-01-01T00:00:00Z -->"
