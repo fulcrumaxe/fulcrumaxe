@@ -22,6 +22,7 @@ from backend.discussion_status import (  # noqa: E402
     BLOCKED_BY_UNPARSEABLE,
     extract_blocked_by,
     extract_linked_pr,
+    extract_status,
     extract_status_anchored,
     is_spec_ready,
     set_status,
@@ -435,6 +436,45 @@ def test_resolution_failure_costs_one_fetch_for_the_whole_batch():
     assert len(blocked) == 5, "every Discussion still blocks — failure means blocked"
     assert all("could not resolve" in reason for _, reason in blocked)
     assert len(calls) == 1, f"one failing fetch must not be retried per Discussion: {len(calls)}"
+
+
+# ---------------------------------------------------------------------------
+# D#2145 — an unterminated STATUS marker must not fail open
+# ---------------------------------------------------------------------------
+#
+# _STATUS_PATTERN used to have no `-->` terminator, so a marker missing its
+# close read as valid on both the whole-body and anchored paths. These pin
+# the fix: an unterminated marker must resolve to UNKNOWN, and the fix must
+# not do it by letting the terminator span onto a later line — that is the
+# exact construct (`[^>]*`) that let registry._STATUS_RE match a
+# 1466-character span of prose on this Discussion's own body.
+
+
+def test_unterminated_marker_is_unknown_not_spec_ready():
+    """The exact repro from D#2145: no '-->' anywhere on the marker line."""
+    body = "<!-- STATUS:SPEC_READY\n\nbody text\n"
+    assert extract_status(body) == "UNKNOWN"
+    assert extract_status_anchored(body) == "UNKNOWN"
+    assert is_spec_ready(body) is False
+
+
+def test_unterminated_marker_exact_closed_corpus_shape_is_unknown():
+    """D#836/D#841/D#842's literal shape: '<!-- STATUS:SPEC_READY>' — missing
+    the two dashes before '>'. All three are closed; this pins the fix."""
+    body = "<!-- STATUS:SPEC_READY>\n"
+    assert extract_status_anchored(body) == "UNKNOWN"
+
+
+def test_unterminated_marker_does_not_span_to_a_later_terminator():
+    """A '-->' later in prose must not rescue an unterminated line-1 marker.
+
+    Confining the terminator to the marker's own line (no '\\n' in the
+    matched span) is what keeps this from reproducing registry._STATUS_RE's
+    1466-character span.
+    """
+    body = "<!-- STATUS:SPEC_READY\n\nprose with a closer somewhere -->\n"
+    assert extract_status(body) == "UNKNOWN"
+    assert extract_status_anchored(body) == "UNKNOWN"
 
 
 # ---------------------------------------------------------------------------

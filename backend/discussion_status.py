@@ -14,7 +14,16 @@ import subprocess
 import sys
 from typing import Optional
 
-_STATUS_PATTERN = re.compile(r"<!--\s*STATUS:(\w+)")
+#
+# The terminator is confined to the marker's OWN line: [^\n<>]* forbids
+# newlines, so this can never span into a later paragraph or fenced code
+# block the way registry._STATUS_RE's [^>]* does (D#2145 measured a
+# 1466-character span from that construct). An unterminated marker — no
+# literal "-->" on the line — now matches nothing and falls through to
+# UNKNOWN on both extract_status() and extract_status_anchored(), closing
+# the fail-open D#2145 documents. See D#2145 for the corpus measurement
+# behind this (3 closed bodies affected, 0 open).
+_STATUS_PATTERN = re.compile(r"<!--\s*STATUS:(\w+)[^\n<>]*-->")
 _PR_PATTERN = re.compile(r"<!--\s*STATUS:[^>]*PR:#(\d+)")
 _SINCE_PATTERN = re.compile(r"<!--\s*STATUS:[^>]*SINCE:([^\s>]+)")
 # BLOCKED-BY is read only from inside the STATUS comment, and only from the
