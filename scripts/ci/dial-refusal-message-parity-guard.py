@@ -96,16 +96,40 @@ could end up scanning nothing is an explicit failure:
      an identifier, a call)                            -> FAIL
   9. Either extracted message is empty                 -> FAIL (an empty
      string equals an empty string, which would be a match over no content)
- 10. A call site does not import the constant          -> FAIL (the constant
-     could otherwise match perfectly while a call site quietly re-inlined its
-     own copy — the three-copy state this Discussion is about, restored)
+ 10. A call site does not import the constant          -> FAIL
  11. The Python constant is defined but referenced
-     nowhere else in its module                       -> FAIL (same reason,
-     Python side: a constant nothing uses is a museum piece, and comparing it
-     would vouch for text no operator ever sees)
+     nowhere else in its module                       -> FAIL (a constant
+     nothing uses is a museum piece, and comparing it would vouch for text no
+     operator ever sees)
 
 There is no code path in this file that reports success without having decoded
 two non-empty strings and compared them.
+
+Read item 10 narrowly, and item 11 too
+--------------------------------------
+Item 10 checks that the import is PRESENT. It does not check that the constant
+is USED. A TypeScript call site that keeps the import and re-inlines a
+different literal at its throw site still passes this guard — that was measured
+against this file, not assumed.
+
+What actually closes that gap is `noUnusedLocals` in ts-backend/tsconfig.json:
+the now-unused import fails `bun run typecheck` with TS6133, in the required
+ts-backend CI job. So the property does hold — by a different mechanism than
+this guard, and anyone deciding whether this check alone is sufficient should
+know it is not the one holding.
+
+Item 11 is the stronger of the two only because Python has no equivalent
+tooling here: it walks the module for a Load of the name, so it does catch a
+raise site that stopped using the constant.
+
+Known gap: TS_CALL_SITES is a hardcoded pair, not a discovery
+-------------------------------------------------------------
+The two call sites are named literally below. This guard therefore says nothing
+about a THIRD TypeScript file that appears later and inlines its own copy of
+the message — such a file is never looked at. That is exactly the "a third copy
+grows back" case, closed for the two sites known today and open for any added
+tomorrow. Recorded here rather than fixed, so the next reader does not assume a
+discovery this guard does not do.
 
 Wiring
 ------
@@ -138,8 +162,11 @@ TS_CONST = "SOURCE_NOT_ALLOWLISTED_REMEDY"
 
 # The call sites that must consume the TypeScript constant rather than carry
 # their own copy. This is the invariant the deduplication half of D#1945
-# establishes; without it the comparison above could pass while a third copy
-# quietly grew back.
+# establishes.
+#
+# Hardcoded, not discovered — see "Known gap" in the module docstring. A new
+# third TypeScript file that inlines its own copy is not covered, because it is
+# not in this tuple and nothing goes looking for it.
 TS_CALL_SITES = (
     REPO_ROOT / "ts-backend" / "src" / "spawn" / "dial-registry.ts",
     REPO_ROOT / "ts-backend" / "src" / "rpc" / "mutating-p6b.ts",
@@ -545,7 +572,13 @@ def extract_ts_message(path: Path) -> str:
 
 
 def assert_call_sites_import(paths: tuple[Path, ...]) -> list[str]:
-    """Every call site must import the constant rather than re-inline it."""
+    """Every known call site must import the constant.
+
+    Presence of the import, not use of it: a call site that keeps the import
+    and re-inlines a different literal passes here. `noUnusedLocals` in
+    ts-backend/tsconfig.json is what fails that case (TS6133, in the required
+    ts-backend job) — see the module docstring.
+    """
     ok: list[str] = []
     for path in paths:
         src = strip_ts_comments(_read(path))
