@@ -5,15 +5,20 @@ Usage (CLI):
   python3 backend/flaky_sentinel.py record --test-id <id> --exit-code <code>
   python3 backend/flaky_sentinel.py flake-score --test-id <id>
   python3 backend/flaky_sentinel.py list [--json]
-  python3 backend/flaky_sentinel.py is-quarantined --test-id <id>
+  python3 backend/flaky_sentinel.py is-quarantined --test-id <id> [--json]
+  python3 backend/flaky_sentinel.py report [--json]
+  python3 backend/flaky_sentinel.py advise --test-id <id>   # stderr-only advisory, silent on stdout
 
-State persists to STATE_DIR/flaky-history.jsonl (outside the repo).
+State persists to STATE_DIR/flaky-history.jsonl (outside the repo). Reads
+canonicalize test_id to group flag-spelling variants of one suite (see
+`_canonical_id`); the store itself is never rewritten.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -42,6 +47,39 @@ def _history_path() -> Path:
 
 #: Only consider the most recent N runs per test_id when computing flake_score.
 WINDOW = 20
+
+#: Quarantine threshold: a canonical id needs at least this many runs in the
+#: window before flake_score is trusted at all — a single fail->pass on a
+#: two-run history is noise, not signal (12 of today's 45 ids sit at exactly
+#: that shape and none of them should quarantine).
+QUARANTINE_MIN_RUNS = 4
+
+#: ...and, with enough runs, flake_score must clear this bar.
+QUARANTINE_SCORE_THRESHOLD = 0.3
+
+
+# ---------------------------------------------------------------------------
+# Canonicalization (read-side only — the store itself is never rewritten)
+# ---------------------------------------------------------------------------
+
+#: Reporting-only flags that don't change which tests run: -q, -x, -v/-vv,
+#: --tb=*. Anything else (target paths, subcommands, other flags) is kept and
+#: still distinguishes one suite from another.
+_REPORT_FLAG_RE = re.compile(r"^(-q|-x|-v+|--tb=\S*)$")
+
+
+def _canonical_id(test_id: str) -> str:
+    """Collapse whitespace and strip reporting-only flags from *test_id* so
+    that flag-spelling variants of the same suite (e.g. `pytest a b -x -q`
+    and `pytest a b -q`) group under one key. Target paths are never
+    stripped, so `pytest tests/` and `pytest tests/ backend/tests/` stay
+    distinct suites. Applied on read only — the JSONL store keeps whatever
+    raw test_id was recorded.
+    """
+    if not test_id:
+        return test_id
+    kept = [tok for tok in test_id.split() if not _REPORT_FLAG_RE.match(tok)]
+    return " ".join(kept)
 
 
 # ---------------------------------------------------------------------------
@@ -99,9 +137,11 @@ def record(test_id: str, exit_code: int, ts: float | None = None) -> dict:
 
 
 def _window_runs(test_id: str) -> list[dict]:
-    """Return the most recent WINDOW runs for *test_id*."""
+    """Return the most recent WINDOW runs whose test_id canonicalizes to the
+    same key as *test_id* (see `_canonical_id`)."""
+    canon = _canonical_id(test_id)
     all_rows = _load_history(_history_path())
-    rows = [r for r in all_rows if r.get("test_id") == test_id]
+    rows = [r for r in all_rows if _canonical_id(r.get("test_id", "")) == canon]
     return rows[-WINDOW:]
 
 
@@ -126,22 +166,30 @@ def flake_score(test_id: str) -> float:
 
 
 def is_quarantined(test_id: str) -> bool:
-    """Pure read — placeholder for future quarantine enforcement.
+    """Return True when *test_id* (canonicalized) has enough run history to
+    trust its flake_score, and that score clears the quarantine bar.
 
-    Always returns False in PR1; the consumer has not been wired yet.
+    Threshold: flake_score >= QUARANTINE_SCORE_THRESHOLD (0.3) over at least
+    QUARANTINE_MIN_RUNS (4) runs in the window. Below that run floor the
+    answer is always False — a single fail->pass on a two-run history reads
+    as flake_score 1.0 but is noise, not a suite worth quarantining.
     """
-    return False
+    runs = _window_runs(test_id)
+    if len(runs) < QUARANTINE_MIN_RUNS:
+        return False
+    return flake_score(test_id) >= QUARANTINE_SCORE_THRESHOLD
 
 
 def list_tests() -> list[dict]:
-    """Return a summary row per unique test_id."""
+    """Return a summary row per unique canonical test_id (see
+    `_canonical_id`) — flag-spelling variants of one suite are grouped."""
     all_rows = _load_history(_history_path())
     seen: dict[str, list[dict]] = {}
     for r in all_rows:
-        seen.setdefault(r.get("test_id", ""), []).append(r)
+        canon = _canonical_id(r.get("test_id", ""))
+        seen.setdefault(canon, []).append(r)
     result = []
     for tid, rows in seen.items():
-        window = rows[-WINDOW:]
         last = rows[-1]
         result.append(
             {
@@ -154,6 +202,20 @@ def list_tests() -> list[dict]:
             }
         )
     return result
+
+
+def report() -> dict:
+    """Summarize the full store: how much was read, and which canonical ids
+    are flaky. A report that cannot state its own denominator (rows_examined,
+    ids_examined) is not trustworthy even when its verdict is right."""
+    rows = _load_history(_history_path())
+    tests = list_tests()
+    return {
+        "rows_examined": len(rows),
+        "ids_examined": len(tests),
+        "tests": tests,
+        "flaky": [t for t in tests if t["flake_score"] > 0.0],
+    }
 
 
 def status(test_id: str) -> dict:
@@ -192,6 +254,17 @@ def _cli(argv: Sequence[str] | None = None) -> int:
     p_status.add_argument("--test-id", required=True)
     p_status.add_argument("--json", dest="as_json", action="store_true")
 
+    p_report = sub.add_parser(
+        "report", help="Summarize the store: rows/ids examined and which ids are flaky"
+    )
+    p_report.add_argument("--json", dest="as_json", action="store_true")
+
+    p_advise = sub.add_parser(
+        "advise",
+        help="Print a one-line flake advisory to stderr if test_id is flaky; silent otherwise, never touches stdout",
+    )
+    p_advise.add_argument("--test-id", required=True)
+
     args = parser.parse_args(argv)
 
     if args.cmd == "record":
@@ -225,6 +298,28 @@ def _cli(argv: Sequence[str] | None = None) -> int:
             print(f"window_runs: {row['window_runs']}")
             print(f"flake_score: {row['flake_score']:.4f}")
             print(f"quarantined: {row['quarantined']}")
+
+    elif args.cmd == "report":
+        data = report()
+        if args.as_json:
+            print(json.dumps(data))
+        else:
+            print(f"rows_examined: {data['rows_examined']}")
+            print(f"ids_examined : {data['ids_examined']}")
+            print(f"flaky_ids    : {len(data['flaky'])}")
+            for t in data["flaky"]:
+                print(f"  {t['test_id']:<60} score={t['flake_score']:.3f} runs={t['runs']}")
+
+    elif args.cmd == "advise":
+        # Advisory only — stdout stays untouched so callers piping this
+        # process's stdout into a manifest are never corrupted (D#2132).
+        row = status(args.test_id)
+        if row["flake_score"] > 0.0:
+            print(
+                f"flaky: {row['test_id']} flake_score={row['flake_score']:.3f} "
+                f"quarantined={row['quarantined']}",
+                file=sys.stderr,
+            )
 
     return 0
 
