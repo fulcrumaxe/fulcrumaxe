@@ -804,14 +804,29 @@ def apply_inbound(
             **classify_kwargs,
         )
     except ApplyRefused as exc:
-        write_failure_count(state_dir, failures + 1)
-        return {"result": RESULT_REFUSED, "reason": str(exc), "consecutive_failures": failures + 1}
+        # --dry-run promises to return before every line that writes (see the
+        # --dry-run help text below). A classify/ceiling refusal is raised
+        # here, upstream of the `if dry_run` branch inside `_run`, so without
+        # this guard a dry run would still bump the circuit breaker.
+        if not dry_run:
+            write_failure_count(state_dir, failures + 1)
+        return {
+            "result": RESULT_REFUSED,
+            "reason": str(exc),
+            "consecutive_failures": failures if dry_run else failures + 1,
+        }
     except Exception as exc:  # noqa: BLE001 -- an unexpected failure is still a failure
-        write_failure_count(state_dir, failures + 1)
+        # Same --dry-run promise as the two guards above. This handler wraps
+        # the entire `_run()` call, so it is also reachable for a dry run: a
+        # git subprocess failure, a bad protected.txt/sensitive.txt parse, or
+        # a remote timeout anywhere before `_run`'s own `if dry_run` early
+        # return would otherwise still spend a strike on the circuit breaker.
+        if not dry_run:
+            write_failure_count(state_dir, failures + 1)
         return {
             "result": RESULT_REFUSED,
             "reason": f"unexpected error: {type(exc).__name__}: {exc}",
-            "consecutive_failures": failures + 1,
+            "consecutive_failures": failures if dry_run else failures + 1,
         }
 
 
@@ -893,12 +908,16 @@ def _run(
         if e.get("status") in (pull.STATUS_CONFLICT, pull.STATUS_INTEGRITY_FAIL) and path not in known_debt
     )
     if conflicted:
-        write_failure_count(state_dir, failures + 1)
+        # Same --dry-run promise as the classify/ceiling refusal above: this
+        # is the second of the two write_failure_count call sites that ran
+        # ahead of the `if dry_run` branch further down.
+        if not dry_run:
+            write_failure_count(state_dir, failures + 1)
         return {
             "result": RESULT_CONFLICT,
             "reason": f"change set contains unresolved conflicts: {conflicted}",
             "conflicted": conflicted,
-            "consecutive_failures": failures + 1,
+            "consecutive_failures": failures if dry_run else failures + 1,
         }
 
     protected = outbound_apply.read_protected_set()
@@ -941,6 +960,21 @@ def _run(
         # so nothing was put in front of a human. The debt IS persisted: this
         # run classified every carried path, and dropping that result would
         # lose any path that resolved since the last run.
+        #
+        # Under --dry-run this branch must not persist that decision at all
+        # -- it is a real write to `pending`, not just to the failure counter,
+        # and it runs ahead of `_run`'s own `if dry_run` check further down.
+        # The debt-tracking fields below (`pending_count`, `resolved`) describe
+        # what WOULD be persisted, which is meaningless once nothing is -- so
+        # a dry run reports the same shape as the other dry-run exit below
+        # (result/write_set/withheld) instead of a half-true RESULT_NOTHING.
+        if dry_run:
+            return {
+                "result": "dry-run",
+                "reason": "no path in the change set cleared the write-set rules",
+                "write_set": [],
+                "withheld": withheld,
+            }
         write_state(state_dir, consecutive_failures=0, pending=next_pending)
         return {
             "result": RESULT_NOTHING,
