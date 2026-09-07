@@ -46,6 +46,7 @@ from hooks.sandbox_rules import (
     resolve_effective_cwd,
     _worktree_root_from_cwd,
 )
+import hooks.sandbox_rules as sandbox_rules
 from testsupport.fixture_paths import FIXTURE_HOME, FIXTURE_MAIN_REPO
 
 # ---------------------------------------------------------------------------
@@ -3997,3 +3998,228 @@ class TestD2240GitRmCachedExemption:
         violation."""
         assert is_real_git_rm_invocation("git rm --cached f") is True
         assert is_real_git_rm_invocation("git rm f") is True
+
+
+# ---------------------------------------------------------------------------
+# D#2448 — classify_bash cost is bounded, and bounded by SHAPE not by seconds
+# ---------------------------------------------------------------------------
+#
+# WHAT RUNS THIS: CI runs no pytest (D#2443), so nothing in this file — these
+# tests included — gates a merge. They live here because this is where the other
+# 703 tests for this module live, and a scaling regression is caught by running
+# them, not by a required check. That is a deliberate choice recorded in D#2448's
+# Spec rather than an omission: the honest, non-flaky form of this assertion is
+# an operation count, and an operation count belongs next to the unit tests, not
+# in a required job protecting against a tail case nobody has hit in real
+# traffic. No scripts/ci/ guard is added.
+
+
+def _tokeniser_work(command: str) -> int:
+    """Character-copy operations CPython's shlex performs building tokens for
+    one `classify_bash` call.
+
+    THIS IS A COUNT, NOT A DURATION, and that is the whole point. A wall-clock
+    threshold here would be a flake on a loaded runner and meaningless on a
+    different host; this number is identical on a fast machine and a slow one.
+
+    What it counts, and why that is the right thing to count: `shlex.read_token`
+    builds each token with `self.token = self.token + nextchar`, one character
+    at a time. `self.token` is an attribute, so CPython's in-place
+    string-concatenation optimisation does not apply and every character copies
+    the whole token accumulated so far — a token of length L costs ~L**2/2
+    character copies. Summing `len(token)**2` across every token of every
+    tokenisation pass therefore counts exactly the operation that was
+    superlinear, and it is the operation the D#2448 profile found 95% of the
+    runtime inside.
+    """
+    import shlex as _shlex
+
+    work = 0
+    original_split = _shlex.split
+    original_punct = sandbox_rules._punctuation_tokens_uncached
+
+    def _counting(fn):
+        def inner(text, *args, **kwargs):
+            nonlocal work
+            tokens = fn(text, *args, **kwargs)
+            work += sum(len(tok) * len(tok) for tok in tokens)
+            return tokens
+
+        return inner
+
+    _shlex.split = _counting(original_split)
+    sandbox_rules._punctuation_tokens_uncached = _counting(original_punct)
+    # The memo would otherwise report a second measurement of the same string as
+    # zero work; clear it so each measurement stands on its own.
+    sandbox_rules._TOKENISE_CACHE.clear()
+    try:
+        classify_bash(command, _WT_CLAUDE)
+    finally:
+        _shlex.split = original_split
+        sandbox_rules._punctuation_tokens_uncached = original_punct
+        sandbox_rules._TOKENISE_CACHE.clear()
+    return work
+
+
+# steps(10n) <= K * 10 * steps(n). K is the slack allowed over exactly-linear
+# growth. Measured on this module: 1.0x for a single long token (the cap bounds
+# it outright) and 10.0x for many short tokens (exactly linear). The pre-fix
+# algorithm scores 100.05x, so K=2 sits an order of magnitude clear of both the
+# passing and the failing case.
+_SCALING_SLACK = 2
+
+
+class TestD2448TokeniserScaling:
+    """`classify_bash` cost must grow no worse than linearly in command length.
+
+    D#2448: a 1.2 MB command took 98 s inside a PreToolUse hook that runs before
+    every tool call. An agent that appears hung for that long gets killed, and a
+    guardrail that gets killed is not a guardrail — which is why this is scored
+    as over-blocking (CLAUDE.md's worse failure for hooks/) rather than as a
+    performance nicety.
+    """
+
+    def test_one_long_token_is_not_superlinear(self) -> None:
+        """The shape that was quadratic: cost scaled with the length of the
+        LONGEST TOKEN, not of the command. That is why D#2448's two probes
+        disagreed about input shape while agreeing about the conclusion."""
+        n = 20_000
+        small = _tokeniser_work("echo " + "a" * (n - 5))
+        large = _tokeniser_work("echo " + "a" * (10 * n - 5))
+        assert small > 0, "counter measured nothing — instrumentation is broken"
+        assert large <= _SCALING_SLACK * 10 * small, (
+            f"tokeniser work grew {large / small:.1f}x for a 10x longer token "
+            f"(work({n})={small}, work({10 * n})={large}); expected no worse "
+            f"than {_SCALING_SLACK * 10}x"
+        )
+
+    def test_many_short_tokens_stays_linear(self) -> None:
+        """The shape that was already linear must not become superlinear — a cap
+        on token length must not be paid for with a new per-token cost."""
+        n = 20_000
+        small = _tokeniser_work("echo " + " ".join(["aaaa"] * (n // 5)))
+        large = _tokeniser_work("echo " + " ".join(["aaaa"] * (10 * n // 5)))
+        assert small > 0
+        assert large <= _SCALING_SLACK * 10 * small, (
+            f"tokeniser work grew {large / small:.1f}x for a 10x longer command"
+        )
+
+    def test_truncation_is_the_identity_below_the_cap(self) -> None:
+        """The safety property behind every "no verdict changed" claim.
+
+        Nothing this fix does can alter a command that carries no over-long run,
+        so no realistic command reaches the tokeniser in a different shape than
+        it did before — and no verdict can move for one.
+        """
+        for command in (
+            "git status --short",
+            "python3 -c 'import os; print(os.getcwd())'",
+            "echo " + "a" * (sandbox_rules._MAX_TOKEN_CHARS - 5),
+            "curl -sSL https://example.com/" + "p" * 4000,
+        ):
+            assert sandbox_rules._truncate_long_runs(command) == command
+
+    def test_truncation_keeps_the_prefix_of_an_overlong_run(self) -> None:
+        """Prefix, not placeholder. A placeholder containing `<`/`>` would be
+        split into a bogus redirect operator and target, inventing a write target
+        that was never in the command — an over-block. Keeping the prefix means
+        every rule that keys on the START of a token sees what it saw before."""
+        cap = sandbox_rules._MAX_TOKEN_CHARS
+        command = "echo /some/path/" + "z" * (cap * 3)
+        out = sandbox_rules._truncate_long_runs(command)
+        assert len(out) < len(command)
+        assert out.startswith("echo /some/path/zzz")
+        assert max(len(tok) for tok in out.split()) == cap
+
+    def test_memo_returns_a_fresh_list_each_time(self) -> None:
+        """Callers own their token list and some mutate it; a shared cached list
+        would let one caller corrupt the next one's view of the command."""
+        first = sandbox_rules._shlex_split("git status --short")
+        first.append("MUTATED")
+        second = sandbox_rules._shlex_split("git status --short")
+        assert "MUTATED" not in second
+
+    def test_memo_replays_unbalanced_quote_errors(self) -> None:
+        """Callers rely on ValueError to trigger their degraded-tokenisation
+        fallbacks; a memo that swallowed it would silently change behaviour."""
+        for _ in range(2):
+            with pytest.raises(ValueError):
+                sandbox_rules._shlex_split("echo 'unbalanced")
+
+
+class TestD2448OversizeQuotedRegionAllowsAndRecords:
+    """A quoted region past the ceiling is ALLOWED and recorded, never blocked.
+
+    D#2448 acceptance item 4. Truncating such a region would be an over-block:
+    `_python_payload_is_read_only` fails closed on a SyntaxError, so a truncated
+    `python3 -c "<script>"` payload stops parsing and a legitimate ALLOW becomes
+    a BLOCK. Declining to classify can only move a verdict toward allow.
+    """
+
+    def _oversize(self) -> str:
+        body = " ".join("a" for _ in range(sandbox_rules._MAX_QUOTED_REGION_CHARS))
+        return "echo '" + body + "'"
+
+    def test_allows_rather_than_blocks(self) -> None:
+        assert classify_bash(self._oversize(), _WT_CLAUDE).allow is True
+
+    def test_says_it_did_not_vet_the_command(self) -> None:
+        """An empty reason means "vetted and clean". This allow is not that and
+        must not be mistaken for it — the reason is what hooks/sandbox.py keys
+        its audit row on."""
+        decision = classify_bash(self._oversize(), _WT_CLAUDE)
+        assert decision.reason == sandbox_rules.OVERSIZE_QUOTED_REGION_REASON
+        assert sandbox_rules.has_oversize_quoted_region(self._oversize()) is True
+
+    def test_ceiling_sits_above_realistic_quoted_payloads(self) -> None:
+        """An inline python script and a long commit message must still be
+        classified normally — the ceiling bounds a pathological tail, it does not
+        stop vetting real commands."""
+        script = "python3 -c '" + ("x = 1; " * 1000) + "'"
+        message = 'git commit -m "' + ("word " * 2000) + '"'
+        for command in (script, message):
+            assert sandbox_rules.has_oversize_quoted_region(command) is False
+            assert (
+                classify_bash(command, _WT_CLAUDE).reason
+                != sandbox_rules.OVERSIZE_QUOTED_REGION_REASON
+            )
+
+    def test_longest_quoted_region_handles_escapes_and_unterminated_quotes(self) -> None:
+        assert sandbox_rules.longest_quoted_region("echo 'abc'") == 3
+        assert sandbox_rules.longest_quoted_region('echo "ab\\"cd"') == 6
+        assert sandbox_rules.longest_quoted_region("echo 'abc") == 3
+        assert sandbox_rules.longest_quoted_region("echo abc") == 0
+
+
+class TestD2448NonObjectPayloadIsQuiet:
+    """A JSON top level that is not an object must not print a traceback.
+
+    D#2448 items 10/11. Failing open is CORRECT for a guardrail and does not
+    change — the exit status is the property that must not move. The traceback
+    was the defect: it reads like a real error in an agent's tool output and
+    teaches whoever sees it to ignore hook output, which costs us the messages
+    that do matter.
+    """
+
+    @pytest.mark.parametrize("payload", ["[1, 2, 3]", '"a string"', "42", "null", "true"])
+    def test_exits_zero_without_a_traceback(self, payload: str) -> None:
+        hook = str(_REPO / "hooks" / "sandbox.py")
+        result = subprocess.run(
+            [sys.executable, hook], input=payload, capture_output=True, text=True, timeout=30
+        )
+        assert result.returncode == 0, "must still fail OPEN"
+        assert "Traceback" not in result.stderr
+        assert "AttributeError" not in result.stderr
+        assert "not an object" in result.stderr
+
+    def test_an_object_payload_is_still_processed_normally(self) -> None:
+        """The guard must not swallow real payloads on its way past."""
+        hook = str(_REPO / "hooks" / "sandbox.py")
+        payload = json.dumps(
+            {"tool_name": "Bash", "tool_input": {"command": "git status"}, "cwd": _WT_CLAUDE}
+        )
+        result = subprocess.run(
+            [sys.executable, hook], input=payload, capture_output=True, text=True, timeout=30
+        )
+        assert result.returncode == 0
+        assert "not an object" not in result.stderr

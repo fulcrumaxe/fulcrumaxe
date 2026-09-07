@@ -764,7 +764,7 @@ def _substitution_is_claude_spawn(inner: str) -> bool:
     normalised = re.sub(r";", " ; ", normalised)
     normalised = re.sub(r" +", " ", normalised).strip()
     try:
-        inner_tokens = shlex.split(normalised)
+        inner_tokens = _shlex_split(normalised)
     except ValueError:
         inner_tokens = normalised.split()
     for pos in _command_positions(inner_tokens):
@@ -807,7 +807,7 @@ def check_claude_spawn(argv: list[str], cmd_str: str) -> Decision:
     normalised = re.sub(r";", " ; ", normalised)
     normalised = re.sub(r" +", " ", normalised).strip()
     try:
-        tokens = shlex.split(normalised)
+        tokens = _shlex_split(normalised)
     except ValueError:
         # Untokenisable (e.g. unclosed quotes after stripping) — fall back to
         # simpler split; prefer safety over false positive.
@@ -839,7 +839,7 @@ def check_claude_spawn(argv: list[str], cmd_str: str) -> Decision:
     # 3. Recurse into bash -c / sh -c payloads (original tokens, before quote-strip,
     #    to preserve inner quoting for recursive shlex.split).
     try:
-        orig_tokens = shlex.split(cmd_str)
+        orig_tokens = _shlex_split(cmd_str)
     except ValueError:
         orig_tokens = []
 
@@ -1028,6 +1028,240 @@ def is_worktree(cwd: str) -> Optional[str]:
             worktree_id = rest.split("/")[0] if rest else "unknown"
             return worktree_id or "unknown"
     return None
+
+
+# ---------------------------------------------------------------------------
+# Tokeniser cost control (D#2448)
+# ---------------------------------------------------------------------------
+#
+# `classify_bash` runs as a PreToolUse hook, before every single tool call, so
+# its cost is paid on every call whether or not it finds anything. At realistic
+# command lengths that cost is ~0.1 ms and invisible. The tail was not: a
+# 1.2 MB command took 95 s on the operator host, which does not degrade the
+# guardrail so much as stop the agent — and an agent that looks hung gets
+# killed, which is the over-blocking CLAUDE.md names as the worse failure for
+# this file.
+#
+# A profile (cProfile, 1.2 MB command, non-team_lead tier) put 95% of that time
+# in ONE named function: CPython's `shlex.read_token` (Lib/shlex.py). It builds
+# each token with `self.token = self.token + nextchar`, one character at a
+# time. Because `self.token` is an attribute, CPython's in-place string-concat
+# optimisation does not apply, so every character copies the whole token so far:
+# a single token of length L costs O(L**2).
+#
+# That is why the two probes in D#2448 disagreed about input *shape* while
+# agreeing about the conclusion. The cost is quadratic in the length of the
+# LONGEST TOKEN, not in the length of the command. Measured here, doubling:
+#
+#   one long token      31.5 ms -> 91.6 ms -> 302.3 ms   (~3.3x per doubling)
+#   many short tokens   11.4 ms -> 22.5 ms ->  44.5 ms   (~2.0x per doubling)
+#
+# Two independent costs came out of that profile, and they are fixed
+# separately below:
+#
+#   1. Re-tokenisation. A single classify_bash call tokenised the command 16
+#      times (16x character amplification, measured on a 49-byte command) —
+#      each of the dozen-odd shlex call sites in this module re-derived the
+#      same token list from scratch. `_cached_tokenise` makes that once.
+#      This changes no verdict at all: same tokeniser, same input, same output.
+#
+#   2. The quadratic itself. `_truncate_long_runs` bounds the length of any
+#      single whitespace-free run handed to shlex, which bounds L and makes the
+#      total linear in the command length.
+#
+# Nothing here makes the classifier stricter. See `_truncate_long_runs` for why
+# its one lossy edge is an under-block rather than an over-block, which is the
+# direction CLAUDE.md's scoring rule for hooks/ asks for.
+
+# A whitespace-free run longer than this is truncated before tokenisation.
+# Chosen as 2x PATH_MAX (4096): every token this module actually matches on is
+# a path, a git verb, a `gh` flag, or a shell operator, and none of those can
+# exceed PATH_MAX and still mean anything on this filesystem.
+_MAX_TOKEN_CHARS = 8192
+
+# `\S+` and not `\S{N,}`. The obvious spelling of this scan,
+# `re.sub(r"\S{8193,}", ...)`, is itself catastrophically slow — on 1.2 MB of
+# 8192-character runs it backtracks from every position inside every run and
+# took 9106 ms, against 2.32 ms for the `\S+` scan below. Replacing a
+# quadratic tokeniser with a quadratic regex would have benchmarked as a fix
+# and changed nothing.
+_NON_SPACE_RUN_RE = re.compile(r"\S+")
+
+
+def _truncate_long_runs(command: str) -> str:
+    """Truncate any whitespace-free run in *command* longer than the cap.
+
+    Linear in ``len(command)``. Bounds the longest token shlex can build, which
+    is what bounds the O(L**2) accumulation in `shlex.read_token`.
+
+    Truncation keeps each over-long run's PREFIX rather than substituting a
+    placeholder, and that choice is load-bearing in two directions:
+
+      - A placeholder containing shell metacharacters (`<`, `>`) would be split
+        by the punctuation tokeniser into a bogus redirect operator and target,
+        inventing a write target that was never in the command — an OVER-block,
+        and a guardrail that blocks real work is the failure mode this file is
+        scored against.
+      - A word-shaped placeholder would look like a relative path to the
+        unenumerated-write scan, with the same over-blocking result.
+
+    A prefix cannot do either. Every rule in this module that keys on the START
+    of a token — `startswith("/")`, `startswith("-")`, `~/`, a git verb, a `gh`
+    flag — sees exactly what it saw before. The only thing lost is content past
+    the cap inside a single 8 KB-plus unbroken run, so the one direction this
+    can move a verdict is toward ALLOW, on a token that cannot be a real path.
+    """
+    if len(command) <= _MAX_TOKEN_CHARS:
+        # Fast path: no run can exceed the cap, so realistic commands never
+        # pay for the scan at all.
+        return command
+    out: list[str] = []
+    last = 0
+    for match in _NON_SPACE_RUN_RE.finditer(command):
+        start, end = match.span()
+        if end - start > _MAX_TOKEN_CHARS:
+            out.append(command[last:start])
+            out.append(command[start:start + _MAX_TOKEN_CHARS])
+            last = end
+    if not out:
+        return command
+    out.append(command[last:])
+    return "".join(out)
+
+
+# A quoted region longer than this makes classify_bash decline to classify the
+# command: it ALLOWS and records, it does not block (D#2448 acceptance item 4).
+#
+# Why a ceiling here and truncation above, when both bound the same quadratic:
+# truncating a quoted region is the one form of this fix that can make the
+# classifier STRICTER. `_python_payload_is_read_only` fails closed — it returns
+# False on a SyntaxError from `ast.parse`, and False means "not provably
+# read-only", which blocks. Truncate the payload of a legitimate
+# `python3 -c "<9 KB script>"` and it stops parsing, so an ALLOW becomes a
+# BLOCK. That is an over-block, and CLAUDE.md's scoring rule for hooks/ is
+# explicit that over-blocking is the worse failure here: a guardrail that gets
+# in the way of real work gets disabled.
+#
+# Declining to classify can only ever move a verdict toward ALLOW, which is the
+# safe direction, and it is the shape `payload_shape` and `head_flip_warning`
+# already use in this file. The cost is real and is stated rather than hidden:
+# past this ceiling the command is NOT vetted, so hooks/sandbox.py records it.
+#
+# 128 KiB sits far above every legitimate quoted region — an inline
+# `python3 -c` script, a commit message, a PR body are all comfortably under
+# 20 KB — while still bounding the O(L**2) accumulation to roughly 0.4 s.
+_MAX_QUOTED_REGION_CHARS = 131072
+
+
+def longest_quoted_region(command: str) -> int:
+    """Length of the longest quoted-region interior in *command*.
+
+    Linear: both cursors advance monotonically and never revisit a character.
+
+    This is a bound on what `shlex` can accumulate into one token, not a shell
+    parser. A token is either an unquoted whitespace-free run (bounded by
+    `_truncate_long_runs`) or contains a quoted region (bounded here), so the
+    two together bound token length for any input not deliberately constructed
+    to defeat them — which D#2448 places out of scope by design.
+    """
+    longest = 0
+    i = 0
+    n = len(command)
+    while i < n:
+        char = command[i]
+        if char == "\\":
+            i += 2
+            continue
+        if char in ("'", '"'):
+            start = i + 1
+            j = start
+            while j < n:
+                current = command[j]
+                # Backslash escapes inside "..." but is literal inside '...',
+                # matching shlex's posix rules.
+                if char == '"' and current == "\\":
+                    j += 2
+                    continue
+                if current == char:
+                    break
+                j += 1
+            if j >= n:
+                # Unterminated quote. shlex raises ValueError on this and every
+                # caller already has a fallback; measure the tail and stop.
+                return max(longest, n - start)
+            longest = max(longest, j - start)
+            i = j + 1
+            continue
+        i += 1
+    return longest
+
+
+def has_oversize_quoted_region(command: str) -> bool:
+    """True if *command* carries a quoted region past the ceiling.
+
+    `classify_bash` declines to classify these (allowing them) and
+    hooks/sandbox.py records the event. Exposed so the hook can record without
+    re-deriving the answer.
+
+    The length pre-check is not merely an optimisation: a quoted region cannot
+    be longer than the command containing it, so realistic commands never run
+    the scan at all and item 8's 0.1 ms budget is untouched.
+    """
+    return (
+        len(command) > _MAX_QUOTED_REGION_CHARS
+        and longest_quoted_region(command) > _MAX_QUOTED_REGION_CHARS
+    )
+
+
+# Reason carried by the one Decision in this module that allows WITHOUT having
+# vetted the command. Distinguishable on purpose: an empty reason means "vetted
+# and clean"; this means "not vetted, and that is recorded".
+OVERSIZE_QUOTED_REGION_REASON = (
+    "sandbox_unclassified_oversize_quoted_region: command contains a quoted "
+    "region larger than the classifier's ceiling — ALLOWED without vetting and "
+    "recorded, not blocked"
+)
+
+
+# Bounded memo of tokenisations, keyed by (tokeniser kind, command string).
+# One classify_bash call re-tokenises the same handful of strings a dozen-plus
+# times; a few entries absorb all of that. Bounded (and cleared wholesale on
+# overflow) because this module is imported in-process by long-running callers
+# and by the test suite, not only by the short-lived hook process.
+_TOKENISE_CACHE_MAX = 8
+_TOKENISE_CACHE: dict[tuple[str, str], object] = {}
+
+
+def _cached_tokenise(kind: str, command: str, produce: Callable[[str], list[str]]) -> list[str]:
+    """Memoised tokenisation. Replays `ValueError` so callers' unbalanced-quote
+    fallbacks behave exactly as they did when every call site ran the tokeniser
+    itself.
+
+    Returns a fresh list each time — callers treat their token list as their
+    own and some mutate it, which a shared cached list would corrupt.
+    """
+    key = (kind, command)
+    cached = _TOKENISE_CACHE.get(key)
+    if cached is None:
+        try:
+            cached = produce(_truncate_long_runs(command))
+        except ValueError as exc:
+            cached = ValueError(str(exc))
+        if len(_TOKENISE_CACHE) >= _TOKENISE_CACHE_MAX:
+            _TOKENISE_CACHE.clear()
+        _TOKENISE_CACHE[key] = cached
+    if isinstance(cached, ValueError):
+        raise ValueError(str(cached))
+    return list(cached)  # type: ignore[arg-type]
+
+
+def _shlex_split(command: str) -> list[str]:
+    """`shlex.split(command)`, memoised and with over-long runs truncated.
+
+    Drop-in for the bare `shlex.split` calls this module used to make at a
+    dozen sites. Same tokeniser, same arguments, same ValueError contract.
+    """
+    return _cached_tokenise("split", command, shlex.split)
 
 
 def _tokenize_shell_command(command: str) -> list[str]:
@@ -1369,7 +1603,7 @@ def is_real_git_rm_invocation(command: str, *, exempt_cached: bool = False) -> b
 
     # Step 3: tokenise.
     try:
-        tokens = shlex.split(normalised)
+        tokens = _shlex_split(normalised)
     except ValueError:
         # Untokenisable (e.g. unclosed quotes) — fall back to the narrow regex.
         # Conservative: fail-closed (block if the narrow pattern matches).
@@ -1555,7 +1789,7 @@ def is_head_flipping_git_invocation(command: str) -> bool:
 def _is_bash_wrapping_git_write(command: str, worktree_root: str) -> Optional[str]:
     """Detect `bash -c '...'` or `sh -c '...'` wrapping a git write-verb."""
     try:
-        tokens = shlex.split(command)
+        tokens = _shlex_split(command)
     except ValueError:
         return None
 
@@ -1662,6 +1896,12 @@ def _tokenize_punctuation_aware(command: str) -> list[str]:
     Same failure mode as `shlex.split`: raises `ValueError` on unbalanced
     quoting. Callers already handle that.
     """
+    return _cached_tokenise("punctuation", command, _punctuation_tokens_uncached)
+
+
+def _punctuation_tokens_uncached(command: str) -> list[str]:
+    """The actual punctuation-aware lexer run. Separated only so
+    `_cached_tokenise` has something to call on a miss."""
     lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
     lexer.commenters = ""
@@ -1776,7 +2016,7 @@ def _absolute_path_targets(command: str) -> list[str]:
 
     # Write-command path targets
     try:
-        tokens = shlex.split(command)
+        tokens = _shlex_split(command)
     except ValueError:
         tokens = command.split()
 
@@ -2871,7 +3111,7 @@ def _scan_command_segments(
     normalised = re.sub(r" +", " ", normalised).strip()
 
     try:
-        tokens = shlex.split(normalised)
+        tokens = _shlex_split(normalised)
     except ValueError:
         # Untokenisable — nothing safe to scan structurally. The redirect-regex path
         # in _absolute_path_targets already ran independently of tokenisation.
@@ -3031,7 +3271,7 @@ def _all_path_operands(command: str) -> list[str]:
     # args, and not filtered to absolute-shaped tokens (SEC-8) — a relative,
     # `~`-prefixed, or dotdot-relative token is just as real an operand.
     try:
-        tokens = shlex.split(command)
+        tokens = _shlex_split(command)
     except ValueError:
         tokens = command.split()
 
@@ -3163,7 +3403,7 @@ def _find_real_command_segments(
     normalised = re.sub(r"[;(){}|]", lambda m: f" {m.group()} ", normalised)
     normalised = re.sub(r" +", " ", normalised).strip()
     try:
-        tokens = shlex.split(normalised)
+        tokens = _shlex_split(normalised)
     except ValueError:
         tokens = normalised.split()
 
@@ -3181,7 +3421,7 @@ def _find_real_command_segments(
         results.extend(_find_real_command_segments(match.group(1), is_target_token))
 
     try:
-        orig_tokens = shlex.split(command)
+        orig_tokens = _shlex_split(command)
     except ValueError:
         orig_tokens = []
     for idx, tok in enumerate(orig_tokens):
@@ -3352,7 +3592,7 @@ def _extract_all_gh_query_values(command: str) -> list[str]:
     _QUERY_FLAGS = frozenset(["-f", "-F", "--field", "--raw-field"])
 
     try:
-        tokens = shlex.split(command)
+        tokens = _shlex_split(command)
     except ValueError:
         # Untokenisable — fall back to regex (captures unquoted values only)
         values: list[str] = []
@@ -3652,6 +3892,16 @@ def classify_bash(command: str, cwd: str) -> Decision:
     Returns Decision(allow=False, reason=...) to block, Decision(allow=True, reason="") to pass.
     Caller is responsible for checking is_worktree(cwd) first.
     """
+    # 0. Cost ceiling (D#2448 item 4). A quoted region past the ceiling is the
+    #    one shape whose token length cannot be bounded without risking an
+    #    over-block (see _MAX_QUOTED_REGION_CHARS). Decline to classify it:
+    #    ALLOW, and let hooks/sandbox.py record that this command went unvetted.
+    #    Deliberately NOT a block — refusing to classify means not knowing
+    #    whether the command was safe, and turning "I don't know" into "denied"
+    #    is the over-blocking that gets guardrails disabled.
+    if has_oversize_quoted_region(command):
+        return Decision(allow=True, reason=OVERSIZE_QUOTED_REGION_REASON)
+
     # 1a. git rm check — archive protocol violation, applies regardless of worktree status.
     git_rm_decision = classify_git_rm(command)
     if not git_rm_decision.allow:
