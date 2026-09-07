@@ -286,9 +286,25 @@ def test_get_session_manager_returns_sqlite_when_db_exists(tmp_path):
         assert isinstance(result, SqliteSessionManager)
 
 
-def test_get_session_manager_returns_file_based_when_no_db(tmp_path):
+def test_get_session_manager_returns_file_based_when_no_db(tmp_path, monkeypatch):
     import backend.db as db_mod
     with patch.object(db_mod, "state_db_exists", return_value=False):
         import backend.session_manager as sm_mod
+
+        # get_session_manager() constructs SessionManager() with no arguments,
+        # and __init__ mkdirs its sessions dir — so without this the call
+        # creates .autonomous-team/sessions/ in the working tree. Nothing
+        # under .autonomous-team/ is tracked, so that directory then exists
+        # for every later test in the run and for nobody on a fresh clone
+        # (D#2453).
+        #
+        # Patching sm_mod.SESSIONS_DIR would not help: it is the default
+        # argument of __init__, bound once when the def executed, so the
+        # module attribute is no longer what the call reads. The default
+        # tuple itself is what has to move.
+        monkeypatch.setattr(
+            sm_mod.SessionManager.__init__, "__defaults__", (tmp_path / "sessions",)
+        )
+
         result = sm_mod.get_session_manager()
         assert isinstance(result, SessionManager)

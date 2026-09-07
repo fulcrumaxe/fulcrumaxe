@@ -306,8 +306,17 @@ def test_pre_spawn_check_includes_lessons():
     if not script.exists():
         pytest.skip("pre-spawn-check.sh not found — skipping integration test")
 
-    # Write a lesson to the real lessons dir so pre-spawn-check can find it
+    # This test shells out to pre-spawn-check.sh, which reads the real
+    # in-repo lessons dir and has no override for it — so the lesson has to
+    # be written there. What it must not do is LEAVE anything behind: nothing
+    # under .autonomous-team/ is tracked, so a run that creates the directory
+    # here hands the next test a checkout that looks different from a fresh
+    # clone (D#2453). Record which of these paths already existed so the
+    # cleanup below can put the tree back exactly as it found it.
     lessons_dir = repo_root / ".autonomous-team" / "lessons"
+    state_dir_existed = lessons_dir.parent.exists()
+    lessons_dir_existed = lessons_dir.exists()
+    lesson_file_existed = (lessons_dir / "test_coverage.jsonl").exists()
     store = LessonsStore(base_dir=lessons_dir)
     store.record(
         pr=9999,
@@ -325,15 +334,33 @@ def test_pre_spawn_check_includes_lessons():
         cwd=str(repo_root),
     )
 
-    # Clean up the test lesson
+    # Clean up the test lesson, then remove any path this test created.
+    # Rewriting the file's contents is not enough on its own: on a checkout
+    # where none of these existed, an emptied-but-present
+    # .autonomous-team/lessons/test_coverage.jsonl is still three new paths
+    # in the working tree. Anything that was already here is left untouched.
+    #
+    # This cleanup is sufficient only because the subprocess above runs with
+    # --dry-run, and every write in scripts/pre-spawn-check.sh is gated on
+    # DRY_RUN != 1. Drop that flag and the script writes files this block
+    # does not know to remove — and it would fail silently, because the
+    # rmdir calls below sit inside `except Exception: pass` and a non-empty
+    # directory simply stays. If you change the invocation, revisit this.
     try:
         lesson_file = lessons_dir / "test_coverage.jsonl"
         if lesson_file.exists():
             lines = lesson_file.read_text().splitlines()
             remaining = [ln for ln in lines if "[pytest-integration]" not in ln]
-            lesson_file.write_text(
-                "\n".join(remaining) + ("\n" if remaining else "")
-            )
+            if not remaining and not lesson_file_existed:
+                lesson_file.unlink()
+            else:
+                lesson_file.write_text(
+                    "\n".join(remaining) + ("\n" if remaining else "")
+                )
+        if not lessons_dir_existed:
+            lessons_dir.rmdir()          # raises if not empty — then leave it
+        if not state_dir_existed:
+            lessons_dir.parent.rmdir()
     except Exception:
         pass
 

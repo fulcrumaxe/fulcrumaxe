@@ -38,6 +38,22 @@ from backend.circuit_breaker import (
 
 
 @pytest.fixture(autouse=True)
+def scratch_history_file(tmp_path):
+    """Keep the transition log out of the checkout.
+
+    `_HISTORY_FILE` is a repo-root-anchored module constant with no env
+    override, so an unpatched run appends to
+    `.autonomous-team/circuit-breaker-history.jsonl` in the working tree and
+    creates `.autonomous-team/` along the way. Nothing under that directory
+    is tracked, so on a fresh clone this run is what brings it into
+    existence — and other tests then take its presence for a fact about the
+    checkout rather than about the order tests ran in (D#2453).
+    """
+    with patch.object(cb_mod, "_HISTORY_FILE", tmp_path / "circuit-breaker-history.jsonl"):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def fake_bb(tmp_path):
     """Replace the module-level _bb with a fresh in-memory Blackboard."""
     from backend.blackboard import Blackboard

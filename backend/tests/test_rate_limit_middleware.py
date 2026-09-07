@@ -34,6 +34,31 @@ from backend.rate_limiter import RateLimiter
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def scratch_kpi_out(tmp_path, monkeypatch):
+    """Keep the KPI snapshot out of the checkout.
+
+    The exemption tests below hit `/metrics`, which reaches
+    `kpi_engine.compute_all()`, which unconditionally writes `KPI_OUT` — a
+    repo-root-anchored module constant with no env override. So a test about
+    rate-limit exemptions was writing `.autonomous-team/kpi.json` into the
+    working tree (D#2453). Patched here rather than in `kpi_engine` because
+    the write is incidental to what these tests are asserting.
+
+    Scope of what this prevents, stated precisely because the imprecise
+    version is the same defect this fixture is part of closing: it stops a
+    stray `kpi.json` on a checkout that ALREADY has `.autonomous-team/`. It
+    is not what creates that directory. `kpi_engine` has no `mkdir`
+    anywhere, so on a tree without it the `write_text` raises
+    `FileNotFoundError` — which `backend/metrics.py` swallows in a bare
+    `except Exception`, quietly. Measured per-module against `main`: this
+    module creates nothing on a tree with the directory absent.
+    """
+    import backend.kpi_engine as kpi_engine
+
+    monkeypatch.setattr(kpi_engine, "KPI_OUT", tmp_path / "kpi.json")
+
+
 @pytest.fixture()
 def _restore_rate_limit(monkeypatch):
     """Ensure RateLimitMiddleware class attributes revert after each test.
