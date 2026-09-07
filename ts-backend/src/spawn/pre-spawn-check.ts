@@ -449,11 +449,28 @@ export async function runPreSpawnCheck(opts: PreSpawnOptions): Promise<PreSpawnR
   }
 
   // ── Step 3: concurrency caps ───────────────────────────────────────────────
-  // Mirrors bash §596-634:
-  //   - Per-project/per-role cap: policies.<role>.max_concurrent
-  //   - Fleet-wide cap: FLEET_CAP_DEFAULT (8) from backend.fleet.concurrency
-  // We use agent_run DuckDB rows with end_ts IS NULL as the live count,
-  // which is the same underlying source as the Python fleet concurrency module.
+  // Mirrors bash §596-634 in decision, not in data source:
+  //   - Per-role cap: policies.<role>.max_concurrent, counted against
+  //     activeRunsForRole (agent_run DuckDB rows for this role only).
+  //   - Fleet-wide cap: FLEET_CAP_DEFAULT (8), counted against activeRuns
+  //     (all agent_run DuckDB rows, no agent-tool- exclusion).
+  // We use agent_run DuckDB rows with end_ts IS NULL as the live count. This is
+  // NOT the same underlying source as scripts/pre-spawn-check.sh, which counts
+  // fleet.db rows scoped to the whole project (any role) via
+  // backend.fleet.concurrency.count_project_capped, and whose fleet-wide cap
+  // (fleet_cap()) excludes agent-tool- rows that this count does not.
+  //
+  // D#2450 PR-a recorded decisions for the five ways this gate and the bash
+  // one diverged (full rationale: scripts/pre-spawn-check.sh, the block above
+  // its per-project-cap check). Rows settled in PR-a: the bash policy-key read
+  // now matches this gate's per-role read below (no change needed here); the
+  // ts-backend parity suite's one-sided "code-reviewer max_concurrent=4"
+  // assertion was retired (ts-backend/tests/spawn/pre-spawn-check.parity.test.ts).
+  // Rows deferred to PR-b: which store is authoritative for "currently
+  // running" (this DuckDB count vs bash's fleet.db count), and whether the
+  // agent-tool- exclusion belongs in both gates or neither. Do not "fix" this
+  // gate to match bash's population, or vice versa, outside that PR — the
+  // comment above records why that decision needs its own review.
   let activeRuns = 0;
   let activeRunsForRole = 0;
 

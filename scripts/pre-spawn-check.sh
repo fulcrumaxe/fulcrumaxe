@@ -18,6 +18,13 @@
 # Steps: agent_feed → budget_check → circuit_breaker_check → context_load → team_log
 
 set -uo pipefail
+# D#2450: `pipefail` above means every `cmd | tr -d '"' || echo default` pattern
+# in this file *is* reachable — the pipeline's exit status is the last non-zero
+# exit among all stages, not just the rightmost stage's. A prior read of this
+# file (without accounting for `pipefail`) concluded these fallbacks could
+# never fire; verified false by reproduction (`f() { return 1; }; x=$(f | tr -d
+# '"' || echo fallback)` yields "fallback" under `set -o pipefail`, "" without
+# it). No fallback in this file needed changing for that reason.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -825,8 +832,54 @@ _load_context() {
     fi
   fi
 
-  # Per-project concurrency cap — reads policies.executor.max_concurrent from control_plane.
-  # This is the inner bound set via the Settings page slider. The fleet-wide cap (8) is
+  # ── D#2450 PR-a: recorded decisions for the bash/TS spawn-gate cap divergence ──
+  # ts-backend/src/spawn/pre-spawn-check.ts diverged from this gate on five rows.
+  # Decisions (full argument in D#2450):
+  #   1. Policy key — FIXED below. Was hardcoded to policies.executor.max_concurrent
+  #      for every role. Confirmed this was not an intentional "executor cap as
+  #      global": _DEFAULT_POLICIES in backend/control_plane.py already ships
+  #      "code-reviewer" its own max_concurrent=4 default that this gate never read
+  #      (dead data on the bash side — only the TS gate honored it). Now reads
+  #      policies.<role>.max_concurrent, FALLING BACK to
+  #      policies.executor.max_concurrent when the spawning role has no
+  #      max_concurrent key of its own — which is every role today except
+  #      code-reviewer and executor (security-reviewer, project-manager,
+  #      incident_commander, debater, researcher). Read-per-role-then-fall-back,
+  #      not read-per-role-only: a bare per-role read would have silently
+  #      removed the only per-project bound those five roles had (the
+  #      Settings-page "Max Concurrent Agents" slider, which every spawn used
+  #      to be measured against regardless of role) and left them capped by
+  #      nothing but the fleet-wide 8. Executor spawns keep reading the exact
+  #      key the Settings-page slider writes to (backend/api.py:3892,
+  #      backend/routers/ops_control.py:78/136) either way. code-reviewer is
+  #      the only role whose *effective* cap actually changes here: it now
+  #      enforces its own default of 4 instead of inheriting whatever the
+  #      executor slider happens to be set to. See the effective-cap table in
+  #      the D#2450 PR body and tests/test_pre_spawn_check_role_caps.sh for the
+  #      full before/after per role.
+  #   2. Block reason — KEPT as per_project_cap_exceeded. What this check counts
+  #      (count_project_capped: total agents active on the project, any role) is
+  #      unchanged in PR-a — see row 4 — so the reason string still accurately
+  #      describes a project-population check even though the cap *value* is now
+  #      read per-role. Calling it "per_role" here would claim a role-scoped count
+  #      this gate does not perform yet.
+  #   3. Parity test — ts-backend's "code-reviewer max_concurrent=4" case asserted
+  #      a claim with no bash counterpart; retired rather than reconciled (see
+  #      ts-backend/tests/spawn/pre-spawn-check.parity.test.ts). A true two-sided
+  #      comparison isn't honest until row 4 is settled.
+  #   4. What it counts — DEFERRED to PR-b. fleet.db via count_project_capped
+  #      (this gate, project population) vs agent_run DuckDB rows keyed by role
+  #      (ts-backend). Changing the authoritative store for a live concurrency
+  #      limiter is reviewed on its own, not bundled with the key fix above.
+  #   5. Fleet-wide cap — DEFERRED to PR-b. fleet_cap() (configurable, excludes
+  #      agent-tool- rows — backend/fleet/concurrency.py) vs ts-backend's
+  #      compiled-in FLEET_CAP_DEFAULT=8 (no exclusion).
+  #
+  # Per-project concurrency cap — reads policies.<role>.max_concurrent from
+  # control_plane, falling back to policies.executor.max_concurrent (the
+  # Settings-page "Max Concurrent Agents" slider) when the role has no cap of
+  # its own (row 1 above). For role=executor these are the same key, so this
+  # is still the inner bound set via that slider. The fleet-wide cap (8) is
   # the outer bound checked below. Both must pass for the spawn to proceed.
   # Skipped in dry-run and no-register modes (same guards as fleet cap check).
   if [[ "$DRY_RUN" != "1" && "${NO_REGISTER:-}" != "1" ]]; then
@@ -849,7 +902,17 @@ _load_context() {
       echo "ERROR: pre-spawn-check: could not resolve fleet project name: $_PROJECT_NAME_EARLY" >&2
       exit 1
     fi
-    _PER_PROJECT_CAP=$(python3 "$REPO_ROOT/backend/control_plane.py" get "policies.executor.max_concurrent" 2>/dev/null | tr -d '"' || echo "")
+    _PER_PROJECT_CAP=$(python3 "$REPO_ROOT/backend/control_plane.py" get "policies.${ROLE}.max_concurrent" 2>/dev/null | tr -d '"' || echo "")
+    if [[ -z "$_PER_PROJECT_CAP" || "$_PER_PROJECT_CAP" == "null" ]]; then
+      # D#2450 needs-fix round: the role has no max_concurrent of its own —
+      # fall back to policies.executor.max_concurrent (the Settings-page
+      # slider) rather than leaving the role unbounded by the per-project
+      # check. Without this fallback, security-reviewer, project-manager,
+      # incident_commander, debater and researcher silently lost the only
+      # per-project bound they had (all five previously fell under whatever
+      # the executor slider was set to, same as executor and code-reviewer).
+      _PER_PROJECT_CAP=$(python3 "$REPO_ROOT/backend/control_plane.py" get "policies.executor.max_concurrent" 2>/dev/null | tr -d '"' || echo "")
+    fi
     # Normalize: treat empty / null / non-numeric as "no per-project cap configured"
     if [[ -n "$_PER_PROJECT_CAP" && "$_PER_PROJECT_CAP" != "null" ]] && python3 -c "int('$_PER_PROJECT_CAP')" 2>/dev/null; then
       # count_project_capped, not count_project (D#2314 S2): agent-tool- rows
