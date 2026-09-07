@@ -867,13 +867,32 @@ _load_context() {
   #      a claim with no bash counterpart; retired rather than reconciled (see
   #      ts-backend/tests/spawn/pre-spawn-check.parity.test.ts). A true two-sided
   #      comparison isn't honest until row 4 is settled.
-  #   4. What it counts — DEFERRED to PR-b. fleet.db via count_project_capped
-  #      (this gate, project population) vs agent_run DuckDB rows keyed by role
-  #      (ts-backend). Changing the authoritative store for a live concurrency
-  #      limiter is reviewed on its own, not bundled with the key fix above.
-  #   5. Fleet-wide cap — DEFERRED to PR-b. fleet_cap() (configurable, excludes
-  #      agent-tool- rows — backend/fleet/concurrency.py) vs ts-backend's
-  #      compiled-in FLEET_CAP_DEFAULT=8 (no exclusion).
+  #   4. What it counts — DECIDED IN PRINCIPLE, NOT YET IMPLEMENTED (D#2450
+  #      PR-b). PR-a deferred this rather than pre-deciding it. PR-b's review
+  #      round picked fleet.db via count_project_capped as the intended
+  #      target — it's the store the real bash spawn lane's live register()
+  #      already mutates, and the store the operator-facing Fleet tile
+  #      already reads (backend/rpc/fleet_concurrency.py, D#2323) — but a PR-b
+  #      reviewer host-verified that fleet.db is currently EMPTY of the
+  #      population this decision assumed: `SELECT COUNT(*) FROM agents`
+  #      returned 0 against 39 live worktrees and 7 open agent_run rows on the
+  #      same host at the same moment. Root cause not yet pinned down — see
+  #      D#2473 for the measurement and the open investigation. Switching
+  #      ts-backend's gate onto a count that reads 0 while real spawns are
+  #      running would not converge the two gates — it would silently disable
+  #      the TS-side per-project cap. So: ts-backend/src/spawn/pre-spawn-check.ts
+  #      still reads agent_run DuckDB rows for this check, unchanged from
+  #      before PR-b. Re-attempt the fleet.db switch only once D#2473 has
+  #      pinned down why fleet.db reads empty and that's fixed — that is its
+  #      own PR with its own review, the same posture PR-a took toward this
+  #      whole decision.
+  #   5. Fleet-wide cap — same status as row 4, same reason: fleet.db reads 0
+  #      right now, so count_fleet_capped() (added in PR-b, additive, exposed
+  #      via `python3 -m backend.fleet.concurrency count_fleet_capped` for
+  #      whenever row 4 actually lands) is not yet wired into ts-backend's
+  #      fleet-wide check. ts-backend's compiled-in FLEET_CAP_DEFAULT=8 over
+  #      agent_run rows (no agent-tool- exclusion) is unchanged from before
+  #      PR-b.
   #
   # Per-project concurrency cap — reads policies.<role>.max_concurrent from
   # control_plane, falling back to policies.executor.max_concurrent (the
@@ -903,7 +922,7 @@ _load_context() {
       exit 1
     fi
     _PER_PROJECT_CAP=$(python3 "$REPO_ROOT/backend/control_plane.py" get "policies.${ROLE}.max_concurrent" 2>/dev/null | tr -d '"' || echo "")
-    if [[ -z "$_PER_PROJECT_CAP" || "$_PER_PROJECT_CAP" == "null" ]]; then
+    if [[ -z "$_PER_PROJECT_CAP" || "$_PER_PROJECT_CAP" == "null" ]] && [[ "${PRE_SPAWN_ROLE_CAP_NO_FALLBACK:-0}" != "1" ]]; then
       # D#2450 needs-fix round: the role has no max_concurrent of its own —
       # fall back to policies.executor.max_concurrent (the Settings-page
       # slider) rather than leaving the role unbounded by the per-project
@@ -911,6 +930,12 @@ _load_context() {
       # incident_commander, debater and researcher silently lost the only
       # per-project bound they had (all five previously fell under whatever
       # the executor slider was set to, same as executor and code-reviewer).
+      #
+      # PRE_SPAWN_ROLE_CAP_NO_FALLBACK=1 disables this fallback. It exists
+      # only so tests/test_pre_spawn_check_role_caps.sh (D#2450 PR-b) can run
+      # THIS script end-to-end in both the fixed and pre-fix shape and prove
+      # the test still catches the original regression — never set in
+      # production. Unset (the default) is unchanged production behavior.
       _PER_PROJECT_CAP=$(python3 "$REPO_ROOT/backend/control_plane.py" get "policies.executor.max_concurrent" 2>/dev/null | tr -d '"' || echo "")
     fi
     # Normalize: treat empty / null / non-numeric as "no per-project cap configured"
