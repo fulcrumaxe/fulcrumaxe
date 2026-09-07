@@ -163,6 +163,16 @@ _require_code_repo() {
 # value is returned as-is with no remote lookup and no _require_code_repo
 # call, so fixtures can exercise the fetch logic against synthetic local
 # repos without a real "fulcrumaxe/fulcrumaxe" GitHub remote configured.
+#
+# Deliberately gated on `-n` alone, not also on PYTEST_CURRENT_TEST: the only
+# consumers of this override are the bash suites in tests/ (invoked directly
+# via `bash tests/...sh`, never through pytest), so PYTEST_CURRENT_TEST is
+# never set in the context that legitimately needs this override. Adding
+# that check would not add safety in production (the var is already unset
+# there either way) and would break the bash fixtures that are this
+# override's actual reason to exist. Matches the WTC_* convention exactly
+# for the same reason WTC_* uses it: the -n check plus this being a var no
+# operator has reason to export is the whole guard.
 _resolve_code_plane_remote() {
   local dir="${1:-.}" repo remote
 

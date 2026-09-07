@@ -173,6 +173,25 @@ assert_nonzero "provision aborts when the code-plane remote is unresolvable" "$R
 assert_contains "message names the code plane slug" "$REAL_CODE_REPO" "$OUT5"
 assert_not "no half-built tree left behind" test -e "$UNRESOLVED_DEST"
 
+echo "=== (D#1940 review) _resolve_code_plane_remote fails closed — tested directly, not through pr_tree_provision ==="
+# A composed end-to-end nonzero exit from pr_tree_provision does not by
+# itself prove the RESOLVER refused: a resolver mutated to wrongly fall back
+# to a remote name (e.g. "origin") instead of failing would often still make
+# pr_tree_provision abort later for an unrelated reason (the headRefOid
+# cross-check calling a live `gh pr view` with no override in this block),
+# so an "aborts nonzero" assertion alone can pass for the wrong reason. Call
+# the resolver directly and pin its exact documented contract instead: exit
+# 1 (not some other nonzero), nothing on stdout (a fallback would print a
+# remote name here), and the plane named on stderr.
+RESOLVE_ERR_LOG="$WORK/resolve_err.log"
+RESOLVE_OUT="$(_resolve_code_plane_remote "$PARENT" 2>"$RESOLVE_ERR_LOG")"
+RESOLVE_RC=$?
+RESOLVE_ERR="$(cat "$RESOLVE_ERR_LOG" 2>/dev/null)"; rm -f "$RESOLVE_ERR_LOG"
+assert_rc "_resolve_code_plane_remote returns exactly 1 on an unmatched remote (its documented contract)" 1 "$RESOLVE_RC"
+assert_ok "_resolve_code_plane_remote prints NOTHING on stdout on failure (a fallback-to-a-remote-name mutation would print one here)" \
+  test -z "$RESOLVE_OUT"
+assert_contains "_resolve_code_plane_remote's stderr names the unresolved plane" "$REAL_CODE_REPO" "$RESOLVE_ERR"
+
 echo "=== (D#1940 item 4) positive control — PR number collision across planes, fetch lands the CODE plane's head ==="
 # Build two independent bare "remotes" both claiming PR #67, with distinct
 # heads — the exact shape D#1940 measured live: the code plane's PR #67 and

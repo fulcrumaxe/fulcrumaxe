@@ -14,7 +14,7 @@ _REPO_ROOT = _BACKEND_DIR.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from backend.spawn_templates import render, KNOWN_ROLES, REQUIRED_VARS, _REPO  # noqa: E402
+from backend.spawn_templates import render, KNOWN_ROLES, REQUIRED_VARS, _REPO, _CODE_REPO  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -435,6 +435,48 @@ def test_security_reviewer_render_contains_stale_worktree_guidance() -> None:
         "headRefName lookup, a fetch resolved via _resolve_code_plane_remote, and "
         "'git show \"$CODE_REMOTE/$BRANCH:path\"' for reading PR files."
     )
+
+
+def test_review_role_headref_lookup_scoped_to_code_repo() -> None:
+    """The BRANCH/HEAD_SHA/PR_SHA lookups added for D#1940 FM-5 must resolve
+    against CODE_REPO (the code plane), never REPO (the Discussion plane).
+
+    Those lookups feed the new headRefOid cross-check, which compares their
+    result against a fetch that is now pinned to the code plane. If the
+    lookup itself still points at the Discussion plane, the cross-check
+    compares two different repos' PR state and aborts every real review —
+    reproduced live on PR #74 (code plane), where it resolved the Discussion
+    plane's unrelated PR #74 and exited 1. Reverting {{CODE_REPO}} back to
+    {{REPO}} on any of these lines must turn this test red.
+    """
+    assert _REPO != _CODE_REPO, (
+        "fixture invalid: _REPO and _CODE_REPO must differ in this checkout "
+        "for this test to discriminate anything — check .autonomous-team/config.json"
+    )
+    assert _REPO not in _CODE_REPO and _CODE_REPO not in _REPO, (
+        "fixture invalid: _REPO and _CODE_REPO must not be substrings of each "
+        "other, or the substring checks below are unreliable"
+    )
+
+    for role in ("code-reviewer", "security-reviewer", "acceptance-tester"):
+        result = render(role, _STUB_VARS)
+        headref_lines = [
+            line for line in result.splitlines()
+            if "gh pr view" in line and ("headRefName" in line or "headRefOid" in line)
+        ]
+        assert headref_lines, (
+            f"render('{role}') has no 'gh pr view ... --json headRef{{Name,Oid}}' line — "
+            "the D#1940 FM-5 cross-check lookup is missing entirely."
+        )
+        for line in headref_lines:
+            assert _CODE_REPO in line, (
+                f"render('{role}') headRef lookup does not scope to CODE_REPO "
+                f"({_CODE_REPO!r}): {line!r}"
+            )
+            assert _REPO not in line, (
+                f"render('{role}') headRef lookup scopes to the Discussion plane "
+                f"({_REPO!r}) instead of the code plane: {line!r}"
+            )
 
 
 def test_acceptance_tester_no_unresolved_include_directives() -> None:

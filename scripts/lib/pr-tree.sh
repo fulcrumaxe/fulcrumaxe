@@ -80,6 +80,12 @@ source "$(dirname "${BASH_SOURCE[0]}")/repo-resolve.sh"
 # CODE_PLANE_REMOTE_OVERRIDE: when set, its value is returned as-is and no
 # `gh pr view` call is made, so fixtures can exercise pr_tree_provision's
 # cross-check without hitting the live API.
+#
+# Gated on `-n` alone, deliberately not also on PYTEST_CURRENT_TEST — see
+# CODE_PLANE_REMOTE_OVERRIDE's comment in scripts/lib/repo-resolve.sh for the
+# full reasoning: the only consumers are bash suites run directly (never
+# under pytest), so that check would break the real consumer while adding no
+# production safety.
 _prt_expected_head_sha() {
   local pr_number="${1:-}"
   [ -n "$pr_number" ] || { _prt_log "usage: _prt_expected_head_sha <pr_number>"; return 3; }

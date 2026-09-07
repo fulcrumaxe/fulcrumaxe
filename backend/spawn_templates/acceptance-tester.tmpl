@@ -22,7 +22,7 @@ source scripts/lib/repo-resolve.sh
 # the two planes, and a wrong-plane fetch succeeds silently (D#1940 FM-5).
 CODE_REMOTE=$(_resolve_code_plane_remote) || { echo "FAIL: could not resolve the code-plane git remote"; exit 1; }
 
-PR_SHA=$(gh pr view {{pr_number}} --repo {{REPO}} --json headRefOid --jq .headRefOid)
+PR_SHA=$(gh pr view {{pr_number}} --repo {{CODE_REPO}} --json headRefOid --jq .headRefOid)
 git fetch --quiet "$CODE_REMOTE" "pull/{{pr_number}}/head"
 
 TREE_BASE="$(mktemp -d)"
