@@ -104,6 +104,104 @@ def test_age_days_is_positive():
 
 
 # ---------------------------------------------------------------------------
+# unrecognized status ("NEW" and friends) — surfaced, not silently dropped
+# ---------------------------------------------------------------------------
+
+OPEN_NEW = {
+    "number": 104,
+    "title": "Filed with an ad-hoc status",
+    "status": "NEW",
+    "created_at": "2024-01-01T00:00:00Z",
+    "closed_at": None,
+}
+
+CLOSED_NEW = {
+    "number": 101,
+    "title": "Closed, ad-hoc status",
+    "status": "NEW",
+    "created_at": "2024-01-01T00:00:00Z",
+    "closed_at": "2024-02-01T00:00:00Z",
+}
+
+CLOSED_DISCUSSING = {
+    "number": 102,
+    "title": "Closed discussing",
+    "status": "DISCUSSING",
+    "created_at": "2024-01-01T00:00:00Z",
+    "closed_at": "2024-02-01T00:00:00Z",
+}
+
+CLOSED_SPEC_READY = {
+    "number": 103,
+    "title": "Closed spec ready",
+    "status": "SPEC_READY",
+    "created_at": "2024-01-01T00:00:00Z",
+    "closed_at": "2024-02-01T00:00:00Z",
+}
+
+
+def test_new_status_surfaced_under_distinct_category():
+    """An open row with an unrecognized status (e.g. "NEW") is surfaced
+    under a category distinct from stale_discussion, instead of being
+    silently dropped by the bare `continue` this used to hit.
+
+    Recognized-but-non-actionable statuses (IMPLEMENTING etc, covered by
+    test_only_actionable_statuses_returned above) are unaffected and keep
+    being dropped -- this is specifically about statuses outside
+    VALID_STATUSES entirely.
+    """
+    discussions = [
+        OPEN_NEW,
+        OPEN_DISCUSSING,
+        OPEN_SPEC_READY,
+        CLOSED_NEW,
+        CLOSED_DISCUSSING,
+        CLOSED_SPEC_READY,
+    ]
+    result = stale_registry_candidates(discussions=discussions)
+
+    # Non-vacuity: assert the function actually had rows to examine, and
+    # print the count -- a fixture that silently became empty must fail
+    # this, not sail through the assertions below.
+    open_rows = [d for d in discussions if d.get("closed_at") is None]
+    print(f"non-vacuity: compared {len(open_rows)} open rows of {len(discussions)} total")
+    assert len(open_rows) > 0
+
+    numbers = [r["number"] for r in result]
+
+    # The NEW row is surfaced, and under a distinct category.
+    assert OPEN_NEW["number"] in numbers
+    new_row = next(r for r in result if r["number"] == OPEN_NEW["number"])
+    assert new_row["category"] != "stale_discussion"
+    assert new_row["category"] == "unrecognized_status"
+
+    # Closed rows never appear, regardless of what status they carry.
+    assert CLOSED_NEW["number"] not in numbers
+    assert CLOSED_DISCUSSING["number"] not in numbers
+    assert CLOSED_SPEC_READY["number"] not in numbers
+
+    # The compared count equals the open-row count (3), not the total
+    # row count (6) -- proves closed rows were excluded, not just unlucky.
+    assert len(numbers) == len(open_rows) == 3
+
+    # Canary: the check must be able to fail. Remove the NEW row and
+    # confirm the result changes. A check that returns the same answer
+    # with and without its subject has not compared anything.
+    without_new = [
+        OPEN_DISCUSSING,
+        OPEN_SPEC_READY,
+        CLOSED_NEW,
+        CLOSED_DISCUSSING,
+        CLOSED_SPEC_READY,
+    ]
+    result_without = stale_registry_candidates(discussions=without_new)
+    numbers_without = [r["number"] for r in result_without]
+
+    assert numbers != numbers_without
+    assert OPEN_NEW["number"] not in numbers_without
+
+
+# ---------------------------------------------------------------------------
 # health_reds
 # ---------------------------------------------------------------------------
 

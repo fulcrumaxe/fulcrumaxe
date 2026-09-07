@@ -118,6 +118,14 @@ def stale_registry_candidates(
 ) -> list[dict]:
     """Return open DISCUSSING/SPEC_READY discussions ranked oldest-first.
 
+    An open row whose status is a *recognized* but non-actionable value
+    (IMPLEMENTING, REVIEWING, DONE, CLOSED — see VALID_STATUSES) is still
+    dropped: it is being handled by another path, not stuck. An open row
+    whose status is *unrecognized* (outside VALID_STATUSES entirely, e.g.
+    the ad-hoc "NEW" some filers invented) is surfaced under a distinct
+    "unrecognized_status" category instead of being silently dropped, so
+    the ranker makes it visible rather than losing it.
+
     Args:
         discussions: injectable list for testing. If None, loads from disk.
 
@@ -129,6 +137,8 @@ def stale_registry_candidates(
         data = reg.load()
         discussions = data.get("discussions", [])
 
+    from backend.discussion_status import VALID_STATUSES  # noqa: PLC0415
+
     actionable_statuses = {"DISCUSSING", "SPEC_READY"}
     now = datetime.now(timezone.utc)
 
@@ -138,8 +148,6 @@ def stale_registry_candidates(
         if d.get("closed_at") is not None:
             continue
         status = d.get("status", "")
-        if status not in actionable_statuses:
-            continue
 
         number = d.get("number")
         title = d.get("title", "")
@@ -152,6 +160,27 @@ def stale_registry_candidates(
                 age_days = (now - ts).total_seconds() / 86400.0
             except ValueError:
                 pass
+
+        if status not in actionable_statuses:
+            if status in VALID_STATUSES:
+                # Recognized, just not actionable here (e.g. IMPLEMENTING).
+                continue
+
+            reason = f"unrecognized status {status!r}"
+            if age_days is not None:
+                reason += f", created {age_days:.0f}d ago"
+            else:
+                reason += ", age unknown"
+
+            candidates.append({
+                "category": "unrecognized_status",
+                "number": number,
+                "title": title,
+                "status": status,
+                "age_days": round(age_days, 1) if age_days is not None else None,
+                "reason": reason,
+            })
+            continue
 
         reason = f"open {status}, "
         if age_days is not None:
