@@ -448,6 +448,9 @@ if [ "$RUN_PYTHON" = "true" ]; then
     # this changed: the suite aborted around 4% in, so ~96% of it never ran on
     # any PR. Exit-code aggregation in run_suite is unchanged, so a failure
     # still fails the run — it just says which failures. D#1997 item 10.
+    # tests/test_role_surface_parity.py (D#2196) is picked up here by the
+    # generic tests/ sweep — no separate registration needed, and it is not
+    # on BASH_SUITE_DENYLIST (that list is for tests/*.sh only).
     PYTEST_ARGS="${TEST_DIRS[*]}"
     # Bounded (D#2132: this arm ran unbounded before, 506-514s tree-wide with
     # no timeout at all) and with AUTONOMOUS_TEAM_STATE_DIR exported to a
