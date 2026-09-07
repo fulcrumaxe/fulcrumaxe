@@ -46,6 +46,7 @@ from hooks.sandbox_rules import (  # noqa: E402
     classify_cwd,
     classify_git_rm,
     classify_path_write,
+    has_unvettable_span,
     is_foreign_self_governed,
     is_head_flipping_git_invocation,
     is_real_git_rm_invocation,
@@ -447,6 +448,55 @@ def _write_head_flip_warning_event(
         pass  # Swallow all telemetry errors
 
 
+def _write_unclassified_command_event(cwd: str, command: str) -> None:
+    """Record a Bash command that classify_bash declined to vet (D#2448).
+
+    kind: "unclassified_oversize_command" — same warn+audit shape as
+    _write_head_flip_warning_event above, and for the same reason: the command
+    is ALLOWED, and the point of the row is that the allow stops being silent.
+
+    A quoted region past the classifier's ceiling costs O(L**2) in CPython's
+    shlex, so classify_bash does not tokenise it. That means this command was
+    NOT vetted — this row is the only trace that a Bash call went through
+    unexamined. It OBSERVES; it does not prevent. Blocking instead would turn
+    "I could not afford to look" into "denied", which is the over-blocking
+    CLAUDE.md names as the worse failure for this file.
+
+    Never raises — telemetry failure must not block the tool call.
+    """
+    try:
+        import datetime
+
+        entry = {
+            "ts": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
+            "tool": "Bash",
+            "kind": "unclassified_oversize_command",
+            "decision": "warn",
+            "cwd": cwd,
+            "command_bytes": len(command),
+            "command": command[:500],
+        }
+        line = _telemetry_line(entry)
+
+        _TELEMETRY_DIR.mkdir(parents=True, exist_ok=True)
+        log_file = _TELEMETRY_DIR / f"blocks-{date.today().isoformat()}.jsonl"
+        with open(log_file, "a") as fh:
+            fh.write(line)
+
+        state_dir = Path(
+            os.environ.get(
+                "AUTONOMOUS_TEAM_STATE_DIR",
+                str(Path.home() / ".autonomous-forever-state"),
+            )
+        )
+        audit_log = state_dir / "audit.jsonl"
+        if state_dir.exists():
+            with open(audit_log, "a") as fh:
+                fh.write(line)
+    except Exception:
+        pass  # Swallow all telemetry errors
+
+
 def main() -> None:
     # 1. Parse stdin
     try:
@@ -455,6 +505,24 @@ def main() -> None:
     except Exception as exc:
         # If we can't parse the input, allow (fail open) but log the parse error.
         sys.stderr.write(f"[sandbox] WARNING: could not parse hook input: {exc}\n")
+        sys.exit(0)
+
+    # 1a. Valid JSON, wrong shape (D#2448 item 10). `json.loads` is happy with a
+    #     list, a string or a number at the top level, and every accessor below
+    #     assumes a dict — `payload.get("tool_name")` raised AttributeError on
+    #     those, printed a full traceback, and then exited 0 anyway.
+    #
+    #     Failing open is correct and does not change here: this hook must never
+    #     be the reason a tool call dies. The traceback was the defect. It reads
+    #     like a real error in an agent's tool output, and the lesson an agent
+    #     takes from a traceback that turns out not to matter is to stop reading
+    #     hook output — which costs us the messages that DO matter. Same exit
+    #     status, one quiet line instead.
+    if not isinstance(payload, dict):
+        sys.stderr.write(
+            "[sandbox] WARNING: hook input was valid JSON but not an object "
+            f"(got {type(payload).__name__}) — allowing without checks\n"
+        )
         sys.exit(0)
 
     # 1b. Record the payload's shape once per distinct key set (D#2324). This
@@ -537,6 +605,24 @@ def main() -> None:
     # 4. For non-team-lead tiers (worktree or untrusted), route by tool type.
     if tool_name == "Bash":
         command = tool_input.get("command", "")
+
+        # 4-0. Cost ceiling (D#2448). This sits ahead of EVERY check below, not
+        #      just classify_bash, because all three tokenise the command and a
+        #      quoted region past the ceiling costs O(L**2) in CPython's shlex
+        #      in each of them independently. Measured on a 1.2 MB command:
+        #      classify_background 11.9 s + check_claude_spawn 12.7 s +
+        #      classify_bash 0.06 s. Gating only classify_bash left 24.6 s of
+        #      the 26.5 s total in place — the ceiling has to be the hook's
+        #      decision, not one classifier's.
+        #
+        #      ALLOW and record, never block: refusing to classify means not
+        #      knowing whether the command was safe, and turning "I could not
+        #      afford to look" into "denied" is the over-blocking CLAUDE.md
+        #      names as the worse failure for this file.
+        if has_unvettable_span(command):
+            _write_unclassified_command_event(cwd=cwd, command=command)
+            _allow(tool_name, cwd, str(tool_input), worktree_id)
+            return  # unreachable — _allow exits
 
         bg_decision = classify_background(tool_input)  # D#2070
         if not bg_decision.allow:
