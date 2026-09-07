@@ -107,6 +107,56 @@ a variable that is gone by the next command. One statement, guarded:
 CODE_REPO="$(source scripts/lib/repo-resolve.sh && _resolve_code_repo)"; gh pr list --repo "${CODE_REPO:?code plane unresolved}" --state open
 ```
 
+**What this forbids, precisely.** The one-liner above is the required form for
+anything **committed into the tree** — a resolver default sitting in a script,
+a template, or any other file `git ls-files` would enumerate. It is not a ban
+on an agent typing a resolved slug into its own ad-hoc shell command; those are
+different acts, and only the first is what this invariant exists to stop.
+`scripts/ci/repo-target-gate.sh` is the enforcement, and it already draws
+exactly this line: it scans `git ls-files` — the tracked tree, because that is
+the published artifact — for an executable default carrying the forbidden slug
+shape. A value an agent resolves and uses interactively, in a command it types
+and runs itself, is invisible to that gate by construction (an ad-hoc shell
+invocation is not a tracked file), and that is correct — it is not what
+"hardcoded" means here.
+
+**When the one-liner itself is refused.** Some non-interactive harnesses can
+refuse `source` inside the one-liner's `$(source ... )` — a command-safety
+analyzer of that kind, not this project's own sandbox, is what balks. Measured
+across two agents in the same session, this was **unreliable rather than
+absolute**: the identical `$(source ... )` construct failed on some runs and
+succeeded on others, with no visible difference in the invocation. Do not
+treat a refusal as proof the form always fails, and do not treat a success as
+proof it always works — retry before concluding either way.
+
+Because of that unreliability, prefer a form that is **deterministic** instead
+of one that merely sometimes survives. This reads `code_repo` straight out of
+`.autonomous-team/config.json` at runtime, with no `source` anywhere in it:
+
+```bash
+python3 -c "import json; print(json.load(open('.autonomous-team/config.json')).get('code_repo',''))"
+```
+
+Use the value it prints as the literal in your next command, typed by hand,
+same as before:
+
+```bash
+gh pr list --repo <the value the command above printed> --state open
+```
+
+This is still **resolving, not hardcoding**: the value is read from config at
+run time rather than typed from memory, and it is used only in an
+interactive command you type and run yourself — never saved anywhere. It must
+never appear as a literal in a committed file: pasting the printed slug into
+a script is exactly the hardcode `repo-target-gate.sh` exists to catch,
+whether or not it was copied from a value you had just resolved. This
+fallback also skips `_resolve_code_repo`'s other resolution steps (the
+`AUTONOMOUS_TEAM_REPO` environment variable, and its own fail-loudly error
+when neither that nor `code_repo` is set) — acceptable for a one-off
+interactive call in this repo, where `config.json`'s `code_repo` is always
+the value that matters, but not a reason to hardcode it as a default
+anywhere.
+
 Before posting ANY comment, issue comment, PR review, or Discussion comment:
 - Verify the target repo matches the surface, per the table
 - **If you cannot tell which surface you are on, use the Discussion plane.** A
