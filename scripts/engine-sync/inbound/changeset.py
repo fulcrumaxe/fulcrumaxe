@@ -82,9 +82,54 @@ def ensure_remote_fetched(remote: str, branch: str, repo_dir: Path = REPO_ROOT) 
 def list_commits(marker: str, remote_ref: str, repo_dir: Path = REPO_ROOT) -> list[str]:
     """Commits reachable from *remote_ref* but not from *marker*, oldest
     first. `git rev-list A..B` walks commit parentage -- it is not a tree
-    comparison of A's and B's endpoints."""
+    comparison of A's and B's endpoints.
+
+    This walk silently assumes *marker* is an ancestor of *remote_ref*. When
+    it is not, `A..B` does not raise or come back empty -- it degenerates to
+    "every commit reachable from B", including B's own parentless root, whose
+    `--name-status` against the empty tree reports the whole tree as one
+    giant addition (D#2454). Callers that cannot already guarantee the
+    ancestor relationship must check `marker_is_ancestor` first."""
     out = _git(["rev-list", "--reverse", f"{marker}..{remote_ref}"], repo_dir=repo_dir)
     return [line for line in out.splitlines() if line.strip()]
+
+
+def merge_base(a: str, b: str, repo_dir: Path = REPO_ROOT) -> str | None:
+    """The merge-base commit of *a* and *b*, or None when they share no
+    history at all. `git merge-base` exits 1 with no output for a disjoint
+    pair -- that is not a GitError (an unreadable ref or a broken repo), it
+    is the informative case this function exists to report, so it is
+    deliberately not routed through `_git`, which raises on any nonzero
+    exit."""
+    proc = subprocess.run(
+        ["git", "merge-base", a, b],
+        cwd=str(repo_dir),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip() or None
+
+
+def marker_is_ancestor(marker: str, remote_ref: str, repo_dir: Path = REPO_ROOT) -> bool:
+    """True iff *marker* is a proper ancestor of *remote_ref* -- the one
+    condition `list_commits`'s `A..B` walk actually needs to mean "commits
+    reachable from B but not from A". `git merge-base --is-ancestor` catches
+    both failure shapes the same way: no shared history at all (merge-base
+    would be empty), and shared history where marker is nonetheless not
+    reachable from remote_ref (merge-base non-empty but not equal to marker,
+    e.g. the two diverged from a common point). Either one collapses `A..B`
+    to "all of B" the same way, so both refuse identically here."""
+    proc = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", marker, remote_ref],
+        cwd=str(repo_dir),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return proc.returncode == 0
 
 
 def commit_subject(sha: str, repo_dir: Path = REPO_ROOT) -> str:
