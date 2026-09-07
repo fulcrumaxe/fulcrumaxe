@@ -1,0 +1,13 @@
+# Allowlist for scripts/ci/state-dir-resolver-guard.py (D#2183)
+#
+# Format: one entry per line — "<path-relative-to-repo-root>:<literal>:<reason>"
+# <literal> is always AUTONOMOUS_TEAM_STATE_DIR — this guard watches exactly
+# one variable, but the field is kept for parity with the sibling allowlists'
+# <path>:<literal>:<reason> shape (D#2254, D#2267).
+# Blank lines and lines starting with # are ignored.
+
+backend/_repo.py:AUTONOMOUS_TEAM_STATE_DIR:Deliberate (D#2183). Repo-slug resolution must stay importable everywhere, including under pytest before a scratch AUTONOMOUS_TEAM_STATE_DIR is set — routing through backend.state_paths would make importing backend._repo raise UnsandboxedStatePathError in that case, and risks an import cycle since state_paths does not import _repo today but is imported from many places _repo itself is imported from.
+
+backend/_repo_planes.py:AUTONOMOUS_TEAM_STATE_DIR:Deliberate, documented in the module's own docstring (D#2183): state_paths raises under pytest when the variable is unset, and repo-plane resolution (deciding which of the two repos a call targets) must stay importable everywhere for the same reason as backend/_repo.py above.
+
+scripts/coldstart-interview/seed-backlog.py:AUTONOMOUS_TEAM_STATE_DIR:replay_file_path() backs the "Replay file — degrade-and-never-abort" mechanism (see the comment header at that function) used during first-run coldstart, before any state dir is necessarily provisioned. Its fallback is deliberately the relative in-repo literal ".autonomous-team", not state_paths' external default — routing it through backend.state_paths would make a bare coldstart run raise RelativeStateDirError/UnsandboxedStatePathError instead of degrading, which is exactly the behavior this function exists to avoid.

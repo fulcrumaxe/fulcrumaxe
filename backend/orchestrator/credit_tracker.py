@@ -37,13 +37,13 @@ _DEFAULT_INITIAL_USD = 200.0      # $200/month Max 20x credit pool
 
 
 def _credit_file() -> Path:
-    """Return the sdk_credit.json path, honouring AUTONOMOUS_TEAM_STATE_DIR."""
-    import os
-    state_dir = os.environ.get(
-        "AUTONOMOUS_TEAM_STATE_DIR",
-        str(Path.home() / ".autonomous-forever-state"),
-    )
-    return Path(state_dir) / "sdk_credit.json"
+    """Return the sdk_credit.json path via backend.state_paths (D#2183) —
+    this used to be a near-duplicate of cost_verification.py's own
+    _credit_file(), reading AUTONOMOUS_TEAM_STATE_DIR directly with no
+    validation of a relative or empty value.
+    """
+    from backend.state_paths import STATE_DIR  # noqa: PLC0415 — call-time, not import-time (D#1810)
+    return STATE_DIR / "sdk_credit.json"
 
 
 # ---------------------------------------------------------------------------

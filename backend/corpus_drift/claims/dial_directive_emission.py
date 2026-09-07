@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -31,14 +30,16 @@ _HEALTHY_COUNT = 4
 
 
 def _state_dir() -> Path:
-    env = os.environ.get("AUTONOMOUS_TEAM_STATE_DIR")
-    if env:
-        return Path(env)
-    try:
-        from backend.state_paths import STATE_DIR  # noqa: PLC0415
-        return STATE_DIR
-    except ImportError:
-        return Path.home() / ".autonomous-forever-state"
+    """Delegate to backend.state_paths (D#2183) — this used to be a byte-
+    identical duplicate of scripts/corpus-drift-audit.py's own resolver,
+    and neither validated a relative or empty state-dir override the way
+    state_paths does. Raises the same exceptions state_paths
+    raises; the caller (evaluate(), below) is reached through
+    corpus-drift-audit.py's per-claim try/except, which degrades a raise
+    here into an "n/a" ClaimResult rather than crashing the audit.
+    """
+    from backend.state_paths import STATE_DIR  # noqa: PLC0415 — call-time, not import-time (D#1810)
+    return STATE_DIR
 
 
 def _count_dial_changes(audit_path: Path, cutoff_ts: float) -> int:

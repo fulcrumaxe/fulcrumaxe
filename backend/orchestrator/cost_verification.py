@@ -136,22 +136,19 @@ def tokens_to_usd(
 # ---------------------------------------------------------------------------
 
 def _db_path() -> Path:
+    # STATS_DB_PATH is a legacy per-value override and bypasses the pytest
+    # sandbox guard outright — matches backend.state_paths' own _stats_db()
+    # precedence (D#2183).
     env = os.environ.get("STATS_DB_PATH")
     if env:
         return Path(env)
-    state_dir = os.environ.get(
-        "AUTONOMOUS_TEAM_STATE_DIR",
-        str(Path.home() / ".autonomous-forever-state"),
-    )
-    return Path(state_dir) / "stats.duckdb"
+    from backend.state_paths import STATE_DIR  # noqa: PLC0415 — call-time, not import-time (D#1810)
+    return STATE_DIR / "stats.duckdb"
 
 
 def _credit_file() -> Path:
-    state_dir = os.environ.get(
-        "AUTONOMOUS_TEAM_STATE_DIR",
-        str(Path.home() / ".autonomous-forever-state"),
-    )
-    return Path(state_dir) / "sdk_credit.json"
+    from backend.state_paths import STATE_DIR  # noqa: PLC0415 — call-time, not import-time (D#1810)
+    return STATE_DIR / "sdk_credit.json"
 
 
 # ---------------------------------------------------------------------------
