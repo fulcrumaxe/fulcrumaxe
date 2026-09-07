@@ -4083,10 +4083,21 @@ class TestD2448TokeniserScaling:
         """The shape that was quadratic: cost scaled with the length of the
         LONGEST TOKEN, not of the command. That is why D#2448's two probes
         disagreed about input shape while agreeing about the conclusion."""
-        n = 20_000
+        # 10n must stay UNDER _MAX_UNVETTABLE_CHARS. If the 10x input trips the
+        # ceiling, classify_bash returns before tokenising anything, the counter
+        # reads zero, and `large <= 20 * small` passes for the worst possible
+        # reason. That is not hypothetical: at n = 20_000 this assertion passed
+        # against the very algorithm it exists to reject, because 200_000 is over
+        # the 131_072 ceiling. Both `> 0` assertions below exist to make a
+        # measurement of nothing fail loudly instead of silently.
+        n = 12_000
+        assert 10 * n < sandbox_rules._MAX_UNVETTABLE_CHARS, (
+            "10x input must not trip the ceiling, or this measures nothing"
+        )
         small = _tokeniser_work("echo " + "a" * (n - 5))
         large = _tokeniser_work("echo " + "a" * (10 * n - 5))
         assert small > 0, "counter measured nothing — instrumentation is broken"
+        assert large > 0, "10x case did nothing — the ceiling masked the measurement"
         assert large <= _SCALING_SLACK * 10 * small, (
             f"tokeniser work grew {large / small:.1f}x for a 10x longer token "
             f"(work({n})={small}, work({10 * n})={large}); expected no worse "
@@ -4100,6 +4111,7 @@ class TestD2448TokeniserScaling:
         small = _tokeniser_work("echo " + " ".join(["aaaa"] * (n // 5)))
         large = _tokeniser_work("echo " + " ".join(["aaaa"] * (10 * n // 5)))
         assert small > 0
+        assert large > 0, "the ceiling masked the measurement"
         assert large <= _SCALING_SLACK * 10 * small, (
             f"tokeniser work grew {large / small:.1f}x for a 10x longer command"
         )
@@ -4157,7 +4169,7 @@ class TestD2448OversizeQuotedRegionAllowsAndRecords:
     """
 
     def _oversize(self) -> str:
-        body = " ".join("a" for _ in range(sandbox_rules._MAX_QUOTED_REGION_CHARS))
+        body = " ".join("a" for _ in range(sandbox_rules._MAX_UNVETTABLE_CHARS))
         return "echo '" + body + "'"
 
     def test_allows_rather_than_blocks(self) -> None:
@@ -4168,8 +4180,8 @@ class TestD2448OversizeQuotedRegionAllowsAndRecords:
         must not be mistaken for it — the reason is what hooks/sandbox.py keys
         its audit row on."""
         decision = classify_bash(self._oversize(), _WT_CLAUDE)
-        assert decision.reason == sandbox_rules.OVERSIZE_QUOTED_REGION_REASON
-        assert sandbox_rules.has_oversize_quoted_region(self._oversize()) is True
+        assert decision.reason == sandbox_rules.UNVETTED_COMMAND_REASON
+        assert sandbox_rules.has_unvettable_span(self._oversize()) is True
 
     def test_ceiling_sits_above_realistic_quoted_payloads(self) -> None:
         """An inline python script and a long commit message must still be
@@ -4178,10 +4190,10 @@ class TestD2448OversizeQuotedRegionAllowsAndRecords:
         script = "python3 -c '" + ("x = 1; " * 1000) + "'"
         message = 'git commit -m "' + ("word " * 2000) + '"'
         for command in (script, message):
-            assert sandbox_rules.has_oversize_quoted_region(command) is False
+            assert sandbox_rules.has_unvettable_span(command) is False
             assert (
                 classify_bash(command, _WT_CLAUDE).reason
-                != sandbox_rules.OVERSIZE_QUOTED_REGION_REASON
+                != sandbox_rules.UNVETTED_COMMAND_REASON
             )
 
     def test_longest_quoted_region_handles_escapes_and_unterminated_quotes(self) -> None:
@@ -4190,6 +4202,148 @@ class TestD2448OversizeQuotedRegionAllowsAndRecords:
         assert sandbox_rules.longest_quoted_region("echo 'abc") == 3
         assert sandbox_rules.longest_quoted_region("echo abc") == 0
 
+
+class TestD2448TruncationNeverHidesTheRestOfTheCommand:
+    """The regression the first version of this change shipped, and the class of
+    bug it belonged to.
+
+    Truncating any `\\S+` run over 8 KiB cut the closing quote off a run like
+    `'<9000 a's>'`. `shlex.split` then raised "No closing quotation", and
+    `_scan_command_segments` treats `ValueError` as "nothing to scan
+    structurally" (`tokens = None`) — fail-open. So a real path LATER in the
+    command stopped being scanned: `echo '<9000 a's>' && rm -rf <path>` was
+    BLOCK before and ALLOW after.
+
+    That is not the movement the docstring claimed. The claim was "toward allow,
+    on a token that cannot be a real path"; the actual mechanism was a globally
+    induced tokenisation failure hiding a real path elsewhere. These tests pin
+    the mechanism, not the one reproducer.
+
+    A differential over 1611 records (base vs head, every command literal in this
+    suite plus boundary synthetics, 3 cwds) found 57 silent BLOCK->ALLOW flips
+    against the old truncation and 0 against this one, with the only remaining
+    differences being explicit, recorded ceiling decisions above 131072 bytes.
+    """
+
+    DANGEROUS = "rm -rf /home/jp/fulcrumaxe/backend"
+
+    def test_quoted_overlong_run_still_blocks_a_later_path(self) -> None:
+        """The reviewed reproducer. Single quotes inside one whitespace-free
+        run over the cap."""
+        command = "echo '" + "a" * 9000 + "' && " + self.DANGEROUS
+        assert classify_bash(command, _WT_CLAUDE).allow is False
+
+    def test_double_quoted_overlong_run_still_blocks_a_later_path(self) -> None:
+        command = 'echo "' + "a" * 9000 + '" && ' + self.DANGEROUS
+        assert classify_bash(command, _WT_CLAUDE).allow is False
+
+    def test_dangling_escape_at_the_cut_still_blocks_a_later_path(self) -> None:
+        """Sibling of the same root cause, found by probing rather than
+        reported: when the cut landed after an odd backslash, shlex raised
+        "No escaped character" — different exception, identical fail-open."""
+        cap = sandbox_rules._MAX_TOKEN_CHARS
+        command = "echo " + "a" * (cap - 1) + "\\z" + " ; " + self.DANGEROUS
+        assert classify_bash(command, _WT_CLAUDE).allow is False
+
+    def test_plain_overlong_run_still_blocks_a_later_path(self) -> None:
+        """The case truncation is actually for — it must keep working."""
+        command = "echo " + "a" * 9000 + " && " + self.DANGEROUS
+        assert classify_bash(command, _WT_CLAUDE).allow is False
+
+    @pytest.mark.parametrize("size", [8191, 8192, 8193, 9000, 24000, 40000])
+    @pytest.mark.parametrize(
+        "wrap",
+        [
+            "echo {} && ",
+            "echo '{}' && ",
+            'echo "{}" && ',
+            "echo x{}y && ",
+        ],
+    )
+    def test_band_between_cap_and_ceiling_stays_vetted(self, size: int, wrap: str) -> None:
+        """8 KiB-128 KiB is the band the first version broke silently: the
+        ceiling does not fire there, so nothing was recorded either — the
+        command went unvetted AND untraced, which is exactly what the
+        allow-and-record ceiling exists to prevent."""
+        command = wrap.format("a" * size) + self.DANGEROUS
+        assert sandbox_rules.has_unvettable_span(command) is False, (
+            "ceiling must not fire in this band"
+        )
+        decision = classify_bash(command, _WT_CLAUDE)
+        assert decision.allow is False, "a real path after a long run must stay visible"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "echo " + "a" * 9000 + " && rm -rf /home/jp/fulcrumaxe/backend",
+            "echo '" + "a" * 9000 + "' && git reset --hard origin/main",
+            'echo "' + "a" * 9000 + '" | tee /home/jp/fulcrumaxe/x',
+            "echo " + "a" * 8191 + "\\z ; git rm f",
+            "echo " + "'a'" * 3000 + " && git rm f",
+            "cat " + "/very/long/path/" * 700 + " && rm -rf /home/jp/x",
+        ],
+    )
+    def test_truncation_never_breaks_tokenisation(self, command: str) -> None:
+        """The invariant, stated as a property rather than as prose.
+
+        If shlex could tokenise the command, it must still be able to after
+        truncation. Every silent flip in this class came from breaking this.
+        """
+        import shlex as _shlex
+
+        try:
+            _shlex.split(command)
+        except ValueError:
+            pytest.skip("original is not tokenisable; nothing to preserve")
+        truncated = sandbox_rules._truncate_long_runs(command)
+        _shlex.split(truncated)  # must not raise
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "echo '" + "a" * 9000 + "' && rm -rf /x",
+            'echo "' + "b" * 9000 + '" && rm -rf /x',
+            "echo " + "c" * 8191 + "\\z && rm -rf /x",
+            "echo " + "'d'" * 4000 + " ; rm -rf /x",
+            "echo $(" + "e" * 9000 + ") && rm -rf /x",
+            "echo `" + "f" * 9000 + "` && rm -rf /x",
+            "echo " + "g" * 9000 + ">/x/y && rm -rf /x",
+        ],
+    )
+    def test_truncation_preserves_every_shell_state_character(self, command: str) -> None:
+        """Why the truncatable-character set is a positive list.
+
+        Quotes and backslashes decide where tokens end; `;`, `&`, `|`, `(`, `)`,
+        `<`, `>` decide where commands and redirects end; `$` and backtick decide
+        expansion. If truncation can delete any of them it can change how the
+        REST of the command parses, which is the whole failure mode here. None of
+        them is in `_INERT_RUN_RE`, so every one survives.
+        """
+        truncated = sandbox_rules._truncate_long_runs(command)
+        for char in "'\"\\;&|()<>$`":
+            assert truncated.count(char) == command.count(char), (
+                f"truncation changed the count of {char!r}"
+            )
+
+    def test_truncation_still_shortens_the_interior_of_a_quoted_blob(self) -> None:
+        """Correctness must not cost the performance fix. The quotes bound the
+        run rather than sitting inside it, so the payload is still capped."""
+        command = "echo '" + "a" * 100_000 + "'"
+        truncated = sandbox_rules._truncate_long_runs(command)
+        assert len(truncated) < 20_000
+        assert truncated.count("'") == 2
+
+    def test_ceiling_covers_what_truncation_refuses_to_touch(self) -> None:
+        """A whitespace-free run that is NOT inert cannot be shortened safely,
+        so past the ceiling it must be declined-and-recorded rather than left to
+        cost O(L**2)."""
+        command = "echo " + "'a'" * 60_000  # ~180 KB, quotes throughout
+        assert sandbox_rules.longest_quoted_region(command) == 1
+        assert sandbox_rules.longest_run(command) > sandbox_rules._MAX_UNVETTABLE_CHARS
+        assert sandbox_rules.has_unvettable_span(command) is True
+        decision = classify_bash(command, _WT_CLAUDE)
+        assert decision.allow is True
+        assert decision.reason == sandbox_rules.UNVETTED_COMMAND_REASON
 
 class TestD2448NonObjectPayloadIsQuiet:
     """A JSON top level that is not an object must not print a traceback.

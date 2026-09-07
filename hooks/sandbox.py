@@ -46,7 +46,7 @@ from hooks.sandbox_rules import (  # noqa: E402
     classify_cwd,
     classify_git_rm,
     classify_path_write,
-    has_oversize_quoted_region,
+    has_unvettable_span,
     is_foreign_self_governed,
     is_head_flipping_git_invocation,
     is_real_git_rm_invocation,
@@ -619,7 +619,7 @@ def main() -> None:
         #      knowing whether the command was safe, and turning "I could not
         #      afford to look" into "denied" is the over-blocking CLAUDE.md
         #      names as the worse failure for this file.
-        if has_oversize_quoted_region(command):
+        if has_unvettable_span(command):
             _write_unclassified_command_event(cwd=cwd, command=command)
             _allow(tool_name, cwd, str(tool_input), worktree_id)
             return  # unreachable — _allow exits

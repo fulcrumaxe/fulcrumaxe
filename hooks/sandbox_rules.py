@@ -1079,20 +1079,59 @@ def is_worktree(cwd: str) -> Optional[str]:
 # exceed PATH_MAX and still mean anything on this filesystem.
 _MAX_TOKEN_CHARS = 8192
 
-# `\S+` and not `\S{N,}`. The obvious spelling of this scan,
+# `\S+`/`[...]+` and not `{N,}`. The obvious spelling of these scans,
 # `re.sub(r"\S{8193,}", ...)`, is itself catastrophically slow — on 1.2 MB of
 # 8192-character runs it backtracks from every position inside every run and
-# took 9106 ms, against 2.32 ms for the `\S+` scan below. Replacing a
-# quadratic tokeniser with a quadratic regex would have benchmarked as a fix
-# and changed nothing.
+# took 9106 ms, against 2.32 ms for the `\S+` scan. Replacing a quadratic
+# tokeniser with a quadratic regex would have benchmarked as a fix and changed
+# nothing.
 _NON_SPACE_RUN_RE = re.compile(r"\S+")
+
+# Characters a run may contain and still be safe to truncate. This is a
+# POSITIVE list on purpose — "everything except quotes" is what made the first
+# version of this wrong, and an allow-list cannot be widened by accident.
+#
+# THE INVARIANT: a run built only of these characters carries no shell state.
+# It contains no quote and no backslash, so cutting its tail cannot change
+# where a quoted region opens or closes and cannot orphan an escape. It
+# contains no `;`, `&`, `|`, `(`, `)`, `<`, `>`, so cutting it cannot delete a
+# command separator or a redirect operator. It contains no `$` and no backtick,
+# so it cannot change an expansion. Removing characters from such a run can
+# therefore only make ONE word token shorter — it cannot change how any other
+# part of the command tokenises.
+#
+# The first version of this function truncated any `\S+` run, which broke that
+# invariant in two ways found by review and by probing for its siblings:
+#
+#   `echo '<9000 a's>' && rm -rf <path>`  — the run included both quotes, the
+#       cut dropped the closing one, `shlex.split` raised "No closing
+#       quotation", and `_scan_command_segments` treats ValueError as "nothing
+#       to scan" (tokens = None, fail-open). The `rm -rf <path>` later in the
+#       command became invisible: BLOCK on base, ALLOW after truncation.
+#   `echo <8191 a's>\<...>`               — the cut landed after an odd
+#       backslash, raising "No escaped character", same fail-open, same flip.
+#
+# Both are the same root cause: the cut removed a character that carried shell
+# state. Neither was a token "that cannot be a real path" being weakened — it
+# was a real path ELSEWHERE in the command going unscanned. Restricting the cut
+# to inert characters is what makes the stated invariant the one that holds.
+#
+# Note this still truncates the interior of a long quoted blob — in
+# `echo '<9000 a's>'` the quotes bound the run rather than sitting inside it, so
+# the a's are truncated and both quotes survive.
+_INERT_RUN_RE = re.compile(r"[A-Za-z0-9_./=:,+%@~^-]+")
 
 
 def _truncate_long_runs(command: str) -> str:
-    """Truncate any whitespace-free run in *command* longer than the cap.
+    """Truncate over-long runs of shell-inert characters in *command*.
 
     Linear in ``len(command)``. Bounds the longest token shlex can build, which
     is what bounds the O(L**2) accumulation in `shlex.read_token`.
+
+    Only runs matching `_INERT_RUN_RE` are touched — see the invariant recorded
+    there, which is what keeps this from changing any verdict. A run that is too
+    long AND not inert is left exactly as it is; `has_unvettable_span` is what
+    bounds the cost of those.
 
     Truncation keeps each over-long run's PREFIX rather than substituting a
     placeholder, and that choice is load-bearing in two directions:
@@ -1107,9 +1146,7 @@ def _truncate_long_runs(command: str) -> str:
 
     A prefix cannot do either. Every rule in this module that keys on the START
     of a token — `startswith("/")`, `startswith("-")`, `~/`, a git verb, a `gh`
-    flag — sees exactly what it saw before. The only thing lost is content past
-    the cap inside a single 8 KB-plus unbroken run, so the one direction this
-    can move a verdict is toward ALLOW, on a token that cannot be a real path.
+    flag — sees exactly what it saw before.
     """
     if len(command) <= _MAX_TOKEN_CHARS:
         # Fast path: no run can exceed the cap, so realistic commands never
@@ -1117,7 +1154,7 @@ def _truncate_long_runs(command: str) -> str:
         return command
     out: list[str] = []
     last = 0
-    for match in _NON_SPACE_RUN_RE.finditer(command):
+    for match in _INERT_RUN_RE.finditer(command):
         start, end = match.span()
         if end - start > _MAX_TOKEN_CHARS:
             out.append(command[last:start])
@@ -1129,28 +1166,49 @@ def _truncate_long_runs(command: str) -> str:
     return "".join(out)
 
 
-# A quoted region longer than this makes classify_bash decline to classify the
-# command: it ALLOWS and records, it does not block (D#2448 acceptance item 4).
+def longest_run(command: str) -> int:
+    """Length of the longest whitespace-free run in *command*.
+
+    An upper bound on a single shlex token that does not depend on quoting.
+    """
+    longest = 0
+    for match in _NON_SPACE_RUN_RE.finditer(command):
+        longest = max(longest, match.end() - match.start())
+    return longest
+
+
+# A span longer than this that truncation could not safely shorten makes
+# classify_bash decline to classify the command: it ALLOWS and records, it does
+# not block (D#2448 acceptance item 4).
 #
-# Why a ceiling here and truncation above, when both bound the same quadratic:
-# truncating a quoted region is the one form of this fix that can make the
-# classifier STRICTER. `_python_payload_is_read_only` fails closed — it returns
-# False on a SyntaxError from `ast.parse`, and False means "not provably
-# read-only", which blocks. Truncate the payload of a legitimate
-# `python3 -c "<9 KB script>"` and it stops parsing, so an ALLOW becomes a
-# BLOCK. That is an over-block, and CLAUDE.md's scoring rule for hooks/ is
-# explicit that over-blocking is the worse failure here: a guardrail that gets
-# in the way of real work gets disabled.
+# Why a ceiling here as well as truncation above. Truncation is bounded by what
+# it can cut without changing tokenisation (see `_INERT_RUN_RE`), and two shapes
+# survive it: a quoted region with whitespace inside, and a whitespace-free run
+# that is not inert. Both are quadratic in shlex. Shortening either one anyway
+# is what the first version of this change did, and it silently flipped 30
+# commands from BLOCK to ALLOW — so for these the answer is to decline rather
+# than to cut.
+#
+# Declining also avoids the one form of this fix that could make the classifier
+# STRICTER. `_python_payload_is_read_only` fails closed — it returns False on a
+# SyntaxError from `ast.parse`, and False means "not provably read-only", which
+# blocks. Clip the payload of a legitimate `python3 -c "<9 KB script>"` and it
+# stops parsing, so an ALLOW becomes a BLOCK. That is an over-block, and
+# CLAUDE.md's scoring rule for hooks/ is explicit that over-blocking is the
+# worse failure here: a guardrail that gets in the way of real work gets
+# disabled.
 #
 # Declining to classify can only ever move a verdict toward ALLOW, which is the
 # safe direction, and it is the shape `payload_shape` and `head_flip_warning`
 # already use in this file. The cost is real and is stated rather than hidden:
 # past this ceiling the command is NOT vetted, so hooks/sandbox.py records it.
+# That record is the half of the bargain that makes declining acceptable —
+# without it this is not a ceiling, it is a hole.
 #
 # 128 KiB sits far above every legitimate quoted region — an inline
 # `python3 -c` script, a commit message, a PR body are all comfortably under
 # 20 KB — while still bounding the O(L**2) accumulation to roughly 0.4 s.
-_MAX_QUOTED_REGION_CHARS = 131072
+_MAX_UNVETTABLE_CHARS = 131072
 
 
 def longest_quoted_region(command: str) -> int:
@@ -1196,30 +1254,47 @@ def longest_quoted_region(command: str) -> int:
     return longest
 
 
-def has_oversize_quoted_region(command: str) -> bool:
-    """True if *command* carries a quoted region past the ceiling.
+def has_unvettable_span(command: str) -> bool:
+    """True if *command* still carries a span too long to tokenise after
+    truncation has done what it safely can.
 
     `classify_bash` declines to classify these (allowing them) and
     hooks/sandbox.py records the event. Exposed so the hook can record without
     re-deriving the answer.
 
-    The length pre-check is not merely an optimisation: a quoted region cannot
-    be longer than the command containing it, so realistic commands never run
-    the scan at all and item 8's 0.1 ms budget is untouched.
+    Measured AFTER `_truncate_long_runs`, which is the whole point: truncation
+    deliberately refuses to touch a run that carries shell state, so this is
+    what bounds the cost of exactly those. Two spans can survive it —
+
+      - a quoted region with whitespace inside it (`'a a a …'`), whose runs are
+        all short so truncation finds nothing to cut, and
+      - a whitespace-free run that is not inert (`'a''a''a'…`), which truncation
+        leaves alone by design.
+
+    Both are quadratic in `shlex` and neither can be shortened without risking
+    the tokenisation change that `_INERT_RUN_RE` exists to prevent, so the
+    answer for both is to decline — allowing, and recording that we did.
+
+    The length pre-check is not merely an optimisation: no span can be longer
+    than the command containing it, so realistic commands never run the scan at
+    all and the 0.1 ms budget on the every-tool-call path is untouched.
     """
+    if len(command) <= _MAX_UNVETTABLE_CHARS:
+        return False
+    reduced = _truncate_long_runs(command)
     return (
-        len(command) > _MAX_QUOTED_REGION_CHARS
-        and longest_quoted_region(command) > _MAX_QUOTED_REGION_CHARS
+        longest_run(reduced) > _MAX_UNVETTABLE_CHARS
+        or longest_quoted_region(reduced) > _MAX_UNVETTABLE_CHARS
     )
 
 
 # Reason carried by the one Decision in this module that allows WITHOUT having
 # vetted the command. Distinguishable on purpose: an empty reason means "vetted
 # and clean"; this means "not vetted, and that is recorded".
-OVERSIZE_QUOTED_REGION_REASON = (
-    "sandbox_unclassified_oversize_quoted_region: command contains a quoted "
-    "region larger than the classifier's ceiling — ALLOWED without vetting and "
-    "recorded, not blocked"
+UNVETTED_COMMAND_REASON = (
+    "sandbox_unclassified_oversize_command: command contains a span larger "
+    "than the classifier's ceiling that cannot be safely shortened — ALLOWED "
+    "without vetting and recorded, not blocked"
 )
 
 
@@ -3892,15 +3967,15 @@ def classify_bash(command: str, cwd: str) -> Decision:
     Returns Decision(allow=False, reason=...) to block, Decision(allow=True, reason="") to pass.
     Caller is responsible for checking is_worktree(cwd) first.
     """
-    # 0. Cost ceiling (D#2448 item 4). A quoted region past the ceiling is the
-    #    one shape whose token length cannot be bounded without risking an
-    #    over-block (see _MAX_QUOTED_REGION_CHARS). Decline to classify it:
-    #    ALLOW, and let hooks/sandbox.py record that this command went unvetted.
+    # 0. Cost ceiling (D#2448 item 4). A span past the ceiling that truncation
+    #    could not safely shorten is one this classifier cannot afford to
+    #    tokenise (see _MAX_UNVETTABLE_CHARS). Decline to classify it: ALLOW,
+    #    and let hooks/sandbox.py record that this command went unvetted.
     #    Deliberately NOT a block — refusing to classify means not knowing
     #    whether the command was safe, and turning "I don't know" into "denied"
     #    is the over-blocking that gets guardrails disabled.
-    if has_oversize_quoted_region(command):
-        return Decision(allow=True, reason=OVERSIZE_QUOTED_REGION_REASON)
+    if has_unvettable_span(command):
+        return Decision(allow=True, reason=UNVETTED_COMMAND_REASON)
 
     # 1a. git rm check — archive protocol violation, applies regardless of worktree status.
     git_rm_decision = classify_git_rm(command)
