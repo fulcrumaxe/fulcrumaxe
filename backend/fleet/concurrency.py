@@ -59,6 +59,7 @@ CLI (used by pre-spawn-check.sh and post-agent-hook.sh)::
     python3 -m backend.fleet.concurrency register <project> <agent_id> <role>
     python3 -m backend.fleet.concurrency unregister <project> <agent_id>
     python3 -m backend.fleet.concurrency count_fleet
+    python3 -m backend.fleet.concurrency count_fleet_capped
     python3 -m backend.fleet.concurrency count_project <project>
     python3 -m backend.fleet.concurrency count_project_capped <project>
     python3 -m backend.fleet.concurrency active_agents <project>
@@ -558,6 +559,7 @@ def _main() -> None:
         print("Commands: register <project> <agent_id> <role>")
         print("          unregister <project> <agent_id>")
         print("          count_fleet")
+        print("          count_fleet_capped")
         print("          count_project <project>")
         print("          count_project_capped <project>")
         print("          active_agents <project>")
@@ -602,6 +604,13 @@ def _main() -> None:
 
     elif cmd == "count_fleet":
         print(count_fleet())
+
+    elif cmd == "count_fleet_capped":
+        # D#2450 PR-b: exposed so ts-backend's pre-spawn-check.ts can read the
+        # same fleet-wide-cap population (agent-tool- rows excluded) that this
+        # module's own register() already enforces, instead of maintaining a
+        # second, DuckDB-backed count with no exclusion of its own.
+        print(count_fleet_capped())
 
     elif cmd == "count_project":
         if len(args) != 2:
