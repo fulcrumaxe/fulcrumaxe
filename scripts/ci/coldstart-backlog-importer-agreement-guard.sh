@@ -166,6 +166,68 @@ mk_task() {
   printf -- '---\nepic: 3\ntask: 1\ntitle: "Task 1"\ntype: feature\nstatus: %s\n---\n\n# Task 1\n' "$status" >"$dest"
 }
 
+# $1 label, $2 root (holds root/epics), $3 substring _coldstart_backlog_
+# describe's output must contain, $4 host note.
+#
+# _coldstart_backlog_describe has its own `-L` (and its own `-maxdepth 6`,
+# added alongside it) that nothing above exercises: it is a report-only
+# helper, called for its printed text, not for a return value any classify()
+# branch depends on. classify_is() never reaches it — classify() does its
+# own, separate `-L` find for the empty/non-empty gate.
+describe_reports() {
+  local label="$1" root="$2" expected_substr="$3" host="$4" out
+  CHECKED=$((CHECKED + 1))
+  out="$(_coldstart_backlog_describe "$root/epics")"
+  if [[ "$out" == *"$expected_substr"* ]]; then
+    echo "PASS: $label describe() reports '$expected_substr' (fixture: $root, host: $host)"
+  else
+    echo "FAIL: $label describe() did not report '$expected_substr' -- got: $out (fixture: $root, host: $host)"
+    FAILED=$((FAILED + 1))
+  fi
+}
+
+# $1 label, $2 root (holds root/epics), $3 host note.
+#
+# Forces the importer subprocess to fail (non-zero exit) on an otherwise
+# ordinary conforming backlog, then checks coldstart_backlog_step's
+# conforming-branch report two ways: (a) it names the real refusal reason,
+# not an empty string, and (b) nothing gets scaffolded. (a) is what a
+# `x="$(...)"`-style regression in that branch breaks silently -- confirmed
+# by reverting just that one branch back to a plain command substitution:
+# the report still says "Could not ask the importer... status: —" but the
+# reason after the dash comes back empty, because
+# _COLDSTART_BACKLOG_REFUSAL_REASON was set inside the forked subshell the
+# command substitution created and never escaped it. (b) is the actual
+# safety property D#2451 item 5 is about; this fixture is a conforming
+# backlog specifically because that is the one branch a subprocess failure
+# must not be allowed to turn into a scaffold.
+step_refuses_closed() {
+  local label="$1" root="$2" host="$3" out fakeroot
+  CHECKED=$((CHECKED + 1))
+  fakeroot="$(mktemp -d)"; FIXTURES+=("$fakeroot")
+  mkdir -p "$fakeroot/scripts"
+  cat >"$fakeroot/scripts/import-epic-tasks.py" <<'PY'
+import sys
+print("boom", file=sys.stderr)
+sys.exit(3)
+PY
+  out="$(
+    _BACKLOG_REPO_ROOT="$fakeroot"
+    coldstart_backlog_step "$root/epics" "$root" "$REPO_ROOT/scripts/coldstart-templates/epic" 2>&1
+  )"
+  if [[ -e "$root/epics/epic-1-example" ]]; then
+    echo "FAIL: $label — step scaffolded during a forced subprocess refusal (fixture: $root, host: $host)"
+    FAILED=$((FAILED + 1))
+    return
+  fi
+  if [[ "$out" == *"importer exited 3: boom"* ]]; then
+    echo "PASS: $label refuses closed, names the real cause, scaffolds nothing (fixture: $root, host: $host)"
+  else
+    echo "FAIL: $label did not name the refusal cause (\"importer exited 3: boom\") -- got: $(printf '%s' "$out" | tr '\n' ' ' | head -c 300) (fixture: $root, host: $host)"
+    FAILED=$((FAILED + 1))
+  fi
+}
+
 HOST="$(uname -a 2>/dev/null || echo unknown)"
 
 echo "=== fixture: ordinary conforming backlog, one open task ==="
@@ -219,6 +281,62 @@ mkdir -p "$D/epics"
 ln -s "$REAL/epic-3-billing" "$D/epics/epic-3-billing"
 classify_is "symlinked epic directory" "$D" "conforming" "yes" "$HOST"
 agree "symlinked epic directory" "$D" "$HOST"
+# _coldstart_backlog_describe's own `-L`/`-maxdepth 6`: reuses this exact
+# fixture (real content reachable only through the symlink) since it is
+# already built, rather than a fifth throwaway directory.
+describe_reports "symlinked epic directory" "$D" "1 markdown file(s)" "$HOST"
+
+echo ""
+echo "=== fixture: symlinked epic directory holding only epic.md, D#2451 item 8 (overviews) ==="
+# The gap the previous round's fixture above did not cover: it has a TASK
+# FILE, so classify() reaches "conforming" through the main loop before
+# _coldstart_backlog_overviews is ever called -- the branch that function
+# backs (incomplete vs foreign) is unreachable from a fixture with anything
+# conforming in it. This fixture has ONLY an epic.md, reached solely through
+# the symlink, and nothing the main loop's `_coldstart_backlog_task_files`
+# would find either way (there is no task file to find). Confirmed: on a
+# copy of this tree with only _coldstart_backlog_overviews's `-L` reverted,
+# this fixture flips from "incomplete" to "foreign" while the fixture above
+# stays "conforming" throughout (it never calls _coldstart_backlog_overviews
+# at all).
+REAL="$(mktemp -d)"; FIXTURES+=("$REAL")
+mkdir -p "$REAL/epic-3-billing"
+cat >"$REAL/epic-3-billing/epic.md" <<'EOF'
+# Epic 3: Billing
+
+## Goal
+Charge correctly on mid-cycle plan change.
+EOF
+D="$(mktemp -d)"; FIXTURES+=("$D")
+mkdir -p "$D/epics"
+ln -s "$REAL/epic-3-billing" "$D/epics/epic-3-billing"
+classify_is "symlinked epic dir, epic.md only" "$D" "incomplete" "no" "$HOST"
+
+echo ""
+echo "=== fixture: signal fields present but status missing, D#2451 (has_partial_frontmatter) ==="
+# _coldstart_backlog_has_partial_frontmatter switched from checking
+# _COLDSTART_BACKLOG_REQUIRED_FIELDS (now just status) to the broader
+# _COLDSTART_BACKLOG_SIGNAL_FIELDS -- a distinct change from the required-
+# field shrink itself, and nothing above exercises the distinction, because
+# by the time has_partial_frontmatter runs, classify() has already
+# confirmed no task file conforms (i.e. every file is missing status), so
+# checking for `status:` specifically can never find it. A file that
+# carries epic/title but not status is the case that tells the two field
+# lists apart: with SIGNAL_FIELDS it reads as "our shape, incomplete"; with
+# REQUIRED_FIELDS it reads as "foreign". Confirmed by reverting only that
+# one field-list swap.
+D="$(mktemp -d)"; FIXTURES+=("$D")
+mkdir -p "$D/epics/epic-4-search"
+printf -- '---\nepic: 4\ntask: 1\ntitle: "Typeahead"\ntype: feature\nestimated_hours: 3\n---\n\n# Task: Typeahead\n' \
+  >"$D/epics/epic-4-search/01.md"
+classify_is "signal fields present, status missing" "$D" "incomplete" "no" "$HOST"
+
+echo ""
+echo "=== fixture: importer subprocess failure on a conforming backlog, D#2451 item 5 ==="
+D="$(mktemp -d)"; FIXTURES+=("$D")
+mkdir -p "$D/epics/epic-3-billing"
+mk_task "$D/epics/epic-3-billing/01.md" "not-started"
+step_refuses_closed "conforming backlog, importer exits non-zero" "$D" "$HOST"
 
 echo ""
 echo "=== fixture: tab before a trailing comment, D#2451 item 7c ==="
