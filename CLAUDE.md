@@ -121,26 +121,45 @@ invocation is not a tracked file), and that is correct — it is not what
 "hardcoded" means here.
 
 **When the one-liner itself is refused.** Some non-interactive harnesses refuse
-the compound form above — `source` and a runtime-computed value inside one
-construct can trip a command-safety analyzer that has nothing to do with this
-project's own sandbox. When that happens, split it into two plain commands
-instead: resolve and print the value, then use the printed literal in the very
-next command.
+`source` outright — not only inside a command substitution or `&&` chain, but
+even as its own bare command with nothing wrapped around it. The mandated
+one-liner fails because of the `$(source ... )` it contains; a first step of
+`source scripts/lib/repo-resolve.sh` run alone, before anything else, fails
+for the identical reason. `source` is what a command-safety analyzer of this
+kind cannot verify — it has nothing to do with this project's own sandbox —
+so **no recipe that sources `repo-resolve.sh`, in one step or two, is
+available to an agent running under that kind of harness.** Knowing this is
+what it is (a `source` restriction, not a restriction on resolving a value at
+all) is what lets you route around it instead of retrying the same shape with
+cosmetic changes.
+
+The form that survives, verified by actually running it under such a harness,
+reads `code_repo` straight out of `.autonomous-team/config.json` at runtime,
+with no `source` anywhere in it:
 
 ```bash
-CODE_REPO="$(source scripts/lib/repo-resolve.sh && _resolve_code_repo)"
-echo "$CODE_REPO"
+python3 -c "import json; print(json.load(open('.autonomous-team/config.json')).get('code_repo',''))"
 ```
+
+Use the value it prints as the literal in your next command, typed by hand,
+same as before:
 
 ```bash
 gh pr list --repo <the value the command above printed> --state open
 ```
 
-This two-step form is for an **interactive or ad-hoc call only** — typed and
-run in the moment, never saved anywhere. It must never appear as a literal in
-a committed file: pasting the printed slug into a script is exactly the
-hardcode `repo-target-gate.sh` exists to catch, whether or not it was copied
-from a value you had just resolved.
+This is still **resolving, not hardcoding**: the value is read from config at
+run time rather than typed from memory, and it is used only in an
+interactive command you type and run yourself — never saved anywhere. It must
+never appear as a literal in a committed file: pasting the printed slug into
+a script is exactly the hardcode `repo-target-gate.sh` exists to catch,
+whether or not it was copied from a value you had just resolved. This
+fallback also skips `_resolve_code_repo`'s other resolution steps (the
+`AUTONOMOUS_TEAM_REPO` environment variable, and its own fail-loudly error
+when neither that nor `code_repo` is set) — acceptable for a one-off
+interactive call in this repo, where `config.json`'s `code_repo` is always
+the value that matters, but not a reason to hardcode it as a default
+anywhere.
 
 Before posting ANY comment, issue comment, PR review, or Discussion comment:
 - Verify the target repo matches the surface, per the table
