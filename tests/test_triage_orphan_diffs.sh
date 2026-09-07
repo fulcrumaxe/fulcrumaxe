@@ -353,6 +353,83 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Test 12: a patch name containing a newline cannot select a different patch
+#
+# The sidecar reader batches its work, so its results have to be matched back
+# to the patches they came from. If that matching goes through the path — a
+# record carrying the path, re-parsed by the caller — then a patch whose NAME
+# contains the record delimiter splits one record into two, and the front half
+# names a different, real patch. That patch then gets discarded on somebody
+# else's status, and the move loop rewrites its sidecar on the way out, so the
+# note that said to keep it is gone too. The archive README restores the file;
+# it does not restore the annotation.
+#
+# The fixture below is that exact collision, built on purpose: a patch called
+# "victim.patch" that is explicitly salvaged, and a second patch whose name is
+# "victim.patch" + newline + "X.patch". Reachability in production is low —
+# pile names are derived from worktree ids — but the whole argument for
+# guarding this path is that a rare failure which destroys unrecoverable work
+# still deserves a guard, so low reachability is not the axis.
+#
+# The property asserted is the general one, not the parse: results must be
+# matched to patches by position, never by re-reading a filesystem-controlled
+# name out of the record.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== Test 12: a newline in a patch name cannot select a different patch ==="
+
+NL_ROOT="${TMPDIR_ROOT}/newline-pile"
+NL_PILE="${NL_ROOT}/archive/orphan-diffs"
+mkdir -p "$NL_PILE"
+
+_nl_make_patch() {
+  printf 'diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n' > "$1"
+}
+
+# The patch that must survive. Explicitly salvaged, with a note a human wrote.
+NL_VICTIM="${NL_PILE}/victim.patch"
+_nl_make_patch "$NL_VICTIM"
+printf '{"patch":"victim.patch","status":"salvaged","note":"KEEP ME","tagged_at":null,"tagged_by":"test"}\n' \
+  > "${NL_VICTIM}.meta.json"
+
+# The colliding name: everything before the newline is exactly the victim's
+# path, so a caller that re-parses the path out of a split record lands on the
+# victim. Its own sidecar says untriaged, which is what makes the victim look
+# discardable.
+NL_ATTACK="${NL_PILE}/victim.patch"$'\n'"X.patch"
+_nl_make_patch "$NL_ATTACK"
+printf '{"patch":"collider","status":"untriaged","note":"","tagged_at":null,"tagged_by":"test"}\n' \
+  > "${NL_ATTACK}.meta.json"
+
+git -C "$NL_ROOT" init --quiet . >/dev/null 2>&1
+git -C "$NL_ROOT" config user.email "test@test.com" >/dev/null 2>&1
+git -C "$NL_ROOT" config user.name "Test" >/dev/null 2>&1
+git -C "$NL_ROOT" add -A >/dev/null 2>&1
+git -C "$NL_ROOT" commit --quiet -m "newline pile" >/dev/null 2>&1
+
+touch -t 200001010000 "$NL_VICTIM" "$NL_ATTACK"
+
+NL_OUT=$(REPO_ROOT="$NL_ROOT" bash "$TRIAGE_SCRIPT" discard-older-than 30d 2>&1)
+echo "$NL_OUT" | sed 's/^/    /'
+
+# The file itself must still be there.
+if [[ -f "$NL_VICTIM" ]]; then
+  _pass "salvaged patch survives a colliding newline-named neighbour"
+else
+  _fail "salvaged patch was discarded because a neighbour's name contained a newline — batch results are being matched by path instead of by position"
+fi
+
+# And so must what its sidecar said. A restored file with an overwritten
+# sidecar has lost the only record that anybody ever marked it keep.
+NL_STATUS=$(jq -r '.status' "${NL_VICTIM}.meta.json" 2>/dev/null || echo "MISSING")
+NL_NOTE=$(jq -r '.note' "${NL_VICTIM}.meta.json" 2>/dev/null || echo "MISSING")
+if [[ "$NL_STATUS" == "salvaged" && "$NL_NOTE" == "KEEP ME" ]]; then
+  _pass "salvaged patch's sidecar contents survive intact (status=${NL_STATUS}, note='${NL_NOTE}')"
+else
+  _fail "salvaged patch's sidecar was overwritten (status=${NL_STATUS}, note='${NL_NOTE}') — the archive README restores the file but not the annotation"
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""

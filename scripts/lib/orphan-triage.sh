@@ -44,11 +44,27 @@ _ot_meta_read() {
 # _ot_read_meta_statuses
 #   Reads MANY sidecars with ONE interpreter (D#2133).
 #
-#   Reads NUL-separated sidecar paths on stdin and writes one TAB-separated
-#   line per input path to stdout:
+#   Reads NUL-separated sidecar paths on stdin and writes EXACTLY ONE line per
+#   input path to stdout, in input order:
 #
-#       R<TAB><status><TAB><path>   sidecar was opened and parsed
-#       U<TAB>-<TAB><path>          sidecar could not be opened or parsed
+#       R<TAB><status>   sidecar was opened and parsed
+#       U<TAB>-          sidecar could not be opened or parsed
+#
+#   The path does not come back. That is the point, not an omission. An
+#   earlier version of this echoed the path as a third field and had the
+#   caller re-parse it, which made a patch NAME part of the record framing: a
+#   patch whose filename contained a newline split one record in two, and the
+#   front half named a different, real patch, which the caller then selected
+#   for discard on somebody else's status. Hardening the parse would have left
+#   a delimiter-based protocol carrying filesystem-controlled text; removing
+#   the path removes the parse. Callers match results to inputs by POSITION.
+#
+#   Input framing is NUL, so a newline in a path cannot split an input either.
+#   Output framing is newline-per-record with the status last, and the status
+#   is stripped of tabs and newlines before it is written, so no field on the
+#   output side can carry a delimiter either. (NUL is not available for the
+#   output side: a bash variable cannot hold a NUL byte, so a command
+#   substitution capturing this would silently drop the separators.)
 #
 #   Why the kind is its own field, rather than a third value in <status>:
 #   folding "could not read it" into the status string is precisely how the
@@ -58,10 +74,9 @@ _ot_meta_read() {
 #   value that makes a patch eligible for discard. A caller can now branch on
 #   the kind without ever having to recognise a magic status string.
 #
-#   Callers MUST seed every path they send as unreadable and upgrade only the
-#   paths that come back on an R line. If the interpreter dies part-way
-#   through, the paths whose lines never arrived stay seeded — which is the
-#   safe direction, because unreadable is never discard-eligible.
+#   Callers MUST treat any input they get no line for as unreadable. If the
+#   interpreter dies part-way through, the trailing inputs go unreported —
+#   which is the safe direction, because unreadable is never discard-eligible.
 # ---------------------------------------------------------------------------
 _ot_read_meta_statuses() {
   python3 -c '
@@ -79,10 +94,14 @@ for raw in sys.stdin.buffer.read().split(b"\0"):
         status = doc.get("status", "untriaged")
         if not isinstance(status, str) or not status.strip():
             raise ValueError("sidecar has no usable status")
-        clean = status.strip().replace("\t", " ").replace("\n", " ")
-        sys.stdout.write("R\t%s\t%s\n" % (clean, path))
+        clean = status.strip()
+        for ch in ("\t", "\n", "\r"):
+            clean = clean.replace(ch, " ")
+        if not clean.strip():
+            raise ValueError("sidecar status is only whitespace")
+        sys.stdout.write("R\t%s\n" % clean)
     except Exception:
-        sys.stdout.write("U\t-\t%s\n" % path)
+        sys.stdout.write("U\t-\n")
 sys.stdout.flush()
 '
 }

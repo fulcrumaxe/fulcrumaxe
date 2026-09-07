@@ -391,6 +391,8 @@ cmd_discard_older_than() {
   local candidates=()
   local with_meta=()
   local unreadable=()
+  local unrecognised_paths=()
+  local unrecognised_statuses=()
   shopt -s nullglob
   for patch in "${ORPHAN_DIFF_DIR}"/*.patch; do
     [[ -f "$patch" ]] || continue
@@ -411,9 +413,16 @@ cmd_discard_older_than() {
 
     # An absent sidecar is the ordinary case and means untriaged — 100% of the
     # patches on the operator checkout take this branch, and it costs no
-    # process at all. `-e` rather than `-f`: a sidecar path that exists but is
-    # not a readable regular file is a sidecar we could not read, not one that
-    # is missing, and those two must not end up in the same bucket.
+    # process at all. `-e` rather than `-f` so that a sidecar path holding
+    # something other than a regular file — a directory, say — is sent to the
+    # reader and comes back unreadable, instead of being mistaken for absent.
+    #
+    # `-e` follows symlinks, so one case does NOT get that treatment: a
+    # sidecar that is a symlink to a missing target reads as absent here, and
+    # the patch stays discard-eligible. That is the same answer the previous
+    # code gave, so it is not a change, but it is not what "exists but could
+    # not be read" would suggest either, and it is written down rather than
+    # left for the next reader to discover.
     if [[ ! -e "${patch}.meta.json" ]]; then
       candidates+=("$patch")
       continue
@@ -430,34 +439,46 @@ cmd_discard_older_than() {
       : # partial output is still usable; unreported patches are caught below
     fi
 
-    local seen=$'\n'
-    local kind status meta_path patch_path
-    while IFS=$'\t' read -r kind status meta_path; do
+    # Match results to patches BY POSITION. The reader emits one line per
+    # input path, in input order, and deliberately does not send the path
+    # back. Re-parsing a path out of the record is what let a patch whose
+    # filename contained a newline split one record in two, so that the front
+    # half named a different, real patch — which was then discarded on
+    # somebody else's status, with its sidecar rewritten on the way out.
+    # Position carries no filename, so there is nothing here to split.
+    local idx=0
+    local kind status
+    while IFS=$'\t' read -r kind status; do
       [[ -n "$kind" ]] || continue
-      patch_path="${meta_path%.meta.json}"
-      seen+="${patch_path}"$'\n'
-      if [[ "$kind" == "R" && "$status" == "untriaged" ]]; then
-        candidates+=("$patch_path")
-      elif [[ "$kind" != "R" ]]; then
-        unreadable+=("$patch_path")
+      # More lines than inputs means the framing no longer lines up, and a
+      # misaligned result is exactly what this loop exists to prevent. Stop
+      # consuming; the tail is caught as unreported below.
+      [[ "$idx" -lt "${#with_meta[@]}" ]] || break
+      patch="${with_meta[$idx]}"
+      idx=$((idx + 1))
+      if [[ "$kind" != "R" ]]; then
+        unreadable+=("$patch")
+      elif [[ "$status" == "untriaged" ]]; then
+        candidates+=("$patch")
+      elif [[ "$status" == "salvaged" || "$status" == "discarded" || "$status" == "needs-review" ]]; then
+        : # already triaged by somebody, leave it alone
+      else
+        # A status nobody recognises is not a licence to discard, and it is
+        # not something to pass over in silence either — kept-but-unmentioned
+        # is the same shape of defect as discarded-without-saying-why.
+        unrecognised_paths+=("$patch")
+        unrecognised_statuses+=("$status")
       fi
-      # kind=R with any other status: already triaged, leave it alone.
     done <<< "$meta_out"
 
-    # A reader that died part-way leaves patches with no line at all. They are
-    # unreadable by the same argument as an explicit U line: we did not learn
-    # the status, so we must not treat the patch as untriaged. This
-    # reconciliation only runs when the line count is short, so it costs
-    # nothing on the ordinary path.
-    local reported
-    reported=$(grep -c . <<< "$meta_out") || reported=0
-    if [[ "$reported" -ne "${#with_meta[@]}" ]]; then
-      for patch in "${with_meta[@]}"; do
-        if [[ "$seen" != *$'\n'"$patch"$'\n'* ]]; then
-          unreadable+=("$patch")
-        fi
-      done
-    fi
+    # A reader that died part-way stops emitting, so the trailing inputs go
+    # unreported. They are unreadable by the same argument as an explicit U
+    # line: we did not learn the status, so we must not treat the patch as
+    # untriaged.
+    while [[ "$idx" -lt "${#with_meta[@]}" ]]; do
+      unreadable+=("${with_meta[$idx]}")
+      idx=$((idx + 1))
+    done
   fi
 
   # Say so out loud. A sidecar we could not read is a patch we deliberately
@@ -468,6 +489,14 @@ cmd_discard_older_than() {
     local u
     for u in "${unreadable[@]}"; do
       echo "  ${u##*/} — ${u##*/}.meta.json is unreadable or not valid JSON" >&2
+    done
+  fi
+
+  if [[ ${#unrecognised_paths[@]} -gt 0 ]]; then
+    echo "WARNING: ${#unrecognised_paths[@]} patch(es) have a sidecar with an unrecognised status. Keeping them — only 'untriaged' is discard-eligible:" >&2
+    local i
+    for i in "${!unrecognised_paths[@]}"; do
+      echo "  ${unrecognised_paths[$i]##*/} — status '${unrecognised_statuses[$i]}' is not one of untriaged/salvaged/discarded/needs-review" >&2
     done
   fi
 
