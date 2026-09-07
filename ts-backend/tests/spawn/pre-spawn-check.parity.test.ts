@@ -47,6 +47,19 @@
  *     parity-tested at the unit level (TS checkDial() vs Python dial_registry.check()
  *     semantics are identical). The bash integration test for dial-denied uses the REAL
  *     dial-registry (which has agent.spawn=4, so dial tests run against the real state).
+ *   - Per-role concurrency cap (bash vs TS): DOCUMENTED DIVERGENCE (D#2450) — this
+ *     gate's `activeRunsForRole` / `policies.<role>.max_concurrent` counts agent_run
+ *     DuckDB rows scoped to one role. `scripts/pre-spawn-check.sh`'s per-project cap
+ *     (same `policies.<role>.max_concurrent` key as of D#2450 PR-a, previously hardcoded
+ *     to `policies.executor.max_concurrent` for every role) still counts fleet.db rows
+ *     scoped to the whole *project*, any role — a genuinely different population, not
+ *     just a different data source. A prior version of this file asserted a
+ *     "code-reviewer max_concurrent=4" parity claim here with no bash counterpart at
+ *     all; that assertion was retired rather than reconciled, because reconciling it
+ *     honestly requires deciding which population each gate counts first — that is
+ *     D#2450 PR-b, not this file. Once PR-b lands, a real comparison belongs here:
+ *     `bash_verdict === ts_verdict` on a shared fixture, not two independent
+ *     hardcoded-4 assertions.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
@@ -370,7 +383,16 @@ describe("scenario: cap-exceeded", () => {
     expect(result.active_runs).toBe(7);
   });
 
-  it("TS blocks per-role cap: code-reviewer max_concurrent=4 with 4 open runs", async () => {
+  // A "TS blocks per-role cap: code-reviewer max_concurrent=4" case used to live
+  // here, titled and positioned as if it were a parity scenario, asserting only
+  // the TS side against a hardcoded 4. It had no bash counterpart — the bash
+  // gate counts a different population entirely (see the "Per-role concurrency
+  // cap" divergence note in the file header). That was the D#2450 defect: a
+  // claim only one side has, dressed as parity. It is retired here rather than
+  // reconciled, because reconciling it honestly requires D#2450 PR-b's
+  // data-source decision first. TS's own per-role blocking decision is still
+  // exercised below — now labeled for what it actually is.
+  it("TS-only, not parity (see file header): blocks per-role cap when active_runs_for_role >= policies.<role>.max_concurrent", async () => {
     const config = makeConfigNormal();
     (config["policies"] as Record<string, unknown>)["code-reviewer"] = {
       timeout_minutes: 20,
