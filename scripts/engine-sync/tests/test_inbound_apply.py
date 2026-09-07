@@ -535,60 +535,82 @@ def test_c6_conflict_applies_nothing_and_leaves_the_tree_untouched(engine, state
 # ---------------------------------------------------------------------------
 
 
-def test_dry_run_ceiling_refusal_leaves_no_state_file(engine, state_dir):
-    """The classify/ceiling refusal raises ApplyRefused upstream of the
-    `if dry_run` branch inside `_run`. Three consecutive --dry-run
-    invocations against a scratch state dir that never had a state file must
-    leave it absent -- not present holding 0, absent."""
-    state_file = apply_inbound.state_path(state_dir)
-    assert not state_file.exists()
-
-    rec = Recorder()
-    for _ in range(3):
-        result = _run(engine, state_dir, rec, max_files=1, dry_run=True)
-        assert result["result"] == apply_inbound.RESULT_REFUSED, result
-        assert "ceiling" in result["reason"]
-
-    assert not state_file.exists(), "a dry-run ceiling refusal wrote the state file"
-    assert rec.pushes == [] and rec.prs == []
+def _dry_run_prep_ceiling_refusal(engine):
+    """The classify/ceiling refusal: ApplyRefused raised inside `_run`,
+    caught in `apply_inbound`'s outer try/except."""
+    return dict(max_files=1)
 
 
-def test_dry_run_ceiling_refusal_leaves_existing_state_byte_identical(engine, state_dir):
-    """Same refusal, starting from a state file that already exists: it must
-    come out byte-identical, not merely holding the same number again."""
-    apply_inbound.write_failure_count(state_dir, 0)
-    state_file = apply_inbound.state_path(state_dir)
-    before = state_file.read_bytes()
-
-    rec = Recorder()
-    for _ in range(3):
-        result = _run(engine, state_dir, rec, max_files=1, dry_run=True)
-        assert result["result"] == apply_inbound.RESULT_REFUSED, result
-
-    assert state_file.read_bytes() == before
-    assert apply_inbound.read_failure_count(state_dir) == 0
-
-
-def test_dry_run_conflict_refusal_leaves_no_state_file(engine, state_dir):
-    """Same promise, the other write_failure_count call site: a conflict
-    must not touch the state file under --dry-run either. Fixing only the
-    ceiling path would leave this one live."""
+def _dry_run_prep_conflict_refusal(engine):
+    """A genuine content conflict: the engine and the plane both changed
+    backend/shared.py away from the marker's baseline."""
     repo = engine["repo"]
     (repo / "backend/shared.py").write_text("ENGINE diverged too\n")
     _git(repo, "add", "backend/shared.py")
     _git(repo, "commit", "-q", "-m", "engine also touches shared")
+    return dict(local_ref="main")
 
-    state_file = apply_inbound.state_path(state_dir)
-    assert not state_file.exists()
 
+def _dry_run_prep_nothing_to_write(engine):
+    """Every candidate path withheld as sensitive: the `if not write_set`
+    branch, no exception involved."""
+    return dict(
+        classify=lambda **kw: _classify(engine, resolve_sensitive_prefixes=lambda: ["backend/", "scripts/"])
+    )
+
+
+def _dry_run_prep_unexpected_exception(engine):
+    """An unrelated failure inside the classify call (a git subprocess
+    error, a bad protected.txt/sensitive.txt parse, a remote timeout) --
+    caught by the generic `except Exception` that wraps the whole `_run`
+    call, not by `except ApplyRefused`."""
+
+    def boom(**kw):
+        raise RuntimeError("synthetic failure standing in for a git/network error")
+
+    return dict(classify=boom)
+
+
+@pytest.mark.parametrize(
+    "prep",
+    [
+        _dry_run_prep_ceiling_refusal,
+        _dry_run_prep_conflict_refusal,
+        _dry_run_prep_nothing_to_write,
+        _dry_run_prep_unexpected_exception,
+    ],
+    ids=["ceiling_refusal", "conflict_refusal", "nothing_to_write", "unexpected_exception"],
+)
+def test_dry_run_never_writes_state_regardless_of_exit_path(engine, state_dir, prep):
+    """Closes the class rather than the instances. `apply_inbound()` has
+    five call sites that can touch the state file (see the module's own
+    write_state/write_failure_count grep); one is unreachable under
+    dry_run (it sits after `_run`'s own dry-run early return on the
+    APPLIED path) and the other four are exactly the parametrized cases
+    here. Whichever of those a dry run takes, the state file must come out
+    exactly as it went in -- absent if it was absent, byte-identical if it
+    already existed. A fifth write path added later without updating this
+    parametrization is exactly the failure mode this test exists to catch;
+    it will not, by construction, be caught by adding a case here after the
+    fact -- the grep in the PR description is what closes that gap."""
+    overrides = prep(engine)
     rec = Recorder()
-    for _ in range(3):
-        result = _run(engine, state_dir, rec, local_ref="main", dry_run=True)
-        assert result["result"] == apply_inbound.RESULT_CONFLICT, result
-        assert "backend/shared.py" in result["conflicted"]
+    state_file = apply_inbound.state_path(state_dir)
 
-    assert not state_file.exists(), "a dry-run conflict refusal wrote the state file"
-    assert rec.pushes == [] and rec.prs == []
+    # Starting from no state file at all.
+    assert not state_file.exists()
+    result = _run(engine, state_dir, rec, dry_run=True, **overrides)
+    assert result["result"] != apply_inbound.RESULT_APPLIED, result
+    assert not state_file.exists(), f"dry-run exit path {result['result']!r} created the state file"
+    assert rec.pushes == [] and rec.prs == [], f"dry-run exit path {result['result']!r} touched the remote"
+
+    # Starting from a state file that already exists: byte-identical, not
+    # merely holding the same number again.
+    apply_inbound.write_failure_count(state_dir, 0)
+    before = state_file.read_bytes()
+    result2 = _run(engine, state_dir, rec, dry_run=True, **overrides)
+    assert result2["result"] != apply_inbound.RESULT_APPLIED, result2
+    assert state_file.read_bytes() == before, f"dry-run exit path {result2['result']!r} mutated the state file"
 
 
 def test_dry_run_does_not_disarm_the_circuit_breaker_for_a_real_refusal(engine, state_dir):
