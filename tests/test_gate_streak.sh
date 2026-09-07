@@ -9,6 +9,22 @@
 # they feed never names the pre-existing decline-reason kinds.
 #
 # Run: bash tests/test_gate_streak.sh
+#
+# Two decisions, recorded here because they were previously left to
+# omission and cost three agents a day of chasing (D#2458):
+#
+# 1. In a tree where backend/_repo.py cannot resolve a repo slug,
+#    team_status.py does not start, so AC-3 SKIPs rather than passes or
+#    fails. An assertion about a program's output cannot mean anything
+#    where the program never ran, and reporting that as a feature failure
+#    is what sent people to read backend/gate_streak.py. The other checks
+#    here are greps and fixtures; they do not need a slug and still run.
+#
+# 2. Nothing runs this suite automatically — no CI job and no runner
+#    references it on either plane; it is a by-hand suite. That stays true
+#    for now, deliberately: promoting an unmaintained suite to a merge
+#    blocker in the same change that fixes its most misleading assertion
+#    is a bad trade. Recorded as a decision rather than an accident.
 
 set -uo pipefail
 
@@ -20,9 +36,15 @@ GATE_STREAK_PY="$REAL_REPO_ROOT/backend/gate_streak.py"
 
 PASS=0
 FAIL=0
+SKIP=0
 
 pass() { echo "  PASS: $1"; PASS=$((PASS + 1)); }
 fail() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
+# SKIP is for a check that could not be evaluated, as distinct from one that
+# was evaluated and held (PASS) or was evaluated and did not (FAIL). It is
+# reported on its own line and in the summary so a reader can never mistake
+# it for either. See the AC-3 block and D#2458.
+skip() { echo "  SKIP: $1"; SKIP=$((SKIP + 1)); }
 
 # -----------------------------------------------------------------------
 # AC-1: positive marker written in ci-status-check.sh, both consumers reach it
@@ -187,25 +209,74 @@ echo ""
 echo "=== AC-3: team_status.py human output reflects the streak ==="
 AUDIT_AC3_ZERO="$(mktemp)"
 AUDIT_AC3_NONZERO="$(mktemp)"
+AC3_STDERR="$(mktemp)"
 printf '%s\n' '{"kind": "ci_gate_stood_down", "pr": 1, "ts": "x"}' >> "$AUDIT_AC3_NONZERO"
-OUT_ZERO=$(CI_STATUS_TEST_MODE=1 CI_STATUS_TEST_AUDIT_FILE="$AUDIT_AC3_ZERO" python3 "$REAL_REPO_ROOT/backend/team_status.py" 2>/dev/null)
-OUT_NONZERO=$(CI_STATUS_TEST_MODE=1 CI_STATUS_TEST_AUDIT_FILE="$AUDIT_AC3_NONZERO" python3 "$REAL_REPO_ROOT/backend/team_status.py" 2>/dev/null)
-if ! printf '%s' "$OUT_ZERO" | grep -q "CI GATE STREAK"; then
-  pass "streak=0 fixture prints no streak line"
+
+# D#2458. Both invocations below used to end in `2>/dev/null`, and neither
+# looked at the exit status. That mattered because team_status.py does not
+# always start: backend/_repo.py raises when it can resolve no repo slug —
+# no .autonomous-team/project.json, no project.json in the state dir, no
+# origin remote in .git/config — which is the normal state of a tree
+# populated straight from the git ref. Both captures then came back empty,
+# the two empty strings compared equal, and the suite printed
+#
+#   FAIL: outputs are identical — streak line had no effect
+#
+# That sentence describes a defect in the gate-streak feature. The feature
+# was fine; the program under test had never run. Three agents chased it in
+# one day, on three unrelated PRs, because the message sent them to the
+# wrong file.
+#
+# So: keep stderr (a healthy run is still silent — it is printed only on the
+# failure path, which is why the redirect existed), and branch on the exit
+# status rather than on the message. Branching on the RuntimeError text
+# would re-hide the next, different crash.
+_run_team_status() {  # $1 = audit fixture. Sets TS_OUT / TS_RC / TS_ERR.
+  TS_OUT=$(CI_STATUS_TEST_MODE=1 CI_STATUS_TEST_AUDIT_FILE="$1" \
+    python3 "$REAL_REPO_ROOT/backend/team_status.py" 2>"$AC3_STDERR")
+  TS_RC=$?
+  TS_ERR=$(cat "$AC3_STDERR")
+}
+
+_run_team_status "$AUDIT_AC3_ZERO"
+OUT_ZERO=$TS_OUT; RC_ZERO=$TS_RC; ERR_ZERO=$TS_ERR
+_run_team_status "$AUDIT_AC3_NONZERO"
+OUT_NONZERO=$TS_OUT; RC_NONZERO=$TS_RC; ERR_NONZERO=$TS_ERR
+
+if [[ "$RC_ZERO" -ne 0 || "$RC_NONZERO" -ne 0 ]]; then
+  # Outcome (a): the program under test never ran. AC-3 asserts on
+  # team_status.py's *output*, so it cannot mean anything here — this is
+  # neither a pass nor evidence against the streak line. Skip it, name the
+  # crash, and show the stderr that used to go to /dev/null.
+  if [[ "$RC_ZERO" -ne 0 ]]; then
+    AC3_RC=$RC_ZERO; AC3_ERR=$ERR_ZERO
+  else
+    AC3_RC=$RC_NONZERO; AC3_ERR=$ERR_NONZERO
+  fi
+  skip "team_status.py exited $AC3_RC without producing output — AC-3 asserts on that output, so it is not evaluated in this tree"
+  echo "    team_status.py stderr was:"
+  printf '%s\n' "$AC3_ERR" | sed 's/^/      /'
+  echo "    This is an environment result, not a gate-streak result. AC-3 needs a"
+  echo "    tree where backend/_repo.py resolves a slug; the other checks in this"
+  echo "    suite do not and still ran."
 else
-  fail "streak=0 fixture unexpectedly printed a streak line"
+  if ! printf '%s' "$OUT_ZERO" | grep -q "CI GATE STREAK"; then
+    pass "streak=0 fixture prints no streak line"
+  else
+    fail "streak=0 fixture unexpectedly printed a streak line"
+  fi
+  if printf '%s' "$OUT_NONZERO" | grep -q "CI GATE STREAK"; then
+    pass "streak>=1 fixture prints one streak line"
+  else
+    fail "streak>=1 fixture printed no streak line"
+  fi
+  if [[ "$OUT_ZERO" != "$OUT_NONZERO" ]]; then
+    pass "the two outputs differ (diffable per AC-3)"
+  else
+    fail "outputs are identical — streak line had no effect"
+  fi
 fi
-if printf '%s' "$OUT_NONZERO" | grep -q "CI GATE STREAK"; then
-  pass "streak>=1 fixture prints one streak line"
-else
-  fail "streak>=1 fixture printed no streak line"
-fi
-if [[ "$OUT_ZERO" != "$OUT_NONZERO" ]]; then
-  pass "the two outputs differ (diffable per AC-3)"
-else
-  fail "outputs are identical — streak line had no effect"
-fi
-rm -f "$AUDIT_AC3_ZERO" "$AUDIT_AC3_NONZERO"
+rm -f "$AUDIT_AC3_ZERO" "$AUDIT_AC3_NONZERO" "$AC3_STDERR"
 
 # -----------------------------------------------------------------------
 # AC-6: --force-no-ci still requires a non-empty --bypass-reason; no new
@@ -244,7 +315,11 @@ fi
 # -----------------------------------------------------------------------
 echo ""
 echo "================================"
-echo "Results: $PASS passed, $FAIL failed"
+if [ "$SKIP" -gt 0 ]; then
+  echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
+else
+  echo "Results: $PASS passed, $FAIL failed"
+fi
 echo "================================"
 
 if [ "$FAIL" -gt 0 ]; then
