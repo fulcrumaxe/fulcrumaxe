@@ -120,6 +120,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -145,6 +146,12 @@ REASON_APPROVED = "external_approved"
 REASON_UNTRUSTED_APPROVER = "external_intake_approval_untrusted_actor"
 REASON_PR_UNREADABLE = "pr_meta_unreadable"
 REASON_TIMELINE_UNREADABLE = "intake_approval_actor_unreadable"
+#: D#2433 — the issue-events timeline exceeded the page budget. Distinct from
+#: REASON_TIMELINE_UNREADABLE: that one means "could not read", this one means
+#: "read some of it, and it proves the answer cannot be trusted" — an operator
+#: seeing "unreadable" would go hunting for a network fault that did not
+#: happen.
+REASON_TIMELINE_TOO_LARGE = "intake_approval_actor_timeline_too_large"
 #: D#2421 — the head moved after a trusted account approved it.
 REASON_HEAD_CHANGED = "external_pr_head_changed_after_approval"
 #: D#2421 — the head-baseline store could not be read or written; fail closed.
@@ -155,6 +162,14 @@ REASON_HEAD_UNRECORDED = "external_pr_head_unrecorded"
 #: D#2421 — the PR has drifted onto too many distinct new heads since its
 #: last approved baseline; blocked until a human runs rebaseline-pr.
 REASON_CEILING = "external_pr_head_invalidation_ceiling"
+
+#: D#2433 — bound the work `intake_approval_actor` can be made to do by a
+#: third party. The timeline is externally inflatable (any account that can
+#: comment on, or reference from another repo, a public PR appends to it) and
+#: reads oldest-first, so the worst-case request count must be a stated
+#: constant, never emergent. See `_fetch_timeline_events`.
+INTAKE_TIMELINE_PAGE_CAP = 10
+INTAKE_TIMELINE_PER_PAGE = 100
 
 
 def _default_code_repo() -> str:
@@ -221,18 +236,109 @@ def fetch_pr_meta(pr: int, repo_slug: str, *, gh=None) -> dict:
     }
 
 
-def intake_approval_actor(
-    pr: int, repo_slug: str, *, gh=None
-) -> tuple[Optional[str], bool, Optional[str]]:
-    """Who applied `intake-approved` to *pr*, and when, per the issue-events
-    timeline.
+class _TimelineTooLarge(Exception):
+    """D#2433 — the issue-events timeline provably exceeds the page budget.
 
-    Returns ``(login, read_ok, labeled_at)``. The most recent `labeled` event
-    for that label wins — a re-application by a maintainer after an author's
-    own attempt should count, and the latest event is the one that reflects
-    the current label. ``(None, True, None)`` means the timeline was read and
-    contains no such event (the label was applied by a path that leaves no
-    event, or was never applied); that is not an approval either.
+    Carries how many pages were actually fetched (``INTAKE_TIMELINE_PAGE_CAP
+    + 1``, always, when this fires) so the caller can put it in the audit
+    row. Internal to this module: it never crosses `intake_approval_actor`'s
+    public boundary — see that function's docstring for why.
+    """
+
+    def __init__(self, pages_fetched: int):
+        self.pages_fetched = pages_fetched
+        super().__init__(
+            f"issues/{{pr}}/events exceeds {INTAKE_TIMELINE_PAGE_CAP} page(s) "
+            f"of {INTAKE_TIMELINE_PER_PAGE}"
+        )
+
+
+def _fetch_timeline_events(pr: int, repo_slug: str, *, gh=None) -> list:
+    """Bounded read of `issues/{pr}/events` (D#2433).
+
+    GitHub returns issue events oldest-first, and the timeline is externally
+    inflatable — any account that can comment on, or reference from another
+    repo, a public PR appends to it. This reads at most
+    ``INTAKE_TIMELINE_PAGE_CAP + 1`` pages of ``INTAKE_TIMELINE_PER_PAGE``
+    each: page ``PAGE_CAP + 1`` is fetched only once every prior page came
+    back completely full, and it exists solely to tell "exactly at the cap"
+    (that extra page is empty) from "over the cap" (it isn't) — its
+    contents, when non-empty, are never merged into the result, only counted.
+    Worst case is therefore a stated constant, never emergent: PAGE_CAP + 1
+    requests, always, regardless of how long the real timeline is.
+
+    Deliberately does not use `gh api`'s automatic follow-all-pages flag: it
+    chases `rel=next` Link headers on its own, which would silently defeat
+    this explicit `page=` bound.
+
+    Raises ``_TimelineTooLarge`` when the timeline provably exceeds the
+    budget, carrying the number of pages fetched. Raises whatever the
+    transport or `json.loads` raises on a genuine read/parse failure. Neither
+    is caught here — this function only bounds the read, it never decides an
+    approver or a verdict; both call sites (`intake_approval_actor`,
+    `check_pr`) handle the two cases themselves.
+    """
+    call = gh or _gh
+    collected: list = []
+    for page_num in range(1, INTAKE_TIMELINE_PAGE_CAP + 2):
+        raw = call(
+            [
+                "api",
+                f"repos/{repo_slug}/issues/{pr}/events"
+                f"?per_page={INTAKE_TIMELINE_PER_PAGE}&page={page_num}",
+            ]
+        )
+        page = json.loads(raw or "[]")
+        if not isinstance(page, list):
+            raise ValueError("issue-events page was not a JSON list")
+        if page_num > INTAKE_TIMELINE_PAGE_CAP:
+            # The +1 boundary-check page. Never merged into `collected` —
+            # only its emptiness is meaningful.
+            if page:
+                raise _TimelineTooLarge(page_num)
+            break
+        collected.extend(page)
+        if len(page) < INTAKE_TIMELINE_PER_PAGE:
+            # Short page: this was the real last page, no need to spend the
+            # boundary-check request.
+            break
+    return collected
+
+
+def _record_timeline_too_large(*, pr: int, repo: str, pages_fetched: int) -> None:
+    """D#2433 — record the refusal to `audit.jsonl` so an operator can find
+    it. Same idiom as `scripts/spec-context-oracle.py::append_audit_event`.
+
+    Never raises. `check_pr` has already decided to block before this is
+    called; a failure to write the record must not turn that refusal into an
+    allow (Spec item 11) — so any failure here is swallowed, not surfaced.
+    """
+    event = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "kind": "pr_intake_timeline_too_large",
+        "event": "pr_intake_timeline_too_large",
+        "pr": pr,
+        "repo": repo,
+        "pages_fetched": pages_fetched,
+        "cap": INTAKE_TIMELINE_PAGE_CAP,
+    }
+    try:
+        sys.path.insert(0, str(_REPO_ROOT))
+        from backend import state_paths  # noqa: PLC0415
+
+        with state_paths.AUDIT_LOG.open("a") as f:
+            f.write(json.dumps(event) + "\n")
+    except Exception:  # noqa: BLE001 — audit failure must never flip the verdict
+        pass
+
+
+def _winner_from_events(
+    events: list,
+) -> tuple[Optional[str], bool, Optional[str]]:
+    """Pick the most-recent `labeled`/intake-approved event out of an
+    already-fetched *events* list. Split out of `intake_approval_actor`
+    (D#2433) so `check_pr` can reuse it against a bounded read without a
+    second GitHub call.
 
     "Most recent" is decided by ``event["id"]``, GitHub's server-assigned
     monotonic integer — not by string-comparing `created_at` (D#2421 PR 3).
@@ -245,8 +351,7 @@ def intake_approval_actor(
 
     Fail closed on anything ambiguous: a matching `labeled` event with no
     integer `id` gives no usable ordering, and a winner whose `created_at`
-    does not parse gives no usable instant. Both return ``read_ok=False``,
-    which the caller reports as `intake_approval_actor_unreadable`.
+    does not parse gives no usable instant. Both return ``read_ok=False``.
 
     The assumption, recorded because it is an assumption and not a contract:
     GitHub's event ids are monotonic within one issue's timeline. That holds
@@ -257,11 +362,6 @@ def intake_approval_actor(
     the untrusted party to already hold label permission, and it is the same
     answer the previous string ordering gave, so it is not a regression.
     """
-    call = gh or _gh
-    try:
-        events = json.loads(call(["api", "--paginate", f"repos/{repo_slug}/issues/{pr}/events"]) or "[]")
-    except Exception:  # noqa: BLE001 — fail closed
-        return None, False, None
     if not isinstance(events, list):
         return None, False, None
 
@@ -290,6 +390,35 @@ def intake_approval_actor(
     login = holder.get("login")
     actor = login.strip() if isinstance(login, str) and login.strip() else None
     return actor, True, created
+
+
+def intake_approval_actor(
+    pr: int, repo_slug: str, *, gh=None
+) -> tuple[Optional[str], bool, Optional[str]]:
+    """Who applied `intake-approved` to *pr*, and when, per the issue-events
+    timeline.
+
+    Returns ``(login, read_ok, labeled_at)``. The most recent `labeled` event
+    for that label wins — a re-application by a maintainer after an author's
+    own attempt should count, and the latest event is the one that reflects
+    the current label. ``(None, True, None)`` means the timeline was read and
+    contains no such event (the label was applied by a path that leaves no
+    event, or was never applied); that is not an approval either.
+
+    The read itself is bounded (D#2433, see `_fetch_timeline_events`) —
+    ``read_ok=False`` now also covers a timeline that provably exceeds the
+    page budget, exactly like any other read failure, for callers of this
+    function specifically. `check_pr` does not go through this function for
+    that distinction: it calls the bounded read directly so it can report
+    `REASON_TIMELINE_TOO_LARGE` instead of the generic "unreadable" and
+    record an audit row — see `check_pr`. This function stays a fail-closed
+    "who, or nothing" answer for any other caller.
+    """
+    try:
+        events = _fetch_timeline_events(pr, repo_slug, gh=gh)
+    except Exception:  # noqa: BLE001 — fail closed (covers _TimelineTooLarge too)
+        return None, False, None
+    return _winner_from_events(events)
 
 
 def _pr_baseline_key(repo_slug: str, pr: int) -> str:
@@ -362,23 +491,35 @@ def check_pr(
     approver_blocked_reason: Optional[str] = None
 
     if provenance == PROVENANCE_EXTERNAL and INTAKE_APPROVED_LABEL in set(label_names):
-        actor, read_ok, labeled_at = intake_approval_actor(pr, slug, gh=gh)
-        if not read_ok:
+        # Calls the bounded read directly (not `intake_approval_actor`) so a
+        # timeline that exceeds the page budget can be reported as
+        # REASON_TIMELINE_TOO_LARGE — distinct from a genuine read failure —
+        # and recorded, without a second GitHub call either way (D#2433).
+        try:
+            events = _fetch_timeline_events(pr, slug, gh=gh)
+        except _TimelineTooLarge as exc:
+            approver_blocked_reason = REASON_TIMELINE_TOO_LARGE
+            _record_timeline_too_large(pr=pr, repo=slug, pages_fetched=exc.pages_fetched)
+        except Exception:  # noqa: BLE001 — fail closed
             approver_blocked_reason = REASON_TIMELINE_UNREADABLE
-        elif not is_trusted_author(actor, trust):
-            approver_blocked_reason = REASON_UNTRUSTED_APPROVER
         else:
-            key = _pr_baseline_key(slug, pr)
-            head_sha = meta.get("head_sha")
-            if isinstance(head_sha, str) and head_sha:
-                baseline_verdict = pr_head_baseline.check_and_record(
-                    key, head_sha, labeled_at, path=baseline_path
-                )
+            actor, read_ok, labeled_at = _winner_from_events(events)
+            if not read_ok:
+                approver_blocked_reason = REASON_TIMELINE_UNREADABLE
+            elif not is_trusted_author(actor, trust):
+                approver_blocked_reason = REASON_UNTRUSTED_APPROVER
             else:
-                # No fingerprint to compare against — cannot confirm the
-                # approved head is still current. Fail closed (HG-1), never
-                # silently treated as a match.
-                baseline_verdict = "unknown"
+                key = _pr_baseline_key(slug, pr)
+                head_sha = meta.get("head_sha")
+                if isinstance(head_sha, str) and head_sha:
+                    baseline_verdict = pr_head_baseline.check_and_record(
+                        key, head_sha, labeled_at, path=baseline_path
+                    )
+                else:
+                    # No fingerprint to compare against — cannot confirm the
+                    # approved head is still current. Fail closed (HG-1),
+                    # never silently treated as a match.
+                    baseline_verdict = "unknown"
 
     if baseline_verdict == "ceiling":
         blocked, reason = True, REASON_CEILING
