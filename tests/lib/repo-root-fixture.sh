@@ -52,6 +52,14 @@
 #   WT_CLAUDE="$FIXTURE_ROOT/.claude/worktrees/testid123"
 #   BLOCKS_FILE="$FIXTURE_ROOT/.autonomous-team/hook-events/blocks-$(date +%F).jsonl"
 #
+#   # D#2447: driving the hook through repo_root_fixture_run_hook (below)
+#   # instead of `python3 "$HOOK"` directly keeps <state_dir>/audit.jsonl
+#   # writes out of the operator's real ~/.autonomous-forever-state by
+#   # default — see that function's own comment.
+#   PAYLOAD='{"tool_name":"Bash","tool_input":{"command":"..."},"cwd":"'"$WT_CLAUDE"'"}'
+#   repo_root_fixture_run_hook "$HOOK" "$PAYLOAD"
+#   echo "$REPO_ROOT_FIXTURE_HOOK_EXIT"
+#
 # repo_root_fixture_make <real_repo_root>
 #   Creates a mktemp -d fixture, `git init -q`s it, and copies every
 #   hooks/*.py file (the real code under test, byte-for-byte, unmodified)
@@ -59,6 +67,29 @@
 #   path on stdout. The caller owns cleanup (rm -rf) — this function does
 #   not register a trap, since a suite sourcing this file already has its
 #   own trap conventions (see D#2254 on not centralizing traps in a helper).
+#
+# repo_root_fixture_run_hook <hook_path> <json_payload>
+#   D#2447: hooks/sandbox.py has four write sites
+#   (_write_gh_api_mutation_allow_event, _write_archive_protocol_warning_event,
+#   _write_head_flip_warning_event, _write_unclassified_command_event), plus a
+#   fifth in hooks/payload_shape.py (record_payload_shape, called
+#   unconditionally from hooks/sandbox.py's main()) — that append to
+#   <state_dir>/audit.jsonl, where state_dir defaults to the operator's real
+#   ~/.autonomous-forever-state whenever AUTONOMOUS_TEAM_STATE_DIR is unset.
+#   Same shape of trap as the telemetry dir above, different write sites — a
+#   suite that forgets to export the override pollutes production. This
+#   function makes the correct
+#   invocation the default one instead of an opt-in the caller has to
+#   remember: if AUTONOMOUS_TEAM_STATE_DIR is not already exported by the
+#   caller, it creates a fresh `mktemp -d` scratch dir and exports it
+#   *before* piping <json_payload> to `python3 <hook_path>` — mirroring
+#   `blackboard_scratch_state_dir` in tests/lib/blackboard-fixture.sh, same
+#   fix for the same class of leak (D#2283), applied here to the hook's own
+#   state-dir write instead of a pr_state fixture. A caller that already
+#   exported AUTONOMOUS_TEAM_STATE_DIR (e.g. to reuse one scratch dir across
+#   several driven calls) is left alone. Hook exit status lands in
+#   REPO_ROOT_FIXTURE_HOOK_EXIT; hook stdout is printed, stderr passes
+#   through.
 #
 # Deliberately NOT under /tmp or /var/tmp
 # -----------------------------------------
@@ -110,4 +141,20 @@ repo_root_fixture_make() {
   fi
 
   printf '%s\n' "$fixture"
+}
+
+# repo_root_fixture_run_hook — see header comment above for the "why".
+# Sets REPO_ROOT_FIXTURE_HOOK_EXIT and prints the hook's stdout.
+repo_root_fixture_run_hook() {
+  local hook_path="${1:?repo_root_fixture_run_hook: hook path required}"
+  local json_payload="${2:?repo_root_fixture_run_hook: json payload required}"
+
+  if [[ -z "${AUTONOMOUS_TEAM_STATE_DIR:-}" ]]; then
+    local scratch
+    scratch="$(mktemp -d)" || return 1
+    export AUTONOMOUS_TEAM_STATE_DIR="$scratch"
+  fi
+
+  printf '%s' "$json_payload" | python3 "$hook_path"
+  REPO_ROOT_FIXTURE_HOOK_EXIT=$?
 }
