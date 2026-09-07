@@ -45,6 +45,17 @@ Steps:
 5. Open a PR targeting main. Title: "#{{discussion_number}}: {{discussion_title}}"
    Include the Discussion URL in the PR body: {{discussion_url}}
 
+   Your worktree's branch shares no history with the code plane — check
+   `git merge-base HEAD code-plane/main` (empty means unrelated histories,
+   the common case). When it is empty, do NOT try to push the worktree's own
+   branch; build the commit with `scripts/lib/code-plane-pr.sh` instead (its
+   header documents the full build/push interface and the three disciplines
+   it enforces — byte-identity by hash, mode read from `git ls-tree`, a
+   private per-invocation scratch path). Resolve the code plane before
+   either building or opening the PR:
+     CODE_REPO="$(source scripts/lib/repo-resolve.sh && _resolve_code_repo)"; gh pr create --repo "${CODE_REPO:?code plane unresolved}" --base main --title "..." --body "..."
+   See `.claude/agents/executor.md` for the full repo-scope card.
+
    Before creating the PR, check if project.json defines release-category labels:
      PR_CATS=$(python3 -c "import json; print(' '.join(json.load(open('.autonomous-team/project.json')).get('pr_categories', [])))" 2>/dev/null || true)
    If PR_CATS is non-empty, pick the single most appropriate label from that list and
