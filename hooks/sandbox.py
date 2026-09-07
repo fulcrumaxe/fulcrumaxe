@@ -298,15 +298,24 @@ def _write_gh_api_mutation_allow_event(
         with open(log_file, "a") as fh:
             fh.write(line)
 
-        # Also write to state-dir audit.jsonl for cross-subsystem observability
-        state_dir = Path(
-            os.environ.get(
-                "AUTONOMOUS_TEAM_STATE_DIR",
-                str(Path.home() / ".autonomous-forever-state"),
-            )
-        )
-        audit_log = state_dir / "audit.jsonl"
-        if state_dir.exists():
+        # Also write to state-dir audit.jsonl for cross-subsystem observability.
+        # D#2447: the old fallback (Path's home-dir lookup) falls through to
+        # a passwd-database lookup when HOME is unset, silently rerouting a
+        # hand-driven run (HOME deliberately unset to test the unset path)
+        # to the operator's real production state dir. Read HOME explicitly
+        # and decline the append entirely when neither override is set — a
+        # genuine run always has HOME set, so this is byte-identical on the
+        # production path.
+        _state_dir_override = os.environ.get("AUTONOMOUS_TEAM_STATE_DIR")
+        _home = os.environ.get("HOME")
+        if _state_dir_override:
+            state_dir = Path(_state_dir_override)
+        elif _home:
+            state_dir = Path(_home) / ".autonomous-forever-state"
+        else:
+            state_dir = None
+        if state_dir is not None and state_dir.exists():
+            audit_log = state_dir / "audit.jsonl"
             with open(audit_log, "a") as fh:
                 fh.write(line)
     except Exception:
@@ -378,15 +387,21 @@ def _write_archive_protocol_warning_event(
         with open(log_file, "a") as fh:
             fh.write(line)
 
-        # Also write to state-dir audit.jsonl for cross-subsystem observability
-        state_dir = Path(
-            os.environ.get(
-                "AUTONOMOUS_TEAM_STATE_DIR",
-                str(Path.home() / ".autonomous-forever-state"),
-            )
-        )
-        audit_log = state_dir / "audit.jsonl"
-        if state_dir.exists():
+        # Also write to state-dir audit.jsonl for cross-subsystem observability.
+        # D#2447: same passwd-fallback fix as the write site above — read HOME
+        # explicitly and decline the append when neither override is set,
+        # instead of falling through the old home-dir lookup to the operator's
+        # real production state dir.
+        _state_dir_override = os.environ.get("AUTONOMOUS_TEAM_STATE_DIR")
+        _home = os.environ.get("HOME")
+        if _state_dir_override:
+            state_dir = Path(_state_dir_override)
+        elif _home:
+            state_dir = Path(_home) / ".autonomous-forever-state"
+        else:
+            state_dir = None
+        if state_dir is not None and state_dir.exists():
+            audit_log = state_dir / "audit.jsonl"
             with open(audit_log, "a") as fh:
                 fh.write(line)
     except Exception:
@@ -433,15 +448,21 @@ def _write_head_flip_warning_event(
         with open(log_file, "a") as fh:
             fh.write(line)
 
-        # Also write to state-dir audit.jsonl for cross-subsystem observability
-        state_dir = Path(
-            os.environ.get(
-                "AUTONOMOUS_TEAM_STATE_DIR",
-                str(Path.home() / ".autonomous-forever-state"),
-            )
-        )
-        audit_log = state_dir / "audit.jsonl"
-        if state_dir.exists():
+        # Also write to state-dir audit.jsonl for cross-subsystem observability.
+        # D#2447: same passwd-fallback fix as the write site above — read HOME
+        # explicitly and decline the append when neither override is set,
+        # instead of falling through the old home-dir lookup to the operator's
+        # real production state dir.
+        _state_dir_override = os.environ.get("AUTONOMOUS_TEAM_STATE_DIR")
+        _home = os.environ.get("HOME")
+        if _state_dir_override:
+            state_dir = Path(_state_dir_override)
+        elif _home:
+            state_dir = Path(_home) / ".autonomous-forever-state"
+        else:
+            state_dir = None
+        if state_dir is not None and state_dir.exists():
+            audit_log = state_dir / "audit.jsonl"
             with open(audit_log, "a") as fh:
                 fh.write(line)
     except Exception:
@@ -483,14 +504,21 @@ def _write_unclassified_command_event(cwd: str, command: str) -> None:
         with open(log_file, "a") as fh:
             fh.write(line)
 
-        state_dir = Path(
-            os.environ.get(
-                "AUTONOMOUS_TEAM_STATE_DIR",
-                str(Path.home() / ".autonomous-forever-state"),
-            )
-        )
-        audit_log = state_dir / "audit.jsonl"
-        if state_dir.exists():
+        # Also write to state-dir audit.jsonl for cross-subsystem observability.
+        # D#2447: same passwd-fallback fix as the write site above — read HOME
+        # explicitly and decline the append when neither override is set,
+        # instead of falling through the old home-dir lookup to the operator's
+        # real production state dir.
+        _state_dir_override = os.environ.get("AUTONOMOUS_TEAM_STATE_DIR")
+        _home = os.environ.get("HOME")
+        if _state_dir_override:
+            state_dir = Path(_state_dir_override)
+        elif _home:
+            state_dir = Path(_home) / ".autonomous-forever-state"
+        else:
+            state_dir = None
+        if state_dir is not None and state_dir.exists():
+            audit_log = state_dir / "audit.jsonl"
             with open(audit_log, "a") as fh:
                 fh.write(line)
     except Exception:

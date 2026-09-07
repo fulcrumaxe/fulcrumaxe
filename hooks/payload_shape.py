@@ -165,10 +165,11 @@ def _resolve_state_dir() -> Path | None:
     Same resolution as the sibling writers in hooks/sandbox.py, with two
     differences, both deliberate.
 
-    It is lazy: those writers spell the fallback as the default argument of
-    `os.environ.get(...)`, which Python evaluates eagerly, so `Path.home()`
-    runs even when the variable IS set. That raises with HOME unset, on a
-    path where the answer was never going to be used.
+    It is lazy: those writers used to spell the fallback as the default
+    argument of `os.environ.get(...)`, which Python evaluates eagerly, so
+    `Path.home()` ran even when the variable IS set — on a path where the
+    answer was never going to be used. This function never needed that
+    change, since it already branched on `env is not None` first.
 
     And a set-but-empty variable writes nowhere rather than falling back.
     `Path("")` is the process cwd, which for anything launched from the repo
@@ -177,12 +178,23 @@ def _resolve_state_dir() -> Path | None:
     state dir instead would be worse still: a test that empties the variable
     to isolate itself would land rows in the one append-only file that has no
     cleanup path.
+
+    D#2447: `Path.home()` falls through to a passwd-database lookup when HOME
+    is unset — it does not raise, contrary to what this docstring used to
+    claim — silently rerouting a hand-driven run (HOME deliberately unset to
+    test the unset path) to the operator's real production state dir. Read
+    HOME explicitly and return None when it is unset too, matching the
+    AUTONOMOUS_TEAM_STATE_DIR-unset branch's "write nowhere" behavior instead
+    of falling back further.
     """
     try:
         env = os.environ.get("AUTONOMOUS_TEAM_STATE_DIR")
         if env is not None:
             return Path(env) if env.strip() else None
-        return Path.home() / ".autonomous-forever-state"
+        home = os.environ.get("HOME")
+        if not home:
+            return None
+        return Path(home) / ".autonomous-forever-state"
     except Exception:
         return None
 
