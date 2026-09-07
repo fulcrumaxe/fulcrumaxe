@@ -120,22 +120,18 @@ and runs itself, is invisible to that gate by construction (an ad-hoc shell
 invocation is not a tracked file), and that is correct — it is not what
 "hardcoded" means here.
 
-**When the one-liner itself is refused.** Some non-interactive harnesses refuse
-`source` outright — not only inside a command substitution or `&&` chain, but
-even as its own bare command with nothing wrapped around it. The mandated
-one-liner fails because of the `$(source ... )` it contains; a first step of
-`source scripts/lib/repo-resolve.sh` run alone, before anything else, fails
-for the identical reason. `source` is what a command-safety analyzer of this
-kind cannot verify — it has nothing to do with this project's own sandbox —
-so **no recipe that sources `repo-resolve.sh`, in one step or two, is
-available to an agent running under that kind of harness.** Knowing this is
-what it is (a `source` restriction, not a restriction on resolving a value at
-all) is what lets you route around it instead of retrying the same shape with
-cosmetic changes.
+**When the one-liner itself is refused.** Some non-interactive harnesses can
+refuse `source` inside the one-liner's `$(source ... )` — a command-safety
+analyzer of that kind, not this project's own sandbox, is what balks. Measured
+across two agents in the same session, this was **unreliable rather than
+absolute**: the identical `$(source ... )` construct failed on some runs and
+succeeded on others, with no visible difference in the invocation. Do not
+treat a refusal as proof the form always fails, and do not treat a success as
+proof it always works — retry before concluding either way.
 
-The form that survives, verified by actually running it under such a harness,
-reads `code_repo` straight out of `.autonomous-team/config.json` at runtime,
-with no `source` anywhere in it:
+Because of that unreliability, prefer a form that is **deterministic** instead
+of one that merely sometimes survives. This reads `code_repo` straight out of
+`.autonomous-team/config.json` at runtime, with no `source` anywhere in it:
 
 ```bash
 python3 -c "import json; print(json.load(open('.autonomous-team/config.json')).get('code_repo',''))"
