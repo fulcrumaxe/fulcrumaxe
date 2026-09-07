@@ -545,6 +545,7 @@ def _human_output(items: list[dict]) -> str:
 
     categories = [
         ("stale_discussion", "Stale Discussions (open, oldest first)"),
+        ("unrecognized_status", "Unrecognized Status (not in VALID_STATUSES)"),
         ("health_red", "Health Reds (failing checks)"),
         ("coverage_gap", "Coverage Gaps (untested modules)"),
     ]
@@ -557,6 +558,11 @@ def _human_output(items: list[dict]) -> str:
         lines.append("-" * 50)
         for item in cat_items:
             if cat_key == "stale_discussion":
+                num = item.get("number", "?")
+                title = (item.get("title") or "")[:55]
+                reason = item.get("reason", "")
+                lines.append(f"  D#{num:<6} {title:<55}  [{reason}]")
+            elif cat_key == "unrecognized_status":
                 num = item.get("number", "?")
                 title = (item.get("title") or "")[:55]
                 reason = item.get("reason", "")

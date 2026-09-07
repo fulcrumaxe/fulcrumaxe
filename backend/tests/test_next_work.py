@@ -488,6 +488,35 @@ def test_human_output_empty_items():
     assert "no candidates" in out
 
 
+def test_human_output_renders_unrecognized_status():
+    """_human_output must render the unrecognized_status category.
+
+    plain `python3 backend/next_work.py` (the documented usage, and the
+    only thing anything in this repo actually calls) prints _human_output,
+    not the --json array. A category present only in the JSON path is
+    invisible on the one path anyone uses -- this pins that it isn't.
+    """
+    items = [
+        {"category": "unrecognized_status", "number": 104, "title": "Filed with an ad-hoc status",
+         "status": "NEW", "age_days": 5.0, "reason": "unrecognized status 'NEW', created 5d ago"},
+    ]
+    out = _human_output(items)
+    assert "104" in out
+    assert "Filed with an ad-hoc status" in out
+    assert "unrecognized status" in out.lower()
+
+
+def test_human_output_end_to_end_surfaces_new_status():
+    """Full pipeline: stale_registry_candidates() -> _human_output() must
+    surface an open NEW-status row in the default (non-JSON) rendering,
+    not just in the returned dict list."""
+    discussions = [OPEN_NEW, OPEN_DISCUSSING]
+    result = stale_registry_candidates(discussions=discussions)
+    out = _human_output(result)
+    assert str(OPEN_NEW["number"]) in out
+    assert OPEN_NEW["title"] in out
+
+
 # ---------------------------------------------------------------------------
 # coverage_gaps — subpackage enumeration
 # ---------------------------------------------------------------------------
