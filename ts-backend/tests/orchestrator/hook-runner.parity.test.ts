@@ -242,8 +242,17 @@ describe("HookRunner — constructor", () => {
   });
 
   it("resolves repo root from module path when no arg given", () => {
-    // Just check it doesn't throw
-    const hr = new HookRunner();
-    expect(() => hr.preSpawn({ role: "executor" })).not.toThrow();
+    // Construction only — do NOT call preSpawn() here. With no explicit
+    // root, the constructor resolves the real checkout this process is
+    // running in (see resolveCheckoutRoot() in config/repo-root.ts), and
+    // preSpawn() intentionally never passes --dry-run to
+    // scripts/pre-spawn-check.sh (that's correct for real spawns). Calling
+    // it from a test with no isolation used to fire that script's own
+    // branch-contamination recovery for real against whatever tree this
+    // suite runs in — the same class of bug fixed elsewhere in this PR for
+    // stepBranchContaminationRecovery. Constructing without throwing is all
+    // this test needs to assert; exercising preSpawn's script-invocation
+    // behaviour is already covered by the isolated-root tests above.
+    expect(() => new HookRunner()).not.toThrow();
   });
 });
