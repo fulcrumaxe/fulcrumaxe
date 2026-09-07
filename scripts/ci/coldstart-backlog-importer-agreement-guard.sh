@@ -17,17 +17,37 @@
 # is a plain directory listing — adding this file is the whole of "wiring the
 # guard in"; see D#2451 item 10 for why nothing in .github/workflows/ changes.
 #
-# What it checks
-# ---------------
-# For a small, named set of fixture trees, it calls the module's own
-# _coldstart_backlog_importable_count and, separately, invokes
-# scripts/import-epic-tasks.py --dry-run directly, then diffs the two
-# integers. This is a genuine two-path comparison, not a tautology: the
-# module's function builds its own throwaway proxy directory and shells out
-# on its own, so a bug in that plumbing (wrong proxy path, wrong repo-path
-# argument, a symlink that does not get created) would show up here as a
-# disagreement even though both paths ultimately call the same importer
-# script.
+# Two independent things this module answers, checked two different ways
+# ------------------------------------------------------------------------
+# _coldstart_backlog_importable_count answers "how many task files would the
+# importer act on" by asking the importer directly. agree() checks that by
+# diffing the module's count against a direct `import-epic-tasks.py --dry-run`
+# invocation on the same tree — a genuine two-path comparison, not a
+# tautology: the module's function builds its own throwaway proxy directory
+# and shells out on its own, so a bug in that plumbing (wrong proxy path,
+# wrong repo-path argument, a symlink that does not get created) would show
+# up as a disagreement even though both paths ultimately call the same
+# importer script.
+#
+# coldstart_backlog_classify answers a DIFFERENT question this function does
+# not touch at all: is this backlog well-formed enough to call "conforming",
+# per _COLDSTART_BACKLOG_REQUIRED_FIELDS and the -L-following finds that back
+# it. classify_is() checks that by asserting the classify() verdict directly.
+#
+# This split exists because an earlier version of this file conflated the
+# two: it had fixtures labelled "D#2451 item 1" (required-field shrink) and
+# "D#2451 item 8" (symlinked epic directory) that only ever called agree(),
+# i.e. only ever exercised _coldstart_backlog_importable_count. That function
+# never reads _COLDSTART_BACKLOG_REQUIRED_FIELDS and never runs a bash `find`
+# over the fixture tree at all (it hands the whole tree to the importer via a
+# proxy symlink and lets Python's own glob/is_dir follow it) — so it has zero
+# power to detect a regression in either the required-field list or the `-L`
+# fix, no matter how the fixture is built. Confirmed by reverting each in
+# isolation (only the field list; only the `-L` additions) on a copy of this
+# tree: agree() stayed green both times, 7 checked/0 failed, while calling
+# coldstart_backlog_classify() directly on the same fixture flipped from
+# "conforming" to "incomplete" (field-list revert) or "empty" (find revert).
+# classify_is() is what actually exercises the code path that flipped.
 #
 # It also pins the importer's output *format* on one fixture with a
 # hand-verified expected count (D#2451 item 4): if `After status filter: N`
@@ -52,7 +72,7 @@
 # created inline below instead, in the same shell as the array append.
 #
 # Run: bash scripts/ci/coldstart-backlog-importer-agreement-guard.sh
-# Exit 0: every fixture's module-count matches the importer's own count.
+# Exit 0: every assertion agrees with its independently-checked ground truth.
 # Exit 1: a disagreement, or zero fixtures were compared.
 
 set -uo pipefail
@@ -112,6 +132,34 @@ agree() {
   fi
 }
 
+# $1 label, $2 root (holds root/epics), $3 expected classify() verdict,
+# $4 whether the importer should say it would create something from this
+# tree ("yes"/"no" — the ground truth that justifies $3, checked
+# independently rather than asserted from nowhere), $5 host note.
+#
+# Exercises coldstart_backlog_classify() directly — the function
+# _COLDSTART_BACKLOG_REQUIRED_FIELDS and the `-L` fixes actually live in.
+# agree() above cannot stand in for this: _coldstart_backlog_importable_count
+# never reads the required-field list and never runs a bash `find` at all.
+classify_is() {
+  local label="$1" root="$2" expected="$3" should_act="$4" host="$5" raw acted got
+  CHECKED=$((CHECKED + 1))
+  raw="$(python3 "$IMPORTER" "$root" --repo example-org/example-project --dry-run 2>/dev/null)"
+  if grep -qF "would create Discussion" <<<"$raw"; then acted="yes"; else acted="no"; fi
+  if [[ "$acted" != "$should_act" ]]; then
+    echo "FAIL: $label — fixture does not corroborate what it claims: importer would-create is '$acted', fixture was built to be '$should_act' (fixture: $root, host: $host)"
+    FAILED=$((FAILED + 1))
+    return
+  fi
+  got="$(coldstart_backlog_classify "$root/epics")"
+  if [[ "$got" == "$expected" ]]; then
+    echo "PASS: $label classifies '$got', agreeing with the importer's own would-create signal ($acted) (fixture: $root, host: $host)"
+  else
+    echo "FAIL: $label classifies '$got', expected '$expected' (importer would-create: $acted) (fixture: $root, host: $host)"
+    FAILED=$((FAILED + 1))
+  fi
+}
+
 mk_task() {
   # $1 dest path, $2 status text verbatim
   local dest="$1" status="$2"
@@ -137,11 +185,16 @@ echo ""
 echo "=== fixture: minimal frontmatter — status only, D#2451 item 1 ==="
 # The required-field-set divergence: the old module required epic/task/
 # title/type/status to call a file conforming; the importer only ever
-# needed status (everything else falls back to '?'/'untitled'). A file with
-# only status must still agree.
+# needed status (everything else falls back to '?'/'untitled'). Checked via
+# classify_is() (which is what actually reads _COLDSTART_BACKLOG_REQUIRED_
+# FIELDS), not agree() -- see the header comment for why agree() alone would
+# not have caught this. agree() also runs here, because a minimal file is
+# still a fine sanity check on the importable-count plumbing; it is just not
+# the assertion that covers item 1.
 D="$(mktemp -d)"; FIXTURES+=("$D")
 mkdir -p "$D/epics/epic-3-billing"
 printf -- '---\nstatus: not-started\n---\n\n# minimal\n' >"$D/epics/epic-3-billing/01.md"
+classify_is "minimal frontmatter (status only)" "$D" "conforming" "yes" "$HOST"
 agree "minimal frontmatter (status only)" "$D" "$HOST"
 
 echo ""
@@ -150,13 +203,21 @@ echo "=== fixture: symlinked epic directory, D#2451 item 8 ==="
 # directory used to read as having no task files, then get an example
 # scaffolded next to it. Real content lives OUTSIDE the fixture root on
 # purpose, reached only via the symlink -- the case that would actually have
-# been destroyed.
+# been destroyed. Checked via classify_is(): _coldstart_backlog_importable_
+# count hands the whole tree to the importer through its own proxy symlink
+# and never runs a bash `find` over it, so it cannot see whether THIS
+# module's `-L` fixes are present or not -- confirmed by reverting only the
+# `-L` additions and watching agree() on this exact fixture stay green while
+# coldstart_backlog_classify() flips from "conforming" to "empty". agree()
+# still runs here too, as a sanity check on the proxy-symlink plumbing
+# _coldstart_backlog_importable_count itself does.
 REAL="$(mktemp -d)"; FIXTURES+=("$REAL")
 mkdir -p "$REAL/epic-3-billing"
 mk_task "$REAL/epic-3-billing/01.md" "not-started"
 D="$(mktemp -d)"; FIXTURES+=("$D")
 mkdir -p "$D/epics"
 ln -s "$REAL/epic-3-billing" "$D/epics/epic-3-billing"
+classify_is "symlinked epic directory" "$D" "conforming" "yes" "$HOST"
 agree "symlinked epic directory" "$D" "$HOST"
 
 echo ""
@@ -166,8 +227,11 @@ echo "=== fixture: tab before a trailing comment, D#2451 item 7c ==="
 # file (fm={}) and the status filter drops it -- 0. The old bash sed/grep
 # parser did not care about YAML validity and still extracted "not-started",
 # reporting 1. Routing through the importer (this module's current
-# implementation) makes them agree by construction; this fixture is what
-# would catch a regression back to local parsing.
+# implementation) makes them agree by construction. Confirmed load-bearing:
+# reverting only _coldstart_backlog_importable_count's body back to the old
+# sed parser (keeping the required-field and -L fixes) makes agree() fail
+# exactly here (module says 1, importer says 0) while every other agree()
+# fixture in this file still passes.
 D="$(mktemp -d)"; FIXTURES+=("$D")
 mkdir -p "$D/epics/epic-3-billing"
 printf -- '---\nepic: 3\ntask: 1\ntitle: "Task 1"\ntype: feature\nstatus: not-started\t# flip when done\n---\n\n# Task 1\n' \

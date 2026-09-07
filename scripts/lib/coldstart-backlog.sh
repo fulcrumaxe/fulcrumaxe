@@ -382,7 +382,12 @@ _coldstart_backlog_describe() {
   local dir="$1"
   local dirs files
   dirs="$(find "$dir" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')"
-  files="$(find -L "$dir" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+  # -maxdepth 6: generous for any layout worth describing, but bounded --
+  # -L already means this follows symlinks, and an unbounded depth on a
+  # symlink-following find over a directory this module does not control the
+  # contents of (an operator's own backlog dir) is a cycle/escape exposure
+  # for no real benefit over a generous bound.
+  files="$(find -L "$dir" -maxdepth 6 -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
   echo "    $dirs subdirector$([[ "$dirs" == "1" ]] && echo y || echo ies), $files markdown file(s) under $dir"
 }
 
@@ -432,8 +437,10 @@ coldstart_backlog_classify() {
   [[ -d "$dir" ]] || { echo "absent"; return 0; }
 
   # -L: see _coldstart_backlog_task_files for why a symlinked epic directory
-  # must not read as "no markdown here at all" (D#2451 item 8).
-  if ! find -L "$dir" -type f -name '*.md' 2>/dev/null | grep -q .; then
+  # must not read as "no markdown here at all" (D#2451 item 8). -maxdepth 6
+  # for the same reason as _coldstart_backlog_describe's: bound the
+  # symlink-following walk instead of leaving it unbounded.
+  if ! find -L "$dir" -maxdepth 6 -type f -name '*.md' 2>/dev/null | grep -q .; then
     echo "empty"
     return 0
   fi
