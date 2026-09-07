@@ -135,10 +135,15 @@ jobs:
         working-directory: ts-backend
         run: bun run build
 
+      # D#2342: wraps the same `bun run test` invocation with a before/after
+      # hash of the tracked tree (scripts/ci/ts-backend-test-integrity.sh).
+      # A step that mutates a tracked file mid-run (the branch-contamination
+      # recovery step used to do this unconditionally, see D#2342 PR-a) now
+      # fails this leg loudly instead of a clean pass count describing a
+      # tree that no longer exists.
       - name: Test
         if: matrix.workspace == 'ts-backend'
-        working-directory: ts-backend
-        run: bun run test
+        run: bash scripts/ci/ts-backend-test-integrity.sh
 
   export-audit:
     name: open-source export audit
