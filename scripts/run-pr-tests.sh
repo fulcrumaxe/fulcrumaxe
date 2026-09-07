@@ -420,6 +420,10 @@ run_suite() {
   # any suite actually runs (D#2132).
   python3 backend/flaky_sentinel.py record --test-id "$cmd_display" --exit-code "$exit_code" \
     >/dev/null 2>&1 || true
+  # Best-effort flaky advisory — stderr only, never stdout, so the manifest
+  # above stays a single JSON object (D#2132). `advise` itself never prints
+  # to stdout; the redirect here is belt-and-suspenders.
+  python3 backend/flaky_sentinel.py advise --test-id "$cmd_display" >/dev/null || true
   if [ "$exit_code" -ne 0 ]; then
     AGGREGATE_EXIT=$exit_code
   fi
