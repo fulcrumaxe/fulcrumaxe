@@ -871,6 +871,111 @@ def test_dry_run_does_not_disarm_the_circuit_breaker_for_a_real_refusal(engine, 
 
 
 # ---------------------------------------------------------------------------
+# D#2454 PR 3 -- a conflicted path must be able to enter the debt
+# ---------------------------------------------------------------------------
+
+
+def _diverge_shared_on_the_engine(engine: dict) -> None:
+    """The README.md shape: a genuine three-way divergence. The marker's
+    baseline for backend/shared.py is 'shared v1'; the plane already moved it
+    to 'shared v2' (c1); this makes the ENGINE'S copy diverge too, so
+    `classify_against_baseline` returns real STATUS_CONFLICT -- not
+    STATUS_LOCAL_PATCH, which is what `backend/diverged.py` already exercises
+    elsewhere in this file (it has no baseline at all)."""
+    repo = engine["repo"]
+    (repo / "backend/shared.py").write_text("ENGINE diverged too\n")
+    _git(repo, "add", "backend/shared.py")
+    _git(repo, "commit", "-q", "-m", "engine also touches shared")
+
+
+def test_conflicted_path_enters_the_debt_on_first_refusal(engine, state_dir):
+    """Item 16. Before this PR, `_run` returned on the conflict check
+    (`:895-902` at spec-writing time) before `build_pending` -- the only
+    producer of the debt -- was ever called, so a conflicted path could never
+    become `known_debt`. Assert the debt is empty going in, so this is really
+    testing the write, not a fixture that already carried it."""
+    assert apply_inbound.read_pending(state_dir) == {}, "test assumes no pre-existing debt"
+    _diverge_shared_on_the_engine(engine)
+
+    rec = Recorder()
+    result = _run(engine, state_dir, rec, local_ref="main")
+
+    assert result["result"] == apply_inbound.RESULT_CONFLICT, result
+    assert "backend/shared.py" in result["conflicted"]
+    assert rec.pushes == [] and rec.prs == [], "a conflict must not open a PR"
+
+    pending = apply_inbound.read_pending(state_dir)
+    assert "backend/shared.py" in pending, "a conflicted path never entered the debt"
+    assert pending["backend/shared.py"]["status"] == pull.STATUS_CONFLICT
+    assert apply_inbound.read_failure_count(state_dir) == 1
+
+
+def test_conflict_refusal_under_dry_run_still_writes_no_state(engine, state_dir):
+    """The --dry-run promise (D#2454 PR 1) must hold for the new write too:
+    persisting the newly-conflicted path into `pending` is still a write to
+    `pending`, and a dry run must leave the state file exactly as it found
+    it -- absent, here."""
+    _diverge_shared_on_the_engine(engine)
+    state_file = apply_inbound.state_path(state_dir)
+    assert not state_file.exists()
+
+    rec = Recorder()
+    result = _run(engine, state_dir, rec, local_ref="main", dry_run=True)
+
+    assert result["result"] == apply_inbound.RESULT_CONFLICT, result
+    assert not state_file.exists(), "a dry run must not persist the conflicted path into pending"
+
+
+def test_second_run_does_not_refuse_over_a_now_known_conflict(engine, state_dir):
+    """Item 17. Run twice against the README.md-shaped fixture: the first
+    run refuses and records the path (proven above); the second run must NOT
+    refuse over that same path again, because it is now in `known_debt`."""
+    _diverge_shared_on_the_engine(engine)
+
+    rec1 = Recorder()
+    result1 = _run(engine, state_dir, rec1, local_ref="main")
+    assert result1["result"] == apply_inbound.RESULT_CONFLICT, result1
+    assert "backend/shared.py" in apply_inbound.read_pending(state_dir)
+
+    rec2 = Recorder()
+    result2 = _run(engine, state_dir, rec2, local_ref="main")
+
+    assert result2["result"] != apply_inbound.RESULT_CONFLICT, (
+        f"a second run refused again over a path already in the debt: {result2}"
+    )
+    # Item 19 (both runs): a conflicted path is never in the write set --
+    # it stays owed, not applied.
+    if result2["result"] == apply_inbound.RESULT_APPLIED:
+        assert "backend/shared.py" not in result2["written"], "a conflicted path must never be written"
+
+    pending2 = apply_inbound.read_pending(state_dir)
+    assert "backend/shared.py" in pending2, "the conflicted path stopped being owed"
+    assert pending2["backend/shared.py"]["status"] == pull.STATUS_CONFLICT
+
+
+def test_a_new_conflict_not_in_the_debt_still_refuses_everything_after_pr3(engine, state_dir):
+    """Item 18, re-proven after the reordering above: a conflict on a path
+    NOT already in the debt must still refuse the whole run untouched --
+    the reordering that lets a conflict enter the debt on refusal must not
+    also have started letting a first-time conflict slip through."""
+    repo = engine["repo"]
+    _diverge_shared_on_the_engine(engine)
+    # A second, unrelated writable path in the same run, to prove it too is
+    # withheld rather than applied around the conflict.
+    _git(repo, "checkout", "-q", "plane")
+    _commit(repo, "unrelated new work (#9)", {"backend/also_new.py": "also new\n"})
+    _git(repo, "checkout", "-q", "main")
+
+    rec = Recorder()
+    result = _run(engine, state_dir, rec, local_ref="main")
+
+    assert result["result"] == apply_inbound.RESULT_CONFLICT, result
+    assert rec.pushes == [] and rec.prs == [], "a first-time conflict must still block the whole run"
+    before = _git(repo, "ls-tree", "-r", "--name-only", "main")
+    assert "backend/also_new.py" not in before, "nothing was applied to the engine tree"
+
+
+# ---------------------------------------------------------------------------
 # C7 -- the marker advances only after a completed apply
 # ---------------------------------------------------------------------------
 

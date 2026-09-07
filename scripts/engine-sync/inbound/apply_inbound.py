@@ -975,18 +975,6 @@ def _run(
         for path, e in classifications.items()
         if e.get("status") in (pull.STATUS_CONFLICT, pull.STATUS_INTEGRITY_FAIL) and path not in known_debt
     )
-    if conflicted:
-        # Same --dry-run promise as the classify/ceiling refusal above: this
-        # is the second of the two write_failure_count call sites that ran
-        # ahead of the `if dry_run` branch further down.
-        if not dry_run:
-            write_failure_count(state_dir, failures + 1)
-        return {
-            "result": RESULT_CONFLICT,
-            "reason": f"change set contains unresolved conflicts: {conflicted}",
-            "conflicted": conflicted,
-            "consecutive_failures": failures if dry_run else failures + 1,
-        }
 
     protected = outbound_apply.read_protected_set()
     sensitive_prefixes = gate.read_sensitive_prefixes()
@@ -1008,6 +996,17 @@ def _run(
             return False
         return changeset.blob_hash_at(local_ref, engine_path, repo_dir=repo_dir) == upstream
 
+    # `next_pending` is computed BEFORE the conflict refusal below, and used
+    # by it -- not only by the ordinary exit paths further down (D#2454 PR 3).
+    # A conflict status (STATUS_CONFLICT / STATUS_INTEGRITY_FAIL) is a member
+    # of PENDING_STATUSES, and `partition_write_set` never marks a conflicted
+    # path writable, so a freshly-conflicted path already earns an entry here
+    # -- the debt-carrying machinery was always able to hold one. What was
+    # missing was ever reaching this call: the refusal below used to return
+    # before `next_pending` existed, so a conflicted path could be classified
+    # on every run and never once land in `known_debt` above. Persisting it
+    # on the refusal too is what lets a SECOND run recognise the path as
+    # already-owed and stop re-triggering this refusal over it.
     next_pending = build_pending(
         classifications,
         withheld,
@@ -1016,6 +1015,29 @@ def _run(
         is_settled_on_engine=_settled_on_engine,
     )
     resolved_paths = sorted(set(previous_pending) - set(next_pending))
+
+    if conflicted:
+        # Scoped to `known_debt`, not to "did this run's enumeration touch
+        # it" -- see the long comment above `known_debt`. A conflict on a
+        # path not yet owed still refuses the WHOLE run untouched: no branch,
+        # no PR, no marker move here, and no write for ANY path -- conflicted
+        # or not -- since every branch/PR/marker step below this point is
+        # unreached on this exit.
+        #
+        # Same --dry-run promise as the classify/ceiling refusal above -- this
+        # is the second of the two call sites that run ahead of the
+        # `if dry_run` branch further down -- now folded into one write_state
+        # call so the debt and the counter land together, atomically, or not
+        # at all under a dry run.
+        if not dry_run:
+            write_state(state_dir, consecutive_failures=failures + 1, pending=next_pending)
+        return {
+            "result": RESULT_CONFLICT,
+            "reason": f"change set contains unresolved conflicts: {conflicted}",
+            "conflicted": conflicted,
+            "consecutive_failures": failures if dry_run else failures + 1,
+            "pending_count": len(next_pending),
+        }
 
     resolved_remote_ref = report.get("remote_ref") or remote_ref or f"{remote}/{remote_branch}"
     tip_sha = changeset.resolve_commit(resolved_remote_ref, repo_dir=repo_dir)
