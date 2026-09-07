@@ -74,6 +74,30 @@ _CEILINGS: dict[str, int] = {
 _DEFAULT_CEILING = 5
 
 # ---------------------------------------------------------------------------
+# Operator-facing remedy for an unauthenticated source
+# ---------------------------------------------------------------------------
+#
+# This is the Python half of a cross-language pair. The TypeScript half is
+# SOURCE_NOT_ALLOWLISTED_REMEDY in ts-backend/src/spawn/dial-messages.ts, and
+# scripts/ci/dial-refusal-message-parity-guard.py fails CI when the two differ.
+#
+# It is a module-level constant rather than an inline literal in set_dial()
+# specifically so that guard can find it by name: anchoring the extraction on
+# the constant's name is what keeps the guard from having to carry a copy of
+# the message, which would be a fourth copy going stale on the next reword.
+#
+# Only the invariant part lives here. The `source {source!r} is not in the
+# directive allowlist. ` prefix stays at the raise site because it interpolates
+# the rejected source, and each language spells that differently (repr() vs
+# JSON.stringify) — it is deliberately not part of what the guard compares.
+_SOURCE_NOT_ALLOWLISTED_REMEDY = (
+    "A caller cannot authorize itself — ask an operator to run "
+    "`bash scripts/provision-dial-allowlist.sh`, or to add an entry to "
+    "<STATE_DIR>/dial-directive-allowlist.json by hand. Ceilings stay "
+    "enforced either way."
+)
+
+# ---------------------------------------------------------------------------
 # Default dial state — written to dial-registry.json on first use
 # ---------------------------------------------------------------------------
 
@@ -586,10 +610,7 @@ def set_dial(
         # shouldn't invite a rejected call to try self-authorizing at all.
         raise ValueError(
             f"source {source!r} is not in the directive allowlist. "
-            "A caller cannot authorize itself — ask an operator to run "
-            "`bash scripts/provision-dial-allowlist.sh`, or to add an entry to "
-            "<STATE_DIR>/dial-directive-allowlist.json by hand. Ceilings stay "
-            "enforced either way."
+            + _SOURCE_NOT_ALLOWLISTED_REMEDY
         )
 
     # Reject unknown class names — only the 13 registered classes are valid.
