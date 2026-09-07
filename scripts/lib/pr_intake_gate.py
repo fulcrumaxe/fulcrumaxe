@@ -172,6 +172,30 @@ INTAKE_TIMELINE_PAGE_CAP = 10
 INTAKE_TIMELINE_PER_PAGE = 100
 
 
+def _gate_hint(reason: str, pr: int) -> str:
+    """What a human should actually do about a blocked verdict for *reason*.
+
+    Pure string selection — it makes no decision, and no PR's classification
+    depends on it. This is the single source `check_pr` puts on the ``hint``
+    key of its JSON (D#2444): both bash callers —
+    `scripts/lib/pr-pickup-gate.sh`'s `_ppg_gate_hint` and the embedded Python
+    in `scripts/sweep-stuck-prs.sh` — now print this value straight off the
+    JSON instead of each keeping its own copy of this case statement. Before
+    D#2444 they were two independent copies, and D#2421 PR 3 fixed only one
+    of them: the sweeper kept telling an already-approved PR it was "awaiting
+    intake-approved" for the `external_pr_head_unrecorded` reason, which is
+    false — that PR *is* approved. What it lacks is a recorded head, and the
+    operator's next step is `rebaseline-pr`, not chasing a maintainer.
+    """
+    if reason == REASON_HEAD_UNRECORDED:
+        return (
+            "already approved, but no head is recorded for it — an operator "
+            "must confirm the CURRENT head is the reviewed one, then run: "
+            f"python3 scripts/lib/pr_intake_gate.py rebaseline-pr {pr} --repo <code plane slug>"
+        )
+    return "awaiting intake-approved from a maintainer"
+
+
 def _default_code_repo() -> str:
     """PRs live on the CODE plane — resolve it, never hard-code it."""
     sys.path.insert(0, str(_REPO_ROOT))
@@ -457,6 +481,7 @@ def check_pr(
             "provenance": PROVENANCE_EXTERNAL,
             "blocked": True,
             "reason": "trust_set_unresolvable",
+            "hint": _gate_hint("trust_set_unresolvable", pr),
             "security_required": True,
             "error": str(exc)[:200],
         }
@@ -470,6 +495,7 @@ def check_pr(
             "provenance": PROVENANCE_EXTERNAL,
             "blocked": True,
             "reason": REASON_PR_UNREADABLE,
+            "hint": _gate_hint(REASON_PR_UNREADABLE, pr),
             "security_required": True,
             "error": meta.get("error", ""),
         }
@@ -556,6 +582,10 @@ def check_pr(
         "provenance": provenance,
         "blocked": blocked,
         "reason": reason,
+        # D#2444 — single source for the remedy text both bash callers print;
+        # see _gate_hint's docstring for why this replaced two independent
+        # copies of the same case statement.
+        "hint": _gate_hint(reason, pr),
         # HG-7 parity: an externally-authored PR makes security-review-passed a
         # hard merge requirement even once a human has let it through. D#2421
         # AC-9: unchanged by any outcome above — merge-side protection stays

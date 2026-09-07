@@ -189,6 +189,9 @@ def get_discussion_for_pr(pr_num):
         pass
     return None
 
+_DEFAULT_GATE_HINT = "awaiting intake-approved from a maintainer"
+
+
 def pr_gate_blocked(pr_num):
     """D#2404 — the same author gate the loop's PR pickup path applies.
 
@@ -196,16 +199,28 @@ def pr_gate_blocked(pr_num):
     sweeper must not enqueue an executor respawn for it, because that respawn
     is an agent spawn on a stranger's branch. Fail closed — a gate that cannot
     be read blocks.
+
+    Returns (blocked, reason, hint). D#2444: `hint` is read straight off
+    `check-pr`'s JSON (`scripts/lib/pr_intake_gate.py`'s `_gate_hint`) rather
+    than recomputed here — that JSON field is the single source
+    scripts/lib/pr-pickup-gate.sh's `_ppg_gate_hint` also reads, so the two
+    spawn paths cannot print different remedies for the same reason again.
+    The literal fallback below only fires when no JSON was produced at all
+    (gate_check_failed), matching pr-pickup-gate.sh's equivalent fallback.
     """
     result = run(["python3", f"{repo_root}/scripts/lib/pr_intake_gate.py",
                   "check-pr", str(pr_num)])
     if result.returncode == 0:
-        return False, ""
+        return False, "", ""
     try:
         verdict = json.loads(result.stdout or "{}")
-        return bool(verdict.get("blocked", True)), verdict.get("reason", "gate_check_failed")
+        return (
+            bool(verdict.get("blocked", True)),
+            verdict.get("reason", "gate_check_failed"),
+            verdict.get("hint") or _DEFAULT_GATE_HINT,
+        )
     except Exception:
-        return True, "gate_check_failed"
+        return True, "gate_check_failed", _DEFAULT_GATE_HINT
 
 
 def get_reviewer_feedback(pr_num):
@@ -234,12 +249,18 @@ for pr_info in data:
 
     print(f"  PR #{pr_num}  age={age_min:.0f}min  respawns={count}")
 
-    blocked, gate_reason = pr_gate_blocked(pr_num)
+    blocked, gate_reason, gate_hint = pr_gate_blocked(pr_num)
     if blocked:
         # Not escalated and not counted — a gated PR is not "stuck", it is
         # waiting on a human, and bumping its respawn counter would eventually
         # slap needs-boss on a stranger's PR.
-        print(f"    -> gated: {gate_reason} — no respawn, awaiting intake-approved")
+        #
+        # D#2444: the trailing clause used to be the fixed string "awaiting
+        # intake-approved" for every reason, which is false for
+        # external_pr_head_unrecorded — that PR *is* approved, it just has no
+        # recorded head. `gate_hint` names the actual remedy for whichever
+        # reason was just printed.
+        print(f"    -> gated: {gate_reason} — no respawn, {gate_hint}")
         continue
 
     if count >= MAX_RESPAWNS:
