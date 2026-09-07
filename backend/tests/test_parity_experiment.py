@@ -26,6 +26,27 @@ import pytest
 # Ensure repo root is on the path for absolute imports
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
+
+# ---------------------------------------------------------------------------
+# Isolation
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def scratch_parity_history(tmp_path, monkeypatch):
+    """Keep the run history out of the checkout.
+
+    `state_paths.PARITY_HISTORY` deliberately lives in-repo under
+    `.autonomous-team/` rather than under STATE_DIR, so setting
+    AUTONOMOUS_TEAM_STATE_DIR does not isolate it — `PARITY_HISTORY_PATH` is
+    its own documented override and is what this points at a scratch file.
+    Without it a run appends to `.autonomous-team/parity-history.jsonl` in
+    the working tree and creates that (untracked) directory as a side effect,
+    which later tests then read as a fact about the checkout (D#2453).
+    """
+    monkeypatch.setenv("PARITY_HISTORY_PATH", str(tmp_path / "parity-history.jsonl"))
+
+
 # ---------------------------------------------------------------------------
 # Helpers: build canned RunResults
 # ---------------------------------------------------------------------------

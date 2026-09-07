@@ -20,7 +20,30 @@ import pytest
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+import backend.spawn_guard as spawn_guard_mod
 from backend.spawn_guard import SpawnGuard, AcquireStatus, AcquireResult
+
+
+# ---------------------------------------------------------------------------
+# Isolation
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def scratch_stats_file(tmp_path):
+    """Keep the guard's stats snapshot out of the checkout.
+
+    `_STATS_FILE` is a *cwd-relative* module constant
+    (`Path(".autonomous-team/spawn-guard-stats.json")`) with no env override,
+    so an unpatched run writes into whatever tree pytest was launched from —
+    the repo root, in practice — and creates `.autonomous-team/` doing it.
+    Nothing under that directory is tracked, so that side effect is what
+    other tests then mistake for a property of the checkout (D#2453).
+    """
+    with patch.object(
+        spawn_guard_mod, "_STATS_FILE", tmp_path / "spawn-guard-stats.json"
+    ):
+        yield
 
 
 # ---------------------------------------------------------------------------

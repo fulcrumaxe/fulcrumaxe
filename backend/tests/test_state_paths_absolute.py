@@ -112,20 +112,44 @@ def test_reader_and_writer_agree_on_stats_db(tmp_path, monkeypatch):
 
 
 def test_fresh_scratch_dir_beats_legacy_audit_path(tmp_path, monkeypatch):
-    """A still-empty scratch state dir must win.
+    """A still-empty scratch state dir must win over a populated fallback.
 
     The old `_audit_log_path()` guarded its scratch branch with
     `if p.exists()`, so pointing the env var at a clean directory — the exact
-    thing reviewers are told to do for isolation — silently lost to the
-    in-repo legacy log.
-    """
-    legacy_dir = _REPO_ROOT / ".autonomous-team"
-    assert legacy_dir.exists(), "expected an in-repo .autonomous-team/ to shadow"
+    thing reviewers are told to do for isolation — silently lost to whichever
+    audit log happened to already be on the machine. Existence must play no
+    part in the answer.
 
-    monkeypatch.setenv("AUTONOMOUS_TEAM_STATE_DIR", str(tmp_path))
+    Both candidates are built here rather than found. The previous version
+    asserted an in-repo `.autonomous-team/` existed, which is a precondition,
+    not the thing under test: nothing under that directory is tracked, so on a
+    fresh clone it does not exist and this test failed at that line — while a
+    full-suite run passed, because earlier tests had created the directory as
+    a side effect of writing into it. The verdict was decided by test order,
+    not by the resolver (D#2453).
+
+    The fallback candidate is the default state dir under `$HOME`, which is
+    the branch `_state_dir()` actually still has. It is created here, on a
+    `$HOME` this test owns, and populated so that a regression which
+    reintroduces an existence check has something real to prefer.
+    """
+    scratch = tmp_path / "scratch-state"
+    scratch.mkdir()  # deliberately empty — no audit.jsonl inside
+
+    fallback_home = tmp_path / "home"
+    fallback_state = fallback_home / ".autonomous-forever-state"
+    fallback_state.mkdir(parents=True)
+    fallback_log = fallback_state / "audit.jsonl"
+    fallback_log.write_text('{"source": "fallback"}\n', encoding="utf-8")
+    monkeypatch.setenv("HOME", str(fallback_home))
+
+    monkeypatch.setenv("AUTONOMOUS_TEAM_STATE_DIR", str(scratch))
     from backend.agent_run_tracker import _audit_log_path
     resolved = _audit_log_path()
-    assert resolved == tmp_path / "audit.jsonl"
+
+    assert fallback_log.exists(), "the candidate being shadowed must really exist"
+    assert resolved == scratch / "audit.jsonl"
+    assert resolved != fallback_log
     assert not resolved.exists(), "scratch dir is empty — the point of the test"
 
 

@@ -191,7 +191,14 @@ class TestServerRpcDispatch(unittest.TestCase):
             with patch.dict(os.environ, {"AF_E2E_FIXTURES": "1"}):
                 # Patch the fixture path that server.py computes
                 fixture_path_attr = REPO_ROOT / ".autonomous-team" / "tmp" / "e2e-fixtures.json"
-                # We can't easily patch a local Path object, so write the fixture there
+                # We can't easily patch a local Path object, so write the fixture there.
+                # Removing the file afterwards is not enough on its own: nothing under
+                # .autonomous-team/ is tracked, so the directories mkdir creates here are
+                # themselves residue that every later test in the run then sees and a
+                # fresh clone does not (D#2453). Note which ones we create so the finally
+                # block can put the tree back; anything already present is left alone.
+                tmp_dir_existed = fixture_path_attr.parent.exists()
+                state_dir_existed = fixture_path_attr.parent.parent.exists()
                 fixture_path_attr.parent.mkdir(parents=True, exist_ok=True)
                 original_content = fixture_path_attr.read_text() if fixture_path_attr.exists() else None
                 fixture_path_attr.write_text(json.dumps(fixture))
@@ -202,6 +209,13 @@ class TestServerRpcDispatch(unittest.TestCase):
                         fixture_path_attr.write_text(original_content)
                     elif fixture_path_attr.exists():
                         fixture_path_attr.unlink()
+                    try:
+                        if not tmp_dir_existed:
+                            fixture_path_attr.parent.rmdir()   # raises if not empty
+                        if not state_dir_existed:
+                            fixture_path_attr.parent.parent.rmdir()
+                    except OSError:
+                        pass
             self.assertEqual(result, fixture["kpi_history"])
         finally:
             fh_path.unlink(missing_ok=True)

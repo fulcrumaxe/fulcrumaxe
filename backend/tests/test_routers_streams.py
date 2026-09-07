@@ -34,6 +34,30 @@ import uvicorn
 
 
 # ---------------------------------------------------------------------------
+# Isolation
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def scratch_kpi_out(tmp_path, monkeypatch):
+    """Keep the KPI snapshot out of the checkout.
+
+    The status-stream snapshot reaches `kpi_engine.compute_all()`, which
+    unconditionally writes `KPI_OUT` — a repo-root-anchored module constant
+    with no env override — so a test about SSE cadence was creating
+    `.autonomous-team/kpi.json`, and with it the untracked
+    `.autonomous-team/` directory, in the working tree (D#2453).
+
+    That directory is not inert once it exists: `backend/spawn_diff.py` puts
+    its temporary module there *only if it is already present*, so this one
+    write also decided where a different test's bytecode landed.
+    """
+    import backend.kpi_engine as kpi_engine
+
+    monkeypatch.setattr(kpi_engine, "KPI_OUT", tmp_path / "kpi.json")
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
