@@ -33,6 +33,13 @@ _PR_PICKUP_GATE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Reason for the most recent pr_pickup_blocked call. Empty when not blocked.
 _PR_GATE_REASON=""
 
+# Hint for the most recent pr_pickup_blocked call — sourced from check-pr's
+# `hint` field (D#2444) rather than computed here, so this file and the
+# sweeper's embedded Python (scripts/sweep-stuck-prs.sh) print the identical
+# remedy text for the identical reason instead of keeping two copies that can
+# drift apart from each other. Empty when not blocked.
+_PR_GATE_HINT=""
+
 # Log through the caller's log() when it has one, so gate decisions land in the
 # same iteration log as everything else.
 _ppg_log() {
@@ -57,15 +64,17 @@ _ppg_log() {
 #   theoretical to the thing an operator reads first, and the difference is
 #   between running one command and hunting for a maintainer who has already
 #   approved the PR.
+#
+#   D#2444: this used to carry its own case statement here, and
+#   scripts/sweep-stuck-prs.sh carried an independent copy that D#2421 PR 3
+#   never touched — the sweeper kept telling an already-approved PR it was
+#   "awaiting intake-approved". `check-pr`'s JSON now carries this text as
+#   `hint`, computed once in scripts/lib/pr_intake_gate.py's `_gate_hint`;
+#   `pr_pickup_blocked` parses it into `_PR_GATE_HINT` alongside
+#   `_PR_GATE_REASON`, and this function just echoes it back — no case
+#   statement left to drift.
 _ppg_gate_hint() {
-  case "$1" in
-    external_pr_head_unrecorded)
-      echo "already approved, but no head is recorded for it — an operator must confirm the CURRENT head is the reviewed one, then run: python3 scripts/lib/pr_intake_gate.py rebaseline-pr $2 --repo <code plane slug>"
-      ;;
-    *)
-      echo "awaiting intake-approved from a maintainer"
-      ;;
-  esac
+  printf '%s' "$_PR_GATE_HINT"
 }
 
 # pr_pickup_blocked <pr_number>
@@ -76,11 +85,16 @@ _ppg_gate_hint() {
 pr_pickup_blocked() {
   local pr="$1"
   _PR_GATE_REASON=""
+  _PR_GATE_HINT=""
 
   local gate_json
   gate_json=$(python3 "$_PR_PICKUP_GATE_LIB_DIR/pr_intake_gate.py" check-pr "$pr" 2>/dev/null) || true
   if [ -z "$gate_json" ]; then
     _PR_GATE_REASON="gate_check_failed"
+    # No JSON was produced at all, so there is no `hint` field to read — this
+    # is the one case that still needs a literal default, matched by the
+    # sweeper's equivalent fallback for AC-5.
+    _PR_GATE_HINT="awaiting intake-approved from a maintainer"
     return 0
   fi
 
@@ -91,6 +105,12 @@ pr_pickup_blocked() {
   _PR_GATE_REASON=$(printf '%s' "$gate_json" \
     | python3 -c "import sys,json; print(json.load(sys.stdin).get('reason',''))" 2>/dev/null \
     || echo "gate_check_failed")
+  _PR_GATE_HINT=$(printf '%s' "$gate_json" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin).get('hint',''))" 2>/dev/null \
+    || echo "")
+  if [ -z "$_PR_GATE_HINT" ]; then
+    _PR_GATE_HINT="awaiting intake-approved from a maintainer"
+  fi
 
   [ "$blocked" = "true" ]
 }

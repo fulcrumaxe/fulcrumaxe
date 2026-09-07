@@ -36,6 +36,14 @@ setup() {
   cp "$REPO_ROOT/scripts/sweep-stuck-prs.sh"     "$TEST_DIR/scripts/"
   cp "$REPO_ROOT/backend/spawn_queue.py"          "$TEST_DIR/backend/"
 
+  # D#2444 AC-5: the drift-guard test drives scripts/lib/pr-pickup-gate.sh's
+  # pr_pickup_blocked/_ppg_gate_hint side by side with this sweeper, against
+  # the identical mocked gh, so it needs its own copy here too. Plain copy
+  # (not a symlink) is fine — unlike pr_intake_gate.py it resolves nothing
+  # from its own path except the sibling pr_intake_gate.py placed alongside
+  # it below.
+  cp "$REPO_ROOT/scripts/lib/pr-pickup-gate.sh"  "$TEST_DIR/scripts/lib/"
+
   # repo-resolve.sh, and a config.json for it to resolve.
   #
   # These were missing, and the fixture passed anyway: sweep-stuck-prs.sh
@@ -125,8 +133,17 @@ if echo "\$args" | grep -qE "issues/[0-9]+/events"; then
 fi
 
 if echo "\$args" | grep -qE "pulls/[0-9]+\$"; then
-  printf '{"user":{"login":"%s","id":1},"labels":%s}\n' \
-    "\${MOCK_PR_AUTHOR:-fixture-bot}" "\${MOCK_PR_LABELS:-[]}"
+  # D#2444 AC-5: MOCK_PR_HEAD_SHA is opt-in and omitted by default, so every
+  # pre-existing test (none of which set it) sees the exact same JSON shape
+  # as before. Only the drift-guard scenarios that need a real head_sha
+  # (external_pr_head_changed_after_approval / _invalidation_ceiling) set it.
+  if [ -n "\${MOCK_PR_HEAD_SHA:-}" ]; then
+    printf '{"user":{"login":"%s","id":1},"labels":%s,"head":{"sha":"%s"}}\n' \
+      "\${MOCK_PR_AUTHOR:-fixture-bot}" "\${MOCK_PR_LABELS:-[]}" "\${MOCK_PR_HEAD_SHA}"
+  else
+    printf '{"user":{"login":"%s","id":1},"labels":%s}\n' \
+      "\${MOCK_PR_AUTHOR:-fixture-bot}" "\${MOCK_PR_LABELS:-[]}"
+  fi
   exit 0
 fi
 
@@ -402,7 +419,249 @@ PY
     fail "untrusted_author: expected counter=0 for gated PR #77, got '$count'"
   fi
 
+  # D#2444 AC-3 — a genuinely unapproved PR must keep the maintainer wording
+  # and must NOT gain rebaseline-pr (fixing the unrecorded-head half must not
+  # break this one).
+  if echo "$output" | grep -q "awaiting intake-approved"; then
+    pass "untrusted_author: gated line still tells a genuinely unapproved PR to await a maintainer (D#2444 AC-3)"
+  else
+    fail "untrusted_author: gated line lost the maintainer-approval wording: $output"
+  fi
+  if echo "$output" | grep -q "rebaseline-pr"; then
+    fail "untrusted_author: gated line names rebaseline-pr for a PR that was never approved (D#2444 AC-3)"
+  else
+    pass "untrusted_author: gated line does not name rebaseline-pr for an unapproved PR (D#2444 AC-3)"
+  fi
+
+  # D#2444 AC-4 — the sweep must have provably inspected the PR: the count of
+  # "PR #<N> age=... respawns=..." inspection lines must equal the number of
+  # stuck PRs supplied (1 here), not merely be nonzero. "0 stuck PRs found"
+  # and "could not read the queue" produce identical stdout otherwise, so a
+  # negative-only assertion (stdout lacks certain text) would pass vacuously
+  # on a sweep that examined nothing.
+  inspect_count=$(echo "$output" | grep -cE '^  PR #[0-9]+  age=[0-9]+min  respawns=[0-9]+$')
+  if [ "$inspect_count" -eq 1 ]; then
+    pass "untrusted_author: exactly one PR-inspection line printed (D#2444 AC-4)"
+  else
+    fail "untrusted_author: expected 1 PR-inspection line, got $inspect_count in: $output"
+  fi
+
   unset MOCK_PR_AUTHOR
+  teardown
+}
+
+# ── Test 7 (D#2444 AC-2/AC-4) — an approved PR with no recorded head names
+#    rebaseline-pr, not "awaiting intake-approved" ──────────────────────────
+#
+# external_pr_head_unrecorded means the PR *is* approved by a trusted
+# account — it just lacks a recorded head baseline (the routine
+# state-dir-loss shape after D#2421 PR 3). The old wording told the operator
+# to chase a maintainer who had already approved it; this is the defect
+# D#2444 exists to fix, on the sweeper's spawn path.
+
+test_gated_unrecorded_head_names_rebaseline() {
+  setup
+
+  local old_time labeled_at
+  old_time=$(date -u -d "60 minutes ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || \
+             date -u -v-60M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || \
+             echo "2026-05-10T05:00:00Z")
+  # Applied well outside the 900s first-observation grace, so the baseline
+  # reads "unknown" -> external_pr_head_unrecorded instead of auto-baselining
+  # to "match".
+  labeled_at=$(date -u -d "2 hours ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || \
+               date -u -v-2H +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || \
+               echo "2026-05-10T03:00:00Z")
+
+  local pr_list='[{"number":4242,"updatedAt":"'"$old_time"'","labels":[{"name":"code-review-needs-fix"}]}]'
+  install_gh_mock "$pr_list" '{"body":"stuck PR","headRefName":"x","comments":[]}'
+
+  export MOCK_PR_AUTHOR="drive-by-stranger"
+  export MOCK_PR_LABELS='[{"name":"intake-approved"}]'
+  export MOCK_LABEL_EVENTS='[{"event":"labeled","id":1,"created_at":"'"$labeled_at"'","label":{"name":"intake-approved"},"actor":{"login":"fixture-bot"}}]'
+
+  output=$(DRY_RUN=1 bash "$TEST_DIR/scripts/sweep-stuck-prs.sh" 2>/dev/null)
+
+  if echo "$output" | grep -q "external_pr_head_unrecorded"; then
+    pass "gated_unrecorded_head: reason is external_pr_head_unrecorded"
+  else
+    fail "gated_unrecorded_head: expected external_pr_head_unrecorded, got: $output"
+  fi
+
+  if echo "$output" | grep -q "rebaseline-pr 4242"; then
+    pass "gated_unrecorded_head: gated line names rebaseline-pr for PR #4242 (D#2444 AC-2)"
+  else
+    fail "gated_unrecorded_head: no rebaseline-pr recovery in: $output"
+  fi
+
+  if echo "$output" | grep -q "awaiting intake-approved"; then
+    fail "gated_unrecorded_head: gated line still says an already-approved PR is 'awaiting intake-approved' (D#2444 AC-2)"
+  else
+    pass "gated_unrecorded_head: gated line no longer claims the approved PR is awaiting approval (D#2444 AC-2)"
+  fi
+
+  # D#2444 AC-4 — same count-not-vacuous-negative guard as the untrusted-author
+  # test above, for this reason.
+  inspect_count=$(echo "$output" | grep -cE '^  PR #[0-9]+  age=[0-9]+min  respawns=[0-9]+$')
+  if [ "$inspect_count" -eq 1 ]; then
+    pass "gated_unrecorded_head: exactly one PR-inspection line printed (D#2444 AC-4)"
+  else
+    fail "gated_unrecorded_head: expected 1 PR-inspection line, got $inspect_count in: $output"
+  fi
+
+  unset MOCK_PR_AUTHOR MOCK_PR_LABELS MOCK_LABEL_EVENTS
+  teardown
+}
+
+# ── Test 8 (D#2444 AC-5) — the sweeper and pr-pickup-gate.sh cannot drift ───
+#
+# Both paths now read `hint` straight off check-pr's JSON
+# (scripts/lib/pr_intake_gate.py's `_gate_hint`, the single source) instead of
+# keeping independent copies of the remedy text — that duplication is exactly
+# what let D#2421 PR 3 fix pr-pickup-gate.sh's wording and leave the
+# sweeper's copy wrong. This drives both readers against the identical mocked
+# `gh`, for every reason the two paths can produce, and requires their
+# remedy text to be byte-identical. Editing either side's wording alone (or
+# reverting either reader to its own hardcoded string) fails this.
+
+# _hint_via_pickup_gate <pr> — pr-pickup-gate.sh's remedy text for <pr>, via
+# the real pr_pickup_blocked + _ppg_gate_hint against the mocked gh already
+# installed in this test's $TEST_DIR.
+_hint_via_pickup_gate() {
+  (
+    source "$TEST_DIR/scripts/lib/pr-pickup-gate.sh"
+    pr_pickup_blocked "$1" >/dev/null 2>&1
+    _ppg_gate_hint "$_PR_GATE_REASON" "$1"
+  )
+}
+
+# _hint_via_sweeper <pr> <pr_list_json> — the real sweeper's remedy text for
+# the fixture PR's gated line, driven end to end (gh pr list included).
+_hint_via_sweeper() {
+  local pr="$1" pr_list="$2"
+  install_gh_mock "$pr_list" '{"body":"stuck PR","headRefName":"x","comments":[]}'
+  local output
+  output=$(DRY_RUN=1 bash "$TEST_DIR/scripts/sweep-stuck-prs.sh" 2>/dev/null)
+  echo "$output" | grep -E "^    -> gated: " | sed 's/^.*no respawn, //'
+}
+
+_assert_hint_equal() {
+  local reason="$1" hint_a="$2" hint_b="$3"
+  if [ -n "$hint_a" ] && [ "$hint_a" = "$hint_b" ]; then
+    pass "hint_drift_guard: $reason — pr-pickup-gate.sh and the sweeper emit byte-identical remedy text (D#2444 AC-5)"
+  else
+    fail "hint_drift_guard: $reason — remedy text diverged: pickup-gate='$hint_a' sweeper='$hint_b'"
+  fi
+}
+
+# Pre-seed a baseline row already at the invalidation ceiling (CEILING=3 in
+# scripts/lib/pr_head_baseline.py), so a single check-pr call reaches
+# external_pr_head_invalidation_ceiling without four real gate calls to drift
+# there one bump at a time.
+_seed_ceiling_baseline() {
+  local pr="$1"
+  python3 - "$REPO_ROOT" "$pr" <<'PY'
+import sys
+sys.path.insert(0, f"{sys.argv[1]}/scripts/lib")
+sys.path.insert(0, sys.argv[1])
+import intake_baseline, pr_head_baseline
+from backend._repo import CODE_REPO
+
+key = pr_head_baseline.pr_key(CODE_REPO, int(sys.argv[2]))
+path = pr_head_baseline._default_store_path()
+intake_baseline.record_baseline(
+    key, content_sha256="sha-ceiling-base", last_edited_at=None,
+    edit_count=0, editor=None, path=path, source="test-seed",
+)
+for _ in range(3):
+    intake_baseline.bump_invalidation(key, path=path)
+PY
+}
+
+test_hint_drift_guard() {
+  setup
+  install_gh_mock '[]' '{}'
+
+  local fresh stale needs_fix_labels
+  fresh=$(date -u -d "1 minute ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || \
+          date -u -v-1M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || \
+          echo "2026-05-10T05:00:00Z")
+  stale=$(date -u -d "2 hours ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || \
+          date -u -v-2H +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || \
+          echo "2026-05-10T03:00:00Z")
+  local age_time
+  age_time=$(date -u -d "60 minutes ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || \
+             date -u -v-60M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || \
+             echo "2026-05-10T05:00:00Z")
+  needs_fix_labels='[{"name":"code-review-needs-fix"}]'
+
+  # ---- external_awaiting_intake_approval ----
+  export MOCK_PR_AUTHOR="drive-by-stranger"
+  unset MOCK_PR_LABELS MOCK_LABEL_EVENTS MOCK_PR_HEAD_SHA
+  HINT_A=$(_hint_via_pickup_gate 6001)
+  HINT_B=$(_hint_via_sweeper 6001 '[{"number":6001,"updatedAt":"'"$age_time"'","labels":'"$needs_fix_labels"'}]')
+  _assert_hint_equal "external_awaiting_intake_approval" "$HINT_A" "$HINT_B"
+
+  # ---- external_pr_head_unrecorded ----
+  export MOCK_PR_LABELS='[{"name":"intake-approved"}]'
+  export MOCK_LABEL_EVENTS='[{"event":"labeled","id":1,"created_at":"'"$stale"'","label":{"name":"intake-approved"},"actor":{"login":"fixture-bot"}}]'
+  HINT_A=$(_hint_via_pickup_gate 6002)
+  HINT_B=$(_hint_via_sweeper 6002 '[{"number":6002,"updatedAt":"'"$age_time"'","labels":'"$needs_fix_labels"'}]')
+  _assert_hint_equal "external_pr_head_unrecorded" "$HINT_A" "$HINT_B"
+
+  # ---- external_intake_approval_untrusted_actor (label applied by someone
+  #      outside the trust set — not a real approval, D#2404 AC3) ----
+  export MOCK_LABEL_EVENTS='[{"event":"labeled","id":1,"created_at":"'"$fresh"'","label":{"name":"intake-approved"},"actor":{"login":"another-stranger"}}]'
+  HINT_A=$(_hint_via_pickup_gate 6003)
+  HINT_B=$(_hint_via_sweeper 6003 '[{"number":6003,"updatedAt":"'"$age_time"'","labels":'"$needs_fix_labels"'}]')
+  _assert_hint_equal "external_intake_approval_untrusted_actor" "$HINT_A" "$HINT_B"
+
+  # ---- intake_approval_actor_unreadable (the winning labeled event's
+  #      created_at does not parse) ----
+  export MOCK_LABEL_EVENTS='[{"event":"labeled","id":1,"created_at":"not-a-date","label":{"name":"intake-approved"},"actor":{"login":"fixture-bot"}}]'
+  HINT_A=$(_hint_via_pickup_gate 6004)
+  HINT_B=$(_hint_via_sweeper 6004 '[{"number":6004,"updatedAt":"'"$age_time"'","labels":'"$needs_fix_labels"'}]')
+  _assert_hint_equal "intake_approval_actor_unreadable" "$HINT_A" "$HINT_B"
+
+  # ---- external_pr_head_changed_after_approval ----
+  export MOCK_LABEL_EVENTS='[{"event":"labeled","id":1,"created_at":"'"$fresh"'","label":{"name":"intake-approved"},"actor":{"login":"fixture-bot"}}]'
+  export MOCK_PR_HEAD_SHA="sha-6005-a"
+  # First call auto-baselines the fresh label to sha-6005-a ("match") and
+  # records it; both callers share one on-disk store, so it doesn't matter
+  # which one records it.
+  _hint_via_pickup_gate 6005 >/dev/null
+  export MOCK_PR_HEAD_SHA="sha-6005-b"
+  HINT_A=$(_hint_via_pickup_gate 6005)
+  HINT_B=$(_hint_via_sweeper 6005 '[{"number":6005,"updatedAt":"'"$age_time"'","labels":'"$needs_fix_labels"'}]')
+  _assert_hint_equal "external_pr_head_changed_after_approval" "$HINT_A" "$HINT_B"
+
+  # ---- external_pr_head_invalidation_ceiling ----
+  _seed_ceiling_baseline 6006
+  export MOCK_PR_HEAD_SHA="sha-6006-new"
+  HINT_A=$(_hint_via_pickup_gate 6006)
+  HINT_B=$(_hint_via_sweeper 6006 '[{"number":6006,"updatedAt":"'"$age_time"'","labels":'"$needs_fix_labels"'}]')
+  _assert_hint_equal "external_pr_head_invalidation_ceiling" "$HINT_A" "$HINT_B"
+  unset MOCK_PR_HEAD_SHA
+
+  # ---- pr_meta_unreadable ----
+  # The mock always emits syntactically valid JSON around MOCK_PR_AUTHOR, so
+  # unparseable JSON is forced a different way: a login value containing an
+  # unescaped quote breaks the printf'd JSON outright.
+  unset MOCK_PR_LABELS MOCK_LABEL_EVENTS
+  export MOCK_PR_AUTHOR='stranger"broken'
+  HINT_A=$(_hint_via_pickup_gate 6007)
+  HINT_B=$(_hint_via_sweeper 6007 '[{"number":6007,"updatedAt":"'"$age_time"'","labels":'"$needs_fix_labels"'}]')
+  _assert_hint_equal "pr_meta_unreadable" "$HINT_A" "$HINT_B"
+
+  # ---- gate_check_failed (no JSON produced at all — pr_intake_gate.py
+  #      missing from the path both callers resolve it from) ----
+  unset MOCK_PR_AUTHOR
+  rm -f "$TEST_DIR/scripts/lib/pr_intake_gate.py"
+  HINT_A=$(_hint_via_pickup_gate 6008)
+  HINT_B=$(_hint_via_sweeper 6008 '[{"number":6008,"updatedAt":"'"$age_time"'","labels":'"$needs_fix_labels"'}]')
+  _assert_hint_equal "gate_check_failed" "$HINT_A" "$HINT_B"
+
+  unset MOCK_PR_AUTHOR MOCK_PR_LABELS MOCK_LABEL_EVENTS MOCK_PR_HEAD_SHA
   teardown
 }
 
@@ -416,6 +675,8 @@ test_second_encounter_increments_counter
 test_third_encounter_escalates
 test_recent_pr_not_stuck
 test_untrusted_author_pr_is_not_respawned
+test_gated_unrecorded_head_names_rebaseline
+test_hint_drift_guard
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
