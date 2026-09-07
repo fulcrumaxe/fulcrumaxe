@@ -54,9 +54,13 @@ HOOK="$FIXTURE_ROOT/hooks/sandbox.py"
 MAIN_REPO="$FIXTURE_ROOT"
 WT_CLAUDE="$FIXTURE_ROOT/.claude/worktrees/testid123"
 
+# Scratch dir for this suite's own stderr captures (D#2254 — a shared fixed
+# /tmp filename could race with a concurrent run of this same suite).
+RUN_TMP="$(mktemp -d /tmp/test_sandbox_state_dir_audit.XXXXXX)"
+
 PASS=0
 FAIL=0
-CLEANUP_DIRS=("$FIXTURE_ROOT")
+CLEANUP_DIRS=("$FIXTURE_ROOT" "$RUN_TMP")
 trap 'rm -rf "${CLEANUP_DIRS[@]}"' EXIT
 
 pass() { echo "PASS: $1"; PASS=$((PASS + 1)); }
@@ -86,9 +90,8 @@ run_and_check() {
   local label="$1" payload="$2" expected_kinds="$3"
 
   unset AUTONOMOUS_TEAM_STATE_DIR || true
-  repo_root_fixture_run_hook "$HOOK" "$payload" >/dev/null 2>/tmp/test_sandbox_state_dir_audit.stderr.$$
+  repo_root_fixture_run_hook "$HOOK" "$payload" >/dev/null 2>"$RUN_TMP/stderr"
   local hook_exit="$REPO_ROOT_FIXTURE_HOOK_EXIT"
-  CLEANUP_DIRS+=("/tmp/test_sandbox_state_dir_audit.stderr.$$")
 
   if [[ "$hook_exit" -eq 0 ]]; then
     pass "$label: hook exits 0 through repo_root_fixture_run_hook"
