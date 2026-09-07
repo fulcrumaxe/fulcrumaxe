@@ -13,7 +13,7 @@
 #   bash scripts/lib/worktree-registry.sh register --id <id> --role <r> --path <p> --pid <pid> [--discussion N] [--branch B] [--base B]
 #   bash scripts/lib/worktree-registry.sh heartbeat <worktree_id>
 #   bash scripts/lib/worktree-registry.sh mark-status <worktree_id> <status>
-#   bash scripts/lib/worktree-registry.sh set-pr <worktree_id> <pr_number>
+#   bash scripts/lib/worktree-registry.sh set-pr <worktree_id> <pr_number> [<code_plane_branch>]
 #   bash scripts/lib/worktree-registry.sh reconcile-path --id <id> --actual-path <path>
 #   bash scripts/lib/worktree-registry.sh list [--status S] [--json]
 #   bash scripts/lib/worktree-registry.sh reap [--ttl-min N] [--dry-run] [--clean-generated-wiki] [--enable-git-tracked-removal]
@@ -578,6 +578,16 @@ print(json.dumps(data, indent=2))
 _cmd_set_pr() {
   local id="${1:-}"
   local pr="${2:-}"
+  # D#2437 item 3 / D#2442 item 14: a PR opened against the code plane via
+  # scripts/lib/code-plane-pr.sh is pushed under a branch name that has no
+  # relationship to this worktree's own auto-created branch (the two planes
+  # do not share history, so the worktree's branch can never be the PR head).
+  # Recording only `pr` and leaving `branch` as-is would make the registry
+  # imply the two are the same branch, which is false whenever this route is
+  # used. The optional third argument records the code-plane branch name
+  # alongside the worktree's own `branch` field instead of overwriting it, so
+  # a reader can tell the two apart rather than assuming correspondence.
+  local code_plane_branch="${3:-}"
   if [[ -z "$id" || -z "$pr" ]]; then
     echo "set-pr: worktree_id and pr_number required" >&2
     return 1
@@ -592,21 +602,27 @@ _cmd_set_pr() {
   new_registry=$(echo "$current" | python3 -c "
 import json,sys
 data=json.load(sys.stdin)
-wid,pr=sys.argv[1],int(sys.argv[2])
+wid,pr,cpb=sys.argv[1],int(sys.argv[2]),(sys.argv[3] or None)
 found=False
 for e in data:
     if e.get('worktree_id')==wid:
         e['pr']=pr
+        if cpb:
+            e['code_plane_branch']=cpb
         found=True
         break
 if not found:
     print(f'set-pr: {wid} not found in registry', file=sys.stderr)
 print(json.dumps(data, indent=2))
-" "$id" "$pr")
+" "$id" "$pr" "$code_plane_branch")
 
   _wtr_write_registry "$new_registry"
   _wtr_unlock
-  echo "set-pr: $id -> pr=$pr"
+  if [[ -n "$code_plane_branch" ]]; then
+    echo "set-pr: $id -> pr=$pr code_plane_branch=$code_plane_branch"
+  else
+    echo "set-pr: $id -> pr=$pr"
+  fi
 }
 
 # D#2222: reconcile a registered entry's path against the tree an agent

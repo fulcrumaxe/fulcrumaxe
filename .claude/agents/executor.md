@@ -205,6 +205,14 @@ Do not waste turns probing the sandbox boundary. If it blocks once, it blocks al
 
    Multiple logical changes = multiple commits. Don't batch unrelated work.
 
+   If `git merge-base HEAD code-plane/main` is empty, your worktree's branch
+   shares no history with the code plane and `git push -u origin HEAD` above
+   does not apply — build the commit with `scripts/lib/code-plane-pr.sh`
+   instead of any working-tree write. Its header documents the full
+   build/push interface and the disciplines it enforces (byte-identity by
+   hash, mode read from `git ls-tree`, a private per-invocation scratch
+   path) so you don't have to re-derive them by hand.
+
 8. Create PR — write the description like a developer explaining their work to a teammate:
 
    Branch naming: short and semantic. "url-detection", "pill-overlay", "cost-calc"
