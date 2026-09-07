@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from backend._repo import REPO as _GH_REPO, REPO_OWNER, REPO_NAME
+from backend import state_paths as _state_paths_module
 
 # ── Path resolution ───────────────────────────────────────────────────────────
 
@@ -78,11 +79,17 @@ def load_worktrees() -> list[dict[str, Any]]:
 
 
 def _state_dir() -> Path:
-    """Return the external state dir (AUTONOMOUS_TEAM_STATE_DIR or ~/.autonomous-forever-state/)."""
-    env = os.environ.get("AUTONOMOUS_TEAM_STATE_DIR")
-    if env:
-        return Path(env)
-    return Path.home() / ".autonomous-forever-state"
+    """Return the external state dir.
+
+    Delegates to backend.state_paths so this module cannot diverge from the
+    canonical resolver (D#2183) — it used to read the env var itself with an
+    `if env:` check that silently treated an empty value as unset and never
+    validated a relative one, unlike state_paths' fail-closed behaviour.
+    Raises the same exceptions state_paths raises (RelativeStateDirError,
+    UnsandboxedStatePathError); callers must handle them.
+    """
+    from backend.state_paths import STATE_DIR  # noqa: PLC0415 — call-time, not import-time (D#1810)
+    return STATE_DIR
 
 
 # ── Path checker ──────────────────────────────────────────────────────────────
@@ -382,7 +389,30 @@ def scan(dry_run: bool = False) -> list[dict[str, Any]]:
         print("[worktree_state_watcher] no active worktrees in registry — nothing to check")
         return []
 
-    state_dir = _state_dir()
+    # D#2183: fail closed on a misconfigured state-dir override rather
+    # than silently comparing against the wrong directory — a diverged
+    # state_dir here used to turn a correct worktree symlink into a
+    # spurious "wrong_symlink" finding, which file_bug() below would then
+    # file as a [Bug] Discussion. Stop before the walk starts.
+    #
+    # Catch via the module object, not `from backend.state_paths import
+    # RelativeStateDirError, ...` at the top of this file: a test fixture
+    # elsewhere in the same pytest process (backend/tests/test_dial_
+    # registry.py) does `importlib.reload(backend.state_paths)`, which
+    # rebinds those class names to NEW class objects. A name imported at
+    # module load time would keep pointing at the pre-reload class and
+    # silently stop matching the exception _state_dir() actually raises
+    # post-reload. Attribute access on the module object is evaluated
+    # fresh at the moment of the match, so it always sees the current
+    # class regardless of any reload that happened in between.
+    try:
+        state_dir = _state_dir()
+    except (
+        _state_paths_module.RelativeStateDirError,
+        _state_paths_module.UnsandboxedStatePathError,
+    ) as exc:
+        print(f"[worktree_state_watcher] ERROR: cannot resolve state dir — {exc}", file=sys.stderr)
+        sys.exit(1)
     findings: list[dict[str, Any]] = []
 
     for wt in worktrees:

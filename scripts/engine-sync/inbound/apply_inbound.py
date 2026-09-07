@@ -1246,10 +1246,20 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _default_state_dir() -> Path:
-    env = os.environ.get("ENGINE_SYNC_STATE_DIR") or os.environ.get("AUTONOMOUS_TEAM_STATE_DIR")
+    """Resolve the state dir this sync tool writes its own bookkeeping to.
+
+    ENGINE_SYNC_STATE_DIR is a legacy per-tool override and wins outright,
+    same precedence as STATS_DB_PATH in backend.state_paths._stats_db().
+    Otherwise delegates to backend.state_paths (D#2183) rather than
+    re-reading AUTONOMOUS_TEAM_STATE_DIR itself — the old `if env:` form
+    here neither validated a relative value nor raised under pytest with
+    the variable unset, both of which state_paths does.
+    """
+    env = os.environ.get("ENGINE_SYNC_STATE_DIR")
     if env:
         return Path(env)
-    return Path.home() / ".autonomous-forever-state"
+    from backend.state_paths import STATE_DIR  # noqa: PLC0415 — call-time, not import-time (D#1810)
+    return STATE_DIR
 
 
 def _resolve_engine_repo() -> str:

@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
 import re
 import sys
 import time
@@ -38,6 +37,7 @@ if str(_SCRIPT_ROOT) not in sys.path:
 from backend.corpus_drift.types import ClaimResult
 from backend.corpus_drift.report import render_markdown, write_json_snapshot
 from backend.repo_root import main_repo_root
+from backend import state_paths as _state_paths_module
 
 logger = logging.getLogger(__name__)
 
@@ -56,14 +56,15 @@ def _parse_since(since_str: str) -> tuple[int, datetime]:
 
 
 def _state_dir() -> Path:
-    env = os.environ.get("AUTONOMOUS_TEAM_STATE_DIR")
-    if env:
-        return Path(env)
-    try:
-        from backend.state_paths import STATE_DIR  # noqa: PLC0415
-        return STATE_DIR
-    except ImportError:
-        return Path.home() / ".autonomous-forever-state"
+    """Delegate to backend.state_paths (D#2183) — this used to be a byte-
+    identical duplicate of dial_directive_emission's own resolver. Raises
+    the same exceptions state_paths raises; main() below handles that for
+    its own (snapshot-directory) call, and the per-claim try/except around
+    module.evaluate() handles it for claims that resolve their own state
+    dir internally (dial_directive_emission).
+    """
+    from backend.state_paths import STATE_DIR  # noqa: PLC0415 — call-time, not import-time (D#1810)
+    return STATE_DIR
 
 
 def _load_runs(role: str, since_iso: str) -> list[dict]:
@@ -123,15 +124,32 @@ def main() -> int:
     window_days, cutoff = _parse_since(args.since)
     since_iso = cutoff.isoformat()
 
-    state_dir = _state_dir()
+    # A misconfigured state-dir override must not crash the whole audit
+    # (D#2183) — only the snapshot write is affected; the report and every
+    # claim (including dial_directive_emission, which resolves its own
+    # state dir independently inside evaluate()) still run.
+    #
+    # Caught via the module object rather than names imported at the top
+    # of this file: a reload of backend.state_paths anywhere in the same
+    # process (e.g. a test fixture) rebinds those class names, and a
+    # name bound at import time would stop matching what _state_dir()
+    # actually raises afterwards. See backend/worktree_state_watcher.py's
+    # matching comment for the full explanation.
+    try:
+        state_dir = _state_dir()
+    except (
+        _state_paths_module.RelativeStateDirError,
+        _state_paths_module.UnsandboxedStatePathError,
+    ) as exc:
+        logger.warning("Could not resolve state dir for snapshot output: %s", exc)
+        state_dir = None
 
     # ── Report paths ────────────────────────────────────────────────────────
     wiki_dir = Path(args.output_dir) if args.output_dir else main_repo_root() / "wiki"
     report_path = wiki_dir / "Corpus-Drift-Report.md"
 
-    snapshot_dir = state_dir / "corpus-drift"
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    snapshot_path = snapshot_dir / f"{today}.json"
+    snapshot_path = (state_dir / "corpus-drift" / f"{today}.json") if state_dir else None
 
     # ── Claim registry ───────────────────────────────────────────────────────
     # Import claim modules; each exposes evaluate() + CLAIM_ID + ROLE_SCOPE
@@ -208,13 +226,16 @@ def main() -> int:
     )
     print(f"Report written: {report_path}")
 
-    write_json_snapshot(
-        results=results,
-        window_days=window_days,
-        generated_at=generated_at,
-        snapshot_path=snapshot_path,
-    )
-    print(f"Snapshot written: {snapshot_path}")
+    if snapshot_path is not None:
+        write_json_snapshot(
+            results=results,
+            window_days=window_days,
+            generated_at=generated_at,
+            snapshot_path=snapshot_path,
+        )
+        print(f"Snapshot written: {snapshot_path}")
+    else:
+        print("Snapshot skipped: state dir unresolved (see WARNING above)", file=sys.stderr)
 
     # ── Summary table ────────────────────────────────────────────────────────
     print()

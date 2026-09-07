@@ -213,11 +213,14 @@ def _routing_counts(db_path: Optional[Path] = None) -> dict[str, Any]:
     note = ""
 
     try:
-        state_dir = os.environ.get(
-            "AUTONOMOUS_TEAM_STATE_DIR",
-            str(Path.home() / ".autonomous-forever-state"),
-        )
-        path = db_path or Path(state_dir) / "stats.duckdb"
+        # D#2183: delegate to backend.state_paths rather than resolving
+        # AUTONOMOUS_TEAM_STATE_DIR here directly. A raise from STATE_DIR
+        # (e.g. a relative value, or unset under pytest) is caught by this
+        # function's own `except Exception as exc` below and degrades to
+        # db_available=False with an explanatory note, same as any other
+        # routing-counts failure.
+        from backend.state_paths import STATE_DIR  # noqa: PLC0415
+        path = db_path or STATE_DIR / "stats.duckdb"
 
         if not path.exists():
             note = "stats.duckdb not found — no telemetry yet"
