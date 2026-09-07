@@ -4225,7 +4225,12 @@ class TestD2448TruncationNeverHidesTheRestOfTheCommand:
     differences being explicit, recorded ceiling decisions above 131072 bytes.
     """
 
-    DANGEROUS = "rm -rf /home/jp/fulcrumaxe/backend"
+    # Synthetic root from testsupport/fixture_paths.py, never a real home
+    # directory. That module exists because ~60 fixture lines each spelled out
+    # the same operator's checkout path, and
+    # scripts/check-no-hardcoded-checkout-paths.sh is the gate that keeps it
+    # that way — it caught this class when it was first written.
+    DANGEROUS = f"rm -rf {_MAIN_REPO}/backend"
 
     def test_quoted_overlong_run_still_blocks_a_later_path(self) -> None:
         """The reviewed reproducer. Single quotes inside one whitespace-free
@@ -4275,12 +4280,12 @@ class TestD2448TruncationNeverHidesTheRestOfTheCommand:
     @pytest.mark.parametrize(
         "command",
         [
-            "echo " + "a" * 9000 + " && rm -rf /home/jp/fulcrumaxe/backend",
+            "echo " + "a" * 9000 + f" && rm -rf {_MAIN_REPO}/backend",
             "echo '" + "a" * 9000 + "' && git reset --hard origin/main",
-            'echo "' + "a" * 9000 + '" | tee /home/jp/fulcrumaxe/x',
+            'echo "' + "a" * 9000 + f'" | tee {_MAIN_REPO}/x',
             "echo " + "a" * 8191 + "\\z ; git rm f",
             "echo " + "'a'" * 3000 + " && git rm f",
-            "cat " + "/very/long/path/" * 700 + " && rm -rf /home/jp/x",
+            "cat " + "/very/long/path/" * 700 + f" && rm -rf {_MAIN_REPO}/x",
         ],
     )
     def test_truncation_never_breaks_tokenisation(self, command: str) -> None:
