@@ -50,10 +50,54 @@
 # the PR branch itself still exists on the fork. Fetching that ref (rather
 # than the branch name) is what makes this work even after the PR author has
 # deleted their branch.
+#
+# Which remote (D#1940 FM-5)
+# ---------------------------
+# PR numbers are not unique across planes: the code plane and the Discussion
+# plane each number their own PRs from 1, so "PR #67" names two different
+# commits. Fetching `refs/pull/<N>/head` from the git remote literally named
+# "origin" (the Discussion plane) succeeds — exit 0 — and silently lands the
+# wrong plane's commit. This file resolves the code-plane remote via
+# scripts/lib/repo-resolve.sh's `_resolve_code_plane_remote` instead of ever
+# fetching from a hardcoded remote name, and independently re-verifies the
+# fetched head against `gh pr view --repo "$(_require_code_repo)"` before
+# handing the tree back to a caller — belt-and-braces, because objects fetched
+# under an old remote name can already sit in the parent's object store from
+# a prior era, which would otherwise let a wrong-plane head_sha resolve as
+# "reachable" even after the fetch itself is correctly pinned.
 
 _prt_log() { printf 'pr-tree: %s\n' "$*" >&2; }
 _prt_repo_root() { (cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd); }
 _prt_abs() { readlink -f "$1" 2>/dev/null || printf '%s\n' "$1"; }
+
+# shellcheck source=./repo-resolve.sh
+source "$(dirname "${BASH_SOURCE[0]}")/repo-resolve.sh"
+
+# _prt_expected_head_sha <pr_number> — the code plane's authoritative
+# headRefOid for <pr_number>, or non-zero with nothing on stdout on failure.
+#
+# PRT_EXPECTED_HEAD_OVERRIDE — test-only escape hatch, same convention as
+# CODE_PLANE_REMOTE_OVERRIDE: when set, its value is returned as-is and no
+# `gh pr view` call is made, so fixtures can exercise pr_tree_provision's
+# cross-check without hitting the live API.
+_prt_expected_head_sha() {
+  local pr_number="${1:-}"
+  [ -n "$pr_number" ] || { _prt_log "usage: _prt_expected_head_sha <pr_number>"; return 3; }
+
+  if [ -n "${PRT_EXPECTED_HEAD_OVERRIDE:-}" ]; then
+    printf '%s\n' "$PRT_EXPECTED_HEAD_OVERRIDE"
+    return 0
+  fi
+
+  local repo sha
+  repo="$(_require_code_repo "pr-tree provisioning")" || return 1
+  sha="$(gh pr view "$pr_number" --repo "$repo" --json headRefOid --jq .headRefOid 2>/dev/null)"
+  if [ -z "$sha" ]; then
+    _prt_log "could not resolve PR #${pr_number}'s headRefOid from the code plane ($repo)"
+    return 1
+  fi
+  printf '%s\n' "$sha"
+}
 
 # pr_tree_provision <pr_number> <head_sha> <dest> [parent_repo]
 pr_tree_provision() {
@@ -70,13 +114,29 @@ pr_tree_provision() {
     return 3
   fi
 
-  if ! git -C "$parent" fetch --quiet origin "refs/pull/${pr_number}/head" 2>/dev/null; then
-    _prt_log "fetch of refs/pull/${pr_number}/head failed against $parent's origin"
+  local code_remote
+  code_remote="$(_resolve_code_plane_remote "$parent")" || {
+    _prt_log "could not resolve the code-plane git remote in $parent — refusing to fetch against an unresolved plane"
+    return 3
+  }
+
+  if ! git -C "$parent" fetch --quiet "$code_remote" "refs/pull/${pr_number}/head" 2>/dev/null; then
+    _prt_log "fetch of refs/pull/${pr_number}/head failed against $parent's $code_remote remote"
     return 3
   fi
 
   if ! git -C "$parent" rev-parse --verify --quiet "${head_sha}^{commit}" >/dev/null 2>&1; then
     _prt_log "PR #${pr_number} head $head_sha is not reachable in $parent after fetch"
+    return 3
+  fi
+
+  local expected_sha
+  expected_sha="$(_prt_expected_head_sha "$pr_number")" || {
+    _prt_log "could not verify PR #${pr_number}'s head_sha argument against the code plane — refusing to trust an unverified sha"
+    return 3
+  }
+  if [ "$expected_sha" != "$head_sha" ]; then
+    _prt_log "PR #${pr_number} head_sha argument ($head_sha) does not match the code plane's headRefOid ($expected_sha) — refusing; the caller likely resolved this sha against the wrong repo plane"
     return 3
   fi
 

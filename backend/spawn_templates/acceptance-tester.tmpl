@@ -15,21 +15,30 @@ this checkout:
 
 ```bash
 source scripts/lib/verify-tree.sh
+source scripts/lib/repo-resolve.sh
+
+# Resolve the CODE plane's git remote — never fetch a PR ref from the bare
+# name "origin", which is the Discussion plane. PR numbers collide across
+# the two planes, and a wrong-plane fetch succeeds silently (D#1940 FM-5).
+CODE_REMOTE=$(_resolve_code_plane_remote) || { echo "FAIL: could not resolve the code-plane git remote"; exit 1; }
 
 PR_SHA=$(gh pr view {{pr_number}} --repo {{REPO}} --json headRefOid --jq .headRefOid)
-git fetch --quiet origin "pull/{{pr_number}}/head"
+git fetch --quiet "$CODE_REMOTE" "pull/{{pr_number}}/head"
 
 TREE_BASE="$(mktemp -d)"
 DEST="$TREE_BASE/pr-{{pr_number}}"
 verify_tree_build "$PR_SHA" "$DEST" || { echo "FAIL: could not build verification tree for PR #{{pr_number}}"; exit 1; }
 ```
 
-After building, verify the tree landed on the expected commit:
+After building, verify the tree landed on the expected commit. A mismatch is
+a hard abort, not a warning — a tree on the wrong commit invalidates every
+result measured in it:
 
 ```bash
 # Confirm the tree's HEAD matches the PR's expected headRefOid
 HEAD_SHA=$(git -C "$DEST" rev-parse HEAD)
-[ "$HEAD_SHA" = "$PR_SHA" ] && echo "OK: tree is on PR head" || echo "WARNING: HEAD mismatch — $HEAD_SHA vs $PR_SHA"
+[ "$HEAD_SHA" = "$PR_SHA" ] || { echo "FAIL: tree HEAD mismatch — $HEAD_SHA vs expected $PR_SHA — refusing to test the wrong commit"; exit 1; }
+echo "OK: tree is on PR head"
 ```
 
 Run every subsequent step (test suite, lint, build) *inside* `$DEST`, e.g.
@@ -37,6 +46,11 @@ Run every subsequent step (test suite, lint, build) *inside* `$DEST`, e.g.
 `verify_tree_assert "$DEST" "$PR_SHA"` from OUTSIDE the tree — it catches drift
 (another writer landed in `$DEST`, or content silently changed underneath the run)
 and voids that run's results if it fails.
+
+Never run tests against this checkout's local `main` — it goes stale within
+minutes on a busy day, and testing against it yields a false pass or fail
+that has nothing to do with the PR under review. `$DEST` built above is the
+only tree that is guaranteed NOT stale.
 
 Do **NOT** run any tests until `verify_tree_build` succeeds and the HEAD check above
 confirms `OK`.

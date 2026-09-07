@@ -388,14 +388,17 @@ def test_acceptance_tester_render_contains_pr_checkout_guidance() -> None:
     running tests — the worktree starts at main, which would give false results.
     """
     result = render("acceptance-tester", _STUB_VARS)
-    # Either "gh pr checkout" or the manual fetch+checkout pattern must appear
+    # Either "gh pr checkout" or the manual fetch+build pattern must appear.
+    # The fetch resolves the CODE plane's remote (D#1940 FM-5) rather than a
+    # bare "origin" — a PR number collides across the code and Discussion
+    # planes, so a literal "origin" fetch can silently land the wrong commit.
     has_gh_checkout = "gh pr checkout" in result
-    has_fetch_pattern = "origin/" in result and "headRef" in result
+    has_fetch_pattern = "_resolve_code_plane_remote" in result and "headRef" in result
     assert has_gh_checkout or has_fetch_pattern, (
         "render('acceptance-tester') missing PR checkout guidance. "
         "The template must instruct the agent to check out the PR branch "
-        "('gh pr checkout' or 'git fetch origin $BRANCH && git checkout $BRANCH') "
-        "before running any tests."
+        "('gh pr checkout' or a headRefOid fetch resolved against the code-plane "
+        "remote via _resolve_code_plane_remote) before running any tests."
     )
 
 
@@ -414,17 +417,23 @@ def test_acceptance_tester_render_warns_against_testing_main() -> None:
 def test_security_reviewer_render_contains_stale_worktree_guidance() -> None:
     """render('security-reviewer') must contain the stale-worktree read-only pattern.
 
-    Matches the pattern in code-reviewer.tmpl: headRefName + git fetch origin +
-    git show origin/$BRANCH.
+    Matches the pattern in code-reviewer.tmpl: headRefName + a fetch resolved
+    against the code-plane remote + git show against that same remote.
+
+    The fetch must NOT be a bare "git fetch origin" (D#1940 FM-5): "origin" is
+    the Discussion plane, PR numbers collide across the two planes, and a
+    wrong-plane fetch succeeds silently instead of failing.
     """
     result = render("security-reviewer", _STUB_VARS)
     has_headref = "headRefName" in result or "headRef" in result
-    has_origin_fetch = "git fetch origin" in result
-    has_git_show = 'git show' in result and "origin/" in result
-    assert has_headref and has_origin_fetch and has_git_show, (
-        "render('security-reviewer') missing stale-worktree read-only guidance. "
-        "Must include: headRefName lookup, 'git fetch origin', and "
-        "'git show origin/$BRANCH:path' for reading PR files."
+    has_code_plane_fetch = "_resolve_code_plane_remote" in result and "git fetch" in result
+    has_no_bare_origin_fetch = "git fetch origin " not in result
+    has_git_show = "git show" in result and "CODE_REMOTE" in result
+    assert has_headref and has_code_plane_fetch and has_no_bare_origin_fetch and has_git_show, (
+        "render('security-reviewer') missing stale-worktree read-only guidance, or still "
+        "fetches from the bare 'origin' remote (the Discussion plane). Must include: "
+        "headRefName lookup, a fetch resolved via _resolve_code_plane_remote, and "
+        "'git show \"$CODE_REMOTE/$BRANCH:path\"' for reading PR files."
     )
 
 
