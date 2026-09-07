@@ -209,6 +209,14 @@ class TestServerRpcDispatch(unittest.TestCase):
                         fixture_path_attr.write_text(original_content)
                     elif fixture_path_attr.exists():
                         fixture_path_attr.unlink()
+                    # Best-effort by construction: rmdir raises on a non-empty
+                    # directory and the OSError is swallowed, so if anything
+                    # else ever writes into .autonomous-team/tmp/ during this
+                    # handler the directory silently stays behind rather than
+                    # this test failing. That is the right trade here — a
+                    # cleanup must not turn into a second source of failures —
+                    # but it means the guard against this regressing is
+                    # scripts/check-tests-leave-tree-clean.sh, not this block.
                     try:
                         if not tmp_dir_existed:
                             fixture_path_attr.parent.rmdir()   # raises if not empty

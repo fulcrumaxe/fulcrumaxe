@@ -339,6 +339,13 @@ def test_pre_spawn_check_includes_lessons():
     # where none of these existed, an emptied-but-present
     # .autonomous-team/lessons/test_coverage.jsonl is still three new paths
     # in the working tree. Anything that was already here is left untouched.
+    #
+    # This cleanup is sufficient only because the subprocess above runs with
+    # --dry-run, and every write in scripts/pre-spawn-check.sh is gated on
+    # DRY_RUN != 1. Drop that flag and the script writes files this block
+    # does not know to remove — and it would fail silently, because the
+    # rmdir calls below sit inside `except Exception: pass` and a non-empty
+    # directory simply stays. If you change the invocation, revisit this.
     try:
         lesson_file = lessons_dir / "test_coverage.jsonl"
         if lesson_file.exists():

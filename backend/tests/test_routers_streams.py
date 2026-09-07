@@ -44,13 +44,17 @@ def scratch_kpi_out(tmp_path, monkeypatch):
 
     The status-stream snapshot reaches `kpi_engine.compute_all()`, which
     unconditionally writes `KPI_OUT` — a repo-root-anchored module constant
-    with no env override — so a test about SSE cadence was creating
-    `.autonomous-team/kpi.json`, and with it the untracked
-    `.autonomous-team/` directory, in the working tree (D#2453).
+    with no env override — so a test about SSE cadence was writing
+    `.autonomous-team/kpi.json` into the working tree (D#2453).
 
-    That directory is not inert once it exists: `backend/spawn_diff.py` puts
-    its temporary module there *only if it is already present*, so this one
-    write also decided where a different test's bytecode landed.
+    What this prevents is that stray file on a checkout that ALREADY has
+    `.autonomous-team/`. It is not what creates the directory: `kpi_engine`
+    has no `mkdir` anywhere, so on a tree without it the write raises
+    `FileNotFoundError` and is swallowed upstream. Measured per-module
+    against `main`, this module leaves nothing behind on such a tree. The
+    directory's creators are elsewhere — see the sibling fixtures in
+    test_circuit_breaker, test_spawn_guard, test_parity_experiment,
+    test_session_manager, and the cleanups in test_lessons and test_kpi_rpc.
     """
     import backend.kpi_engine as kpi_engine
 

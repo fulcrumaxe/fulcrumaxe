@@ -35,6 +35,42 @@
 # uses `--ignored=matching --untracked-files=all`, which is what makes the
 # residue visible at all.
 #
+# A VERDICT REQUIRES AN OBSERVATION
+# ----------------------------------
+# The comparison below can be satisfied by an empty subject set: a run that
+# executed no tests adds no paths, so "nothing was added" comes out green.
+# That is the same defect this check exists to catch, sitting in the check —
+# a result that reports something other than what its reader assumes. Code
+# review on the first version caught it, having reproduced it three ways:
+# the DEFAULT invocation on a checkout with no `.autonomous-team/config.json`
+# (collection errors, pytest exit 2, zero tests run), a typo'd target
+# filename (exit 4), and a `-k` expression matching nothing (exit 5). All
+# three reported a clean tree.
+#
+# So the run is validated before the difference is interpreted, on two
+# independent grounds, because either alone can be satisfied vacuously:
+#
+#   1. pytest's exit status must be 0 or 1. Both are real runs — 1 is tests
+#      failing, which is still an observation of what a run does to the tree.
+#      2 (collection error), 3 (internal error), 4 (usage error) and 5 (no
+#      tests collected) all mean no run happened, and neither a pass nor a
+#      fail can be issued from one.
+#   2. at least one test case must actually have executed, counted from a
+#      JUnit XML written to a scratch path outside the repo. This is the
+#      backstop for an exit status that says 0 while nothing ran; it is not
+#      redundant with (1), it is the same rule stated positively about the
+#      subject set rather than about the exit code.
+#
+# Neither gate subsumes the other, and the collection-error case shows why:
+# pytest writes a JUnit `<testcase>` entry for each collection ERROR, so the
+# default-invocation repro above counts 3 executed cases while having run
+# nothing at all. The exit status is what catches that one; the count is what
+# would catch its mirror image.
+#
+# Neither gate reports "clean". A run that did not happen gets "could not
+# observe", which is a failure, because the alternative is a green result
+# that means nothing.
+#
 # WHY A DIFFERENCE, NOT A CLEANLINESS ASSERTION
 # ----------------------------------------------
 # The working tree here is *already* dirty on every real checkout —
@@ -76,6 +112,10 @@
 #   scripts/check-tests-leave-tree-clean.sh -k some_expression backend/tests
 #
 # Every argument is passed straight through to pytest.
+#
+# Exit status: 0 when a real run added nothing (or only tolerated cache
+# paths), 1 when it added something — and also 1 when no run happened at all,
+# which is not a pass. See "A VERDICT REQUIRES AN OBSERVATION" above.
 
 set -uo pipefail
 
@@ -121,8 +161,9 @@ snapshot() {
 
 BEFORE_FILE="$(mktemp)"
 AFTER_FILE="$(mktemp)"
+JUNIT_FILE="$(mktemp)"   # outside the repo, so it is never itself residue
 cleanup() {
-  rm -f "$BEFORE_FILE" "$AFTER_FILE"
+  rm -f "$BEFORE_FILE" "$AFTER_FILE" "$JUNIT_FILE"
   [ -n "$SCRATCH_STATE_DIR" ] && rm -rf "$SCRATCH_STATE_DIR"
   return 0
 }
@@ -132,9 +173,8 @@ snapshot > "$BEFORE_FILE"
 echo "before: $(wc -l < "$BEFORE_FILE" | tr -d ' ') tracked-or-ignored status entries"
 
 echo "running: pytest ${PYTEST_TARGET[*]}"
-python3 -m pytest "${PYTEST_TARGET[@]}"
+python3 -m pytest "${PYTEST_TARGET[@]}" "--junitxml=$JUNIT_FILE"
 PYTEST_RC=$?
-echo "pytest exit status: $PYTEST_RC (not this check's verdict — residue is)"
 
 snapshot > "$AFTER_FILE"
 echo "after:  $(wc -l < "$AFTER_FILE" | tr -d ' ') tracked-or-ignored status entries"
@@ -143,8 +183,47 @@ echo "after:  $(wc -l < "$AFTER_FILE" | tr -d ' ') tracked-or-ignored status ent
 # it changed. comm needs both inputs sorted, which snapshot() guarantees.
 ADDED="$(comm -13 "$BEFORE_FILE" "$AFTER_FILE")"
 
+# ---------------------------------------------------------------------------
+# Validate the run before interpreting the difference. See "A VERDICT REQUIRES
+# AN OBSERVATION" in the header: an empty run adds nothing, so without this
+# the check is at its most confident exactly when it saw the least.
+# ---------------------------------------------------------------------------
+
+EXECUTED=0
+if [ -s "$JUNIT_FILE" ]; then
+  EXECUTED="$(grep -o '<testcase' "$JUNIT_FILE" | wc -l | tr -d ' ')"
+fi
+
+no_observation() {
+  echo >&2
+  echo "FAIL: no observation was made, so no verdict can be issued." >&2
+  echo "  $1" >&2
+  echo "  pytest exit status: $PYTEST_RC; test cases executed: $EXECUTED" >&2
+  if [ -n "$ADDED" ]; then
+    echo "  (the tree did change during this non-run — reported for information," >&2
+    echo "   but it is not a verdict about what a real run does:)" >&2
+    printf '%s' "$ADDED" | sed 's/^/    /' >&2
+  fi
+  exit 1
+}
+
+case "$PYTEST_RC" in
+  0|1) ;;   # a real run: everything passed, or tests failed. Both are observations.
+  2) no_observation "pytest exit 2 — collection error. Nothing ran." ;;
+  3) no_observation "pytest exit 3 — internal error. Nothing ran." ;;
+  4) no_observation "pytest exit 4 — usage error (a mistyped target reaches here). Nothing ran." ;;
+  5) no_observation "pytest exit 5 — no tests were collected." ;;
+  *) no_observation "pytest exit $PYTEST_RC — unrecognized; treating as no run." ;;
+esac
+
+if [ "$EXECUTED" -lt 1 ]; then
+  no_observation "pytest reported success but no test case executed."
+fi
+
+echo "pytest exit status: $PYTEST_RC over $EXECUTED test cases (not this check's verdict — residue is)"
+
 if [ -z "$ADDED" ]; then
-  echo "OK: pytest ${PYTEST_TARGET[*]} added nothing to the working tree"
+  echo "OK: pytest ${PYTEST_TARGET[*]} ran $EXECUTED test cases and added nothing to the working tree"
   exit 0
 fi
 
@@ -196,5 +275,5 @@ if [ -n "$FATAL" ]; then
 fi
 
 echo
-echo "OK: pytest ${PYTEST_TARGET[*]} added only interpreter/pytest cache paths"
+echo "OK: pytest ${PYTEST_TARGET[*]} ran $EXECUTED test cases and added only interpreter/pytest cache paths"
 exit 0
