@@ -228,6 +228,76 @@ PY
   fi
 }
 
+# $1 label, $2 root (holds root/epics), $3 host note.
+#
+# None of agree()/classify_is()/describe_reports()/step_refuses_closed()
+# can observe THIS property: that _coldstart_backlog_importable_count_into_
+# globals calls the canonical _coldstart_backlog_importable_count rather
+# than reaching past it to _coldstart_backlog_importer_status_count
+# directly. All four of those are tree-fixture-plus-output comparisons --
+# "which function does this wrapper call" is a call-graph fact, not
+# something any tree fixture's output can distinguish while the two
+# functions happen to compute the same answer, which they do today
+# (_coldstart_backlog_importable_count is currently a pure one-line
+# pass-through). That is a real gap in what this guard's existing
+# primitives can express, not a property that cannot be tested at all: it
+# is testable by stubbing, a different technique from the other four.
+#
+# Two observations against the same fixture tree:
+#   1. Stub _coldstart_backlog_importable_count to return a sentinel no
+#      real count could ever equal. Call _into_globals. If it delegates,
+#      the sentinel comes back. This is the property under test.
+#   2. Control: with the SAME stub still active, redefine _into_globals to
+#      the pre-fix shape (call _coldstart_backlog_importer_status_count
+#      directly, bypassing the stub). The real count must come back, not
+#      the sentinel -- proving observation 1 was not vacuously true (i.e.
+#      the stub really is reachable only through the delegation path, so
+#      seeing it in observation 1 actually means something).
+# Both function definitions are restored by re-sourcing $BACKLOG_LIB
+# afterward, so later fixtures in this file see the real implementations.
+wrapper_delegates() {
+  local label="$1" root="$2" host="$3" real_count sentinel_seen bypass_seen
+  local sentinel="SENTINEL-4f2c9a-not-a-real-count"
+
+  real_count="$(python3 "$IMPORTER" "$root" --repo example-org/example-project --dry-run 2>/dev/null \
+                | sed -n 's/^After status filter: \([0-9]*\) task.*/\1/p' | head -n 1)"
+  [[ -n "$real_count" ]] || real_count=0
+
+  # shellcheck disable=SC2317  # reachable via the stubbed call below
+  _coldstart_backlog_importable_count() {
+    _COLDSTART_BACKLOG_LAST_COUNT="$sentinel"
+    echo "$sentinel"
+    return 0
+  }
+
+  CHECKED=$((CHECKED + 1))
+  _coldstart_backlog_importable_count_into_globals "$root/epics" >/dev/null
+  sentinel_seen="$_COLDSTART_BACKLOG_LAST_COUNT"
+  if [[ "$sentinel_seen" == "$sentinel" ]]; then
+    echo "PASS: $label — _into_globals delegates through _coldstart_backlog_importable_count (stub's sentinel observed) (fixture: $root, host: $host)"
+  else
+    echo "FAIL: $label — _into_globals did not call the stubbed _coldstart_backlog_importable_count; got '$sentinel_seen' (fixture: $root, host: $host)"
+    FAILED=$((FAILED + 1))
+  fi
+
+  # shellcheck disable=SC2317  # reachable via the call below
+  _coldstart_backlog_importable_count_into_globals() {
+    _coldstart_backlog_importer_status_count "$1" >/dev/null
+  }
+
+  CHECKED=$((CHECKED + 1))
+  _coldstart_backlog_importable_count_into_globals "$root/epics" >/dev/null
+  bypass_seen="$_COLDSTART_BACKLOG_LAST_COUNT"
+  if [[ "$bypass_seen" == "$real_count" && "$bypass_seen" != "$sentinel" ]]; then
+    echo "PASS: $label — control: a wrapper that calls the lower-level function directly skips the stub and returns the real count ($bypass_seen), confirming observation 1 was not vacuous (fixture: $root, host: $host)"
+  else
+    echo "FAIL: $label — control did not behave as expected; got '$bypass_seen', real count is '$real_count' (fixture: $root, host: $host)"
+    FAILED=$((FAILED + 1))
+  fi
+
+  source "$BACKLOG_LIB"
+}
+
 HOST="$(uname -a 2>/dev/null || echo unknown)"
 
 echo "=== fixture: ordinary conforming backlog, one open task ==="
@@ -382,6 +452,19 @@ else
   FAILED=$((FAILED + 1))
 fi
 agree "mixed backlog" "$D" "$HOST"
+
+echo ""
+echo "=== fixture: _into_globals delegates through the canonical wrapper, not around it ==="
+# Runs last on purpose: it redefines _coldstart_backlog_importable_count and
+# _coldstart_backlog_importable_count_into_globals for the duration of
+# wrapper_delegates(), then restores both by re-sourcing $BACKLOG_LIB. Any
+# fixture placed after this one would still see the real implementations,
+# but keeping it last means a mistake in the restore step cannot silently
+# affect an earlier fixture's result.
+D="$(mktemp -d)"; FIXTURES+=("$D")
+mkdir -p "$D/epics/epic-3-billing"
+mk_task "$D/epics/epic-3-billing/01.md" "not-started"
+wrapper_delegates "importable_count_into_globals" "$D" "$HOST"
 
 echo ""
 echo "=============================================="
