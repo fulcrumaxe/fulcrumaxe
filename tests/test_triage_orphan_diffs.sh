@@ -275,6 +275,161 @@ _assert_contains "$HELP_OUT" "discard-older-than" "help mentions discard-older-t
 _assert_contains "$HELP_OUT" "stats" "help mentions stats"
 
 # ---------------------------------------------------------------------------
+# Test 11: discard-older-than's interpreter spawns do not grow with the pile
+#
+# D#2133: the candidate loop used to spawn python3 twice per patch — once to
+# read the mtime, once to read the sidecar status. On the operator checkout
+# that was 388 patches x 2 spawns, every one of the status reads landing in
+# `except Exception` because no sidecar existed for any of them.
+#
+# The assertion is deliberately a COMPARISON between two pile sizes rather
+# than a literal count. `[[ $spawns -eq 2 ]]` would keep passing forever and
+# say nothing the day the loop goes superlinear again; a constant number of
+# spawns outside the loop is fine and this shape tolerates it.
+#
+# The pile used here gives every patch a well-formed sidecar with a status of
+# 'salvaged'. That is the strictly harder case — the sidecars actually have to
+# be read, so the fix cannot pass by skipping the read — and it means zero
+# patches are selected, so nothing is moved and the count is the selection
+# loop's alone. It is a REAL run, not --dry-run.
+#
+# Measured on this file's own host at the time of writing, pre-fix: 10 spawns
+# at N=5 and 100 at N=50. Post-fix: 1 and 1.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== Test 11: interpreter spawns do not grow with the pile ==="
+
+SPAWN_REALPY="$(command -v python3)"
+
+# _spawn_count_for_n N — build a scratch pile of N sidecar-bearing patches,
+# run discard-older-than against it through a PATH shim that counts python3
+# invocations, and echo the count.
+_spawn_count_for_n() {
+  local n="$1"
+  local root="${TMPDIR_ROOT}/spawnpile-${n}"
+  local shim="${TMPDIR_ROOT}/spawnshim-${n}"
+  local counter="${TMPDIR_ROOT}/spawncount-${n}"
+
+  mkdir -p "${root}/archive/orphan-diffs" "$shim"
+  : > "$counter"
+
+  {
+    printf '#!/bin/sh\n'
+    printf 'printf "1\\n" >> "%s"\n' "$counter"
+    printf 'exec "%s" "$@"\n' "$SPAWN_REALPY"
+  } > "${shim}/python3"
+  chmod +x "${shim}/python3"
+
+  local i=1
+  while [[ "$i" -le "$n" ]]; do
+    local p="${root}/archive/orphan-diffs/agent-spawn${i}-old.patch"
+    printf 'diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n' > "$p"
+    printf '{"patch":"agent-spawn%s-old.patch","status":"salvaged","note":"","tagged_at":null,"tagged_by":null}\n' \
+      "$i" > "${p}.meta.json"
+    touch -t 200001010000 "$p"
+    i=$((i + 1))
+  done
+
+  git -C "$root" init --quiet . >/dev/null 2>&1
+  git -C "$root" config user.email "test@test.com" >/dev/null 2>&1
+  git -C "$root" config user.name "Test" >/dev/null 2>&1
+  git -C "$root" add -A >/dev/null 2>&1
+  git -C "$root" commit --quiet -m "spawn pile" >/dev/null 2>&1
+
+  PATH="${shim}:${PATH}" REPO_ROOT="$root" \
+    bash "$TRIAGE_SCRIPT" discard-older-than 30d >/dev/null 2>&1
+
+  grep -c . "$counter" 2>/dev/null || echo 0
+}
+
+SPAWNS_5=$(_spawn_count_for_n 5)
+SPAWNS_50=$(_spawn_count_for_n 50)
+echo "  python3 spawns: N=5 -> ${SPAWNS_5}, N=50 -> ${SPAWNS_50}"
+
+if [[ "$SPAWNS_50" -eq "$SPAWNS_5" ]]; then
+  _pass "spawn count is flat in the pile size (N=5: ${SPAWNS_5}, N=50: ${SPAWNS_50})"
+else
+  _fail "spawn count grows with the pile size (N=5: ${SPAWNS_5}, N=50: ${SPAWNS_50}) — the candidate loop is spawning an interpreter per patch again"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 12: a patch name containing a newline cannot select a different patch
+#
+# The sidecar reader batches its work, so its results have to be matched back
+# to the patches they came from. If that matching goes through the path — a
+# record carrying the path, re-parsed by the caller — then a patch whose NAME
+# contains the record delimiter splits one record into two, and the front half
+# names a different, real patch. That patch then gets discarded on somebody
+# else's status, and the move loop rewrites its sidecar on the way out, so the
+# note that said to keep it is gone too. The archive README restores the file;
+# it does not restore the annotation.
+#
+# The fixture below is that exact collision, built on purpose: a patch called
+# "victim.patch" that is explicitly salvaged, and a second patch whose name is
+# "victim.patch" + newline + "X.patch". Reachability in production is low —
+# pile names are derived from worktree ids — but the whole argument for
+# guarding this path is that a rare failure which destroys unrecoverable work
+# still deserves a guard, so low reachability is not the axis.
+#
+# The property asserted is the general one, not the parse: results must be
+# matched to patches by position, never by re-reading a filesystem-controlled
+# name out of the record.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== Test 12: a newline in a patch name cannot select a different patch ==="
+
+NL_ROOT="${TMPDIR_ROOT}/newline-pile"
+NL_PILE="${NL_ROOT}/archive/orphan-diffs"
+mkdir -p "$NL_PILE"
+
+_nl_make_patch() {
+  printf 'diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n' > "$1"
+}
+
+# The patch that must survive. Explicitly salvaged, with a note a human wrote.
+NL_VICTIM="${NL_PILE}/victim.patch"
+_nl_make_patch "$NL_VICTIM"
+printf '{"patch":"victim.patch","status":"salvaged","note":"KEEP ME","tagged_at":null,"tagged_by":"test"}\n' \
+  > "${NL_VICTIM}.meta.json"
+
+# The colliding name: everything before the newline is exactly the victim's
+# path, so a caller that re-parses the path out of a split record lands on the
+# victim. Its own sidecar says untriaged, which is what makes the victim look
+# discardable.
+NL_ATTACK="${NL_PILE}/victim.patch"$'\n'"X.patch"
+_nl_make_patch "$NL_ATTACK"
+printf '{"patch":"collider","status":"untriaged","note":"","tagged_at":null,"tagged_by":"test"}\n' \
+  > "${NL_ATTACK}.meta.json"
+
+git -C "$NL_ROOT" init --quiet . >/dev/null 2>&1
+git -C "$NL_ROOT" config user.email "test@test.com" >/dev/null 2>&1
+git -C "$NL_ROOT" config user.name "Test" >/dev/null 2>&1
+git -C "$NL_ROOT" add -A >/dev/null 2>&1
+git -C "$NL_ROOT" commit --quiet -m "newline pile" >/dev/null 2>&1
+
+touch -t 200001010000 "$NL_VICTIM" "$NL_ATTACK"
+
+NL_OUT=$(REPO_ROOT="$NL_ROOT" bash "$TRIAGE_SCRIPT" discard-older-than 30d 2>&1)
+echo "$NL_OUT" | sed 's/^/    /'
+
+# The file itself must still be there.
+if [[ -f "$NL_VICTIM" ]]; then
+  _pass "salvaged patch survives a colliding newline-named neighbour"
+else
+  _fail "salvaged patch was discarded because a neighbour's name contained a newline — batch results are being matched by path instead of by position"
+fi
+
+# And so must what its sidecar said. A restored file with an overwritten
+# sidecar has lost the only record that anybody ever marked it keep.
+NL_STATUS=$(jq -r '.status' "${NL_VICTIM}.meta.json" 2>/dev/null || echo "MISSING")
+NL_NOTE=$(jq -r '.note' "${NL_VICTIM}.meta.json" 2>/dev/null || echo "MISSING")
+if [[ "$NL_STATUS" == "salvaged" && "$NL_NOTE" == "KEEP ME" ]]; then
+  _pass "salvaged patch's sidecar contents survive intact (status=${NL_STATUS}, note='${NL_NOTE}')"
+else
+  _fail "salvaged patch's sidecar was overwritten (status=${NL_STATUS}, note='${NL_NOTE}') — the archive README restores the file but not the annotation"
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""
