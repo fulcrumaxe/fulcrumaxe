@@ -57,7 +57,8 @@
 #   state-file-absent          engine-sync-inbound-apply.json does not exist
 #   state-file-corrupt         it exists but is not the JSON shape expected
 #   engine-check-unavailable   the state file was fine, but unmerged.py could
-#                              not complete (network, an unresolvable ref, ...)
+#                              not complete (network, an unresolvable ref,
+#                              ENGINE_SYNC_NO_FETCH=1, ...)
 #
 # The exit code still mirrors staleness.sh's (0 in-sync / 1 stale /
 # 2 undecidable), so a caller that only wants the status can keep reading
@@ -126,6 +127,12 @@
 #   ENGINE_SYNC_LOCAL_REF         what "the engine's own copy" means for the
 #                                 unmerged half of withheld_debt, default "main"
 #                                 (apply_inbound.py's own --local-ref default)
+#   ENGINE_SYNC_NO_FETCH          set to 1 to skip the unmerged-branch check's
+#                                 network calls (same flag staleness.sh already
+#                                 honors for its own fetch). withheld_debt
+#                                 becomes null with withheld_debt_error
+#                                 "engine-check-unavailable", NEVER 0 -- an
+#                                 unmeasured half must never read as a clean one.
 
 set -uo pipefail
 
@@ -239,11 +246,23 @@ fi
 # actually open, one fetch per branch -- not the near-zero cost
 # staleness.sh's own check holds itself to, and deliberately so: that is
 # the cost of this half actually measuring something (D#2445).
-UNMERGED_JSON="$(python3 "$SCRIPT_DIR/unmerged.py" \
-  --remote "${ENGINE_SYNC_ENGINE_REMOTE:-origin}" \
-  --local-ref "${ENGINE_SYNC_LOCAL_REF:-main}" \
-  --repo-dir "$GIT_C_DIR" 2>/dev/null)"
-UNMERGED_RC=$?
+#
+# ENGINE_SYNC_NO_FETCH (same flag, same "1" convention as staleness.sh's
+# own) skips this call entirely rather than letting it make network
+# traffic anyway. It does NOT fall back to a debt of 0 for the skipped
+# half -- that would silently reproduce the exact defect this field exists
+# to close, just triggered by an env var instead of a network failure -- so
+# it reports the same "engine-check-unavailable" a real failure would.
+if [ "${ENGINE_SYNC_NO_FETCH:-0}" = "1" ]; then
+  UNMERGED_JSON='{"error": "skipped: ENGINE_SYNC_NO_FETCH=1"}'
+  UNMERGED_RC=1
+else
+  UNMERGED_JSON="$(python3 "$SCRIPT_DIR/unmerged.py" \
+    --remote "${ENGINE_SYNC_ENGINE_REMOTE:-origin}" \
+    --local-ref "${ENGINE_SYNC_LOCAL_REF:-main}" \
+    --repo-dir "$GIT_C_DIR" 2>/dev/null)"
+  UNMERGED_RC=$?
+fi
 
 # Splice the new fields into staleness.sh's own JSON rather than reformatting
 # it, so every field it emitted survives verbatim.

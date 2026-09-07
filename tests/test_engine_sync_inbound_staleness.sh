@@ -423,6 +423,16 @@ run_alarm_debt() {
     bash "$ALARM" 2>/dev/null
 }
 
+run_alarm_debt_with() {
+  # run_alarm_debt_with <state-dir> <engine-remote> <local-ref> <no-fetch> --
+  # same as run_alarm_debt but every knob the unmerged-check reads is
+  # overridable, for exercising ITS OWN failure modes (as opposed to the
+  # state file's, which B5/B6 above already cover).
+  ENGINE_SYNC_GIT_DIR="$B_ENGINE" ENGINE_SYNC_STATE_DIR="$1" \
+    ENGINE_SYNC_ENGINE_REMOTE="$2" ENGINE_SYNC_LOCAL_REF="$3" ENGINE_SYNC_NO_FETCH="$4" \
+    bash "$ALARM" 2>/dev/null
+}
+
 # B1: nothing owed either way -> 0, not null, and no error field.
 B1_STATE="$B_ROOT/state-b1"
 write_apply_state "$B1_STATE" '{}'
@@ -494,6 +504,38 @@ write_apply_state "$B7_STATE" '{}'
 OUT="$(run_alarm_debt "$B7_STATE")"
 [ "$(json_field "$OUT" withheld_debt)" = "1" ]
 check "B7 local_ref moved forward on unrelated work -> count unchanged, still 1" $?
+
+# B8/B9/B10: the unmerged-check's OWN failure modes, asserted through the
+# real alarm.sh (not just unmerged.py's unit tests, which only check that it
+# raises or exits non-zero -- never this exact string end to end). All three
+# use a clean, readable pending={} state file, so a failure here is
+# unambiguously the engine-check's, not the state file's -- and there is a
+# real open sync branch on origin the whole time (from B3/B7), so a bug that
+# collapsed any of these to 0 would be silently dropping a genuine path,
+# exactly the shape D#2445 is about.
+#
+# B8: negative -- local_ref itself does not resolve.
+B8_STATE="$B_ROOT/state-b8"
+write_apply_state "$B8_STATE" '{}'
+OUT="$(run_alarm_debt_with "$B8_STATE" origin does-not-exist-ref 0)"
+[ "$(json_field "$OUT" withheld_debt)" = "None" ] && [ "$(json_field "$OUT" withheld_debt_error)" = "engine-check-unavailable" ]
+check "B8 unresolvable ENGINE_SYNC_LOCAL_REF -> withheld_debt=null, error=engine-check-unavailable" $?
+
+# B9: negative -- the engine remote itself is not configured.
+B9_STATE="$B_ROOT/state-b9"
+write_apply_state "$B9_STATE" '{}'
+OUT="$(run_alarm_debt_with "$B9_STATE" no-such-remote main 0)"
+[ "$(json_field "$OUT" withheld_debt)" = "None" ] && [ "$(json_field "$OUT" withheld_debt_error)" = "engine-check-unavailable" ]
+check "B9 nonexistent ENGINE_SYNC_ENGINE_REMOTE -> withheld_debt=null, error=engine-check-unavailable" $?
+
+# B10: negative -- ENGINE_SYNC_NO_FETCH=1 must not fall back to 0. A real
+# open branch (from B3/B7) would be counted if this actually ran the check;
+# skipping it must read as "couldn't tell", never as "nothing owed".
+B10_STATE="$B_ROOT/state-b10"
+write_apply_state "$B10_STATE" '{}'
+OUT="$(run_alarm_debt_with "$B10_STATE" origin main 1)"
+[ "$(json_field "$OUT" withheld_debt)" = "None" ] && [ "$(json_field "$OUT" withheld_debt_error)" = "engine-check-unavailable" ]
+check "B10 ENGINE_SYNC_NO_FETCH=1 -> withheld_debt=null, error=engine-check-unavailable (never 0)" $?
 
 # ---------------------------------------------------------------------------
 A6_STATE_DIR="$(mktemp -d)"
