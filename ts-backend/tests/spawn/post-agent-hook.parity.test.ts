@@ -477,6 +477,7 @@ describe("TS CLI: stdout format (programmatic)", () => {
       "memory", "training_mine", "cost_summary", "post_agent_cleanup",
       "worktree_registry", "self_observe_check", "scope_drift_check",
       "anomaly_check", "reap_worktrees", "team_log",
+      "branch_contamination_recovery",
     ]) {
       tracker.mark(step);
     }
@@ -543,6 +544,7 @@ describe("StepTracker: idempotency", () => {
     tracker.mark("anomaly_check");
     tracker.mark("reap_worktrees");
     tracker.mark("team_log");
+    tracker.mark("branch_contamination_recovery");
 
     const origDb = process.env["STATS_DB_PATH"];
     process.env["STATS_DB_PATH"] = join(tsDir, "stats.duckdb");
