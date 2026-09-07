@@ -43,8 +43,16 @@ _LOCK_TIMEOUT_SECONDS = 10
 from backend._repo import REPO as _REPO  # noqa: E402 (after Path constants)
 from backend._repo import REPO_OWNER as _REPO_OWNER, REPO_NAME as _REPO_NAME  # noqa: E402
 
-# Matches <!-- STATUS:XXX --> or <!-- STATUS:XXX SINCE:... --> or <!-- STATUS:XXX PR:#N SINCE:... -->
-_STATUS_RE = re.compile(r"<!--\s*STATUS:(\w+)(?:[^>]*)-->")
+# PR extraction only — status extraction used to have its own private regex
+# here too (_STATUS_RE), but that regex's `(?:[^>]*)` crossed fences and
+# paragraphs freely and, on D#2145's own pre-Spec body, matched a
+# 1466-character span starting inside a fenced code block and terminating on
+# a "-->" that lived in unrelated prose, misreading the body as SPEC_READY.
+# _parse_status() below now delegates to
+# backend.discussion_status.extract_status_anchored(), which reads only the
+# body's first non-empty line, so there is no second status parser left to
+# diverge from it (D#2145 PR-b). _PR_RE is unrelated to status and is left
+# as-is — no PR:# misparse was ever measured.
 _PR_RE = re.compile(r"<!--\s*STATUS:[^>]*\bPR:#?(\d+)[^>]*-->")
 
 _EMPTY_REGISTRY = {
@@ -428,12 +436,31 @@ class DiscussionRegistry:
         return _ts_cs(body)
 
     def _parse_status(self, body: str) -> str:
-        """Extract STATUS value from Discussion body HTML comment, or infer from content."""
-        m = _STATUS_RE.search(body)
-        if m:
-            return m.group(1)
-        # No STATUS comment — treat as DISCUSSING (no spec yet)
-        return "DISCUSSING"
+        """Extract STATUS value via the shared anchored parser, or infer from content.
+
+        Delegates to backend.discussion_status.extract_status_anchored(),
+        which reads only the body's first non-empty line — the authoritative
+        marker — so a STATUS-shaped comment quoted in prose or buried in a
+        later fenced code block is never read as the real status. This used
+        to be a private whole-body regex (_STATUS_RE) that disagreed with the
+        gate's anchored reader; see D#2145 for the corpus measurement (a
+        1466-character span misread on this Discussion's own pre-Spec body).
+
+        extract_status_anchored() returns "UNKNOWN" when the first non-empty
+        line carries no STATUS marker at all — including the common case of a
+        body with no STATUS marker anywhere. The registry boundary maps that
+        to "DISCUSSING" (no spec conversation started yet), matching this
+        function's pre-existing behaviour for a markerless body. "DISCUSSING"
+        is intentionally NOT pushed into the shared parser itself, which must
+        stay fail-closed to UNKNOWN for the spawn gate (D#2145 acceptance
+        item 9 / Implementation Notes).
+        """
+        try:
+            from backend.discussion_status import extract_status_anchored  # noqa: PLC0415
+        except ModuleNotFoundError:
+            from discussion_status import extract_status_anchored  # type: ignore[no-redef]  # noqa: PLC0415
+        status = extract_status_anchored(body)
+        return "DISCUSSING" if status == "UNKNOWN" else status
 
     def _parse_pr(self, body: str) -> int | None:
         """Extract PR number from STATUS comment if present."""
