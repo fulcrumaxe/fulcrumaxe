@@ -211,7 +211,7 @@ def pr_gate_blocked(pr_num):
     (gate_check_failed), matching pr-pickup-gate.sh's equivalent fallback.
     """
     result = run(["python3", f"{repo_root}/scripts/lib/pr_intake_gate.py",
-                  "check-pr", str(pr_num)])
+                  "check-pr", str(pr_num), "--repo", repo])
     if result.returncode == 0:
         return False, "", ""
     try:

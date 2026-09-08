@@ -13,6 +13,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+REAL_PYTHON3="$(command -v python3)"
 
 PASS=0
 FAIL=0
@@ -558,16 +559,27 @@ _assert_hint_equal() {
 # scripts/lib/pr_head_baseline.py), so a single check-pr call reaches
 # external_pr_head_invalidation_ceiling without four real gate calls to drift
 # there one bump at a time.
+#
+# The seeded key must be computed the same way _hint_via_pickup_gate and
+# _hint_via_sweeper now resolve it (D#2422: both pinned to the fixture's own
+# $TEST_DIR/.autonomous-team/config.json via repo-resolve.sh), not by
+# importing backend._repo.CODE_REPO directly here. That import resolves
+# relative to $REPO_ROOT (the real checkout pr_intake_gate.py's __file__
+# follows its symlink back to) rather than $TEST_DIR, so it used to land on
+# the real checkout's own git-origin fallback — the same value check-pr's
+# internal default happened to fall back to before either caller passed
+# --repo. Once both callers pin to the fixture's slug instead, seeding under
+# the checkout's slug writes to a different key than either caller now reads.
 _seed_ceiling_baseline() {
-  local pr="$1"
-  python3 - "$REPO_ROOT" "$pr" <<'PY'
+  local pr="$1" repo_slug
+  repo_slug="$(source "$TEST_DIR/scripts/lib/repo-resolve.sh" && _resolve_code_repo)"
+  python3 - "$REPO_ROOT" "$pr" "$repo_slug" <<'PY'
 import sys
 sys.path.insert(0, f"{sys.argv[1]}/scripts/lib")
 sys.path.insert(0, sys.argv[1])
 import intake_baseline, pr_head_baseline
-from backend._repo import CODE_REPO
 
-key = pr_head_baseline.pr_key(CODE_REPO, int(sys.argv[2]))
+key = pr_head_baseline.pr_key(sys.argv[3], int(sys.argv[2]))
 path = pr_head_baseline._default_store_path()
 intake_baseline.record_baseline(
     key, content_sha256="sha-ceiling-base", last_edited_at=None,
@@ -665,6 +677,98 @@ test_hint_drift_guard() {
   teardown
 }
 
+# ── Test 9 (D#2422 item 1) — the author-gate call pins --repo explicitly ────
+#
+# pr_gate_blocked used to call pr_intake_gate.py check-pr without --repo,
+# leaning on that module's own internal default resolver instead of the
+# $REPO this script already resolved via repo-resolve.sh. Both resolve to
+# the same slug today, so nothing observably breaks yet in the gh-mock
+# assertions above — this test doesn't depend on the gate's *answer*
+# differing, only on the subprocess argv the sweeper actually constructs,
+# which is the thing that would silently diverge the day the two resolvers
+# stop agreeing.
+test_gate_call_pins_repo_flag() {
+  setup
+
+  local old_time
+  old_time=$(date -u -d "60 minutes ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || \
+             date -u -v-60M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || \
+             echo "2026-05-10T05:00:00Z")
+  local pr_list='[{"number":88,"updatedAt":"'"$old_time"'","labels":[{"name":"code-review-needs-fix"}]}]'
+  install_gh_mock "$pr_list" '{"body":"stuck PR","headRefName":"x","comments":[]}'
+
+  # Shim python3 to log every argv used to invoke pr_intake_gate.py, then
+  # delegate to the real interpreter so the gate still runs for real.
+  CALL_LOG="$TEST_DIR/python3-calls.log"
+  : > "$CALL_LOG"
+  cat > "$TEST_DIR/bin/python3" <<SHIMEOF
+#!/usr/bin/env bash
+if printf '%s' "\$*" | grep -q "pr_intake_gate.py"; then
+  printf '%s\n' "\$*" >> "$CALL_LOG"
+fi
+exec "$REAL_PYTHON3" "\$@"
+SHIMEOF
+  chmod +x "$TEST_DIR/bin/python3"
+
+  DRY_RUN="" bash "$TEST_DIR/scripts/sweep-stuck-prs.sh" >/dev/null 2>&1
+
+  local check_pr_call
+  check_pr_call=$(grep "check-pr" "$CALL_LOG" | head -1)
+  if echo "$check_pr_call" | grep -qE -- "--repo[[:space:]]+test-owner/test-repo"; then
+    pass "gate_call_pins_repo: pr_gate_blocked passes --repo test-owner/test-repo to check-pr"
+  else
+    fail "gate_call_pins_repo: expected --repo test-owner/test-repo in check-pr invocation, got: '$check_pr_call'"
+  fi
+
+  teardown
+}
+
+# ── Test 10 (D#2422 item 4) — the empty-reason case that broke @tsv ────────
+#
+# The first cut of the jq consolidation joined fields with @tsv. bash's IFS
+# whitespace-collapsing treats a lone tab as ordinary whitespace even when
+# IFS is set to just "\t", so two consecutive tabs (an empty `reason` next to
+# `blocked=false`) silently merged into one delimiter and shifted every field
+# after it — `hint` landed in `reason`'s slot and `reason` came back empty.
+# This pins exactly that shape end to end through pr_pickup_blocked, not just
+# through the jq expression in isolation, so a future rewrite that
+# reintroduces @tsv fails here instead of shipping quietly.
+test_empty_reason_with_blocked_false_survives_field_parse() {
+  setup
+
+  # setup() symlinks pr_intake_gate.py to the real checkout's copy (so its
+  # own imports resolve); `rm -f` first so this stub lands in a plain file
+  # at that path instead of writing through the symlink into the real
+  # checkout — cat > on a symlink follows it to the target.
+  rm -f "$TEST_DIR/scripts/lib/pr_intake_gate.py"
+  cat > "$TEST_DIR/scripts/lib/pr_intake_gate.py" <<'PY'
+#!/usr/bin/env python3
+import json
+import sys
+
+if sys.argv[1:2] == ["check-pr"]:
+    print(json.dumps({"blocked": False, "reason": "", "hint": "some hint"}))
+    sys.exit(0)
+sys.exit(1)
+PY
+
+  local hint
+  hint=$(
+    source "$TEST_DIR/scripts/lib/pr-pickup-gate.sh"
+    pr_pickup_blocked 9999
+    rc=$?
+    printf 'rc=%s reason=[%s] hint=[%s]' "$rc" "$_PR_GATE_REASON" "$_PR_GATE_HINT"
+  )
+
+  if [ "$hint" = "rc=1 reason=[] hint=[some hint]" ]; then
+    pass "empty_reason_field_parse: blocked=false with an empty reason parses all three fields correctly"
+  else
+    fail "empty_reason_field_parse: expected 'rc=1 reason=[] hint=[some hint]', got '$hint'"
+  fi
+
+  teardown
+}
+
 # ── Run all tests ─────────────────────────────────────────────────────────────
 
 echo "=== test_sweep_stuck_prs.sh ==="
@@ -677,6 +781,8 @@ test_recent_pr_not_stuck
 test_untrusted_author_pr_is_not_respawned
 test_gated_unrecorded_head_names_rebaseline
 test_hint_drift_guard
+test_gate_call_pins_repo_flag
+test_empty_reason_with_blocked_false_survives_field_parse
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

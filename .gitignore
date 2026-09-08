@@ -100,6 +100,14 @@ dashboard/e2e/__artifacts__/
 /.autonomous-team/agent-profiles.json
 /.autonomous-team/vast-serving.json.example
 
+# Operator config. bootstrap.sh writes config.json with this operator's
+# bot_account, maintainer_allowlist, boss_github_user_id and smoke_test_key;
+# project.json carries the paired repo-plane settings. Neither has ever been
+# tracked, but nothing stopped a `git add -A` from picking one up on a repo
+# that is public.
+/.autonomous-team/config.json
+/.autonomous-team/project.json
+
 # Generated runtime trails. Never tracked, but also never ignored until now,
 # so each one showed up as status noise and was one `add .` away from being
 # committed.

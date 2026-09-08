@@ -253,7 +253,6 @@ def fetch_pr_meta(pr: int, repo_slug: str, *, gh=None) -> dict:
     return {
         "pr": pr,
         "author": login.strip() if isinstance(login, str) and login.strip() else None,
-        "author_id": holder.get("id"),
         "labels": labels,
         "head_sha": head_sha,
         "fetch_ok": True,
