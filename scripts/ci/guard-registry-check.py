@@ -119,6 +119,44 @@ def is_referenced(name: str, text: str) -> bool:
     return re.search(re.escape(f"scripts/ci/{name}") + r"(?![\w.-])", text) is not None
 
 
+def has_top_level_on(workflow: Path) -> bool:
+    """True when `workflow` declares a real top-level `on:` trigger key.
+
+    A workflow GitHub Actions can never run — no top-level `on:` key, or one
+    with nothing under it — is dead text that can still name
+    scripts/ci/<guard> paths. Counting a reference from such a file as wiring
+    is the exact defect D#2388 fixes, so a file this returns False for is
+    excluded from reference-counting before reconciliation.
+
+    Plain-text line scan for a column-0 `on:` key, matching the rest of this
+    file's approach (see `command_text`) rather than a full YAML parser —
+    this repo has no YAML dependency and one top-level key does not need one.
+    Two things this deliberately does not try to resolve: an inline empty
+    container (`on: {}` / `on: []`) counts as present, since telling that
+    apart from a real trigger needs an actual parser; and a file this cannot
+    even read (bad encoding, I/O error) is raised to the caller as a hard
+    failure, never silently treated as untriggerable.
+    """
+    lines = workflow.read_text(encoding="utf-8").splitlines()
+    for idx, raw in enumerate(lines):
+        if raw.lstrip().startswith("#"):
+            continue
+        m = re.match(r"""^(?:on|"on"|'on'):(.*)$""", raw)
+        if not m:
+            continue
+        inline = m.group(1).split("#", 1)[0].strip()
+        if inline:
+            return True
+        # `on:` alone on its line — a real trigger only if something is
+        # indented beneath it; otherwise it declares nothing and never fires.
+        for follow in lines[idx + 1 :]:
+            if not follow.strip() or follow.lstrip().startswith("#"):
+                continue
+            return follow[:1] in (" ", "\t")
+        return False
+    return False
+
+
 def load_ledger(path: Path) -> tuple[dict[str, dict[str, str]], list[str]]:
     """Return ({section: {name: reason}}, hard errors). Errors mean it is unusable."""
     empty = {section: {} for section in LEDGER_SECTIONS}
@@ -231,13 +269,38 @@ def main() -> int:
         )
         return 1
 
-    workflows = sorted(
+    all_workflows = sorted(
         p for p in WORKFLOW_DIR.glob("*.y*ml") if p.is_file()
     ) if WORKFLOW_DIR.is_dir() else []
-    if not workflows:
+    if not all_workflows:
         print(
             f"guard-registry-check: FAIL — no workflow files under {WORKFLOW_DIR}; "
             "with nothing to reconcile against, every guard would read as unwired",
+            file=sys.stderr,
+        )
+        return 1
+
+    # A workflow with no top-level `on:` key (or an empty one) can never run,
+    # so a reference from it does not count as wiring — see has_top_level_on.
+    workflows = []
+    for wf in all_workflows:
+        try:
+            triggerable = has_top_level_on(wf)
+        except (OSError, UnicodeDecodeError) as exc:
+            print(
+                f"guard-registry-check: FAIL — {wf.relative_to(REPO_ROOT)} could not be "
+                f"read to check for a top-level 'on:' key: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+        if triggerable:
+            workflows.append(wf)
+
+    if not workflows:
+        print(
+            f"guard-registry-check: FAIL — none of "
+            f"{', '.join(p.name for p in all_workflows)} declares a top-level 'on:' "
+            "trigger; with nothing that can ever run, every guard would read as unwired",
             file=sys.stderr,
         )
         return 1
