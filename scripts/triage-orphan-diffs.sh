@@ -661,28 +661,45 @@ cmd_auto_triage() {
   local discard_dir="${REPO_ROOT}/archive/orphan-diffs-discarded-${today}"
   local review_dir="${REPO_ROOT}/archive/orphan-diffs-needs-review"
 
-  # Collect untriaged patches (up to batch_size)
+  # Collect untriaged patches (up to batch_size).
+  #
+  # A missing sidecar is the ordinary case and means untriaged. A sidecar
+  # that exists but cannot be opened or parsed does NOT mean untriaged — it
+  # means we don't know, and this is a destructive path (D#2461, same
+  # collapse D#2133 fixed on discard-older-than). Reuse the same reader
+  # rather than re-deriving the distinction with a fresh `except Exception:
+  # print('untriaged')`.
   local candidates=()
+  local unreadable_meta=()
   shopt -s nullglob
   for patch in "${ORPHAN_DIFF_DIR}"/*.patch; do
     [[ -f "$patch" ]] || continue
     [[ ${#candidates[@]} -ge "$batch_size" ]] && break
 
-    local status
-    status=$(python3 -c "
-import json, sys
-try:
-    d = json.load(open(sys.argv[1]))
-    print(d.get('status', 'untriaged'))
-except Exception:
-    print('untriaged')
-" "${patch}.meta.json" 2>/dev/null || echo "untriaged")
+    if [[ ! -e "${patch}.meta.json" ]]; then
+      candidates+=("$patch")
+      continue
+    fi
 
-    if [[ "$status" == "untriaged" ]]; then
+    local kind status
+    IFS=$'\t' read -r kind status < <(printf '%s.meta.json\0' "$patch" | _ot_read_meta_statuses)
+    if [[ "$kind" != "R" ]]; then
+      # Sidecar exists but could not be opened or parsed. Never
+      # discard-eligible — keep it in place and say so, don't skip silently.
+      unreadable_meta+=("$patch")
+    elif [[ "$status" == "untriaged" ]]; then
       candidates+=("$patch")
     fi
   done
   shopt -u nullglob
+
+  if [[ ${#unreadable_meta[@]} -gt 0 ]]; then
+    echo "WARNING: ${#unreadable_meta[@]} patch(es) have a sidecar that could not be read or parsed. Keeping them — an unreadable sidecar is not 'untriaged' and is never discard-eligible:" >&2
+    local u
+    for u in "${unreadable_meta[@]}"; do
+      echo "  ${u##*/} — ${u##*/}.meta.json is unreadable or not valid JSON" >&2
+    done
+  fi
 
   local total_candidates=${#candidates[@]}
   if [[ "$total_candidates" -eq 0 ]]; then
