@@ -59,11 +59,14 @@ make_tree() {
   echo "$root"
 }
 
-# workflow <root> [extra-run-target...] — a minimal workflow that runs the
-# guard runner, plus a `run:` line for each named own-step file.
+# workflow <root> [extra-run-target...] — a minimal, real-triggered workflow
+# (top-level `on:`) that runs the guard runner, plus a `run:` line for each
+# named own-step file.
 workflow() {
   local root="$1"; shift
   {
+    echo "on:"
+    echo "  pull_request:"
     echo "jobs:"
     echo "  backend:"
     echo "    name: backend (import-smoke)"
@@ -84,6 +87,8 @@ workflow() {
 workflow_without_runner() {
   local root="$1"; shift
   {
+    echo "on:"
+    echo "  pull_request:"
     echo "jobs:"
     echo "  backend:"
     echo "    name: backend (import-smoke)"
@@ -96,6 +101,40 @@ workflow_without_runner() {
     echo "      - name: something else"
     echo "        run: true"
   } > "$root/.github/workflows/ci.yml"
+}
+
+# workflow_no_trigger <root> <filename> [extra-run-target...] — a second
+# workflow file with jobs but NO top-level `on:` key: GitHub Actions can
+# never run it, so its references must not count as wiring (D#2388).
+workflow_no_trigger() {
+  local root="$1" fname="$2"; shift 2
+  {
+    echo "jobs:"
+    echo "  extra:"
+    echo "    steps:"
+    local p
+    for p in "$@"; do
+      echo "      - name: step for $p"
+      echo "        run: python3 scripts/ci/$p"
+    done
+  } > "$root/.github/workflows/$fname"
+}
+
+# workflow_empty_on <root> <filename> [extra-run-target...] — a top-level
+# `on:` key present but with nothing under it: same as no trigger at all.
+workflow_empty_on() {
+  local root="$1" fname="$2"; shift 2
+  {
+    echo "on:"
+    echo "jobs:"
+    echo "  extra:"
+    echo "    steps:"
+    local p
+    for p in "$@"; do
+      echo "      - name: step for $p"
+      echo "        run: python3 scripts/ci/$p"
+    done
+  } > "$root/.github/workflows/$fname"
 }
 
 # ledger <root> <json>
@@ -239,7 +278,56 @@ workflow "$R"
 ledger "$R" '{"exempt": {}, "own_step": {}}'
 expect "an unusable runner fails the check" 1 "--list exited 9" "$(run_checker "$R")"
 
-# 14. The real tree, run the way ci.yml runs it.
+# 14. A guard referenced ONLY by a workflow with no top-level `on:` key
+#     fails — that workflow can never run, so its reference isn't wiring
+#     (D#2388, the defect this file exists to fix). A real, triggered ci.yml
+#     is also present so this isn't masked by the "nothing can ever run"
+#     tree-wide failure below.
+R="$(make_tree trigger_gap)"
+touch "$R/scripts/ci/alpha-guard.py"
+workflow "$R"
+workflow_no_trigger "$R" dead.yml alpha-guard.py
+ledger "$R" '{"exempt": {}, "own_step": {"alpha-guard.py": "needs a PR event payload the runner cannot give it"}}'
+expect "a guard wired only to an untriggerable workflow fails" 1 "it runs nowhere and gates nothing" "$(run_checker "$R")"
+
+# 15. The mirror image: a guard referenced by a workflow WITH a real
+#     top-level `on:` key still passes, even when that workflow is not
+#     ci.yml — the #2383 widening this file preserves. pr-gates.yml's two
+#     guards are the live case this stands in for.
+R="$(make_tree cross_file_trigger)"
+touch "$R/scripts/ci/beta-guard.py"
+workflow "$R"
+{
+  echo "on:"
+  echo "  pull_request:"
+  echo "jobs:"
+  echo "  gate:"
+  echo "    steps:"
+  echo "      - run: python3 scripts/ci/beta-guard.py"
+} > "$R/.github/workflows/other-gates.yml"
+ledger "$R" '{"exempt": {}, "own_step": {"beta-guard.py": "needs a separate trigger set"}}'
+expect "a guard wired via a non-ci.yml workflow with a real trigger still passes" 0 "PASS  beta-guard.py  own step in other-gates.yml" "$(run_checker "$R")"
+
+# 16. A top-level `on:` key with nothing under it is handled deliberately:
+#     treated the same as no `on:` key at all, not as a parse error and not
+#     as a silent pass. This is the "empty value" half of D#2388's acceptance.
+R="$(make_tree empty_on_value)"
+touch "$R/scripts/ci/alpha-guard.py"
+workflow "$R"
+workflow_empty_on "$R" only.yml alpha-guard.py
+ledger "$R" '{"exempt": {}, "own_step": {"alpha-guard.py": "needs a PR event payload the runner cannot give it"}}'
+expect "an on: key with no value counts as no trigger, same as a missing one" 1 "it runs nowhere and gates nothing" "$(run_checker "$R")"
+
+# 17. A workflow file this scan cannot even read (bad encoding) is a hard
+#     failure, not a silent skip — the other half of D#2388's acceptance.
+R="$(make_tree bad_encoding)"
+touch "$R/scripts/ci/alpha-guard.py"
+workflow "$R"
+printf '\xff\xfeon:\njobs:\n' > "$R/.github/workflows/bad.yml"
+ledger "$R" '{"exempt": {}, "own_step": {}}'
+expect "an unreadable workflow file fails loud rather than silently skipping" 1 "bad.yml" "$(run_checker "$R")"
+
+# 18. The real tree, run the way ci.yml runs it.
 expect "the real repo reconciles clean" 0 "guard-registry-check: OK" "$(run_checker "$REPO_ROOT")"
 
 echo ""
