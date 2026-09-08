@@ -89,7 +89,7 @@
     "scripts/coldstart-interview/harness.sh": "975aed3f194399d6040e80c40c64c168bacf710b15386aaf3d8da7627a6bcaae",
     "scripts/coldstart-interview/repo-signals.sh": "3f7d8982d841a06ce22d632dbcadba134422e0f5d4aeb59189611b82fa666114",
     "scripts/coldstart-project.sh": "e01afd0ed873909a99d36ce0f0bff342a203c1edf147211997cc4e0fec02302f",
-    "scripts/coldstart-tutorial/tutor.sh": "49afbf9c645eaafb9cc4791e0f47aa2e00a95b97dc625cbfee0889eb3503da6a",
+    "scripts/coldstart-tutorial/tutor.sh": "397745aba3318e5fdbea81d28b159628fcc6225204e60c1c96a3e02c582b46a8",
     "scripts/coldstart-unified.sh": "e4f231d00d3eee13fae45b50513f6954ea468bef91d76f94003252c1c3ae8ac1",
     "scripts/coldstart.sh": "6764aa2775ad21df65a13c07b5867c2306dac41d0f7b03c0abb6d8345a166448",
     "scripts/compute-pr-defect-density.sh": "04e087ac7d2c2df9895526fb7b3724cde1cd8cad6a89af60b24eff5a580e6765",
