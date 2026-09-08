@@ -25,6 +25,26 @@ _SNAPSHOT_TMPL_PATH = (
     / "executor.tmpl"
 )
 
+# loop-bootstrap/backend-snapshot/ is untracked generated state, and nothing
+# in this tree currently generates it: bootstrap.sh dropped the snapshot-mirror
+# step when it was archived (D#1890, 2026-08-17 — see the matching note in
+# tests/test_loop_bootstrap_extended.sh, whose own backend-snapshot assertions
+# are already carried as a known-failure in scripts/run-pr-tests.sh for the
+# same reason). Its presence is therefore a property of the machine, not of
+# the tree: present on any host that predates the D#1890 archival or has
+# copied it in some other way, absent on a fresh clone or CI checkout. These
+# snapshot-side assertions are skipped rather than failed when the directory
+# is absent, naming the reason, so a real drift (once the mirror step exists
+# again) still fails loudly instead of being silently skipped forever.
+_SNAPSHOT_MISSING_REASON = (
+    "loop-bootstrap/backend-snapshot/ is absent — nothing in this checkout's "
+    "bootstrap.sh (or elsewhere in the tree) generates it since its D#1890 "
+    "archival, so there is no live snapshot to assert against"
+)
+_snapshot_skip = pytest.mark.skipif(
+    not _SNAPSHOT_TMPL_PATH.exists(), reason=_SNAPSHOT_MISSING_REASON
+)
+
 
 def _load_template(path: Path) -> str:
     return path.read_text()
@@ -37,7 +57,7 @@ def _load_template(path: Path) -> str:
 
 @pytest.mark.parametrize(
     "tmpl_path",
-    [_TMPL_PATH, _SNAPSHOT_TMPL_PATH],
+    [_TMPL_PATH, pytest.param(_SNAPSHOT_TMPL_PATH, marks=_snapshot_skip)],
     ids=["backend", "loop-bootstrap-snapshot"],
 )
 def test_template_contains_pr_categories_python_oneliner(tmpl_path: Path) -> None:
@@ -50,7 +70,7 @@ def test_template_contains_pr_categories_python_oneliner(tmpl_path: Path) -> Non
 
 @pytest.mark.parametrize(
     "tmpl_path",
-    [_TMPL_PATH, _SNAPSHOT_TMPL_PATH],
+    [_TMPL_PATH, pytest.param(_SNAPSHOT_TMPL_PATH, marks=_snapshot_skip)],
     ids=["backend", "loop-bootstrap-snapshot"],
 )
 def test_template_contains_label_flag_instruction(tmpl_path: Path) -> None:
@@ -61,7 +81,7 @@ def test_template_contains_label_flag_instruction(tmpl_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "tmpl_path",
-    [_TMPL_PATH, _SNAPSHOT_TMPL_PATH],
+    [_TMPL_PATH, pytest.param(_SNAPSHOT_TMPL_PATH, marks=_snapshot_skip)],
     ids=["backend", "loop-bootstrap-snapshot"],
 )
 def test_template_contains_category_guide(tmpl_path: Path) -> None:
@@ -73,7 +93,7 @@ def test_template_contains_category_guide(tmpl_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "tmpl_path",
-    [_TMPL_PATH, _SNAPSHOT_TMPL_PATH],
+    [_TMPL_PATH, pytest.param(_SNAPSHOT_TMPL_PATH, marks=_snapshot_skip)],
     ids=["backend", "loop-bootstrap-snapshot"],
 )
 def test_template_says_skip_when_empty(tmpl_path: Path) -> None:
@@ -135,6 +155,7 @@ def test_pr_categories_extraction_empty_when_field_absent(tmp_path: Path) -> Non
     assert result.stdout.strip() == ""
 
 
+@_snapshot_skip
 def test_templates_are_in_sync() -> None:
     """backend and loop-bootstrap-snapshot executor templates must have identical pr_categories blocks."""
     backend_content = _load_template(_TMPL_PATH)
