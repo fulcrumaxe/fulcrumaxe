@@ -11,6 +11,7 @@ no real destructive operation is run.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -29,6 +30,8 @@ from backend.orchestrator.tool_proxy import (
     run_edit,
     run_write,
 )
+from hooks import sandbox as _sandbox_hook
+from hooks import sandbox_rules as _sandbox_rules
 from testsupport.fixture_paths import FIXTURE_MAIN_REPO
 
 # A clean env that passes validate_env()
@@ -130,6 +133,47 @@ class TestRunBashSandboxBlocking:
         dirty_env = {"PATH": "/usr/bin", "ANTHROPIC_API_KEY": "sk-bad"}
         with pytest.raises(EnvLeakError):
             run_bash("echo hi", dirty_env, str(tmp_path))
+
+    def test_declined_oversize_command_writes_unclassified_record(self, tmp_path, monkeypatch):
+        """D#2466: a command classify_bash declines to vet (oversize span, D#2448)
+        is ALLOWED here — same as the PreToolUse hook path — but that allow is
+        only acceptable because it is RECORDED. Assert the record actually lands
+        on disk and is readable, not merely that the allow branch was taken.
+        """
+        monkeypatch.setattr(_sandbox_hook, "_TELEMETRY_DIR", tmp_path / "hook-events")
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        monkeypatch.setenv("AUTONOMOUS_TEAM_STATE_DIR", str(state_dir))
+
+        # Patch the ceiling down instead of building a real 128 KiB argv: the
+        # exact threshold value is covered by tests/test_sandbox_rules.py, and
+        # a literal 128 KiB single-argument command hits shell/exec argv limits
+        # in a sandboxed test runner for reasons that have nothing to do with
+        # the behaviour under test here (whether tool_proxy records the
+        # decline). A small ceiling exercises the identical has_unvettable_span
+        # -> UNVETTED_COMMAND_REASON -> record path.
+        monkeypatch.setattr(_sandbox_rules, "_MAX_UNVETTABLE_CHARS", 40)
+        body = " ".join("a" for _ in range(50))
+        cmd = "echo '" + body + "'"
+        assert _sandbox_rules.has_unvettable_span(cmd) is True  # sanity: fixture is really oversize
+
+        # Allowed, not blocked — declining to vet must never turn into a block.
+        run_bash(cmd, _CLEAN_ENV, str(tmp_path))
+
+        hook_events_files = sorted((tmp_path / "hook-events").glob("blocks-*.jsonl"))
+        assert len(hook_events_files) == 1, f"expected one daily log file, got {hook_events_files}"
+        hook_lines = hook_events_files[0].read_text().splitlines()
+        assert len(hook_lines) == 1, f"expected exactly one recorded row, got {hook_lines}"
+        hook_row = json.loads(hook_lines[0])
+        assert hook_row["kind"] == "unclassified_oversize_command"
+        assert hook_row["decision"] == "warn"
+        assert hook_row["tool"] == "Bash"
+        assert hook_row["command_bytes"] == len(cmd)
+
+        audit_lines = (state_dir / "audit.jsonl").read_text().splitlines()
+        assert len(audit_lines) == 1, f"expected exactly one audit row, got {audit_lines}"
+        audit_row = json.loads(audit_lines[0])
+        assert audit_row["kind"] == "unclassified_oversize_command"
 
     def test_block_happens_before_execution(self):
         """Verifies no side effect: a write-outside-worktree redirect doesn't create the file.

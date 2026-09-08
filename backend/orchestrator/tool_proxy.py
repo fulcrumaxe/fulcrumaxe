@@ -35,6 +35,7 @@ from typing import Any
 try:
     from hooks.sandbox_rules import classify_bash as _classify_bash
     from hooks.sandbox_rules import check_claude_spawn as _check_claude_spawn
+    from hooks.sandbox_rules import UNVETTED_COMMAND_REASON as _UNVETTED_COMMAND_REASON
 except ImportError:
     # Fall back to loading via absolute path (worktree may not have repo root on PYTHONPATH,
     # e.g. under pytest --import-mode=importlib, which does not add the repo root to
@@ -57,6 +58,29 @@ except ImportError:
     _spec.loader.exec_module(_mod)  # type: ignore[union-attr]
     _classify_bash = _mod.classify_bash
     _check_claude_spawn = _mod.check_claude_spawn
+    _UNVETTED_COMMAND_REASON = _mod.UNVETTED_COMMAND_REASON
+
+# Same reuse strategy for the writer that makes a declined-as-oversize command
+# visible (D#2466). hooks/sandbox.py owns `_write_unclassified_command_event` —
+# it is the same "allow, but record that nobody vetted it" row the PreToolUse
+# hook writes for the identical condition. classify_bash's Decision.reason is
+# the shared signal (see UNVETTED_COMMAND_REASON above); reusing the hook's own
+# writer instead of re-deriving one here keeps a single place that decides what
+# the record looks like and where it lands, per D#2466 scope item 1.
+try:
+    from hooks.sandbox import _write_unclassified_command_event
+except ImportError:
+    import sys as _sys
+    import importlib.util as _ilu
+    _repo_root = Path(__file__).resolve().parents[2]
+    _spec = _ilu.spec_from_file_location(
+        "hooks.sandbox",
+        _repo_root / "hooks" / "sandbox.py",
+    )
+    _mod = _ilu.module_from_spec(_spec)  # type: ignore[arg-type]
+    _sys.modules["hooks.sandbox"] = _mod
+    _spec.loader.exec_module(_mod)  # type: ignore[union-attr]
+    _write_unclassified_command_event = _mod._write_unclassified_command_event
 
 
 # ---------------------------------------------------------------------------
@@ -288,6 +312,14 @@ def run_bash(cmd: str, env: dict[str, str], cwd: str, timeout: int = 60) -> str:
             f"Command blocked by sandbox policy: {decision.reason!r}. "
             f"Command was: {cmd!r}"
         )
+    # D#2466: classify_bash allows-without-vetting a command that carries a
+    # span past its cost ceiling (D#2448) — that allow is only acceptable
+    # because it is recorded. hooks/sandbox.py's PreToolUse path records it;
+    # this SDK-lane path used to branch on decision.allow alone and silently
+    # drop the same case. Honour decision.reason here so both enforcement
+    # consumers of classify_bash agree on what an unvetted allow means.
+    if decision.reason == _UNVETTED_COMMAND_REASON:
+        _write_unclassified_command_event(cwd=cwd, command=cmd)
 
     result = subprocess.run(
         cmd,
