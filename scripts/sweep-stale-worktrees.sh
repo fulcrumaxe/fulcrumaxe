@@ -6,6 +6,10 @@
 #   2. zero TRACKED changes (git status --short, ignoring untracked "??" lines)
 #   3. not listed active in scripts/lib/worktree-registry.sh
 #   4. directory mtime is at least 1 hour old
+#   5. no commit made INSIDE this worktree that exists on no remote-tracking
+#      ref (D#2041) — a detached tree (e.g. scripts/lib/pr-tree.sh's
+#      provisioning) leaves no branch pointing at such a commit once the
+#      worktree is gone, so a merely-clean tree is not enough
 #
 # Usage:
 #   bash scripts/sweep-stale-worktrees.sh             # dry-run (DEFAULT): print candidates, zero changes
@@ -103,6 +107,13 @@ git fetch origin main --quiet 2>/dev/null || echo "[sweep-stale-worktrees] WARN:
 # ── 3. Load active worktree ids from the registry (fail-closed: if the
 #       registry call errors, treat NOTHING as protected-by-registry so the
 #       mtime guard is the only remaining safety net — never invert this) ───
+# In production, ACTIVE_IDS ends up empty regardless: nothing in this repo
+# calls `worktree_registry register` outside test fixtures, so
+# worktrees.json is always `[]` and this block below is inert on every real
+# run — see scripts/lib/worktree-registry.sh:777-779 ("The registry ... is
+# never populated: nothing in this repo calls `worktree_registry register`"),
+# i.e. no production caller. The dirty/mtime/behind/unpushed guards below are
+# what actually protects a worktree; do not count this block as a guard.
 ACTIVE_IDS=""
 if [[ -x "$REPO_ROOT/scripts/lib/worktree-registry.sh" ]] || [[ -f "$REPO_ROOT/scripts/lib/worktree-registry.sh" ]]; then
   ACTIVE_JSON=$(bash "$REPO_ROOT/scripts/lib/worktree-registry.sh" list --status active --json 2>/dev/null || echo "[]")
@@ -133,6 +144,7 @@ SKIPPED_YOUNG=()
 SKIPPED_FRESH=()
 SKIPPED_DIRTY=()
 SKIPPED_DIRTY_DETAIL=()
+SKIPPED_UNPUSHED=()
 
 _wt_path=""
 _wt_branch=""
@@ -177,6 +189,48 @@ _process_worktree() {
   if [[ -n "$tracked" ]]; then
     SKIPPED_DIRTY+=("$wt_id")
     SKIPPED_DIRTY_DETAIL+=("$wt_id | $wt_path | $(echo "$tracked" | tr '\n' ';' | sed 's/;$//')")
+    return
+  fi
+
+  # D#2041: "clean" is not "fully pushed". The reaper's own documented
+  # safe-removal predicate (worktree-registry.sh Step 5) requires BOTH a
+  # clean tree AND `rev-list HEAD --not --remotes` empty; this sweep only
+  # ever checked the first half. A detached tree (scripts/lib/pr-tree.sh's
+  # `--detach` checkout) has no branch, so a commit made inside it and
+  # removed here would have nothing left pointing at it.
+  #
+  # A naive `rev-list HEAD --not --remotes` is the wrong spelling, though:
+  # it also flags a tree simply CHECKED OUT at a commit that is on no
+  # remote-tracking ref — the ordinary squash-merged-PR shape (squash makes
+  # a new commit on the target branch; the pre-squash commits never land on
+  # any remote ref) or a deleted-branch shape (the remote-tracking ref gets
+  # pruned). Either would make this guard protect that whole population
+  # forever. What actually matters is commits added AFTER the worktree was
+  # created, not the commit it started at — `git worktree add` always writes
+  # one HEAD reflog entry at creation time, so the OLDEST entry in that
+  # worktree's own HEAD reflog is its checkout point, and excluding that
+  # point (as well as --remotes) isolates just the locally-added work.
+  local checkout_sha
+  checkout_sha=$(git -C "$wt_path" reflog show --format=%H HEAD 2>/dev/null | tail -1)
+  if [[ -z "$checkout_sha" ]]; then
+    # An empty/unreadable reflog is ordinary, not exotic: it expires under
+    # git's default gc.reflogExpireUnreachable=30 days, or is never written
+    # at all under core.logAllRefUpdates=false. Either way we cannot tell
+    # whether this tree holds a locally-added, never-pushed commit -- and
+    # this guard exists specifically to stop that commit from being
+    # silently destroyed. An inconclusive signal must fail CLOSED (protect)
+    # here, never fall through to the removal-eligible path below -- the
+    # opposite choice from the registry block above, deliberately: that
+    # block's signal loss still leaves the mtime/behind/dirty guards intact
+    # as a safety net, but this IS the last guard standing between a clean
+    # detached tree and permanent, irreversible loss of its only commit.
+    SKIPPED_UNPUSHED+=("$wt_id")
+    return
+  fi
+  local unpushed
+  unpushed=$(git -C "$wt_path" rev-list HEAD --not --remotes "$checkout_sha" 2>/dev/null || true)
+  if [[ -n "$unpushed" ]]; then
+    SKIPPED_UNPUSHED+=("$wt_id")
     return
   fi
 
@@ -265,6 +319,10 @@ echo "  skipped (fresh, <= threshold behind): ${#SKIPPED_FRESH[@]}"
 echo "  skipped (dirty, tracked changes): ${#SKIPPED_DIRTY[@]}"
 if [[ "${#SKIPPED_DIRTY[@]}" -gt 0 ]]; then
   echo "  dirty ids: ${SKIPPED_DIRTY[*]}"
+fi
+echo "  skipped (unpushed, locally-added commit on no remote ref): ${#SKIPPED_UNPUSHED[@]}"
+if [[ "${#SKIPPED_UNPUSHED[@]}" -gt 0 ]]; then
+  echo "  unpushed ids: ${SKIPPED_UNPUSHED[*]}"
 fi
 echo "-${#REMOVED[@]} stale worktrees removed"
 
