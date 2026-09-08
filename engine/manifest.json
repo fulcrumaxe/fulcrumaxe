@@ -271,7 +271,7 @@
     "scripts/sweep-loop-runs.sh": "c8fd81b7514e5e43266d0dc3467280d9bb3d9224532f411a32af18cfffc1b102",
     "scripts/sweep-stale-worktrees.sh": "7866b821521a74675468cf7ec1bd11411373a495390f4d35859d716e9bbef662",
     "scripts/sweep-stalled-discussions.sh": "8f83c717e825c2e7b319c426b69c8ef265cc3860a7fb9e56763da54a4f456885",
-    "scripts/sweep-stuck-prs.sh": "1906b6bff28f5bd3d33c9982b64100186591d1e437c66d655aa583440cb1f620",
+    "scripts/sweep-stuck-prs.sh": "bf66715da9dec04077b8b1356442070bdad7a7ee32870ed456a951932369ec6e",
     "scripts/sync-wiki.sh": "51028ec69b5104e27dabda632a71446f1cc9bedd1baae013a74a56d1de646bee",
     "scripts/tail-agents.sh": "2482a6d9f713bf4158118a1782698fa4c8ab118edaa4f6dd834856a2f53fc7b8",
     "scripts/team-lead-iteration.sh": "4274e3f1486a73966ac5b28d52c45768d7d189b049054c612e3a15485b4be43a",

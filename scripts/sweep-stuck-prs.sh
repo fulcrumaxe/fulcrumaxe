@@ -63,6 +63,8 @@ _KNOWN_LABELS=(
   "browser-test-passed"
   "debater-confirmed"
   "needs-boss"
+  "a11y-reviewed"
+  "verification-substance-absent"
   "do-not-merge"
   "wip"
   "team-log"
