@@ -235,9 +235,20 @@ do_install_agent() {
   local dst="$dst_dir/$(basename "$src")"
 
   if [[ "$FORCE" != "true" ]] && [[ -f "$dst" ]]; then
-    if ! cmp -s "$src" "$dst"; then
+    # $dst went through rewrite_tree_identifiers on install; $src (the
+    # engine's copy) never does. On a target whose --repo slug differs from
+    # the engine's, a raw cmp of the two therefore differs for every agent
+    # file regardless of whether its upstream content actually changed
+    # (D#2355). Rewrite a throwaway copy of $src the same way $dst was
+    # rewritten so both sides of the comparison are post-rewrite.
+    local rewrite_tmp
+    rewrite_tmp="$(mktemp -d)"
+    cp -P "$src" "$rewrite_tmp/$(basename "$src")"
+    rewrite_tree_identifiers "$rewrite_tmp"
+    if ! cmp -s "$rewrite_tmp/$(basename "$src")" "$dst"; then
       AGENT_UPSTREAM_UPDATES+=("$(basename "$src")")
     fi
+    rm -rf "$rewrite_tmp"
     return
   fi
   do_install "$src" "$dst_dir"
