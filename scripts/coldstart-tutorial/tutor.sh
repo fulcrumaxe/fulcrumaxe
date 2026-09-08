@@ -31,21 +31,23 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LESSONS="${COLDSTART_TUTORIAL_LESSONS:-$SCRIPT_DIR/lessons.json}"
 STATE_ROOT="${AUTONOMOUS_TEAM_STATE_DIR:-$HOME/.autonomous-forever-state}"
 
-# shellcheck source=../lib/platform-compat.sh
-source "$SCRIPT_DIR/../lib/platform-compat.sh"
-
-# _agents_fingerprint DIR — "path mtime size" per *.md file under DIR, one
-# per line, sorted by path. Used by --self-test's engine-boundary guard to
-# prove nothing under .claude/agents/ moved. Replaces a
-# `find -exec stat ... {} \;` one-liner using GNU-only stat flags, which has
-# no BSD spelling to fall into via -exec (D#2263 Phase 2).
+# _agents_fingerprint DIR — one "checksum size path" line per *.md file
+# under DIR (ordered by path). Used by --self-test's engine-boundary guard
+# to prove nothing under .claude/agents/ moved. Fingerprints file *content*
+# via the POSIX-standard `cksum` (identical output format on GNU and BSD,
+# so no stat-style flag dispatch is needed) instead of mtime+size: an
+# mtime/size fingerprint went blind to in-place content edits whenever
+# `stat` was unusable, because both fields then collapsed to the same
+# "ERR" placeholder for every file, and two fingerprints taken before and
+# after a real edit compared equal (D#2457). A content checksum cannot
+# agree with itself across an edit that changed the bytes, and dropping the
+# stat dependency here removes the failure mode entirely rather than just
+# reporting it.
 _agents_fingerprint() {
-  local dir="$1" f mtime size
+  local dir="$1" f
   [[ -d "$dir" ]] || return 0
   while IFS= read -r f; do
-    mtime=$(pc_stat_mtime "$f" 2>/dev/null) || mtime="ERR"
-    size=$(pc_stat_size "$f" 2>/dev/null) || size="ERR"
-    printf '%s %s %s\n' "$f" "$mtime" "$size"
+    cksum "$f" || return 1
   done < <(find "$dir" -name '*.md' | sort)
 }
 
