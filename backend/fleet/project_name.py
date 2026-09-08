@@ -60,12 +60,17 @@ def resolve_project_name(repo_root: str | Path | None = None) -> str:
 
     try:
         raw = config_path.read_text()
-    except OSError as exc:
+    except FileNotFoundError as exc:
         # No config.json at all — the open-source export ships none (D#2340).
         # Derive from origin instead of blocking the spawn. This resolver is
         # still the single one both sides call, so the read side
         # (backend/api.py) and the write side (scripts/pre-spawn-check.sh)
         # cannot disagree, which is the D#2314 property that matters.
+        #
+        # Only a missing file falls back — a config.json that exists but
+        # can't be read (permissions, a directory in its place) is a real
+        # problem worth surfacing, not something to silently route around by
+        # guessing from the git remote. Those OSErrors propagate uncaught.
         derived = repo_slug_from_git_config(root)
         if derived:
             return derived.rsplit("/", 1)[-1]

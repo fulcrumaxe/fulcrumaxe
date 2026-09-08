@@ -22,7 +22,14 @@ Two properties this module guarantees to its callers:
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
+
+# OWNER and NAME as GitHub actually allows them: no "/" (that's the
+# separator), no whitespace, no quoting or fragment punctuation. Anything
+# outside this charset means the value isn't a clean OWNER/NAME and should
+# fall through to None rather than being guessed at.
+_VALID_SLUG_PART = re.compile(r"[A-Za-z0-9._-]+")
 
 
 def _slug_from_url(url: str) -> str | None:
@@ -51,14 +58,22 @@ def _slug_from_url(url: str) -> str | None:
     else:
         return None
 
-    if path.endswith(".git"):
-        path = path[: -len(".git")]
-    path = path.strip("/")
-
+    # Split first, strip ".git" only off the NAME half. Stripping a trailing
+    # ".git" (or a trailing "/") off the whole path *before* splitting hides
+    # a stray character sitting right after it — "OWNER/NAME.git/",
+    # 'OWNER/NAME"', "OWNER/NAME#frag.git" all used to slip through that way.
+    # Left alone, the count("/") check below now catches the trailing-slash
+    # case on its own, and the charset check catches the rest.
     if path.count("/") != 1 or any(c.isspace() for c in path):
         return None
     owner, _, name = path.partition("/")
     if not owner or not name:
+        return None
+
+    if name.endswith(".git"):
+        name = name[: -len(".git")]
+
+    if not _VALID_SLUG_PART.fullmatch(owner) or not _VALID_SLUG_PART.fullmatch(name):
         return None
     return f"{owner}/{name}"
 
