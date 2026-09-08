@@ -1,31 +1,34 @@
 name: PR gates
 
-# Two gates for the move to a public development repo (D#2348 PR-h). They
-# live in their own workflow rather than as jobs in ci.yml for one reason
-# that is not organisational: they need a DIFFERENT TRIGGER.
+# Gates for the move to a public development repo (D#2348 PR-h) plus a third
+# added later (pr-mutation-evidence, D#1984). They live in their own workflow
+# rather than as jobs in ci.yml for one reason that is not organisational:
+# they need a DIFFERENT TRIGGER.
 #
-# Both read something that is not the commit — one reads the PR body, the
-# other reads the PR's diff against its base — and a PR body can be edited
-# after a check has passed, with no new commit and no re-run. On ci.yml's
-# trigger set (opened, synchronize, reopened by default) the link-policy gate
-# would pass on an open, and a violating URL pasted in afterwards would never
-# be looked at again. That is a hole in the one gate whose entire subject is
+# Each reads something that is not the commit — pr-link-policy and
+# pr-mutation-evidence read the PR body, publish-denylist reads the PR's diff
+# against its base — and a PR body can be edited after a check has passed,
+# with no new commit and no re-run. On ci.yml's trigger set (opened,
+# synchronize, reopened by default) a body-reading gate would pass on an
+# open, and a violating body pasted in afterwards would never be looked at
+# again. That is a hole in exactly the gates whose entire subject is
 # trivially mutable, so it is worth closing rather than documenting.
 #
 # Adding `edited` to ci.yml itself would re-run the whole matrix — three
 # workspace legs, the export audit, the backend job's twelve guards, and
-# preflight — every time somebody fixes a typo in a description. These two
-# jobs take ~18s combined. Splitting them out buys the coverage at roughly a
-# tenth of the cost, and leaves ci.yml's triggers exactly as they were.
+# preflight — every time somebody fixes a typo in a description. Splitting
+# these out buys the coverage at a fraction of that cost, and leaves ci.yml's
+# triggers exactly as they were.
 #
 # Deliberately the plain `pull_request` event, never the write-token-exposing
 # variant of that name, so fork PRs get GitHub's default read-only,
 # secret-free token — same reasoning as ci.yml's own header. See D#1537.
 #
-# Neither job is in CI_REQUIRED_CHECKS (scripts/lib/ci-status-check.sh). That
-# array's four names are exact-string matched by the merge gate and adding to
-# it is a separate decision (D#2348 PR-h item 4). These report; they do not
-# block a merge today.
+# None of these three jobs is in CI_REQUIRED_CHECKS
+# (scripts/lib/ci-status-check.sh). That array's names are exact-string
+# matched by the merge gate and adding to it is a separate decision (D#2348
+# PR-h item 4 for the first two, out of scope for pr-mutation-evidence per
+# D#1984 §3 item 4 and §9). These report; they do not block a merge today.
 
 on:
   pull_request:
@@ -93,3 +96,27 @@ jobs:
         env:
           PUBLISH_DENYLIST_BASE: ${{ github.event.pull_request.base.sha }}
         run: bash scripts/ci/publish-denylist.sh
+
+  pr-mutation-evidence:
+    name: PR mutation evidence
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    if: vars.CI_DISABLED != 'true'
+    timeout-minutes: 10
+    steps:
+      # fetch-depth: 0, same as publish-denylist above: this gate applies and
+      # reverts a real patch against the checkout, and a shallow clone is not
+      # a tree this job should be trusting for that.
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Same body-to-file discipline as PR link policy above, and for the
+      # identical reason: the runner prints a step's env block into the log
+      # before the step runs, so the body must never pass through `env:`.
+      - name: PR mutation evidence
+        env:
+          PR_BODY_FILE: ${{ runner.temp }}/pr-body.txt
+        run: |
+          jq -r '.pull_request.body // ""' "$GITHUB_EVENT_PATH" > "$PR_BODY_FILE"
+          bash scripts/ci/pr-mutation-evidence.sh

@@ -10,6 +10,17 @@ synthetic inputs. They do NOT prove the feature works in production.
 pytest tests/ -x -q
 ```
 
+**Optional: reproduce a mutation claim in CI, not just assert one.** If a
+Gate 1 test is new or modified and you want CI to reproduce that it can fail,
+add a `## Mutation evidence` block to the PR body (a machine-applicable
+`diff` plus the command that must go from green to red). The
+`pr-mutation-evidence` job in `.github/workflows/pr-gates.yml` applies the
+diff, runs the command on the clean tree and again on the patched tree, and
+fails the check unless it is green then red. Absence of the block is never a
+failure on this PR — this reproduces one shape of "a test that cannot fail"
+fully, catches a second only partially, and cannot catch the rest; it is not
+a substitute for actually trying to break what a test claims to cover.
+
 ### Gate 2 — Spec-vs-Reality (smoke)
 Run the real binary, CLI, or UI against a live input. Capture the output.
 This is the only way to confirm spec-vs-reality alignment.
