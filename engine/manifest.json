@@ -192,7 +192,7 @@
     "scripts/lib/pr-pickup-gate.sh": "92274bc471f934ed496573d4d8e667d2fa33b744fb460f7c19e4ecf9a83daa51",
     "scripts/lib/pr-tree.sh": "5ee9c28762f4845b7b2aa2750f58e8a00c68dfb748980e19e662f8f81916f489",
     "scripts/lib/pre-code-checklist.sh": "69051a1c5d3b503fc5cdd0da27663c63e2cd6662a106573328c91b8aee520e68",
-    "scripts/lib/preflight-common.sh": "796ffda21a8d3f40d0d8bde843e59e1f6a5cc604ca9a4707f24070ccfd65b3f6",
+    "scripts/lib/preflight-common.sh": "acaaa301fe9c8b80ea7df9ebf314ef11df99a07936c2fbce1793e254a2ffda83",
     "scripts/lib/reconcile-grace.sh": "af8227bc5b406200c9a8f356e163f57610e014b687b51914d3d262fc147f87c6",
     "scripts/lib/repo-resolve.sh": "f11302b112fc1bbcf8d3ce47321a5148d89de3d9006d39000f409566d711d2cd",
     "scripts/lib/repo-root-resolve.sh": "21810460fc70b8b9ef556894434fdf804880a2e0798a44972e549c1cc2455bcc",
