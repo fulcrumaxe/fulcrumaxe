@@ -479,6 +479,36 @@ def test_review_role_headref_lookup_scoped_to_code_repo() -> None:
             )
 
 
+def test_code_reviewer_diff_stat_calls_scoped_to_code_repo() -> None:
+    """The surgical-changes-check `gh pr diff` calls (diff-line count and
+    files-touched, D#2429) must carry --repo {{CODE_REPO}}, matching the
+    headref lookups earlier in the same template.
+
+    Left unpinned, `gh pr diff` resolves against the checkout's bare git
+    remote -- the Discussion plane here -- and PR numbers collide across
+    the two planes, so a reviewer can report diff stats for an entirely
+    unrelated PR in the wrong repo. Removing either --repo pin must turn
+    this test red.
+    """
+    pr_number = _STUB_VARS["pr_number"]
+    result = render("code-reviewer", _STUB_VARS)
+    invocation_marker = f"gh pr diff {pr_number}"
+    invocation_lines = [
+        line for line in result.splitlines() if invocation_marker in line
+    ]
+    assert len(invocation_lines) >= 2, (
+        "expected at least the diff-line-count and files-touched 'gh pr diff' "
+        f"invocations in render('code-reviewer'); found {len(invocation_lines)}: "
+        f"{invocation_lines!r}"
+    )
+    for line in invocation_lines:
+        assert "--repo" in line, (
+            "render('code-reviewer') has an unpinned 'gh pr diff' call -- it "
+            "resolves against the checkout's bare remote (the Discussion "
+            f"plane) instead of --repo {_CODE_REPO}: {line!r}"
+        )
+
+
 def test_acceptance_tester_no_unresolved_include_directives() -> None:
     """render('acceptance-tester') must not contain any {{include:...}} tokens.
 
