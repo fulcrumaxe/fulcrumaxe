@@ -13,6 +13,7 @@ Run with:
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -72,6 +73,12 @@ def test_slug_from_url_accepts_real_remote_forms(url: str, expected: str) -> Non
         "https://github.com/adopter/nested/deeper.git",
         "https://github.com//theirfork.git",
         "git@github.com:adopter/their fork.git",
+        # D#2343: each of these three used to slip a stray trailing
+        # character through because ".git"/"/" were stripped off the whole
+        # path before the owner/name split, hiding what came right after.
+        "https://github.com/adopter/theirfork.git/",
+        'https://github.com/adopter/theirfork"',
+        "https://github.com/adopter/theirfork#frag.git",
     ],
 )
 def test_slug_from_url_rejects_anything_not_owner_name(url: str) -> None:
@@ -111,9 +118,11 @@ def test_malformed_config_returns_none(tmp_path: Path) -> None:
 
 def test_percent_in_url_does_not_raise(tmp_path: Path) -> None:
     # RawConfigParser, not ConfigParser: a '%' in a value must not be treated
-    # as interpolation syntax.
+    # as interpolation syntax — it must not raise. But '%' also isn't a valid
+    # slug character, so the charset check (D#2343) rejects it as a slug: a
+    # wrong slug is worse than no slug.
     _write_git_config(tmp_path, _origin_config("https://github.com/adopter/their%20fork.git"))
-    assert repo_slug_from_git_config(tmp_path) == "adopter/their%20fork"
+    assert repo_slug_from_git_config(tmp_path) is None
 
 
 def test_duplicate_url_keys_do_not_raise(tmp_path: Path) -> None:
@@ -209,3 +218,27 @@ def test_project_name_still_raises_with_no_config_and_no_remote(tmp_path: Path) 
 
     with pytest.raises(ProjectNameUnresolvable, match="cannot read"):
         resolve_project_name(tmp_path)
+
+
+def test_project_name_unreadable_config_does_not_fall_back_to_origin(tmp_path: Path) -> None:
+    # D#2343: the docstring above says the origin fallback fires "only when
+    # config.json is missing entirely." A present-but-unreadable file (a
+    # real permissions problem, not a missing one) used to be swallowed by a
+    # too-wide `except OSError` and silently routed to the origin remote
+    # instead. Uses a real chmod, per D#2149 — a mocked raise wouldn't
+    # exercise the actual `except FileNotFoundError` narrowing.
+    if os.geteuid() == 0:
+        pytest.skip("running as root — permission bits do not block reads")
+    from backend.fleet.project_name import resolve_project_name
+
+    _write_git_config(tmp_path, _origin_config("https://github.com/adopter/theirfork.git"))
+    team_dir = tmp_path / ".autonomous-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+    config_path = team_dir / "config.json"
+    config_path.write_text('{"project_name": "should-not-be-reached"}')
+    config_path.chmod(0o000)
+    try:
+        with pytest.raises(PermissionError):
+            resolve_project_name(tmp_path)
+    finally:
+        config_path.chmod(0o644)
