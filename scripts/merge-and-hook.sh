@@ -13,6 +13,12 @@
 #    Nine labels gated the loop path and none of them gated this one. First of
 #    all the gates: one API call, no diff, no override flag. The refusal names
 #    the label that caused it.
+# 0-b. Pass-label freshness check (D#2462): a required pass label (e.g.
+#    code-review-passed) applied to one head SHA is refused if the issue
+#    timeline shows a later head_ref_force_pushed / committed / base_ref_*
+#    event — i.e. the label predates the current head. Fails CLOSED if the
+#    timeline cannot be read or the label has no recorded event, unlike the
+#    loop's own (deliberately fail-open) equivalent check. No override flag.
 # 0. Browser-test gate (D#2332): a PR that touches dashboard/ must carry
 #    browser-test-passed. The loop auto-merge path has enforced this at its
 #    merging phase for a while; this path did not, so a five-file dashboard PR
@@ -209,6 +215,65 @@ if [[ -n "$_REQUIRED_MISSING" ]]; then
   exit 1
 fi
 echo "[merge-and-hook] merge-gate labels OK for PR #$PR — no blocking label present, every required label present."
+
+# ── Step 0-b: pass-label freshness check (D#2462) ─────────────────────────────
+# A review label is applied to the PR, not pinned to a commit. If the head
+# moves after the label lands — a force-push, a further commit, a retarget —
+# the label still reads as satisfied even though the code it attests to is
+# gone. The loop path already guards against this at its merging phase
+# (loop-phased-step5.sh's _invalidate_stale_pass_labels, reading the same
+# issue-timeline events used below); this path did not, so a force-pushed fix
+# round after a passing review still merged on a review of the PREVIOUS head.
+# Measured directly for D#2462: labeling a PR, pushing a further commit, then
+# running this script merged without refusal.
+#
+# Reuses the loop's signal — the issue timeline's labeled /
+# head_ref_force_pushed / committed / base_ref_* events — but this path fails
+# CLOSED where the loop deliberately fails open (see that function's own
+# comments). A single manual merge that cannot confirm what it is approving
+# should refuse rather than assume the label still holds; the loop re-checks
+# every few minutes and can afford to wait for better data next pass, this
+# script cannot. That divergence is intentional, not something to reconcile —
+# the loop's fail-open behaviour is unchanged and out of scope here.
+#
+# No --force flag, for the same reason the label-presence checks above have
+# none: the remedy (get the label re-applied against the current head) is
+# always available and leaves a visible trail on the PR itself.
+_TIMELINE_RC=0
+_TIMELINE="$(gh api "repos/${_CODE_REPO}/issues/${PR}/timeline" --paginate \
+  -q '.[] | select(.event=="labeled" or .event=="head_ref_force_pushed" or .event=="committed" or (.event // "" | startswith("base_ref_"))) | "\(.created_at // .committer.date)\t\(.event)\t\(.label.name // "")"' \
+  2>/dev/null)" || _TIMELINE_RC=$?
+if [[ "$_TIMELINE_RC" -ne 0 ]]; then
+  echo "[merge-and-hook] ERROR: could not fetch PR #$PR's issue timeline to verify pass-label freshness against the current head. Refusing to merge rather than trusting a label that may predate a later push." >&2
+  exit 1
+fi
+
+_STALE_AFTER_TS=""
+_STALE_AFTER_EVENT=""
+if [[ -n "$_TIMELINE" ]]; then
+  _STALE_PAIR="$(printf '%s\n' "$_TIMELINE" | awk -F'\t' '
+    ($2=="head_ref_force_pushed" || $2=="committed" || $2 ~ /^base_ref_/) && $1 > ts {ts=$1; ev=$2}
+    END{print ts "\t" ev}')"
+  IFS=$'\t' read -r _STALE_AFTER_TS _STALE_AFTER_EVENT <<< "$_STALE_PAIR"
+fi
+
+if [[ -n "$_STALE_AFTER_TS" ]]; then
+  for _gate_label in "${MERGE_GATE_REQUIRED_PASS_LABELS[@]}"; do
+    _LABEL_TS="$(printf '%s\n' "$_TIMELINE" | awk -F'\t' -v want="$_gate_label" '
+      $2=="labeled" && $3==want && $1 > ts {ts=$1}
+      END{print ts}')"
+    if [[ -z "$_LABEL_TS" ]]; then
+      echo "[merge-and-hook] ERROR: PR #$PR carries '$_gate_label' but the issue timeline has no 'labeled' event for it, so its freshness against the current head ($_STALE_AFTER_EVENT at $_STALE_AFTER_TS) cannot be verified. Refusing to merge." >&2
+      exit 1
+    fi
+    if [[ "$_LABEL_TS" < "$_STALE_AFTER_TS" ]]; then
+      echo "[merge-and-hook] ERROR: PR #$PR's '$_gate_label' label is stale — labeled $_LABEL_TS, but $_STALE_AFTER_EVENT happened after, at $_STALE_AFTER_TS. The reviewed commit is not the current head. Refusing to merge." >&2
+      echo "[merge-and-hook] Get '$_gate_label' re-applied against the current head. There is no override flag for this check." >&2
+      exit 1
+    fi
+  done
+  echo "[merge-and-hook] pass-label freshness OK for PR #$PR — every required pass label postdates the most recent $_STALE_AFTER_EVENT ($_STALE_AFTER_TS)."
+fi
 
 # ── Step 0a: browser-test gate (D#2332) ───────────────────────────────────────
 # This runs before every other gate on purpose. It is two API calls at most, it

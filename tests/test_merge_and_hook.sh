@@ -225,6 +225,24 @@ if [[ "$ARGS" == *"pr merge"* ]]; then
   exit 0
 fi
 
+# `gh api repos/.../issues/<PR>/timeline --paginate -q '...'` (D#2462
+# pass-label freshness check). STUB_TIMELINE is the raw tsv
+# (timestamp\tevent\tlabel) this stub prints verbatim; STUB_TIMELINE_RC lets a
+# test simulate the fetch itself failing (a real gh api error), one of the two
+# fail-closed refusal paths under test. Deliberately silent about GH_ARGS,
+# matching the labels/pr-diff stubs above: several tests assert on the absence
+# of "GH_ARGS:" to prove no merge was attempted, and this fetch now runs on
+# every invocation. Default STUB_TIMELINE is empty, so the freshness check
+# finds no stale-triggering event and is a no-op for every test written before
+# it existed.
+if [[ "$ARGS" == *"issues/"*"/timeline"* ]]; then
+  if [[ "${STUB_TIMELINE_RC:-0}" != "0" ]]; then
+    exit "${STUB_TIMELINE_RC}"
+  fi
+  printf '%s\n' "${STUB_TIMELINE:-}"
+  exit 0
+fi
+
 # Everything else — generic success stub, args visible for assertions.
 echo "GH_ARGS: $ARGS"
 exit 0
@@ -1445,6 +1463,94 @@ assert_contains "MGL-4: gate reports itself satisfied" "merge-gate labels OK for
 assert_contains "MGL-4: merge happened" "PR #999 merged." "$OUT_MGL4"
 unset TWO_GATE_PR_BODY_999 STUB_PR_LABELS STUB_PR_LABELS_EXACT
 rm -rf "$T_MGL4"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# D#2462 — pass-label freshness. A required pass label applied at one head SHA
+# must not still satisfy the gate once the issue timeline shows a later push.
+# Every case iterates MERGE_GATE_REQUIRED_PASS_LABELS from the shared
+# definition, for the same reason MGL-1..4 do above.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_MGL_T0="2026-01-01T00:00:00Z"   # baseline commit
+_MGL_T1="2026-01-02T00:00:00Z"   # label applied here
+_MGL_T2="2026-01-03T00:00:00Z"   # a later push
+
+echo "Test MGL-5: a pass label applied after the last push is fresh — merge proceeds"
+T_MGL5=$(mktemp -d)
+setup_stubs "$T_MGL5" 0
+export TWO_GATE_PR_BODY_999="Gate 1: PASS\nGate 2: PASS"
+export STUB_PR_LABELS_EXACT=1
+export STUB_PR_LABELS="$(printf '%s\n' "${MERGE_GATE_REQUIRED_PASS_LABELS[@]}")"
+_MGL_TL="${_MGL_T0}"$'\t'"committed"$'\t'
+for MGL_LABEL in "${MERGE_GATE_REQUIRED_PASS_LABELS[@]}"; do
+  _MGL_TL="${_MGL_TL}"$'\n'"${_MGL_T1}"$'\t'"labeled"$'\t'"${MGL_LABEL}"
+done
+export STUB_TIMELINE="$_MGL_TL"
+OUT_MGL5=$(run_script "$T_MGL5" --pr 999 2>&1)
+RC_MGL5=$?
+assert_exit "MGL-5: exits 0" 0 "$RC_MGL5"
+assert_contains "MGL-5: gate reports freshness satisfied" "pass-label freshness OK for PR #999" "$OUT_MGL5"
+assert_contains "MGL-5: merge happened" "PR #999 merged." "$OUT_MGL5"
+unset TWO_GATE_PR_BODY_999 STUB_PR_LABELS STUB_PR_LABELS_EXACT STUB_TIMELINE
+rm -rf "$T_MGL5"
+
+echo "Test MGL-6: a pass label applied BEFORE a later push is stale — refuses, names the mismatch (D#2462 repro)"
+for MGL_LABEL in "${MERGE_GATE_REQUIRED_PASS_LABELS[@]}"; do
+  T_MGL6=$(mktemp -d)
+  setup_stubs "$T_MGL6" 0
+  export TWO_GATE_PR_BODY_999="Gate 1: PASS\nGate 2: PASS"
+  export STUB_PR_LABELS_EXACT=1
+  export STUB_PR_LABELS="$(printf '%s\n' "${MERGE_GATE_REQUIRED_PASS_LABELS[@]}")"
+  _MGL_TL="${_MGL_T0}"$'\t'"committed"$'\t'
+  for _mgl_l in "${MERGE_GATE_REQUIRED_PASS_LABELS[@]}"; do
+    _MGL_TL="${_MGL_TL}"$'\n'"${_MGL_T1}"$'\t'"labeled"$'\t'"${_mgl_l}"
+  done
+  _MGL_TL="${_MGL_TL}"$'\n'"${_MGL_T2}"$'\t'"head_ref_force_pushed"$'\t'
+  export STUB_TIMELINE="$_MGL_TL"
+  OUT_MGL6=$(run_script "$T_MGL6" --pr 999 2>&1)
+  RC_MGL6=$?
+  assert_exit "MGL-6[$MGL_LABEL]: exits 1" 1 "$RC_MGL6"
+  assert_contains "MGL-6[$MGL_LABEL]: refusal names the stale label" "'$MGL_LABEL' label is stale" "$OUT_MGL6"
+  assert_contains "MGL-6[$MGL_LABEL]: refusal names the trigger event" "head_ref_force_pushed happened after" "$OUT_MGL6"
+  assert_not_contains "MGL-6[$MGL_LABEL]: no merge happened" "PR #999 merged." "$OUT_MGL6"
+  unset TWO_GATE_PR_BODY_999 STUB_PR_LABELS STUB_PR_LABELS_EXACT STUB_TIMELINE
+  rm -rf "$T_MGL6"
+done
+
+echo "Test MGL-7: timeline fetch failure fails closed — refuses rather than trusting the label"
+T_MGL7=$(mktemp -d)
+setup_stubs "$T_MGL7" 0
+export TWO_GATE_PR_BODY_999="Gate 1: PASS\nGate 2: PASS"
+export STUB_PR_LABELS_EXACT=1
+export STUB_PR_LABELS="$(printf '%s\n' "${MERGE_GATE_REQUIRED_PASS_LABELS[@]}")"
+export STUB_TIMELINE_RC=1
+OUT_MGL7=$(run_script "$T_MGL7" --pr 999 2>&1)
+RC_MGL7=$?
+assert_exit "MGL-7: exits 1" 1 "$RC_MGL7"
+assert_contains "MGL-7: refusal names the unverifiable timeline" "could not fetch PR #999's issue timeline" "$OUT_MGL7"
+assert_not_contains "MGL-7: no merge happened" "PR #999 merged." "$OUT_MGL7"
+unset TWO_GATE_PR_BODY_999 STUB_PR_LABELS STUB_PR_LABELS_EXACT STUB_TIMELINE_RC
+rm -rf "$T_MGL7"
+
+echo "Test MGL-8: a required label with no recorded 'labeled' event, after a later push, fails closed"
+for MGL_LABEL in "${MERGE_GATE_REQUIRED_PASS_LABELS[@]}"; do
+  T_MGL8=$(mktemp -d)
+  setup_stubs "$T_MGL8" 0
+  export TWO_GATE_PR_BODY_999="Gate 1: PASS\nGate 2: PASS"
+  export STUB_PR_LABELS_EXACT=1
+  export STUB_PR_LABELS="$(printf '%s\n' "${MERGE_GATE_REQUIRED_PASS_LABELS[@]}")"
+  # A stale-triggering event exists, but no 'labeled' event was ever recorded
+  # for this label — cannot be told apart from a genuinely stale one, so it
+  # must refuse rather than assume the label is still good.
+  export STUB_TIMELINE="${_MGL_T0}"$'\t'"committed"$'\t'$'\n'"${_MGL_T2}"$'\t'"head_ref_force_pushed"$'\t'
+  OUT_MGL8=$(run_script "$T_MGL8" --pr 999 2>&1)
+  RC_MGL8=$?
+  assert_exit "MGL-8[$MGL_LABEL]: exits 1" 1 "$RC_MGL8"
+  assert_contains "MGL-8[$MGL_LABEL]: refusal names the unverifiable label" "no 'labeled' event for it" "$OUT_MGL8"
+  assert_not_contains "MGL-8[$MGL_LABEL]: no merge happened" "PR #999 merged." "$OUT_MGL8"
+  unset TWO_GATE_PR_BODY_999 STUB_PR_LABELS STUB_PR_LABELS_EXACT STUB_TIMELINE
+  rm -rf "$T_MGL8"
+done
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
