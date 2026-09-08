@@ -37,9 +37,7 @@ TESTS_DIR="$REPO_ROOT/tests"
 # Each entry is "<path relative to repo root>|D#<number> — why it is still here".
 # Removing an entry whose copy still exists must turn this suite red; that is the
 # negative self-check D#1948 item 11 asks for.
-ALLOWLIST=(
-  "tests/test_post_merge_hook_unmerged_paths.sh|D#1976 — same heredoc copy, plus a git shim that hardcodes /usr/bin/git and is red under nix. Left byte-unmodified by the D#1948 PR on purpose, so it stayed a usable control for that change. D#1976 removes the copy; this entry goes with it."
-)
+ALLOWLIST=()
 
 PASS=0
 FAIL=0
