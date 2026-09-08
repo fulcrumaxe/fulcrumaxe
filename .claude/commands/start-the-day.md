@@ -28,7 +28,15 @@ Today's items may already be partially done from yesterday's late-session work â
 Per the plan's "morning ritual" section:
 
 - Do NOT add new work until P0 / P1 items are closed
-- Use REST API endpoints, NEVER `gh pr create` (GraphQL rate-limit risk)
+- Create PRs with `gh pr create`. Do NOT use `gh api -X POST .../pulls`: the sandbox
+  blocks `gh api` mutations from sub-agent worktrees (`sandbox_block_gh_api_mutation`),
+  so the REST route is unavailable to exactly the agents who need to open PRs. This
+  replaces the old "use REST API endpoints" rate-limit rule, retired on evidence:
+  measured 2026-09-08 on gh 2.96.0, this command is GraphQL-backed (3 `POST /graphql`
+  requests, ~2 rate-limit points per PR), and at this repo's rate (74 PRs in the 7
+  days to 2026-09-08) that is under 0.03% of the 5,000-points/hour GraphQL budget.
+  Re-check with the GraphQL `rateLimit` field, never with `gh api rate_limit` â€” the
+  REST view reported 0 GraphQL points used during a window that had actually spent 773.
 - Spawn up to 6 agents in parallel with non-overlapping file scopes
 - Every spawn through `scripts/spawn-agent.sh` (canonical wrapper, injects WORKTREE_PATH per D#592)
 - Apply NEW spawn templates' policy: agents return `blocked_reason: "rate_limit"` instead of sleep-looping
