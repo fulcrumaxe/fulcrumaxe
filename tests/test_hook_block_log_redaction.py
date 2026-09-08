@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -191,20 +192,54 @@ def test_redacted_line_keeps_command_cwd_and_agent(tmp_path, monkeypatch):
     assert extractor.extract_event_id(str(transcript)) == ""
 
 
+# The set of hooks/sandbox.py functions expected to call _telemetry_line(entry)
+# exactly once. Checked in by name, not by count: a writer added or removed
+# should make a failure name *which* function changed, not just report that
+# some number moved.
+EXPECTED_TELEMETRY_WRITER_FUNCTIONS = {
+    "_write_telemetry",
+    "_write_claude_spawn_block_event",
+    "_write_agent_spawn_block_event",
+    "_write_gh_api_mutation_block_event",
+    "_write_gh_api_mutation_allow_event",
+    "_write_foreign_defer_event",
+    "_write_archive_protocol_warning_event",
+    "_write_head_flip_warning_event",
+    "_write_unclassified_command_event",
+}
+
+
+def _extract_telemetry_writer_functions(src: str) -> set[str]:
+    """Every top-level function whose body calls `_telemetry_line(entry)`,
+    named by function rather than counted — mirrors the call-site extraction
+    pattern used for the merge-gate labels in test_gate_label_drift.py."""
+    pieces = re.split(r"^def (\w+)", src, flags=re.MULTILINE)
+    names_and_bodies = zip(pieces[1::2], pieces[2::2])
+    return {name for name, body in names_and_bodies if "_telemetry_line(entry)" in body}
+
+
 def test_every_telemetry_writer_goes_through_the_scrubber():
     """The property is structural, not per-field.
 
-    hooks/sandbox.py has eight telemetry writers and they carry agent-authored
-    text under six different keys. Scrubbing per field would be eight chances to
-    miss one and a ninth on every writer added later, so all of them serialise
-    through _telemetry_line(). This asserts that no direct json.dumps(entry)
-    call has crept back in.
+    hooks/sandbox.py's telemetry writers carry agent-authored text under six
+    different keys. Scrubbing per field would be one chance per writer to
+    miss one and another on every writer added later, so all of them
+    serialise through _telemetry_line(). This asserts that no direct
+    json.dumps(entry) call has crept back in, and that the set of writer
+    functions doing so matches a checked-in expected set — so a failure
+    names the writer that was added or removed, not just a count that moved.
     """
     src = (_REPO_ROOT / "hooks" / "sandbox.py").read_text()
     assert "json.dumps(entry)" not in src.replace(
         "redact_spawn_tags(json.dumps(entry))", ""
     ), "a telemetry writer serialises an entry without going through _telemetry_line()"
-    assert src.count("_telemetry_line(entry)") == 8
+    writers = _extract_telemetry_writer_functions(src)
+    assert writers == EXPECTED_TELEMETRY_WRITER_FUNCTIONS, (
+        f"telemetry writer functions changed: found {writers}, expected "
+        f"{EXPECTED_TELEMETRY_WRITER_FUNCTIONS} — a writer calling "
+        f"_telemetry_line(entry) was added or removed in hooks/sandbox.py "
+        f"without updating this list"
+    )
 
 
 def test_redaction_leaves_untagged_text_untouched():

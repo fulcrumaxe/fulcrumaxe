@@ -11,8 +11,10 @@ a paired negative-fixture test, not a comment claiming immunity.
 
 Five rules:
   Rule 1 (test_extraction_count) — the CLAUDE.md label-bullet extraction
-          itself is asserted (== 3), not just a property of whatever comes
-          back (>= 0 would pass on an empty list).
+          itself is asserted against a checked-in expected SET, not just a
+          count (which drifts every time a bullet is added or removed and
+          then only reports a number) and not just a property of whatever
+          comes back (>= 0 would pass on an empty list).
   Rule 2 (test_call_site_labels_match_real_script) — the loop script's gate
           labels are extracted by matching `_has_label "$PR_NUM" "<label>"`
           call sites, never by grepping the label string anywhere in the
@@ -56,6 +58,17 @@ AGENTS_DIR = REPO_ROOT / ".claude" / "agents"
 SPAWN_TEMPLATES_DIR = REPO_ROOT / "backend" / "spawn_templates"
 BOOTSTRAP_SCRIPT = REPO_ROOT / "scripts" / "bootstrap-github-labels.sh"
 
+# Rule 1: the exact set of label bullets CLAUDE.md's Merge Gate Protocol
+# section is expected to list. A count alone (`== N`) drifts every time a
+# bullet is added or removed and only reports a number moved; a set
+# comparison names the bullet that changed.
+EXPECTED_MERGE_GATE_BULLETS = {
+    "code-review-passed",
+    "security-review-passed",
+    "browser-test-passed",
+    "acceptance-passed",
+}
+
 # Rule 3 allowlist: call-site labels the loop reads that are conditional or
 # gate-off-by-default, and therefore legitimately absent from CLAUDE.md's
 # bullet list of the headline labels. Each entry states why.
@@ -77,11 +90,21 @@ EXPECTED_CALL_SITE_LABELS = {
 # label-application syntax is `gh ... --add-label <label>` and the
 # `apply_label <n> <label>` helper (scripts/lib/gh-label.sh). Matching both,
 # across every .claude/agents/*.md and backend/spawn_templates/*.tmpl file,
-# gives 11 distinct literals: a11y-reviewed, acceptance-failed,
-# acceptance-passed, bug, code-review-needs-fix, code-review-passed,
-# enhancement, needs-boss, security-needs-fix, security-review-passed,
-# verification-substance-absent.
-EXPECTED_APPLIED_LABEL_COUNT = 11
+# gives this checked-in set. A count alone drifts every time a label is added
+# or removed and only reports a number moved; this reports which literal.
+EXPECTED_APPLIED_LABELS = {
+    "a11y-reviewed",
+    "acceptance-failed",
+    "acceptance-passed",
+    "bug",
+    "code-review-needs-fix",
+    "code-review-passed",
+    "enhancement",
+    "needs-boss",
+    "security-needs-fix",
+    "security-review-passed",
+    "verification-substance-absent",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -205,17 +228,18 @@ def _all_applied_labels() -> set[str]:
 
 
 def test_extraction_count():
-    labels = _extract_merge_gate_bullets(CLAUDE_MD.read_text())
-    assert len(labels) == 3, (
-        f"expected exactly 3 labels in CLAUDE.md's Merge Gate Protocol bullet "
-        f"list, got {len(labels)}: {labels}"
+    labels = set(_extract_merge_gate_bullets(CLAUDE_MD.read_text()))
+    assert labels == EXPECTED_MERGE_GATE_BULLETS, (
+        f"CLAUDE.md's Merge Gate Protocol bullet list changed: extracted "
+        f"{labels}, expected {EXPECTED_MERGE_GATE_BULLETS}"
     )
 
 
 def test_extraction_count_fixture_with_two_entries_fails():
-    """Non-vacuity proof for Rule 1: a fence holding 2 entries must make the
-    count check fail, so `len(labels) == 3` is a real assertion and not
-    decoration a reviewer would need to take on faith."""
+    """Non-vacuity proof for Rule 1: a fence holding a different set of
+    entries must make the set-equality check fail, so the comparison against
+    EXPECTED_MERGE_GATE_BULLETS is a real assertion and not decoration a
+    reviewer would need to take on faith."""
     fixture = (
         "## Merge Gate Protocol\n\n"
         "**Default (loop auto-merge):** The loop's merging phase checks these labels:\n"
@@ -223,10 +247,12 @@ def test_extraction_count_fixture_with_two_entries_fails():
         "- `security-review-passed` — conditional\n\n"
         "This is enforced elsewhere.\n"
     )
-    labels = _extract_merge_gate_bullets(fixture)
-    assert len(labels) == 2
+    labels = set(_extract_merge_gate_bullets(fixture))
+    assert labels == {"code-review-passed", "security-review-passed"}
     with pytest.raises(AssertionError):
-        assert len(labels) == 3, "fixture fence deliberately holds only 2 entries"
+        assert labels == EXPECTED_MERGE_GATE_BULLETS, (
+            "fixture fence deliberately holds a different set of bullets"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -294,15 +320,17 @@ def test_call_site_allowlist_fixture_fails_on_new_label():
 
 
 def test_applied_labels_extraction_nonempty_and_exact_count():
-    """The extracted labels[] set is asserted non-empty AND equal to an
-    expected literal count before any membership check runs (AC 7) — an
-    empty extraction would make the membership check below vacuously pass."""
+    """The extracted labels[] set is asserted non-empty AND equal to a
+    checked-in expected SET before any membership check runs (AC 7) — an
+    empty extraction would make the membership check below vacuously pass.
+    Comparing against a set rather than a count means a failure here names
+    the literal that was added or removed, not just a number that moved."""
     applied = _all_applied_labels()
     assert len(applied) > 0
-    assert len(applied) == EXPECTED_APPLIED_LABEL_COUNT, (
-        f"expected exactly {EXPECTED_APPLIED_LABEL_COUNT} distinct applied "
-        f"label literals across .claude/agents/*.md and "
-        f"backend/spawn_templates/*.tmpl, got {len(applied)}: {sorted(applied)}"
+    assert applied == EXPECTED_APPLIED_LABELS, (
+        f"applied label literals across .claude/agents/*.md and "
+        f"backend/spawn_templates/*.tmpl changed: extracted {sorted(applied)}, "
+        f"expected {sorted(EXPECTED_APPLIED_LABELS)}"
     )
 
 
