@@ -105,7 +105,6 @@ REPO="$(_require_code_repo "run-pr-tests")" || exit 1
 #   tests/test_scheduler_dispatcher.sh    — rc=0 dur=38s 16 passed, 0 failed
 #   tests/test_spawn_agent_start_run.sh   — rc=0 dur=23s 25 passed, 0 failed
 BASH_SUITE_DENYLIST=(
-  "tests/test_post_merge_hook_unmerged_paths.sh:host-env(/usr/bin/git shim) — red on nix, unrelated to routing; shim hardcodes /usr/bin/git, see RUN_POST_MERGE_HOOK comment below (D#1976). LIVE FIXTURE: tests/test_run_pr_tests_routing.sh item10 depends on this path staying denylisted."
   "tests/smoke-3spawn-d984.sh:bug(D#2168) — FileNotFoundError: a3.json never written; SUBAGENT_STOP_DRY_RUN write path swallows its own error (2>/dev/null || true)"
   "tests/test_append_loop_metrics.sh:bug(D#2166) — missing field: ts; appended row carries key 'timestamp', not 'ts'"
   "tests/test_dashboard_lifecycle.sh:host-env(dashboard ports) — reconciled against the real 120s bound (dur=79s, still fails): Vite dev server did not respond on port 5273 within 30s"
@@ -541,10 +540,6 @@ fi
 # changed file is one of the tests themselves, the generic tests/*.sh rule
 # above already ran it (bounded) and _RAN_COMMANDS dedup makes the matching
 # call here a no-op.
-# tests/test_post_merge_hook_unmerged_paths.sh is a trigger above but is not run
-# here on purpose: it is red on nix for an unrelated reason (its shim hardcodes
-# /usr/bin/git) and would fail every PR that touched the hook. D#1976 fixes it,
-# and adds it here.
 if [ "${RUN_POST_MERGE_HOOK:-false}" = "true" ] && [ -f "$REPO_ROOT/tests/test_post_merge_hook_pull.sh" ]; then
   RUN_SUITE_TIMEOUT_SECONDS="${RUN_PR_TESTS_BASH_TIMEOUT:-120}" \
     run_suite "post-merge-hook:pull" "bash tests/test_post_merge_hook_pull.sh" \
@@ -555,6 +550,9 @@ if [ "${RUN_POST_MERGE_HOOK:-false}" = "true" ] && [ -f "$REPO_ROOT/tests/test_p
   RUN_SUITE_TIMEOUT_SECONDS="${RUN_PR_TESTS_BASH_TIMEOUT:-120}" \
     run_suite "post-merge-hook:no-heredoc-copies" "bash tests/test_no_heredoc_hook_copies.sh" \
     "$REPO_ROOT" bash tests/test_no_heredoc_hook_copies.sh
+  RUN_SUITE_TIMEOUT_SECONDS="${RUN_PR_TESTS_BASH_TIMEOUT:-120}" \
+    run_suite "post-merge-hook:unmerged-paths" "bash tests/test_post_merge_hook_unmerged_paths.sh" \
+    "$REPO_ROOT" bash tests/test_post_merge_hook_unmerged_paths.sh
   RUN_SUITE_TIMEOUT_SECONDS="${RUN_PR_TESTS_BASH_TIMEOUT:-120}" \
     run_suite "auto-pull-recover" "bash tests/test_auto_pull_recover.sh" \
     "$REPO_ROOT" bash tests/test_auto_pull_recover.sh

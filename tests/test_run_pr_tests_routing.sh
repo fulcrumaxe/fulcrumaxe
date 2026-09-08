@@ -398,13 +398,16 @@ test_item9_generic_bash_suite_is_bounded() {
 test_item10_denylisted_suite_reported_skipped_with_reason() {
   setup
   # Real denylist entry baked into the copied script — no fixture needed,
-  # routing only matches on the changed-file string.
-  GH_FILES="tests/test_post_merge_hook_unmerged_paths.sh"
+  # routing only matches on the changed-file string. Was
+  # tests/test_post_merge_hook_unmerged_paths.sh; repointed at another
+  # still-denylisted tests/*.sh path when D#1976 removed that one from
+  # BASH_SUITE_DENYLIST — neither assertion below cares which path it is.
+  GH_FILES="tests/test_append_loop_metrics.sh"
 
   local out skipped reason
   out=$(run_script 7004)
-  skipped=$(routing_field "$out" "tests/test_post_merge_hook_unmerged_paths.sh" "skipped")
-  reason=$(routing_field "$out" "tests/test_post_merge_hook_unmerged_paths.sh" "reason")
+  skipped=$(routing_field "$out" "tests/test_append_loop_metrics.sh" "skipped")
+  reason=$(routing_field "$out" "tests/test_append_loop_metrics.sh" "reason")
 
   if [ "$skipped" = "True" ]; then
     pass "item10: a denylisted suite is reported skipped in routing, not silently absent"
@@ -476,13 +479,16 @@ test_d2177_item2_python_routing_preserved() {
 
 test_d2177_item3_denylisted_suite_skipped_and_no_pytest() {
   setup
-  GH_FILES="tests/test_post_merge_hook_unmerged_paths.sh"
+  # Was tests/test_post_merge_hook_unmerged_paths.sh; repointed at another
+  # still-denylisted tests/*.sh path when D#1976 removed that one from
+  # BASH_SUITE_DENYLIST — this test only needs *a* denylisted path.
+  GH_FILES="tests/test_append_loop_metrics.sh"
 
   local out skipped reason suite pytest_count
   out=$(run_script 8003)
-  skipped=$(routing_field "$out" "tests/test_post_merge_hook_unmerged_paths.sh" "skipped")
-  reason=$(routing_field "$out" "tests/test_post_merge_hook_unmerged_paths.sh" "reason")
-  suite=$(routing_field "$out" "tests/test_post_merge_hook_unmerged_paths.sh" "suite")
+  skipped=$(routing_field "$out" "tests/test_append_loop_metrics.sh" "skipped")
+  reason=$(routing_field "$out" "tests/test_append_loop_metrics.sh" "reason")
+  suite=$(routing_field "$out" "tests/test_append_loop_metrics.sh" "suite")
   pytest_count=$(tests_run_count "$out" "pytest")
 
   if [ "$skipped" = "True" ]; then pass "d2177 item3: denylisted suite reported skipped"
