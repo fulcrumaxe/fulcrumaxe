@@ -75,11 +75,16 @@ def resolve_target_repo() -> str | None:
 
 def _log_warn(command: str, target_repo: str | None) -> None:
     try:
+        root = str(_REPO_ROOT)
+        if root not in sys.path:
+            sys.path.insert(0, root)
+        from hooks.spawn_tag_redaction import redact_spawn_tags
+
         _TELEMETRY_DIR.mkdir(parents=True, exist_ok=True)
         log_file = _TELEMETRY_DIR / f"repo-scope-warns-{date.today().isoformat()}.jsonl"
         entry = {
             "ts": datetime.now(timezone.utc).isoformat(),
-            "command_excerpt": command[:300],
+            "command_excerpt": redact_spawn_tags(command[:300]),
             "target_repo": target_repo,
         }
         with open(log_file, "a", encoding="utf-8") as fh:

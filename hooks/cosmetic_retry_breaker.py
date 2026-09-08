@@ -52,6 +52,7 @@ from hooks._retry_common import (  # noqa: E402
     normalize,
     tokenize,
 )
+from hooks.spawn_tag_redaction import redact_spawn_tags  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -216,7 +217,7 @@ def _log_block(agent_id: str, command: str, variant_count: int, action: str) -> 
         entry = {
             "ts": _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z"),
             "agent_id": agent_id,
-            "command": _scrub(command)[:500],
+            "command": redact_spawn_tags(_scrub(command))[:500],
             "variant_count": variant_count,
             "action": action,  # "block" or "terminate"
         }
@@ -319,7 +320,7 @@ def main() -> None:
     # absence as 0 when reading. The variant check reads prior entries, so
     # adding now is safe.)
     try:
-        scrubbed_command = _scrub(new_command)
+        scrubbed_command = redact_spawn_tags(_scrub(new_command))
         _append_ring(agent_id, {"command": scrubbed_command, "exit_code": None, "ts": time.time()})
     except Exception:
         pass  # fail-open
@@ -338,7 +339,7 @@ def main() -> None:
         try:
             sentinel = _sentinel_path(agent_id)
             sentinel.write_text(
-                json.dumps({"ts": time.time(), "command": _scrub(new_command)[:200]}),
+                json.dumps({"ts": time.time(), "command": redact_spawn_tags(_scrub(new_command))[:200]}),
                 encoding="utf-8",
             )
         except Exception:

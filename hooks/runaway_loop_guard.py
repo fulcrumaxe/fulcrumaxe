@@ -40,11 +40,16 @@ _RUNAWAY_RE = re.compile(r"until\s+\w[\w\s()${}\"'-]*;\s*do\s+sleep\s+\d", re.IG
 
 def _log_block(command: str) -> None:
     try:
+        root = str(_REPO_ROOT)
+        if root not in sys.path:
+            sys.path.insert(0, root)
+        from hooks.spawn_tag_redaction import redact_spawn_tags
+
         _TELEMETRY_DIR.mkdir(parents=True, exist_ok=True)
         log_file = _TELEMETRY_DIR / f"runaway-loop-blocks-{date.today().isoformat()}.jsonl"
         entry = {
             "ts": datetime.now(timezone.utc).isoformat(),
-            "command_excerpt": command[:300],
+            "command_excerpt": redact_spawn_tags(command[:300]),
         }
         with open(log_file, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry) + "\n")
