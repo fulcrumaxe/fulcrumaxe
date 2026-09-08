@@ -153,7 +153,7 @@ resolve_merged_count() {
   local disc="$1"
   local all_records record_total recorded_true title_count
 
-  all_records=$(python3 "$REPO_ROOT/backend/pr_state.py" list --discussion "$disc" 2>/dev/null || echo "[]")
+  all_records=$(python3 "$REPO_ROOT/backend/pr_state.py" list --discussion "$disc" --repo "$_CODE_REPO" 2>/dev/null || echo "[]")
   record_total=$(echo "$all_records" | python3 -c "
 import json, sys
 try:
@@ -335,11 +335,20 @@ print('\n'.join(n.get('body', '') for n in nodes))
     # merge-count source of truth for the guard's planned_prs > 1 branch.
     # Title-prefix counting (resolve_merged_count's fallback) stays only for
     # a Discussion with no recorded entry at all.
-    EXISTING_PR_ENTRY=$(python3 "$REPO_ROOT/backend/pr_state.py" get "$PR" 2>/dev/null || echo "null")
+    #
+    # --repo "$_CODE_REPO" (D#2379): pr_state keys on the PR number alone by
+    # default, and two repos issue PR numbers into that one key space once the
+    # public repo is the code plane. Without --repo, a public PR whose number
+    # matches an existing private-repo row would find it non-null here, skip
+    # init, and stamp merged=true onto the WRONG row — crediting an unrelated
+    # Discussion with a merge it never got. --repo scopes this get/init/set
+    # to a key namespaced under the code plane, which a same-numbered row
+    # from any other repo can never collide with.
+    EXISTING_PR_ENTRY=$(python3 "$REPO_ROOT/backend/pr_state.py" get "$PR" --repo "$_CODE_REPO" 2>/dev/null || echo "null")
     if [[ -z "$EXISTING_PR_ENTRY" || "$EXISTING_PR_ENTRY" == "null" ]]; then
-      python3 "$REPO_ROOT/backend/pr_state.py" init "$PR" --discussion "$DISCUSSION" >/dev/null 2>&1 || true
+      python3 "$REPO_ROOT/backend/pr_state.py" init "$PR" --discussion "$DISCUSSION" --repo "$_CODE_REPO" >/dev/null 2>&1 || true
     fi
-    python3 "$REPO_ROOT/backend/pr_state.py" set "$PR" --field "merged=true" >/dev/null 2>&1 || true
+    python3 "$REPO_ROOT/backend/pr_state.py" set "$PR" --field "merged=true" --repo "$_CODE_REPO" >/dev/null 2>&1 || true
 
     MERGED_FOR_GUARD=$(resolve_merged_count "$DISCUSSION")
 
