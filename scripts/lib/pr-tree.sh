@@ -65,6 +65,30 @@
 # under an old remote name can already sit in the parent's object store from
 # a prior era, which would otherwise let a wrong-plane head_sha resolve as
 # "reachable" even after the fetch itself is correctly pinned.
+#
+# Why these trees are not registered (D#2041)
+# ---------------------------------------------
+# pr_tree_provision never calls `worktree_registry register`, and this file
+# has no teardown function at all — so there is nothing to deregister on. An
+# earlier draft of D#2041 proposed adding that register/deregister pair; it
+# was dropped because there is no teardown to hook a deregister into, and a
+# `worktrees.json` entry with no writer to ever clear it would protect the
+# tree permanently — trading a reap-too-early risk for a never-reap-again
+# one, which is worse given the worktree cap is already under pressure.
+#
+# What actually protects a pr-tree, since it is never in worktrees.json:
+#   - the mtime guard in scripts/sweep-stale-worktrees.sh (>= 1h old)
+#   - the commits-behind guard there (must be > the stale threshold)
+#   - the tracked-changes ("dirty") guard there (uncommitted work is kept)
+#   - the unpushed-commit guard there (D#2041) — a commit made *inside* this
+#     tree that exists on no remote-tracking ref is kept even when the tree
+#     is otherwise clean and stale, which is the gap a `--detach` checkout
+#     otherwise leaves: no branch is left pointing at such a commit once the
+#     worktree itself is removed.
+# None of these read worktrees.json. A pr-tree is exactly as protected as any
+# other unregistered worktree under .claude/worktrees/ — see
+# scripts/lib/worktree-registry.sh's own note that the registry has no
+# production caller.
 
 _prt_log() { printf 'pr-tree: %s\n' "$*" >&2; }
 _prt_repo_root() { (cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd); }
