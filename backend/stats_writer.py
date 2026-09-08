@@ -680,15 +680,29 @@ def avg_fix_rounds_24h() -> dict:
 
     Reads all fix_rounds_per_pr rows in the last 24h and computes:
         avg_last_24h  — float average, or None when sample_size < 5
-        sample_size   — number of PRs merged in the window
+        sample_size   — number of PRs merged in the window (excludes error rows)
         distribution  — dict mapping rounds (as string "0", "1", ...) to count
+        error_count   — number of rows in the window with value < 0 (D#2475's
+                        writer-side -1 sentinel: the measurement itself failed,
+                        not a real fix-round count)
 
-    Returns {"avg_last_24h": None, "sample_size": 0, "distribution": {}} when
-    the database is empty or does not exist.
+    A negative row is a *measurement failure*, not a rounds count — it is
+    excluded from avg_last_24h, sample_size and distribution rather than
+    averaged in, which would silently drag a real number toward a value no
+    PR ever reported. error_count makes that failure visible instead
+    ("N of M measurements failed") rather than folding it back into a
+    plausible-looking average — the same "failure indistinguishable from a
+    real measurement" shape D#2475 fixed at the writer, now closed at the
+    reader too.
+
+    Returns {"avg_last_24h": None, "sample_size": 0, "distribution": {},
+    "error_count": 0} when the database is empty or does not exist.
     """
+    empty = {"avg_last_24h": None, "sample_size": 0, "distribution": {}, "error_count": 0}
+
     db = _db_path()
     if not db.exists():
-        return {"avg_last_24h": None, "sample_size": 0, "distribution": {}}
+        return dict(empty)
 
     from datetime import timedelta  # noqa: PLC0415
 
@@ -712,12 +726,14 @@ def avg_fix_rounds_24h() -> dict:
         finally:
             conn.close()
     except Exception:  # noqa: BLE001
-        return {"avg_last_24h": None, "sample_size": 0, "distribution": {}}
+        return dict(empty)
 
     if not rows:
-        return {"avg_last_24h": None, "sample_size": 0, "distribution": {}}
+        return dict(empty)
 
-    values = [int(r[0]) for r in rows]
+    raw_values = [int(r[0]) for r in rows]
+    error_count = sum(1 for v in raw_values if v < 0)
+    values = [v for v in raw_values if v >= 0]
     sample_size = len(values)
     avg = sum(values) / sample_size if sample_size >= 5 else None
 
@@ -730,6 +746,7 @@ def avg_fix_rounds_24h() -> dict:
         "avg_last_24h": round(avg, 2) if avg is not None else None,
         "sample_size": sample_size,
         "distribution": distribution,
+        "error_count": error_count,
     }
 
 

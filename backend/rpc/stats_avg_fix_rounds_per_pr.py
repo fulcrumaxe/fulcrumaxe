@@ -10,8 +10,11 @@ def handle(params: dict) -> dict:
 
     Response: {
         "avg_last_24h": float | null,  -- null when sample_size < 5
-        "sample_size": int,
+        "sample_size": int,            -- excludes rows where the measurement
+                                        -- itself failed (negative sentinel)
         "distribution": {"0": N, "1": N, ...}  -- rounds -> count
+        "error_count": int             -- rows in the window where the
+                                        -- writer's measurement failed
     }
     """
     return _avg()

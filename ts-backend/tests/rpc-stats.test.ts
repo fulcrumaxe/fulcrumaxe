@@ -135,9 +135,9 @@ describe("stats.* handlers — DB absent graceful empty", () => {
   });
 
   // stats.avg_fix_rounds_per_pr
-  it("handleAvgFixRoundsPerPr: DB absent → {avg_last_24h:null, sample_size:0, distribution:{}}", async () => {
+  it("handleAvgFixRoundsPerPr: DB absent → {avg_last_24h:null, sample_size:0, distribution:{}, error_count:0}", async () => {
     const result = await handleAvgFixRoundsPerPr({}) as Record<string, unknown>;
-    expect(result).toEqual({ avg_last_24h: null, sample_size: 0, distribution: {} });
+    expect(result).toEqual({ avg_last_24h: null, sample_size: 0, distribution: {}, error_count: 0 });
   });
 
   // stats.pre_write_burn
@@ -452,7 +452,7 @@ describe("POST /rpc — stats.* batch 2 dispatch (no Python backend needed)", ()
     expect(Array.isArray(result["rows"])).toBe(true);
   });
 
-  it("stats.avg_fix_rounds_per_pr → HTTP 200, result with avg_last_24h/sample_size/distribution", async () => {
+  it("stats.avg_fix_rounds_per_pr → HTTP 200, result with avg_last_24h/sample_size/distribution/error_count", async () => {
     const { status, body } = await rpc(app, "stats.avg_fix_rounds_per_pr", {}, TOKEN);
     expect(status).toBe(200);
     expect(body["error"]).toBeUndefined();
@@ -460,7 +460,9 @@ describe("POST /rpc — stats.* batch 2 dispatch (no Python backend needed)", ()
     expect("avg_last_24h" in result).toBe(true);
     expect("sample_size" in result).toBe(true);
     expect("distribution" in result).toBe(true);
+    expect("error_count" in result).toBe(true);
     expect(result["sample_size"]).toBe(0);
+    expect(result["error_count"]).toBe(0);
   });
 
   it("stats.pre_write_burn → HTTP 200, result with rows array", async () => {
@@ -512,6 +514,72 @@ describe("POST /rpc — stats.* batch 2 dispatch (no Python backend needed)", ()
     const { status, body } = await rpc(app, "stats.parity_trend", { limit: 5 }, TOKEN);
     expect(status).toBe(200);
     expect(body["error"]).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §4b — handleAvgFixRoundsPerPr: negative-sentinel exclusion (D#2475 follow-up)
+// ---------------------------------------------------------------------------
+// The writer fix (D#2475) made a genuine `gh` failure land as -1 in
+// fix_rounds_per_pr instead of a false 0. That alone was not enough: this
+// reader had no `value >= 0` filter, so a -1 would silently blend into the
+// average and drag it down — the same "failure indistinguishable from a
+// real measurement" shape D#2475 fixed at the writer, one hop downstream.
+// These tests seed a real temp DuckDB (via the same recordMetrics() the
+// hook itself uses) so they exercise the actual reader, not a mock.
+
+describe("handleAvgFixRoundsPerPr — negative sentinel rows excluded", () => {
+  let tmpDbPath: string;
+
+  beforeEach(() => {
+    tmpDbPath = join(tmpdir(), `fix-rounds-sentinel-${Date.now()}-${Math.random().toString(36).slice(2)}.duckdb`);
+    process.env.STATS_DB_PATH = tmpDbPath;
+  });
+
+  afterEach(() => {
+    delete process.env.STATS_DB_PATH;
+    try { rmSync(tmpDbPath, { force: true }); } catch { /* ignore */ }
+  });
+
+  it("excludes -1 rows from sample_size and average, counts them in error_count", async () => {
+    const { recordMetrics } = await import("../src/spawn/post-merge-hook.js");
+
+    // 5 genuine 0-round PRs + 3 failed measurements (-1). Distinct `pr` tags
+    // keep each row's (ts, metric, tags) primary key unique even though
+    // recordMetrics() writes them all at the same timestamp.
+    const rows = [
+      ...[1, 2, 3, 4, 5].map(pr => ({
+        metric: "fix_rounds_per_pr", value: 0.0, unit: "count",
+        tags: { pr: String(pr), tag: "Feature" }, source: "test",
+      })),
+      ...[6, 7, 8].map(pr => ({
+        metric: "fix_rounds_per_pr", value: -1.0, unit: "count",
+        tags: { pr: String(pr), tag: "Feature" }, source: "test",
+      })),
+    ];
+    await recordMetrics(rows, tmpDbPath);
+
+    const result = await handleAvgFixRoundsPerPr({}) as Record<string, unknown>;
+    expect(result["sample_size"]).toBe(5);
+    expect(result["avg_last_24h"]).toBe(0);
+    expect(result["error_count"]).toBe(3);
+    expect(Object.keys(result["distribution"] as Record<string, number>)).not.toContain("-1");
+  });
+
+  it("all rows negative → sample_size 0, avg null, error_count reflects the full outage", async () => {
+    const { recordMetrics } = await import("../src/spawn/post-merge-hook.js");
+
+    const rows = [1, 2, 3, 4, 5, 6].map(pr => ({
+      metric: "fix_rounds_per_pr", value: -1.0, unit: "count",
+      tags: { pr: String(pr), tag: "Feature" }, source: "test",
+    }));
+    await recordMetrics(rows, tmpDbPath);
+
+    const result = await handleAvgFixRoundsPerPr({}) as Record<string, unknown>;
+    expect(result["sample_size"]).toBe(0);
+    expect(result["avg_last_24h"]).toBeNull();
+    expect(result["distribution"]).toEqual({});
+    expect(result["error_count"]).toBe(6);
   });
 });
 

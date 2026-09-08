@@ -732,3 +732,130 @@ echo "PLANNED_LABELS=[$UMBRELLA_PLANNED_LABELS]"
         result = self._run_detect_umbrella(body)
         assert result["is_umbrella"] is False, result["raw"]
         assert result["planned_count"] == 0, result["raw"]
+
+
+# ── Fix-cycle-count regression tests (D#2475) ─────────────────────────────────
+# `gh pr view --json timelineItems` is not a field `gh pr view --json`
+# supports (it's GraphQL-only), so that call failed on every real invocation.
+# `2>/dev/null || echo "0"` swallowed the failure and wrote a "0" to the
+# metric store indistinguishable from a PR that genuinely needed no fix
+# round — fix_rounds_per_pr had been hardcoded to 0.0 since 2026-07-24 as a
+# result. These tests source the real snippet straight out of
+# scripts/post-merge-hook.sh (not a re-implementation) so a future edit that
+# reintroduces a broken `gh` call, or that collapses the failure sentinel
+# back into 0, fails here instead of silently shipping.
+
+class TestFixCycleCountSnippet:
+    """Sources the real FIX_CYCLE_COUNT block out of post-merge-hook.sh."""
+
+    def _run_snippet(self, mock_gh_script: str) -> dict:
+        script_path = REPO_ROOT / "scripts" / "post-merge-hook.sh"
+        source_text = script_path.read_text()
+        start_marker = "  # Count fix cycles: times code-review-needs-fix was applied before merge."
+        start = source_text.index(start_marker)
+        end = source_text.index("\n  fi\n", start) + len("\n  fi\n")
+        snippet = source_text[start:end]
+
+        # A mocked `gh` on PATH stands in for the real API call.
+        import tempfile
+        with tempfile.TemporaryDirectory() as bindir:
+            gh_path = Path(bindir) / "gh"
+            gh_path.write_text(mock_gh_script)
+            gh_path.chmod(0o755)
+
+            script = f"""
+set -uo pipefail
+export PATH="{bindir}:$PATH"
+_CODE_REPO="fulcrumaxe/fulcrumaxe"
+PR="123"
+{snippet}
+echo "FIX_CYCLE_COUNT=$FIX_CYCLE_COUNT"
+"""
+            result = subprocess.run(
+                ["bash", "-c", script],
+                capture_output=True,
+                text=True,
+            )
+            out = result.stdout + result.stderr
+            m = re.search(r"FIX_CYCLE_COUNT=(-?\d+)", out)
+            return {"value": m.group(1) if m else None, "raw": out, "returncode": result.returncode}
+
+    def test_no_longer_calls_gh_pr_view_with_timeline_items(self):
+        # Regression for the exact root cause: the snippet must not still
+        # request a field `gh pr view --json` cannot serve.
+        script_path = REPO_ROOT / "scripts" / "post-merge-hook.sh"
+        source_text = script_path.read_text()
+        start = source_text.index(
+            "  # Count fix cycles: times code-review-needs-fix was applied before merge."
+        )
+        end = source_text.index("\n  fi\n", start) + len("\n  fi\n")
+        snippet = source_text[start:end]
+        code_lines = [l for l in snippet.splitlines() if not l.strip().startswith("#")]
+        code = "\n".join(code_lines)
+        assert "--json timelineItems" not in code, code
+        assert "gh pr view" not in code, code
+        assert "gh api" in code, code
+
+    def test_real_labeled_events_counted(self):
+        # Mock `gh api .../timeline --paginate --jq ...` returning "2",
+        # mirroring a PR that had code-review-needs-fix applied twice.
+        mock = """#!/usr/bin/env bash
+if [[ "$*" == *"issues/123/timeline"* ]]; then
+  echo "2"
+  exit 0
+fi
+exit 1
+"""
+        result = self._run_snippet(mock)
+        assert result["value"] == "2", result["raw"]
+
+    def test_genuine_zero_is_not_confused_with_failure(self):
+        # A PR that never needed a fix round must still report 0, not -1.
+        mock = """#!/usr/bin/env bash
+if [[ "$*" == *"issues/123/timeline"* ]]; then
+  echo "0"
+  exit 0
+fi
+exit 1
+"""
+        result = self._run_snippet(mock)
+        assert result["value"] == "0", result["raw"]
+
+    def test_api_failure_yields_sentinel_not_zero(self):
+        # This is the regression this Discussion is about: a failed call
+        # must land as -1 (unknown), never as a 0 indistinguishable from a
+        # real zero-fix-rounds measurement.
+        mock = """#!/usr/bin/env bash
+exit 1
+"""
+        result = self._run_snippet(mock)
+        assert result["value"] == "-1", result["raw"]
+
+
+class TestFixCyclesPythonParsing:
+    """
+    Sources the real fix_cycles parsing line out of post-merge-hook.sh's
+    Python heredoc, so a drift back to `.isdigit()` (which rejects the
+    leading "-" of the -1 sentinel and silently maps it back to 0) fails
+    here.
+    """
+
+    def _parse(self, fix_cycles_str: str) -> int:
+        script_path = REPO_ROOT / "scripts" / "post-merge-hook.sh"
+        source_text = script_path.read_text()
+        line = next(
+            l for l in source_text.splitlines()
+            if l.strip().startswith("fix_cycles = int(fix_cycles_str)")
+        )
+        ns: dict = {"fix_cycles_str": fix_cycles_str}
+        exec(line.strip(), ns)
+        return ns["fix_cycles"]
+
+    def test_sentinel_minus_one_preserved(self):
+        assert self._parse("-1") == -1
+
+    def test_real_count_parsed(self):
+        assert self._parse("3") == 3
+
+    def test_empty_string_falls_back_to_sentinel_not_zero(self):
+        assert self._parse("") == -1

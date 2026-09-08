@@ -385,15 +385,23 @@ export async function handleRoleRetryRate(_params: Record<string, unknown>): Pro
  *
  * Response: {
  *   "avg_last_24h": float|null,  — null when sample_size < 5
- *   "sample_size": int,
+ *   "sample_size": int,          — excludes rows where the measurement
+ *                                  itself failed (negative sentinel)
  *   "distribution": {"0": N, "1": N, ...}
+ *   "error_count": int           — rows in the window where the writer's
+ *                                  measurement failed (D#2475's -1 sentinel)
  * }
+ *
+ * A negative row is a measurement failure, not a rounds count — excluded
+ * from avg_last_24h/sample_size/distribution rather than averaged in, which
+ * would silently drag a real number toward one no PR ever reported.
+ * error_count surfaces that failure instead of hiding it in the mean.
  *
  * Mirrors: backend/stats_writer.avg_fix_rounds_24h()
  *          backend/rpc/stats_avg_fix_rounds_per_pr.handle()
  */
 export async function handleAvgFixRoundsPerPr(_params: Record<string, unknown>): Promise<unknown> {
-  const empty = { avg_last_24h: null, sample_size: 0, distribution: {} };
+  const empty = { avg_last_24h: null, sample_size: 0, distribution: {}, error_count: 0 };
   const cutoff = new Date(Date.now() - 24 * 3600 * 1000);
   const cutoffStr = toCutoffStr(cutoff);
 
@@ -419,11 +427,16 @@ export async function handleAvgFixRoundsPerPr(_params: Record<string, unknown>):
 
     if (!rows.length) return empty;
 
-    // Python: values = [int(r[0]) for r in rows]
-    const values = rows.map(row => {
+    // Python: raw_values = [int(r[0]) for r in rows]
+    const rawValues = rows.map(row => {
       const v = row["value"];
       return typeof v === "bigint" ? Number(v) : Math.round(Number(v));
     });
+
+    // Python: error_count = sum(1 for v in raw_values if v < 0)
+    //         values = [v for v in raw_values if v >= 0]
+    const errorCount = rawValues.filter(v => v < 0).length;
+    const values = rawValues.filter(v => v >= 0);
 
     const sampleSize = values.length;
     const avg = sampleSize >= 5 ? values.reduce((a, b) => a + b, 0) / sampleSize : null;
@@ -442,6 +455,7 @@ export async function handleAvgFixRoundsPerPr(_params: Record<string, unknown>):
       avg_last_24h: avgRounded,
       sample_size: sampleSize,
       distribution,
+      error_count: errorCount,
     };
   } catch {
     return empty;

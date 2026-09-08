@@ -821,6 +821,66 @@ class TestAvgFixRounds24h:
         assert result["sample_size"] == 5
         assert result["avg_last_24h"] == 1.0
 
+    # ── D#2475 follow-up: negative sentinel rows (-1 = writer-side measurement
+    # failure) must never enter the average, sample_size, or distribution.
+    # Coordinator finding: the writer fix alone left the reader unguarded —
+    # `values = [int(r[0]) for r in rows]` had no `value >= 0` filter, so a
+    # genuine `gh` failure would blend a -1 into a plausible-looking average,
+    # making the next failure LESS visible than the constant-0 bug it
+    # replaced (which is exactly what tripped the /history.html rule that
+    # surfaced D#2475 in the first place).
+
+    def test_empty_db_reports_zero_error_count(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("STATS_DB_PATH", str(tmp_path / "ghost.duckdb"))
+        result = sw.avg_fix_rounds_24h()
+        assert result["error_count"] == 0
+
+    def test_negative_sentinel_excluded_from_average(self, isolated_db):
+        # 5 genuine 0-round PRs plus 3 failed measurements (-1). If the -1s
+        # were blended in, sum=−3, sample_size=8, avg≈−0.375 — a nonsensical
+        # negative average masquerading as data. The correct read is
+        # avg=0.0 over 5 real samples, with the 3 failures called out
+        # separately.
+        now = datetime.now(timezone.utc)
+        for i in range(5):
+            ts = now - timedelta(minutes=i)
+            sw.record("fix_rounds_per_pr", 0.0, "count", ts=ts)
+        for i in range(3):
+            ts = now - timedelta(minutes=10 + i)
+            sw.record("fix_rounds_per_pr", -1.0, "count", ts=ts)
+
+        result = sw.avg_fix_rounds_24h()
+        assert result["sample_size"] == 5, "negative rows must not count toward sample_size"
+        assert result["avg_last_24h"] == 0.0, "negative rows must not drag the average down"
+        assert result["error_count"] == 3
+
+    def test_negative_sentinel_excluded_from_distribution(self, isolated_db):
+        now = datetime.now(timezone.utc)
+        rounds_list = [0, 1, 1, 2, -1]
+        for i, rounds in enumerate(rounds_list):
+            ts = now - timedelta(minutes=i)
+            sw.record("fix_rounds_per_pr", float(rounds), "count", ts=ts)
+        result = sw.avg_fix_rounds_24h()
+        dist = result["distribution"]
+        assert "-1" not in dist, "a failed measurement must never appear as a rounds bucket"
+        assert result["error_count"] == 1
+        assert sum(dist.values()) == 4
+
+    def test_all_rows_negative_yields_no_avg_but_reports_error_count(self, isolated_db):
+        # A total outage: every measurement in the window failed. The old
+        # behavior (fail to 0) would have reported a suspiciously perfect
+        # "0 fix rounds" average; the fix must instead report no average
+        # (insufficient real samples) and surface the full failure count.
+        now = datetime.now(timezone.utc)
+        for i in range(6):
+            ts = now - timedelta(minutes=i)
+            sw.record("fix_rounds_per_pr", -1.0, "count", ts=ts)
+        result = sw.avg_fix_rounds_24h()
+        assert result["sample_size"] == 0
+        assert result["avg_last_24h"] is None
+        assert result["distribution"] == {}
+        assert result["error_count"] == 6
+
 
 # ===========================================================================
 # team_lead_tokens_percentiles() — p50/p95

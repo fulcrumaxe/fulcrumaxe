@@ -891,12 +891,20 @@ if ! hook_event_has_step "stats_metrics"; then
   PR_CREATED_AT=$(gh pr view "$PR" --repo "$_CODE_REPO" \
     --json createdAt --jq '.createdAt' 2>/dev/null || echo "")
 
-  # Count fix cycles: times code-review-needs-fix was applied before merge
-  FIX_CYCLE_COUNT=$(gh pr view "$PR" --repo "$_CODE_REPO" \
-    --json timelineItems \
-    --jq '[.timelineItems.nodes[] | select(.label.name == "code-review-needs-fix")] | length' \
-    2>/dev/null || echo "0")
-  FIX_CYCLE_COUNT="${FIX_CYCLE_COUNT:-0}"
+  # Count fix cycles: times code-review-needs-fix was applied before merge.
+  # `timelineItems` is a GraphQL field, not one `gh pr view --json` exposes —
+  # that call has failed on every invocation since this was written, and
+  # `2>/dev/null || echo "0"` turned every one of those failures into a
+  # zero indistinguishable from a PR that genuinely needed no fix round.
+  # The REST issue-timeline endpoint carries the same labeled events and
+  # `gh api` actually accepts it. Reserve -1 for "the call itself failed"
+  # so a real zero-fix-rounds PR is never confused with a broken measurement.
+  FIX_CYCLE_COUNT=$(gh api "repos/${_CODE_REPO}/issues/${PR}/timeline" --paginate \
+    --jq '[.[] | select(.event == "labeled" and .label.name == "code-review-needs-fix")] | length' \
+    2>/dev/null)
+  if ! [[ "$FIX_CYCLE_COUNT" =~ ^[0-9]+$ ]]; then
+    FIX_CYCLE_COUNT="-1"
+  fi
 
   # Cost for this Discussion in USD — via cost_tracker.py, the single source
   # of truth for cost. (This used to shell out to `budget.py status` and
@@ -1074,7 +1082,7 @@ spec_ready_ts_str = "$SPEC_READY_TS"
 reviewer_accept_ts_str = "$REVIEWER_ACCEPT_TS"
 ac_rate_str = "$AC_PASS_RATE"
 
-fix_cycles = int(fix_cycles_str) if fix_cycles_str.strip().isdigit() else 0
+fix_cycles = int(fix_cycles_str) if fix_cycles_str.strip().lstrip('-').isdigit() else -1
 cost_usd = float(cost_usd_str) if cost_usd_str.strip().replace('.','',1).isdigit() else 0.0
 conflict_score = int(conflict_str) if conflict_str.strip().lstrip('-').isdigit() else 0
 
