@@ -883,6 +883,25 @@ if [[ -n "$PR_ARG" ]]; then
   _PA_SHA_FULL=$(printf '%s' "$_PA_INFO" | cut -f1)
   PR_BRANCH=$(printf '%s' "$_PA_INFO" | cut -s -f2)
 
+  # D#1981: PR_BRANCH is untrusted input. It's `.head.ref` on a PR against
+  # the code plane, which is now a public repo with forking enabled — a
+  # fork PR's branch name is whatever the contributor typed, and it flows
+  # unmodified into {{pr_branch}} template slots below, at least one of
+  # which (docs-writer's `git push origin "HEAD:refs/heads/{{pr_branch}}"`)
+  # is a double-quoted shell command an agent is told to run. Double quotes
+  # stop `;`/`|` but not backticks or `$( )`. Validate against a
+  # conservative allowlist and fail closed on anything else — same
+  # fail-closed-allowlist shape as `_GIT_BRANCH_READONLY_FLAGS` at
+  # hooks/sandbox_rules.py:105.
+  _PA_BRANCH_INVALID=""
+  if [[ -n "$PR_BRANCH" ]]; then
+    if [[ ${#PR_BRANCH} -gt 255 || ! "$PR_BRANCH" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]]; then
+      _PA_BRANCH_INVALID=1
+      echo "WARN: PR #${PR_ARG} head branch name failed validation (untrusted fork input) — refusing to render it into any prompt" >&2
+      PR_BRANCH=""
+    fi
+  fi
+
   # D#1788 round 3: pr_number/pr_url are hard-required with no network
   # involved (pure string formatting from --pr). pr_branch is different —
   # it's a best-effort `gh api` lookup that can fail on a rate limit or
@@ -893,12 +912,18 @@ if [[ -n "$PR_ARG" ]]; then
   # "pr_branch" without ever saying the real cause was an API failure.
   # Only those three roles need to hard-fail here — checking the template
   # directly (not a hand-maintained role list) keeps this from drifting the
-  # way REQUIRED_VARS did.
-  if [[ -n "$_PA_API_FAILED" ]]; then
+  # way REQUIRED_VARS did. A branch name that fails validation (above) hits
+  # this same hard-fail path — a silently emptied {{pr_branch}} on these
+  # three roles is exactly the failure class this block exists to catch.
+  if [[ -n "$_PA_API_FAILED" || -n "$_PA_BRANCH_INVALID" ]]; then
     _PB_TMPL="$REPO_ROOT/backend/spawn_templates/${ROLE}.tmpl"
     if [[ -f "$_PB_TMPL" ]] && grep -q '{{pr_branch}}' "$_PB_TMPL"; then
-      echo "Spawn blocked: role=$ROLE requires {{pr_branch}}, but gh api failed to resolve the head branch for PR #${PR_ARG} (see WARN above). Retry, or check gh auth/rate limits." >&2
-      unset _PA_LIB _PA_SHA _PA_INFO _PA_ERR _PA_API_FAILED _PB_TMPL
+      if [[ -n "$_PA_BRANCH_INVALID" ]]; then
+        echo "Spawn blocked: role=$ROLE requires {{pr_branch}}, but PR #${PR_ARG}'s head branch name failed validation (see WARN above)." >&2
+      else
+        echo "Spawn blocked: role=$ROLE requires {{pr_branch}}, but gh api failed to resolve the head branch for PR #${PR_ARG} (see WARN above). Retry, or check gh auth/rate limits." >&2
+      fi
+      unset _PA_LIB _PA_SHA _PA_INFO _PA_ERR _PA_API_FAILED _PA_BRANCH_INVALID _PB_TMPL
       exit 1
     fi
     unset _PB_TMPL
@@ -912,7 +937,7 @@ if [[ -n "$PR_ARG" ]]; then
       inject_for_pr "$PR_ARG" "$_PA_SHA"
     ) 2>/dev/null || true
   fi
-  unset _PA_LIB _PA_SHA _PA_INFO _PA_ERR _PA_API_FAILED
+  unset _PA_LIB _PA_SHA _PA_INFO _PA_ERR _PA_API_FAILED _PA_BRANCH_INVALID
 fi
 
 # ── 5. Resolve worktree path for prompt injection ────────────────────────────
