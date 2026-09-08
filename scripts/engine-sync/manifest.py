@@ -12,8 +12,15 @@ Subcommands:
              SHA-256, and write engine/manifest.json (sorted keys, no
              timestamps in the hashed or written content -> deterministic).
   verify     Recompute hashes for every file listed in engine/manifest.json
-             against the current working tree. Exits 0 if all match; exits
-             non-zero and names every drifted path otherwise.
+             against the current working tree, AND recompute the live
+             allowlist candidate set so a file that matches the allowlist but
+             was never pinned (`added`) is reportable -- not just `drifted`
+             and `missing`. Exits 0 if the pinned set exactly matches the
+             candidate set and every hash agrees; exits non-zero and names
+             every offending path otherwise. Also refuses to report clean
+             about a manifest with an empty or absent `files` key (D#1928) --
+             a checker that passes on zero pinned files is the defect it
+             exists to catch, not a clean bill of health.
 
 Manifest shape:
   {
@@ -132,15 +139,31 @@ def cmd_generate(_args: argparse.Namespace) -> int:
 
 def cmd_verify(_args: argparse.Namespace) -> int:
     if not MANIFEST_PATH.exists():
-        print(f"error: manifest not found at {MANIFEST_PATH}", file=sys.stderr)
+        print(f"error: manifest not found at {MANIFEST_PATH} (0 files examined)", file=sys.stderr)
         return 2
 
     with open(MANIFEST_PATH) as f:
         manifest = json.load(f)
 
+    # D#1928: a manifest with no `files` key at all, or an empty one, used to
+    # fall straight through the loop below (nothing to iterate) and print
+    # "verify: clean (0 files match)" -- exit 0. That is indistinguishable
+    # from a manifest that pins everything and matches. Refuse instead: this
+    # is "could not establish a verdict", which belongs on exit 2 alongside
+    # the missing-manifest case above, not on the clean path.
+    pinned = manifest.get("files")
+    if not isinstance(pinned, dict) or not pinned:
+        reason = "has no 'files' key" if "files" not in manifest else "'files' is empty"
+        print(
+            f"error: manifest at {MANIFEST_PATH} {reason} -- refusing to report "
+            f"clean about an empty pin set (0 files examined)",
+            file=sys.stderr,
+        )
+        return 2
+
     drifted: list[str] = []
     missing: list[str] = []
-    for relpath, recorded_hash in sorted(manifest.get("files", {}).items()):
+    for relpath, recorded_hash in sorted(pinned.items()):
         full = REPO_ROOT / relpath
         if not full.is_file():
             missing.append(relpath)
@@ -149,8 +172,20 @@ def cmd_verify(_args: argparse.Namespace) -> int:
         if actual_hash != recorded_hash:
             drifted.append(relpath)
 
-    if not drifted and not missing:
-        print(f"verify: clean ({len(manifest.get('files', {}))} files match)")
+    # `added`: a file the allowlist would pin today but that has no entry in
+    # the manifest at all. Previously unreportable -- verify() only ever
+    # iterated manifest["files"], so a candidate with no pin was invisible to
+    # it, not merely absent from its output. Call the real candidate-set
+    # builder rather than re-implementing the globbing (D#1928 Implementation
+    # Notes; scripts/engine-sync/tests/test_coldstart_boundary.py sets the
+    # same precedent for this codebase).
+    includes, excludes = read_allowlist()
+    candidates = collect_files(REPO_ROOT, includes, excludes)
+    added = sorted(set(candidates) - set(pinned))
+
+    examined = len(pinned)
+    if not drifted and not missing and not added:
+        print(f"verify: clean ({examined} files match)")
         return 0
 
     if drifted:
@@ -161,6 +196,11 @@ def cmd_verify(_args: argparse.Namespace) -> int:
         print(f"verify: MISSING {len(missing)} file(s):", file=sys.stderr)
         for p in missing:
             print(f"  missing: {p}", file=sys.stderr)
+    if added:
+        print(f"verify: ADDED {len(added)} file(s) matching the allowlist but never pinned:", file=sys.stderr)
+        for p in added:
+            print(f"  added: {p}", file=sys.stderr)
+    print(f"verify: examined {examined} pinned entries ({len(candidates)} live candidates)", file=sys.stderr)
     return 1
 
 
