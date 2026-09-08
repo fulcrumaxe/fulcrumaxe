@@ -52,6 +52,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from hooks.repo_root import resolve_main_repo_root  # noqa: E402
+from hooks.spawn_tag_redaction import redact_spawn_tags  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -90,11 +91,19 @@ def _blocks_file() -> Path:
 
 
 def _append_audit_row(row: dict) -> None:
-    """Append a single JSON audit row to today's blocks file."""
+    """Append a single JSON audit row to today's blocks file.
+
+    Scrubbed the same way as hooks/sandbox.py's own writers into this file
+    (D#1959): `row["attempted_target"]` is the first 200 characters of a
+    scanned Agent() prompt, which is exactly the field that carries a
+    canonical "hook_event_id=<role>-<disc>-<ts>" spawn tag. Redacting the
+    serialised line rather than the field keeps this consistent with every
+    other writer into blocks-*.jsonl (D#2459).
+    """
     _HOOK_EVENTS_DIR.mkdir(parents=True, exist_ok=True)
     blocks_path = _blocks_file()
     with open(blocks_path, "a", encoding="utf-8") as fh:
-        fh.write(json.dumps(row) + "\n")
+        fh.write(redact_spawn_tags(json.dumps(row)) + "\n")
 
 
 def _scan_transcript(transcript_path: str) -> list[dict]:
