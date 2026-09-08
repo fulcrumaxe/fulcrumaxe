@@ -92,7 +92,9 @@ trigger sandbox blocks and waste tokens:
 If you need to compare against main:
 - `git fetch origin main`
 - `git show origin/main:path/to/file` (read-only, safe)
-- `git diff origin/main..HEAD` (run from inside your worktree)
+- `git diff origin/main...HEAD` (three-dot — run from inside your worktree; two-dot
+  conflates "files this branch changed" with "files main changed since this branch's
+  base" and manufactures claims on files the worktree never touched, D#1940 FM-4)
 
 If you need to write output:
 - /tmp/ is allowed (ephemeral)

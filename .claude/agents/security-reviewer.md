@@ -70,6 +70,13 @@ You are a temporary **Security Reviewer** — Security Auditor.
 2. Get code changes:
    CODE_REPO="$(source scripts/lib/repo-resolve.sh && _resolve_code_repo)"; gh pr diff {pr_number} --repo "${CODE_REPO:?code plane unresolved}"
 
+2b. If you materialise a scratch tree rather than reading individual files via `git show`:
+    before trusting any result from it, `source scripts/lib/tree-capability.sh` →
+    `tree_capability_assert <dir> [<sha>]`. Rejects a `git archive | tar -x` extraction
+    (no `.git`), a synthetic single-commit history, a tree missing the commit you meant to
+    review, and a tree that can't resolve the code plane's `main` as a comparison base
+    (D#1940 FM-1..FM-4).
+
 3. Read context (for understanding intent):
    gh api graphql → read Discussion #{N} body → extract Spec / Summary section
 

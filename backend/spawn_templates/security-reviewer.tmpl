@@ -14,6 +14,16 @@ reading any file:
 ```bash
 source scripts/lib/repo-resolve.sh
 
+# This function ships on the code plane (D#1940 PR-a) but this template
+# itself is read from wherever backend/spawn_templates.py's own file lives —
+# your own local checkout, which can be behind. A missing function here
+# means the checkout serving this spawn hasn't picked up that change yet;
+# fail with a diagnostic that says so, not a bare "command not found".
+if ! declare -f _resolve_code_plane_remote > /dev/null 2>&1; then
+  echo "FAIL: _resolve_code_plane_remote is not defined after sourcing scripts/lib/repo-resolve.sh — this checkout's copy of that file predates D#1940 PR-a and does not know how to resolve the code-plane remote. Do not fall back to the bare name \"origin\" (that is the Discussion plane, D#1940 FM-5); update this checkout's scripts/lib/repo-resolve.sh instead."
+  exit 1
+fi
+
 # Resolve the CODE plane's git remote — the bare name "origin" is the
 # Discussion plane and must never be used to pull a PR branch.
 CODE_REMOTE=$(_resolve_code_plane_remote) || exit 1
@@ -21,13 +31,31 @@ CODE_REMOTE=$(_resolve_code_plane_remote) || exit 1
 # Get the PR's branch name and authoritative head sha
 BRANCH=$(gh pr view {{pr_number}} --repo {{CODE_REPO}} --json headRefName --jq .headRefName)
 HEAD_SHA=$(gh pr view {{pr_number}} --repo {{CODE_REPO}} --json headRefOid --jq .headRefOid)
-# Fetch fresh, from the code plane
+# Fetch fresh, from the code plane — the PR branch AND main, so a
+# differential has both ends (D#1940 FM-3/FM-4).
 git fetch --quiet "$CODE_REMOTE" "$BRANCH"
+git fetch --quiet "$CODE_REMOTE" main
 FETCHED_SHA=$(git rev-parse --verify --quiet "$CODE_REMOTE/$BRANCH")
 [ "$FETCHED_SHA" = "$HEAD_SHA" ] || { echo "FAIL: fetched $FETCHED_SHA but PR #{{pr_number}}'s head on the code plane is $HEAD_SHA — refusing to review the wrong commit"; exit 1; }
 # Read files via git show, not direct file read:
 git show "$CODE_REMOTE/$BRANCH:path/to/file.py"
+# A differential is three-dot, with explicit remote refs on both sides —
+# never a bare `main..HEAD` or `origin/main..HEAD` (D#1940 FM-4):
+git diff "$CODE_REMOTE/main...$CODE_REMOTE/$BRANCH"
 ```
+
+If you materialise a tree at all (rather than reading individual files via `git show`), use
+`verify_tree_build` (`source scripts/lib/verify-tree.sh`) — never `.claude/worktrees/agent-*/`
+— and assert it before trusting any result from it:
+
+```bash
+source scripts/lib/tree-capability.sh
+tree_capability_assert "$SCRATCH_DIR" "$FETCHED_SHA" || { echo "FAIL: tree is not capable of a trustworthy result (D#1940 FM-1..FM-4)"; exit 1; }
+```
+
+`gh pr diff {{pr_number}} --repo "$(_require_code_repo)"` is GitHub's own authoritative
+diff — when it disagrees with a local diff, it wins; treat the disagreement as your local
+tree being stale, not as two valid answers.
 
 Security review is read-only — use `git show "$CODE_REMOTE/$BRANCH:..."` for all file reads.
 Never check out the PR branch; never run tests from this worktree.
