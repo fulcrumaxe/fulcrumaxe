@@ -458,8 +458,8 @@ def _dict_to_spec(d: dict[str, Any]) -> SpawnSpec:
 
 def _make_agent_id(spec_dict: dict[str, Any]) -> str:
     import time as _time
-    role = spec_dict.get("role", "unknown")
-    disc = spec_dict.get("discussion", "nod")
+    role = spec_dict.get("role") or "unknown"
+    disc = spec_dict.get("discussion") or "nod"
     return f"{role}-{disc}-{int(_time.time())}"
 
 
@@ -473,7 +473,7 @@ def _record_cc_route(agent_id: str, spec_dict: dict[str, Any]) -> None:
     """
     try:
         from backend.agent_run_tracker import start_run, complete_run  # noqa: PLC0415
-        role = spec_dict.get("role", "unknown")
+        role = spec_dict.get("role") or "unknown"
         discussion = spec_dict.get("discussion")
         pr = spec_dict.get("pr")
         start_run(
