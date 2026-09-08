@@ -91,6 +91,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -115,6 +116,25 @@ class RelativeStateDirError(ValueError):
     from — for anything started at the repo root, that is the checkout
     itself. See D#1967.
     """
+
+
+class InvalidProjectNameError(ValueError):
+    """Raised by :func:`for_project` when *name* contains characters outside
+    the safe charset.
+
+    ``for_project()`` builds ``home / f".{name}-state"`` directly from its
+    *name* argument with no character check. An unvalidated name of
+    ``"./../../etc"`` resolves ``state_dir`` to ``/etc-state`` — outside
+    ``$HOME`` (CWE-22, D#2358). Checked once here rather than per call site,
+    so every present and future caller of ``for_project()`` inherits it.
+    """
+
+
+# Project names are always a short slug a human picked (e.g. "projectb",
+# "autonomous-forever") — never free text. Same conservative charset used
+# for a GitHub repo slug component elsewhere in this codebase
+# (backend/_repo_remote.py's ``_VALID_SLUG_PART``).
+_PROJECT_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 def _guard(var_name: str) -> None:
@@ -393,7 +413,18 @@ def for_project(name: str) -> ProjectPaths:
     ProjectPaths
         Resolved path bundle.  ``state_dir`` is guaranteed to be set even
         when no config file is found (falls back to ``~/.<name>-state/``).
+
+    Raises
+    ------
+    InvalidProjectNameError
+        If *name* contains anything outside ``[A-Za-z0-9._-]`` — checked
+        before any path is built from it (see the class docstring).
     """
+    if not _PROJECT_NAME_RE.fullmatch(name):
+        raise InvalidProjectNameError(
+            f"invalid project name {name!r}: must match "
+            f"{_PROJECT_NAME_RE.pattern!r}"
+        )
     served = _served_state_dir(name)
     if served is not None:
         served_dir, data = served
