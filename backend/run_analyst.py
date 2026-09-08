@@ -362,12 +362,20 @@ def get_pr_diff_size(pr_number: int) -> dict:
 
 
 def get_current_branch() -> str:
-    """Get the current branch of the parent repo (point-in-time)."""
+    """Get the current branch of the MAIN repo checkout (point-in-time).
+
+    Anchored at main_repo_root(), never at REPO_ROOT: REPO_ROOT is wherever
+    this process happens to be running, which is a worktree whenever the
+    analyst is spawned like any other agent -- and the finding this feeds is
+    a claim about the parent repo, not about the analyst's own execution
+    context. Same class of bug as D#1997's _MAIN_REPO_ROOT_PATH fix, applied
+    here to this classifier.
+    """
     try:
         result = subprocess.run(
             ["git", "branch", "--show-current"],
             capture_output=True, text=True, timeout=10,
-            cwd=str(REPO_ROOT),
+            cwd=str(main_repo_root()),
         )
         if result.returncode == 0:
             return result.stdout.strip()
@@ -1006,10 +1014,12 @@ def classify_spec_impl_semantic_gap(
     return findings
 
 
-def classify_branch_drift(feed_events: list[dict]) -> list[dict]:
-    """Detect that parent repo is not on main during a /loop iteration.
+def classify_branch_drift_current() -> list[dict]:
+    """Detect that the MAIN repo is not on main right now.
 
-    Checks actual current branch at analyst run time.
+    Environment-derived: a live git probe against the main checkout, not
+    against any run data. Runs regardless of whether the runs corpus is
+    empty -- it has nothing to do with runs at all.
     Severity: high -- parent-repo branch drift corrupts spawned agents.
     """
     findings = []
@@ -1023,8 +1033,16 @@ def classify_branch_drift(feed_events: list[dict]) -> list[dict]:
             "suggested_discussion_title": "[Bug] Parent repo drifted off main — worktree contamination suspected",
             "suggested_tag": "[Bug]",
         })
+    return findings
 
-    # Also surface historical drift events from feed
+
+def classify_branch_drift_historical(feed_events: list[dict]) -> list[dict]:
+    """Detect historical branch-drift events mentioned in the agent feed.
+
+    Run-derived: this is a regex scan over feed_events, so it has nothing to
+    say when the runs corpus is empty.
+    """
+    findings = []
     for entry in feed_events:
         text = _entry_text(entry)
         if re.search(r"parent.*repo.*branch|branch.*not.*main|drifted.*off.*main|git.*checkout.*main", text, re.IGNORECASE):
@@ -3862,6 +3880,134 @@ def _median(values: list[float]) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Provenance dispatch
+#
+# Findings come from three unrelated kinds of input, and only one of them is
+# "runs": a live probe of the analyst's own execution environment (whether
+# the MAIN checkout is on main right now), a scan of transcript files, and
+# everything derived from the feed/loop-log/audit corpus that runs_analyzed
+# counts. Tagging each group once here -- rather than inside each of the
+# ~45 classifiers -- keeps provenance correct without touching every
+# classifier body.
+# ---------------------------------------------------------------------------
+
+def _tag(findings: list[dict], provenance: str) -> list[dict]:
+    """Stamp every finding in *findings* with its provenance; return it."""
+    for finding in findings:
+        finding["provenance"] = provenance
+    return findings
+
+
+def collect_run_derived_findings(
+    *,
+    feed_events: list[dict],
+    loop_logs: list[dict],
+    audit: list[dict],
+    role_efficiency: dict,
+    cost_tracker: dict,
+    needs_fix_prs: list[dict],
+    loop_metrics: list[dict],
+    budget_data: dict,
+    hook_events: list[dict],
+    since: datetime,
+    runs_analyzed: int,
+) -> list[dict]:
+    """Run every run-derived classifier and tag the results "runs".
+
+    Gated on runs_analyzed, not on any individual input being empty:
+    role_efficiency, cost_tracker, hook_events, and budget_data are each
+    independent of the feed/loop-log/audit corpus runs_analyzed counts, and
+    could carry data of their own even when zero runs were analysed. With no
+    runs analysed there is nothing to derive a run-based finding from --
+    honest behaviour is to run none of these classifiers, say so on stdout,
+    and return no findings, never a findings list that looks derived from
+    runs no one read.
+    """
+    if runs_analyzed == 0:
+        print("0 runs analysed — no run-derived findings possible")
+        return []
+
+    findings: list[dict] = []
+    combined = feed_events + loop_logs + audit
+    for i in range(0, max(1, len(combined)), CHUNK_SIZE):
+        chunk = combined[i:i + CHUNK_SIZE]
+        findings.extend(classify_failure_clusters(chunk, [], []))
+        findings.extend(classify_spec_quality_flags(chunk, []))
+        findings.extend(classify_tool_use_anomalies(chunk, [], []))
+        findings.extend(classify_worktree_contamination(chunk, [], []))
+        findings.extend(classify_hard_rule_violations(chunk, [], []))
+        findings.extend(classify_agent_output_missing(chunk, [], []))
+
+    findings.extend(classify_stalled_patterns(feed_events, since))
+    findings.extend(classify_fix_cycle_loops(feed_events, audit, needs_fix_prs))
+    findings.extend(classify_cost_outliers(role_efficiency, cost_tracker))
+    findings.extend(classify_time_anomalies(role_efficiency, feed_events))
+
+    # New Phase A classifiers (Discussion #478)
+    findings.extend(classify_test_coverage_gap(feed_events, audit))
+    findings.extend(classify_missing_post_agent_hook(feed_events, audit))
+    findings.extend(classify_token_burn_no_output(feed_events, audit))
+    findings.extend(classify_discussion_respun_n_times(feed_events, audit))
+    findings.extend(classify_hook_event_spam(hook_events))
+    findings.extend(classify_transcript_repetition(feed_events, loop_logs))
+    findings.extend(classify_spec_impl_semantic_gap(feed_events, audit, needs_fix_prs))
+    findings.extend(classify_branch_drift_historical(feed_events))
+    findings.extend(classify_stale_snapshot_consumption(loop_metrics, feed_events))
+    findings.extend(classify_budget_cap_proximity(budget_data))
+    findings.extend(classify_pre_spawn_check_missing(feed_events, audit))
+
+    return _tag(findings, "runs")
+
+
+def collect_findings(
+    *,
+    feed_events: list[dict],
+    loop_logs: list[dict],
+    audit: list[dict],
+    role_efficiency: dict,
+    cost_tracker: dict,
+    needs_fix_prs: list[dict],
+    loop_metrics: list[dict],
+    budget_data: dict,
+    hook_events: list[dict],
+    since: datetime,
+    runs_analyzed: int,
+    transcript_derived: list[dict] | None = None,
+) -> list[dict]:
+    """Run-derived + environment-derived + (pre-scanned) transcript-derived,
+    each tagged with its own provenance. This is main()'s findings-collection
+    step, extracted so it is directly testable without argparse or the
+    file-write side effects the rest of main() has.
+
+    transcript_derived is accepted pre-computed (main() passes the already-
+    scanned Phase A.2-A.8 result) rather than scanned here, so a caller that
+    only cares about run-derived vs environment-derived behaviour -- the
+    empty-corpus honesty tests -- never has to touch a real transcript file
+    on disk to exercise this function.
+
+    Only run-derived findings are gated on runs_analyzed; environment- and
+    transcript-derived findings are unconditional, on purpose (D#1932
+    criterion 4 blocks a version of this that widens the gate to also
+    suppress those).
+    """
+    run_derived = collect_run_derived_findings(
+        feed_events=feed_events,
+        loop_logs=loop_logs,
+        audit=audit,
+        role_efficiency=role_efficiency,
+        cost_tracker=cost_tracker,
+        needs_fix_prs=needs_fix_prs,
+        loop_metrics=loop_metrics,
+        budget_data=budget_data,
+        hook_events=hook_events,
+        since=since,
+        runs_analyzed=runs_analyzed,
+    )
+    environment_derived = _tag(classify_branch_drift_current(), "environment")
+    return run_derived + environment_derived + list(transcript_derived or [])
+
+
+# ---------------------------------------------------------------------------
 # CLI entrypoint
 # ---------------------------------------------------------------------------
 
@@ -3921,63 +4067,54 @@ def main() -> int:
 
     runs_analyzed = len(feed_events) + len(loop_logs) + len(audit)
 
-    all_findings: list[dict] = []
-
-    combined = feed_events + loop_logs + audit
-    for i in range(0, max(1, len(combined)), CHUNK_SIZE):
-        chunk = combined[i:i + CHUNK_SIZE]
-        all_findings.extend(classify_failure_clusters(chunk, [], []))
-        all_findings.extend(classify_spec_quality_flags(chunk, []))
-        all_findings.extend(classify_tool_use_anomalies(chunk, [], []))
-        all_findings.extend(classify_worktree_contamination(chunk, [], []))
-        all_findings.extend(classify_hard_rule_violations(chunk, [], []))
-        all_findings.extend(classify_agent_output_missing(chunk, [], []))
-
-    all_findings.extend(classify_stalled_patterns(feed_events, since))
-    all_findings.extend(classify_fix_cycle_loops(feed_events, audit, needs_fix_prs))
-    all_findings.extend(classify_cost_outliers(role_efficiency, cost_tracker))
-    all_findings.extend(classify_time_anomalies(role_efficiency, feed_events))
-
-    # New Phase A classifiers (Discussion #478)
-    all_findings.extend(classify_test_coverage_gap(feed_events, audit))
-    all_findings.extend(classify_missing_post_agent_hook(feed_events, audit))
-    all_findings.extend(classify_token_burn_no_output(feed_events, audit))
-    all_findings.extend(classify_discussion_respun_n_times(feed_events, audit))
-    all_findings.extend(classify_hook_event_spam(hook_events))
-    all_findings.extend(classify_transcript_repetition(feed_events, loop_logs))
-    all_findings.extend(classify_spec_impl_semantic_gap(feed_events, audit, needs_fix_prs))
-    all_findings.extend(classify_branch_drift(feed_events))
-    all_findings.extend(classify_stale_snapshot_consumption(loop_metrics, feed_events))
-    all_findings.extend(classify_budget_cap_proximity(budget_data))
-    all_findings.extend(classify_pre_spawn_check_missing(feed_events, audit))
-
-    # Phase A.2 transcript classifiers (Discussion #486)
+    # Transcript-derived: Phase A.2-A.8 classifiers over transcript files.
+    # Always runs -- transcripts_analyzed is a separate count from
+    # runs_analyzed and this Spec does not gate on it.
     since_seconds = int((datetime.now(timezone.utc) - since).total_seconds())
     transcript_states = _scan_transcripts(since_seconds=since_seconds)
-    all_findings.extend(classify_wrong_premise_retries(transcript_states))
-    all_findings.extend(classify_forbidden_subagent_type(transcript_states))
-    all_findings.extend(classify_team_lead_self_edit(transcript_states))
-    all_findings.extend(classify_auth_leak_risk(transcript_states))
-    all_findings.extend(classify_permission_seeking(transcript_states))
-    all_findings.extend(classify_repeated_file_reads(transcript_states))
+    transcript_derived: list[dict] = []
+    transcript_derived.extend(classify_wrong_premise_retries(transcript_states))
+    transcript_derived.extend(classify_forbidden_subagent_type(transcript_states))
+    transcript_derived.extend(classify_team_lead_self_edit(transcript_states))
+    transcript_derived.extend(classify_auth_leak_risk(transcript_states))
+    transcript_derived.extend(classify_permission_seeking(transcript_states))
+    transcript_derived.extend(classify_repeated_file_reads(transcript_states))
 
     # Phase A.3 transcript classifiers (Discussion #511)
-    all_findings.extend(_run_phase_a3_classifiers(since_seconds=since_seconds))
+    transcript_derived.extend(_run_phase_a3_classifiers(since_seconds=since_seconds))
 
     # Phase A.4 transcript classifiers (Discussion #523)
-    all_findings.extend(_run_phase_a4_classifiers(since_seconds=since_seconds))
+    transcript_derived.extend(_run_phase_a4_classifiers(since_seconds=since_seconds))
 
     # Phase A.5: self-observe gate classifiers (Discussion #531)
-    all_findings.extend(_run_phase_a5_classifiers(since_seconds=since_seconds))
+    transcript_derived.extend(_run_phase_a5_classifiers(since_seconds=since_seconds))
 
     # Phase A.6: worktree isolation classifiers (Discussion #592)
-    all_findings.extend(_run_phase_a6_classifiers(since_seconds=since_seconds))
+    transcript_derived.extend(_run_phase_a6_classifiers(since_seconds=since_seconds))
 
     # Phase A.7: sleep-retry-loop classifiers (Discussion #592 PR-b)
-    all_findings.extend(_run_phase_a7_classifiers(since_seconds=since_seconds))
+    transcript_derived.extend(_run_phase_a7_classifiers(since_seconds=since_seconds))
 
     # Phase A.8: stale_rebase + gate_check_skipped classifiers (Discussion #655)
-    all_findings.extend(_run_phase_a8_classifiers(since_seconds=since_seconds))
+    transcript_derived.extend(_run_phase_a8_classifiers(since_seconds=since_seconds))
+    _tag(transcript_derived, "transcripts")
+
+    # Run-derived (gated on runs_analyzed) + environment-derived (always) --
+    # see collect_findings for why each is treated the way it is.
+    all_findings: list[dict] = collect_findings(
+        feed_events=feed_events,
+        loop_logs=loop_logs,
+        audit=audit,
+        role_efficiency=role_efficiency,
+        cost_tracker=cost_tracker,
+        needs_fix_prs=needs_fix_prs,
+        loop_metrics=loop_metrics,
+        budget_data=budget_data,
+        hook_events=hook_events,
+        since=since,
+        runs_analyzed=runs_analyzed,
+        transcript_derived=transcript_derived,
+    )
 
     seen_keys: set[tuple] = set()
     deduped: list[dict] = []
