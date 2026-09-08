@@ -46,7 +46,11 @@ print('[hourly-stats] recorded ${metric}=${value} ${unit}')
 }
 
 # ── 1. wasted_tokens_ratio ────────────────────────────────────────────────────
-WASTED_RATIO=0.0
+# An empty WASTED_RATIO means "no token-bearing feed rows fell in the 24h
+# window" — that is not the same fact as a measured ratio of 0.0, so it must
+# not be published as one (D#2477: fail-open initialisers were being read as
+# measurements, same shape as the fix_rounds_per_pr breakage).
+WASTED_RATIO=""
 if [[ -f "$FEED" ]]; then
   WASTED_RATIO=$(FEED_PATH="$FEED" python3 -c "
 import json, os, datetime
@@ -78,13 +82,14 @@ with open(feed_path) as f:
             fail_tokens += t
 
 if total_tokens == 0:
-    print(0.0)
+    print('')
 else:
     print(round(fail_tokens / total_tokens, 4))
-" 2>/dev/null || echo "0.0")
+" 2>/dev/null || echo "")
 fi
 
-STATS_DB_PATH="" python3 -c "
+if [[ -n "$WASTED_RATIO" ]]; then
+  STATS_DB_PATH="" python3 -c "
 import sys, os
 sys.path.insert(0, '${REPO_ROOT}/backend')
 import stats_writer
@@ -97,9 +102,15 @@ stats_writer.record(
 )
 print('[hourly-stats] recorded wasted_tokens_ratio=${WASTED_RATIO} ratio')
 "
+else
+  echo "[hourly-stats] skipped wasted_tokens_ratio: no token data in 24h window"
+fi
 
 # ── 2. impersonation_rate ─────────────────────────────────────────────────────
-IMPERSONATION_RATE=0.0
+# Same rule as above: an empty IMPERSONATION_RATE means "zero impl-coord runs
+# in the 24h window", not "measured zero impersonation" — publish nothing
+# rather than a value nobody computed (D#2477).
+IMPERSONATION_RATE=""
 if [[ -f "$FEED" ]]; then
   IMPERSONATION_RATE=$(RETROS_PATH="$RETROS" FEED_PATH="$FEED" python3 -c "
 import json, os, datetime
@@ -145,13 +156,14 @@ except FileNotFoundError:
     pass
 
 if impl_runs == 0:
-    print(0.0)
+    print('')
 else:
     print(round(skipped / impl_runs, 4))
-" 2>/dev/null || echo "0.0")
+" 2>/dev/null || echo "")
 fi
 
-STATS_DB_PATH="" python3 -c "
+if [[ -n "$IMPERSONATION_RATE" ]]; then
+  STATS_DB_PATH="" python3 -c "
 import sys, os
 sys.path.insert(0, '${REPO_ROOT}/backend')
 import stats_writer
@@ -164,9 +176,15 @@ stats_writer.record(
 )
 print('[hourly-stats] recorded impersonation_rate=${IMPERSONATION_RATE} ratio')
 "
+else
+  echo "[hourly-stats] skipped impersonation_rate: no impl-coord runs in 24h window"
+fi
 
 # ── 3. hard_rule_violation_count ──────────────────────────────────────────────
-VIOLATION_COUNT=0
+# An empty VIOLATION_COUNT means "no run-analyst report fell in the 24h
+# window" — no check was actually performed, so there is nothing to publish.
+# A real 0 still requires at least one report to have been examined (D#2477).
+VIOLATION_COUNT=""
 VIOLATION_COUNT=$(REPORTS_DIR="$RUN_REPORTS_DIR" python3 -c "
 import json, os, glob, datetime
 
@@ -176,6 +194,7 @@ cutoff = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hour
 VIOLATION_CATEGORIES = {'forbidden_subagent_type', 'git_rm_usage', 'team_lead_self_edit'}
 
 count = 0
+reports_seen = 0
 for path in glob.glob(os.path.join(reports_dir, '*.json')):
     try:
         with open(path) as f:
@@ -185,15 +204,17 @@ for path in glob.glob(os.path.join(reports_dir, '*.json')):
     report_at = data.get('report_at', '')
     if report_at < cutoff:
         continue
+    reports_seen += 1
     for finding in data.get('findings', []):
         cat = finding.get('category', '')
         if cat in VIOLATION_CATEGORIES:
             count += 1
 
-print(count)
-" 2>/dev/null || echo "0")
+print(count if reports_seen > 0 else '')
+" 2>/dev/null || echo "")
 
-STATS_DB_PATH="" python3 -c "
+if [[ -n "$VIOLATION_COUNT" ]]; then
+  STATS_DB_PATH="" python3 -c "
 import sys, os
 sys.path.insert(0, '${REPO_ROOT}/backend')
 import stats_writer
@@ -206,5 +227,8 @@ stats_writer.record(
 )
 print('[hourly-stats] recorded hard_rule_violation_count=${VIOLATION_COUNT} count')
 "
+else
+  echo "[hourly-stats] skipped hard_rule_violation_count: no run-analyst report in 24h window"
+fi
 
 echo "[hourly-stats] done"
