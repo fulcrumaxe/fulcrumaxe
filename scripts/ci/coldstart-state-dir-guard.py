@@ -27,16 +27,20 @@ What counts as an invocation
 A line that references a coldstart script — either by path literal
 (`.../coldstart-project.sh`) or through a variable previously assigned exactly
 such a path (`COLDSTART_SH="$REPO_ROOT/scripts/coldstart-project.sh"`, then
-`bash "$COLDSTART_SH" ...`) — *and* carries a `bash` / `sh` / `env` execution
-token. A bare reference with no execution token (`grep -n foo
-"$REPO_ROOT/scripts/coldstart-project.sh"`, `assert_contains "$COLDSTART_SH"`,
-`open('.../coldstart-project.sh')`) is a read, not a run, and is not flagged.
+`bash "$COLDSTART_SH" ...`) — and either carries a `bash` / `sh` / `env`
+execution token, or is itself in command-initial position on the line
+(`"$COLDSTART_SH" --name x`, `./scripts/coldstart.sh --name x`) — a direct
+exec needs no interpreter prefix (D#2351). A bare reference used as someone
+else's argument (`grep -n foo "$REPO_ROOT/scripts/coldstart-project.sh"`,
+`assert_contains "$COLDSTART_SH"`, `open('.../coldstart-project.sh')`) is a
+read, not a run, and is not flagged.
 
 Invocations that provably cannot reach the state-dir creation are not flagged:
-a line carrying one of the non-mutating flags below (`--help`, `--dry-run`,
-`--self-test`, `-n`, `--version`), and any `coldstart.sh` invocation that
-passes no `--name` (it exits on the missing-argument path long before
-`STATE_DIR` is computed).
+a line carrying one of the non-mutating flags below as a whole shell token
+(`--help`, `--dry-run`, `--self-test`, `-h`, `--version` — matched by token,
+not by substring, so a fixture path like `fake-home` does not silently exempt
+the line, D#2351), and any `coldstart.sh` invocation that passes no `--name`
+(it exits on the missing-argument path long before `STATE_DIR` is computed).
 
 What counts as containment
 --------------------------
@@ -48,11 +52,15 @@ puts it in the `env=` dict a few lines below the `subprocess.run` argument
 list. Only a line that *assigns* the name (`COLDSTART_STATE_ROOT=` or
 `"COLDSTART_STATE_ROOT":`) counts; a bare mention in a comment does not.
 
-A `HOME=` env prefix on the invocation line itself also counts. The state root
-resolves as `${COLDSTART_STATE_ROOT:-$HOME}`, so pointing HOME at a fixture
-redirects it just as effectively — and one test has to invoke the script with
-the variable genuinely unset, to prove the default is unchanged. That shape is
-accepted same-line only, where the redirect provably covers the invocation.
+A `HOME=` env prefix on the invocation line itself also counts, provided the
+value actually redirects. The state root resolves as
+`${COLDSTART_STATE_ROOT:-$HOME}`, so pointing HOME at a fixture redirects it
+just as effectively — and one test has to invoke the script with the variable
+genuinely unset, to prove the default is unchanged. A value that is `$HOME` /
+`${HOME}` / `~` (quoted or not) is not a redirect — it reassigns HOME to what
+it already is — so that spelling does not count as containment (D#2351). That
+shape is accepted same-line only, where the redirect provably covers the
+invocation.
 
 Stated gap: this is a proximity rule, not dataflow analysis. An assignment
 inside a branch that does not actually cover the invocation would satisfy it.
@@ -126,8 +134,15 @@ SCRIPT_VAR_ASSIGN_RE = re.compile(
 # A bash/sh/env execution token, as a whole word.
 EXEC_TOKEN_RE = re.compile(r"""(?:^|[\s;&|(\["',])(?:bash|sh|env)(?:["'\s,)\]]|$)""")
 
-# Flags that provably exit before any state dir is created.
+# Flags that provably exit before any state dir is created. Matched as a whole
+# shell token, not a substring — the old substring form let "-h" fire inside
+# any unrelated word containing it (a fixture path like "fake-home", a project
+# named "test-host"), silently exempting the line with no warning (D#2351).
 NON_MUTATING_FLAGS = ("--help", "-h", "--dry-run", "--self-test", "--version")
+_NON_MUTATING_ALT = "|".join(re.escape(f) for f in NON_MUTATING_FLAGS)
+NON_MUTATING_FLAG_RE = re.compile(
+    r"""(?:^|[\s;&|(\["',])(?:""" + _NON_MUTATING_ALT + r""")(?:["'\s,)\]]|$)"""
+)
 SYNTAX_ONLY_RE = re.compile(r"\bbash\s+-n\b")
 
 # An assignment (not a bare mention) of the override.
@@ -137,8 +152,14 @@ CONTAINMENT_RE = re.compile(r"""(?:COLDSTART_STATE_ROOT\s*=|["']COLDSTART_STATE_
 # override on the invocation itself redirects it just as effectively. Accepted
 # as containment, but SAME LINE ONLY — an env prefix is the only shape where
 # the redirect provably covers this invocation, and one test deliberately
-# exercises the unset-variable default path with exactly that shape.
-HOME_SAME_LINE_RE = re.compile(r"""(?:^|[\s;&|(])HOME\s*=""")
+# exercises the unset-variable default path with exactly that shape. A value
+# of `$HOME` / `${HOME}` / `~` (quoted or not) is excluded via the negative
+# lookahead below — it reassigns HOME to exactly what it already is, so it is
+# not a redirect at all and must not read as containment (D#2351).
+_HOME_UNCHANGED_VALUE = r"""(?:"?\$\{?HOME\}?"?|~)(?:["'\s;&|)]|$)"""
+HOME_SAME_LINE_RE = re.compile(
+    r"""(?:^|[\s;&|(])HOME\s*=(?!""" + _HOME_UNCHANGED_VALUE + r""")"""
+)
 
 WINDOW_BEFORE = 20
 WINDOW_AFTER = 8
@@ -169,6 +190,46 @@ def _logical_lines(text: str) -> list[tuple[int, str]]:
     return out
 
 
+_CMD_SEP_RE = re.compile(r"&&|\|\||;")
+
+
+def _first_word(segment: str) -> str:
+    """First shell word of a command segment, with its quotes stripped."""
+    seg = segment.strip()
+    if seg[:1] in ("\"", "'"):
+        q = seg[0]
+        end = seg.find(q, 1)
+        return seg[1:end] if end != -1 else seg[1:]
+    parts = seg.split(None, 1)
+    return parts[0] if parts else ""
+
+
+def _direct_invocation(line: str, script_vars: set[str]) -> str | None:
+    """A script literal/var used as the command itself — no bash/sh/env
+    prefix needed when the script is directly executable (D#2351). Returns
+    the matched token, or None.
+
+    Checked as the first word of each `;` / `&&` / `||` separated segment, so
+    only command-initial position counts. That is what keeps a read (`grep
+    -n foo "$COLDSTART_SH"`, `assert_contains "$COLDSTART_SH" ...`,
+    `open('.../coldstart-project.sh')`) from being mistaken for a run — in
+    every one of those the script reference is someone else's argument, not
+    the first word of the segment.
+    """
+    for segment in _CMD_SEP_RE.split(line):
+        word = _first_word(segment)
+        if not word:
+            continue
+        if word.startswith("./"):
+            word = word[2:]
+        if word.endswith(tuple(ENTRY_POINTS)):
+            return word
+        for var in script_vars:
+            if word in (f"${var}", f"${{{var}}}"):
+                return var
+    return None
+
+
 def scan(path: str, text: str) -> list[tuple[str, int, str, str]]:
     """Return (path, lineno, script, line) for each uncontained invocation."""
     joined = _logical_lines(text)
@@ -197,12 +258,12 @@ def scan(path: str, text: str) -> list[tuple[str, int, str, str]]:
         if not literal and not var_hit:
             continue
 
-        if not EXEC_TOKEN_RE.search(line):
+        if not EXEC_TOKEN_RE.search(line) and not _direct_invocation(line, script_vars):
             continue  # a read of the script, not a run of it
 
         if SYNTAX_ONLY_RE.search(line):
             continue
-        if any(f in line for f in NON_MUTATING_FLAGS):
+        if NON_MUTATING_FLAG_RE.search(line):
             continue
 
         script = literal.group(0) if literal else var_hit
@@ -262,6 +323,42 @@ env -u COLDSTART_STATE_ROOT HOME="$FIXTURE_HOME" \\
   > "$WORK/cs.log" 2>&1
 """
 
+# D#2351 #1: NON_MUTATING_FLAGS used to match "-h" as a bare substring, so it
+# fired inside any word containing those two characters.
+_FLAG_SUBSTRING_EVASION = """#!/usr/bin/env bash
+TMP_REPO=$(mktemp -d)
+bash "$REPO_ROOT/scripts/coldstart-project.sh" "$TMP_REPO" "fake-home"
+"""
+
+# The token-matched fix must still let a genuine -h flag through unflagged.
+_FLAG_TOKEN_LEGIT = """#!/usr/bin/env bash
+bash "$REPO_ROOT/scripts/coldstart-project.sh" -h
+"""
+
+# D#2351 #2: HOME_SAME_LINE_RE used to accept any HOME= value, including one
+# that reassigns HOME to exactly what it already is.
+_HOME_UNCHANGED_SAME_VALUE = """#!/usr/bin/env bash
+HOME="$HOME" bash "$REPO_ROOT/scripts/coldstart-project.sh" "$TMP_REPO" unset
+"""
+
+_HOME_UNCHANGED_TILDE = """#!/usr/bin/env bash
+HOME=~ bash "$REPO_ROOT/scripts/coldstart-project.sh" "$TMP_REPO" unset
+"""
+
+# D#2351 #3: EXEC_TOKEN_RE required a bash/sh/env token, so a direct exec of
+# an executable entry point (coldstart.sh is 0755) evaded entirely.
+_DIRECT_INVOCATION = """#!/usr/bin/env bash
+COLDSTART_SH="$REPO_ROOT/scripts/coldstart.sh"
+"$COLDSTART_SH" --name leaky
+"""
+
+_DIRECT_INVOCATION_CONTAINED = """#!/usr/bin/env bash
+COLDSTART_STATE_ROOT="$(mktemp -d)"
+export COLDSTART_STATE_ROOT
+COLDSTART_SH="$REPO_ROOT/scripts/coldstart.sh"
+"$COLDSTART_SH" --name leaky
+"""
+
 
 def run_self_test(fail) -> None:
     cases = [
@@ -271,6 +368,12 @@ def run_self_test(fail) -> None:
         ("positive/via-variable", _VAR_INVOCATION, True),
         ("negative/home-prefixed", _HOME_PREFIXED, False),
         ("negative/continued-env-prefix", _CONTINUED_PREFIX, False),
+        ("positive/flag-substring-evasion", _FLAG_SUBSTRING_EVASION, True),
+        ("negative/flag-token-legit", _FLAG_TOKEN_LEGIT, False),
+        ("positive/home-unchanged-same-value", _HOME_UNCHANGED_SAME_VALUE, True),
+        ("positive/home-unchanged-tilde", _HOME_UNCHANGED_TILDE, True),
+        ("positive/direct-invocation", _DIRECT_INVOCATION, True),
+        ("negative/direct-invocation-contained", _DIRECT_INVOCATION_CONTAINED, False),
     ]
     for name, text, want_findings in cases:
         got = scan(f"tests/self-test-{name}.sh", text)
