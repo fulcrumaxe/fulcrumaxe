@@ -228,7 +228,7 @@
     "scripts/ollama-smoke-test.sh": "e96204779b8e46c7899ee64899d6cb12a90a1faa88173a1e8b5c516b5249a52d",
     "scripts/orchestrate.sh": "1fa620596028755eaa045a0b9c70db3b6d39279df80d2ecb2cd79e579855974c",
     "scripts/post-agent-hook.sh": "5b01364742dbb3294689147f60f9273367254ec69c4d31d1cceb5efacbd10353",
-    "scripts/post-merge-hook.sh": "b2a3180890286f4ebb59295fadc3d5c2780ad3d2d448a42788a7e1caf7246667",
+    "scripts/post-merge-hook.sh": "a6b5f0174237320690f8256a92a81f93e8aac94621fe7c65051c8a027cf5803c",
     "scripts/post-merge-wiki.sh": "2ad042e451cecd6b52d4e79856381ab92a4f46c1524e62895facfa2bd297d9d3",
     "scripts/pre-spawn-check.sh": "e43589b9981c0d5250cc0b235f7046fe5286bf5282f6df99949c9e3bb6e7853c",
     "scripts/preflight-fast.sh": "b73ed86f046df3ec970185c276bca573b8b15f5f8b1930ea02d4c1309036ea41",

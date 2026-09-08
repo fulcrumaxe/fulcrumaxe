@@ -2,7 +2,23 @@
 PR lifecycle state machine backed by the blackboard.
 
 Tracks each open PR's phase from initial queuing through merging.
-Stored under blackboard key ``pr_state/{pr_number}``.
+Stored under blackboard key ``pr_state/{pr_number}`` (legacy, unnamespaced —
+still the default when no repo is given) or ``pr_state/{repo}/{pr_number}``
+when a caller passes ``repo``/``--repo`` explicitly.
+
+Two repos issue PR numbers into this one key space once the public repo
+becomes the code plane (D#2379): a public PR can carry the same number as an
+existing private-repo row. Every reader that omits ``repo`` keeps reading the
+legacy unnamespaced key exactly as before this change — no behaviour change,
+no migration, and the 172 pre-existing rows stay exactly where they are.
+Only the two call sites where a numeric collision is actually dangerous
+(``scripts/post-merge-hook.sh``'s get-then-init merge recording and its
+close-guard count) pass ``--repo`` explicitly, which switches them onto an
+isolated, repo-scoped key that a same-numbered row from a different repo can
+never collide with. There is no automatic fallback from a repo-scoped lookup
+to the legacy key: an explicit ``repo`` means "only this repo's row", by
+design — see D#2379 for why an automatic fallback there would silently
+resurrect the exact collision this change exists to close.
 
 Mutation locus
 --------------
@@ -24,6 +40,7 @@ CLI usage
     python3 backend/pr_state.py list --stale
     python3 backend/pr_state.py advance 547 --to code_review
     python3 backend/pr_state.py set 547 --phase merging --field needs_security_review=true
+    python3 backend/pr_state.py get 547 --repo fulcrumaxe/fulcrumaxe
     python3 backend/pr_state.py record-envelope 547 --role executor --verdict done \\
         --input-tokens 50000 --output-tokens 8000
 
@@ -125,7 +142,12 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def _bb_key(pr: int) -> str:
+def _bb_key(pr: int, repo: str | None = None) -> str:
+    """Key for *pr*. ``repo`` (e.g. ``"fulcrumaxe/fulcrumaxe"``) namespaces the
+    key so the same PR number from a different repo never collides; omitted,
+    this is the legacy unnamespaced key used before D#2379."""
+    if repo:
+        return f"{_KEY_PREFIX}/{repo}/{pr}"
     return f"{_KEY_PREFIX}/{pr}"
 
 
@@ -138,15 +160,19 @@ def _get_bb() -> Blackboard:
 # Library API
 # -----------------------------------------------------------------------
 
-def init_entry(pr: int, discussion: int, bb: Blackboard | None = None) -> dict:
+def init_entry(
+    pr: int, discussion: int, repo: str | None = None, bb: Blackboard | None = None
+) -> dict:
     """
     Create a new pr_state entry in the queued phase.
 
-    Raises ValueError if an entry already exists for this PR.
+    Raises ValueError if an entry already exists for this PR (under the same
+    ``repo`` namespace — a different repo's row for the same PR number is a
+    separate entry, not a collision; see module docstring).
     """
     if bb is None:
         bb = _get_bb()
-    key = _bb_key(pr)
+    key = _bb_key(pr, repo)
     existing = bb.read(key)
     if existing is not None:
         raise ValueError(f"pr_state entry already exists for PR #{pr}")
@@ -171,14 +197,20 @@ def init_entry(pr: int, discussion: int, bb: Blackboard | None = None) -> dict:
     return entry
 
 
-def get_entry(pr: int, bb: Blackboard | None = None) -> dict | None:
-    """Return the pr_state entry for *pr*, or None if it doesn't exist."""
+def get_entry(pr: int, repo: str | None = None, bb: Blackboard | None = None) -> dict | None:
+    """Return the pr_state entry for *pr*, or None if it doesn't exist.
+
+    ``repo`` scopes the lookup to that repo's namespaced key only — it does
+    NOT fall back to the legacy unnamespaced key. Omit ``repo`` to read the
+    legacy key directly."""
     if bb is None:
         bb = _get_bb()
-    return bb.read(_bb_key(pr))
+    return bb.read(_bb_key(pr, repo))
 
 
-def advance(pr: int, to_phase: str, bb: Blackboard | None = None) -> dict:
+def advance(
+    pr: int, to_phase: str, repo: str | None = None, bb: Blackboard | None = None
+) -> dict:
     """
     Advance the phase of PR *pr* to *to_phase*.
 
@@ -190,7 +222,7 @@ def advance(pr: int, to_phase: str, bb: Blackboard | None = None) -> dict:
     if to_phase not in VALID_PHASES:
         raise ValueError(f"Unknown phase: {to_phase!r}. Valid phases: {sorted(VALID_PHASES)}")
 
-    key = _bb_key(pr)
+    key = _bb_key(pr, repo)
     entry = bb.read(key)
     if entry is None:
         raise ValueError(f"No pr_state entry found for PR #{pr}")
@@ -213,6 +245,7 @@ def set_fields(
     pr: int,
     phase: str | None = None,
     fields: dict[str, Any] | None = None,
+    repo: str | None = None,
     bb: Blackboard | None = None,
 ) -> dict:
     """
@@ -223,7 +256,7 @@ def set_fields(
     """
     if bb is None:
         bb = _get_bb()
-    key = _bb_key(pr)
+    key = _bb_key(pr, repo)
     entry = bb.read(key)
     if entry is None:
         raise ValueError(f"No pr_state entry found for PR #{pr}")
@@ -249,6 +282,7 @@ def record_envelope(
     input_tokens: int = 0,
     output_tokens: int = 0,
     event_id: str = "",
+    repo: str | None = None,
     bb: Blackboard | None = None,
 ) -> dict:
     """
@@ -259,7 +293,7 @@ def record_envelope(
     """
     if bb is None:
         bb = _get_bb()
-    key = _bb_key(pr)
+    key = _bb_key(pr, repo)
     entry = bb.read(key)
     if entry is None:
         raise ValueError(f"No pr_state entry found for PR #{pr}")
@@ -291,6 +325,7 @@ def list_entries(
     blocked: bool = False,
     stale: bool = False,
     discussion: int | None = None,
+    repo: str | None = None,
     bb: Blackboard | None = None,
     now_ts: float | None = None,
 ) -> list[dict]:
@@ -301,11 +336,16 @@ def list_entries(
     ``blocked``    -- only entries in the ``blocked`` phase
     ``stale``      -- entries where updated_at > 60 min ago AND not terminal
     ``discussion`` -- only entries linked to this Discussion number
+    ``repo``       -- only entries namespaced under this repo (excludes the
+                      legacy unnamespaced rows and every other repo's rows —
+                      needed so a Discussion count is never inflated by a
+                      same-numbered row from a different repo, D#2379)
     ``now_ts``     -- override for current time (seconds since epoch); used in tests
     """
     if bb is None:
         bb = _get_bb()
-    keys = bb.list_keys(_KEY_PREFIX + "/")
+    prefix = f"{_KEY_PREFIX}/{repo}/" if repo else _KEY_PREFIX + "/"
+    keys = bb.list_keys(prefix)
     entries = []
     for key in keys:
         entry = bb.read(key)
@@ -352,14 +392,23 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     sub = p.add_subparsers(dest="command", required=True)
 
+    _repo_help = (
+        "Namespace the key to this repo slug (e.g. fulcrumaxe/fulcrumaxe), "
+        "isolating it from same-numbered PRs in other repos. Omit to use the "
+        "legacy unnamespaced key (default, unchanged from before D#2379) — "
+        "there is no fallback between the two."
+    )
+
     # init
     ini = sub.add_parser("init", help="Create a new pr_state entry in 'queued' phase")
     ini.add_argument("pr", type=int, help="PR number")
     ini.add_argument("--discussion", type=int, required=True, help="Discussion number")
+    ini.add_argument("--repo", default=None, help=_repo_help)
 
     # get
     g = sub.add_parser("get", help="Print pr_state entry as JSON (null if missing)")
     g.add_argument("pr", type=int, help="PR number")
+    g.add_argument("--repo", default=None, help=_repo_help)
 
     # set
     s = sub.add_parser("set", help="Directly set phase and/or fields (no transition validation)")
@@ -372,6 +421,7 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="key=value",
         help="Set key=value on the entry (value parsed as JSON if possible). Repeatable.",
     )
+    s.add_argument("--repo", default=None, help=_repo_help)
 
     # list
     ls = sub.add_parser("list", help="List pr_state entries")
@@ -379,11 +429,13 @@ def _build_parser() -> argparse.ArgumentParser:
     ls.add_argument("--blocked", action="store_true", help="Show only blocked entries")
     ls.add_argument("--stale", action="store_true", help="Show entries stale > 60 min")
     ls.add_argument("--discussion", type=int, default=None, help="Filter by Discussion number")
+    ls.add_argument("--repo", default=None, help=_repo_help)
 
     # advance
     adv = sub.add_parser("advance", help="Advance PR to a new phase (validates transition)")
     adv.add_argument("pr", type=int, help="PR number")
     adv.add_argument("--to", dest="to_phase", required=True, help="Target phase")
+    adv.add_argument("--repo", default=None, help=_repo_help)
 
     # record-envelope
     rec = sub.add_parser("record-envelope", help="Record an agent envelope for a PR")
@@ -393,6 +445,7 @@ def _build_parser() -> argparse.ArgumentParser:
     rec.add_argument("--input-tokens", type=int, default=0)
     rec.add_argument("--output-tokens", type=int, default=0)
     rec.add_argument("--event-id", default="")
+    rec.add_argument("--repo", default=None, help=_repo_help)
 
     return p
 
@@ -415,7 +468,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "init":
         try:
-            entry = init_entry(args.pr, args.discussion, bb=bb)
+            entry = init_entry(args.pr, args.discussion, repo=args.repo, bb=bb)
         except ValueError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
@@ -423,7 +476,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "get":
-        entry = get_entry(args.pr, bb=bb)
+        entry = get_entry(args.pr, repo=args.repo, bb=bb)
         print(json.dumps(entry, indent=2))
         return 0
 
@@ -437,7 +490,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"error: {exc}", file=sys.stderr)
                 return 1
         try:
-            entry = set_fields(args.pr, phase=args.phase, fields=fields, bb=bb)
+            entry = set_fields(args.pr, phase=args.phase, fields=fields, repo=args.repo, bb=bb)
         except ValueError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
@@ -450,6 +503,7 @@ def main(argv: list[str] | None = None) -> int:
             blocked=args.blocked,
             stale=args.stale,
             discussion=args.discussion,
+            repo=args.repo,
             bb=bb,
         )
         print(json.dumps(entries, indent=2))
@@ -457,7 +511,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "advance":
         try:
-            entry = advance(args.pr, args.to_phase, bb=bb)
+            entry = advance(args.pr, args.to_phase, repo=args.repo, bb=bb)
         except ValueError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
@@ -473,6 +527,7 @@ def main(argv: list[str] | None = None) -> int:
                 input_tokens=args.input_tokens,
                 output_tokens=args.output_tokens,
                 event_id=args.event_id,
+                repo=args.repo,
                 bb=bb,
             )
         except ValueError as exc:

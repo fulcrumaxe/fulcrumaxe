@@ -602,6 +602,99 @@ class TestEdgeCases:
 
 
 # ---------------------------------------------------------------------------
+# Repo namespacing (D#2379) — pr_state keys on the PR number alone, so two
+# repos share one key space once the public repo becomes the code plane.
+# ---------------------------------------------------------------------------
+
+
+class TestRepoNamespacing:
+    """Acceptance items 1-3, D#2379."""
+
+    def test_same_pr_number_different_repos_independently_readable(self, bb):
+        # Acceptance item 1: a row written under repo A and a row written
+        # under repo B with the same PR number are independently readable,
+        # and neither read returns the other's discussion. Assert on the
+        # returned entry, not on the key string.
+        init_entry(500, discussion=10, repo="repo-a/x", bb=bb)
+        init_entry(500, discussion=20, repo="repo-b/y", bb=bb)
+
+        entry_a = get_entry(500, repo="repo-a/x", bb=bb)
+        entry_b = get_entry(500, repo="repo-b/y", bb=bb)
+
+        assert entry_a["discussion"] == 10
+        assert entry_b["discussion"] == 20
+        assert entry_a["discussion"] != entry_b["discussion"]
+
+    def test_repo_scoped_lookup_does_not_see_other_repos_row(self, bb):
+        init_entry(501, discussion=1, repo="repo-a/x", bb=bb)
+        # repo-b/y never wrote anything for PR 501 — it must read as absent,
+        # not silently see repo-a/x's row.
+        assert get_entry(501, repo="repo-b/y", bb=bb) is None
+
+    def test_repo_scoped_lookup_does_not_fall_back_to_legacy_key(self, bb):
+        # A legacy (unnamespaced) row for this PR exists...
+        init_entry(502, discussion=1, bb=bb)
+        # ...but a repo-scoped lookup for the same PR number must NOT find
+        # it: an explicit repo means "only this repo's row", by design (see
+        # module docstring) — an automatic fallback here would silently
+        # resurrect the exact collision D#2379 exists to close.
+        assert get_entry(502, repo="repo-a/x", bb=bb) is None
+
+    def test_list_discussion_counts_only_the_requested_repo(self, bb):
+        # Acceptance item 2: list --discussion N counts only rows from the
+        # plane that PR belongs to. Construct the collision: two different
+        # repos both have a row pointing at the same discussion number.
+        init_entry(503, discussion=7, repo="repo-a/x", bb=bb)
+        init_entry(504, discussion=7, repo="repo-b/y", bb=bb)
+
+        result_a = list_entries(discussion=7, repo="repo-a/x", bb=bb)
+        result_b = list_entries(discussion=7, repo="repo-b/y", bb=bb)
+        result_unscoped = list_entries(discussion=7, bb=bb)
+
+        assert [e["pr"] for e in result_a] == [503]
+        assert [e["pr"] for e in result_b] == [504]
+        # Without a repo filter, both are visible — repo scoping is opt-in.
+        assert sorted(e["pr"] for e in result_unscoped) == [503, 504]
+
+    def test_legacy_unnamespaced_row_still_readable_after_change(self, bb):
+        # Acceptance item 3 (migration test): a pre-existing unnamespaced row
+        # — written exactly as it was before this change, no repo involved —
+        # is still readable via a plain get_entry(pr) call.
+        init_entry(505, discussion=42, bb=bb)
+        e = get_entry(505, bb=bb)
+        assert e is not None
+        assert e["discussion"] == 42
+
+    def test_set_on_legacy_row_updates_in_place_not_a_second_row(self, bb):
+        # Acceptance item 3: a set --field merged=true against a pre-existing
+        # unnamespaced row updates that row rather than creating a second one.
+        init_entry(506, discussion=42, bb=bb)
+        set_fields(506, fields={"merged": True}, bb=bb)
+
+        e = get_entry(506, bb=bb)
+        assert e["merged"] is True
+        assert e["discussion"] == 42  # untouched by the update
+
+        # Exactly one key exists for PR 506 — no duplicate was created.
+        matching_keys = [k for k in bb.list_keys("pr_state/") if k.endswith("/506") or k == "pr_state/506"]
+        assert matching_keys == ["pr_state/506"]
+
+    def test_repo_scoped_key_coexists_with_legacy_key(self, bb):
+        # Verified in the Discussion body: both shapes coexist under one
+        # prefix scan (bb.list_keys("pr_state/") sees both pr_state/2350 and
+        # pr_state/fulcrumaxe/fulcrumaxe/1-style keys).
+        init_entry(507, discussion=1, bb=bb)  # legacy shape
+        init_entry(507, discussion=2, repo="repo-a/x", bb=bb)  # namespaced shape
+
+        keys = bb.list_keys("pr_state/")
+        assert "pr_state/507" in keys
+        assert "pr_state/repo-a/x/507" in keys
+        # And each key resolves to its own independent entry.
+        assert get_entry(507, bb=bb)["discussion"] == 1
+        assert get_entry(507, repo="repo-a/x", bb=bb)["discussion"] == 2
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
