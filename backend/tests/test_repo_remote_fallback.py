@@ -13,6 +13,7 @@ Run with:
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -226,6 +227,8 @@ def test_project_name_unreadable_config_does_not_fall_back_to_origin(tmp_path: P
     # too-wide `except OSError` and silently routed to the origin remote
     # instead. Uses a real chmod, per D#2149 — a mocked raise wouldn't
     # exercise the actual `except FileNotFoundError` narrowing.
+    if os.geteuid() == 0:
+        pytest.skip("running as root — permission bits do not block reads")
     from backend.fleet.project_name import resolve_project_name
 
     _write_git_config(tmp_path, _origin_config("https://github.com/adopter/theirfork.git"))
