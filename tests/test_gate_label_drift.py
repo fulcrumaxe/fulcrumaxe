@@ -21,10 +21,14 @@ Five rules:
   Rule 3 (test_call_site_labels_are_named_or_allowlisted) — every call-site
           label the loop reads is either named in CLAUDE.md's list or on an
           explicit, reasoned allowlist.
-  Rule 4 (test_applied_labels_are_all_known) — every `labels[]="<x>"`
-          literal applied by a role `.md` or spawn `.tmpl` is a label
+  Rule 4 (test_applied_labels_are_all_known) — every label literal a role
+          `.md` or spawn `.tmpl` applies via `gh ... --add-label` or the
+          `apply_label` helper (`scripts/lib/gh-label.sh`) is a label
           something downstream (the gate, the NACK list, or the sweep
-          script) actually reads.
+          script) actually reads. D#2389: the extractor originally matched
+          the `gh api ... -f labels[]="<x>"` syntax; the cards moved to
+          `--add-label` / `apply_label` and the extractor was never updated,
+          so it silently matched nothing — see _extract_applied_labels.
   Rule 5 (test_gate_labels_are_all_created_by_bootstrap) — D#1910: every
           label the loop reads at a `_has_label` call site must also be
           created by `scripts/bootstrap-github-labels.sh`. Rules 1-4 all
@@ -67,7 +71,17 @@ EXPECTED_CALL_SITE_LABELS = {
     "security-review-passed",
 }
 
-EXPECTED_APPLIED_LABEL_COUNT = 6
+# D#2389: re-derived from the tree — no role .md or spawn .tmpl file used the
+# `-f labels[]=` syntax this used to match (grep found zero occurrences), so
+# _extract_applied_labels was silently returning an empty set. The current
+# label-application syntax is `gh ... --add-label <label>` and the
+# `apply_label <n> <label>` helper (scripts/lib/gh-label.sh). Matching both,
+# across every .claude/agents/*.md and backend/spawn_templates/*.tmpl file,
+# gives 11 distinct literals: a11y-reviewed, acceptance-failed,
+# acceptance-passed, bug, code-review-needs-fix, code-review-passed,
+# enhancement, needs-boss, security-needs-fix, security-review-passed,
+# verification-substance-absent.
+EXPECTED_APPLIED_LABEL_COUNT = 11
 
 
 # ---------------------------------------------------------------------------
@@ -125,10 +139,26 @@ def _extract_known_labels(sweep_script_text: str) -> set[str]:
 
 
 def _extract_applied_labels(text: str) -> set[str]:
-    """Every `labels[]="<x>"` literal — the syntax that actually reaches the
-    `gh api ... -f labels[]=` call in role `.md` files and spawn `.tmpl`
-    files applying a label to a live PR."""
-    return set(re.findall(r'labels\[\]="([a-zA-Z0-9_-]+)"', text))
+    """Every label literal a role `.md` or spawn `.tmpl` file actually
+    applies to a live PR (or issue) — via `gh ... --add-label <label>` or
+    the `apply_label <n> <label>` helper in scripts/lib/gh-label.sh.
+
+    D#2389: this used to match `gh api ... -f labels[]="<x>"`, the syntax
+    the sandbox now blocks from a worktree (`gh api -X POST/PATCH/PUT/DELETE`
+    is hard-blocked; see CLAUDE.md). The cards moved to `--add-label` /
+    `apply_label` and this extractor was never updated, so it matched
+    nothing — the exact vacuous-pass shape AC 7's non-empty assertion exists
+    to catch.
+
+    Requires whitespace directly after `--add-label`/`apply_label`, so a
+    prose mention like `` `gh pr edit --add-label` `` (label-less, backtick
+    immediately after the flag) is not mistaken for a real call site — same
+    discipline as test_comment_line_is_not_a_call_site for Rule 2.
+    """
+    found: set[str] = set()
+    found |= set(re.findall(r'--add-label\s+"?([a-zA-Z0-9_-]+)"?', text))
+    found |= set(re.findall(r'apply_label\s+\S+\s+"?([a-zA-Z0-9_-]+)"?', text))
+    return found
 
 
 def _extract_created_labels(bootstrap_script_text: str) -> set[str]:
@@ -270,8 +300,8 @@ def test_applied_labels_extraction_nonempty_and_exact_count():
     applied = _all_applied_labels()
     assert len(applied) > 0
     assert len(applied) == EXPECTED_APPLIED_LABEL_COUNT, (
-        f"expected exactly {EXPECTED_APPLIED_LABEL_COUNT} distinct "
-        f'labels[]="<x>" literals across .claude/agents/*.md and '
+        f"expected exactly {EXPECTED_APPLIED_LABEL_COUNT} distinct applied "
+        f"label literals across .claude/agents/*.md and "
         f"backend/spawn_templates/*.tmpl, got {len(applied)}: {sorted(applied)}"
     )
 
@@ -283,7 +313,7 @@ def test_applied_labels_are_all_known():
     )
     unknown = applied - known
     assert not unknown, (
-        f'labels[]="<x>" literal(s) {unknown} are applied by a role .md or '
+        f"applied label literal(s) {unknown} are applied by a role .md or "
         f"spawn .tmpl but are not read by the loop gate, its NACK list, or "
         f"the sweep script's known-label list — this is the D#1958 defect shape"
     )
@@ -291,8 +321,8 @@ def test_applied_labels_are_all_known():
 
 def test_unknown_applied_label_fixture_fails():
     """Non-vacuity proof for Rule 4 (AC 8): a fixture .md whose body applies
-    labels[]="security-passed" must fail — this is the case that would have
-    caught security-reviewer.md:84 at the source.
+    --add-label "security-passed" must fail — this is the case that would
+    have caught security-reviewer.md:84 at the source.
 
     Deliberately built from fixture loop/sweep text rather than the real
     files: the real sweep script's _KNOWN_LABELS keeps `security-passed` on
@@ -303,7 +333,7 @@ def test_unknown_applied_label_fixture_fails():
     permanent historical entry, and proves the mechanism itself still fails
     correctly on an out-of-vocabulary label.
     """
-    fixture_md = 'gh api ... -f labels[]="security-passed"\n'
+    fixture_md = 'gh pr edit 1 --repo owner/repo --add-label "security-passed"\n'
     fixture_loop = (
         '_has_label "$PR_NUM" "code-review-passed"\n'
         '_NACK_LABELS=(\n'
