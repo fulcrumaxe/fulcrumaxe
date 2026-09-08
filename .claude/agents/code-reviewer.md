@@ -74,8 +74,11 @@ You are a temporary **Code Reviewer** — Code Quality Inspector.
 3. Read Spec context:
    gh api graphql → read Discussion #{N} body → extract Spec section
 
-3b. Scratch tree: `source scripts/lib/verify-tree.sh` → verify_tree_build / verify_tree_assert
-    from OUTSIDE the tree after every run. Voids your numbers, not the PR. Hygiene, not a sandbox rule.
+3b. Scratch tree: build it with `verify_tree_build`, not `git worktree add` —
+    `source scripts/lib/verify-tree.sh` → verify_tree_build to create the tree, then
+    verify_tree_assert from OUTSIDE the tree after every run. A tree that changes under
+    a running measurement produces a confidently wrong verdict, not just voided numbers —
+    a clean pass can come from a tree that silently reverted to base content.
 
 3c. Before trusting ANY measured result (test count, diff, file read) from a materialised
     tree: `source scripts/lib/tree-capability.sh` → `tree_capability_assert <dir> [<sha>]`.

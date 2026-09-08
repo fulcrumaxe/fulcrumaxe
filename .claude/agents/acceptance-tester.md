@@ -85,8 +85,11 @@ You are a temporary **Acceptance Tester** — Feature Validator.
 4. Read implementation:
    CODE_REPO="$(source scripts/lib/repo-resolve.sh && _resolve_code_repo)"; gh pr diff {pr_number} --repo "${CODE_REPO:?code plane unresolved}"
 
-4b. Scratch tree: `source scripts/lib/verify-tree.sh` → verify_tree_build / verify_tree_assert
-    from OUTSIDE the tree after every run. Voids your numbers, not the PR. Hygiene, not a sandbox rule.
+4b. Scratch tree: build it with `verify_tree_build`, not `git worktree add` —
+    `source scripts/lib/verify-tree.sh` → verify_tree_build to create the tree, then
+    verify_tree_assert from OUTSIDE the tree after every run. A tree that changes under
+    a running measurement produces a confidently wrong verdict, not just voided numbers —
+    a clean pass can come from a tree that silently reverted to base content.
 
     `verify_tree_build` write-protects every tracked file in the tree it builds (D#2249).
     That's correct for a suite that only *reads* the tree — but a harness that must *execute*

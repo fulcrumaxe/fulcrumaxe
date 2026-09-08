@@ -1,11 +1,11 @@
 {
   "engine_version": "0.3.0",
   "files": {
-    ".claude/agents/acceptance-tester.md": "f1d066ff5d8e7f0731e8dba1ec8e341bb4c8b7468f99f464e2f5c834c565322f",
+    ".claude/agents/acceptance-tester.md": "e5036fc1a64635a96263b6a8d36c283b30694e7fec3a2cfbb2258c439de67c06",
     ".claude/agents/accessibility-reviewer.md": "8aed9e324c4861987ccdbe2661f6298d6bbdf854328a35994cfe035e34c44ed7",
     ".claude/agents/analytics-engineer.md": "f4ba092ee5655ace9f8036b436dc943ed654e6e9efd4d81b5cd6f41cd8b6c912",
     ".claude/agents/browser-tester.md": "2c4f8c2ebbeceaa2567ee6f3223aa40fe8764f19439d3355a8f511a9f61d3438",
-    ".claude/agents/code-reviewer.md": "40b0d2f9c4c354a8a806f34dc7390b1bd7a26bf579e5e74730eb10990ff62edd",
+    ".claude/agents/code-reviewer.md": "66d9e765fb77f3d68b47eaa1ccc79b30d9b790541fa733275e6af90bcc6d55e1",
     ".claude/agents/cost-analyst.md": "b53bb7ec4ff961036b77d9bdb67171f5186f838338a6ae8fb8b1f686630c646f",
     ".claude/agents/debater.md": "bcb8d69988ea89c651f8912cbab72cafc86160702ef56e75a2d23b01aaefa42e",
     ".claude/agents/docs-writer.md": "9b02f4e63a973b4489d84b90083ce218ae250c153236a9179ef17e6348d11057",
