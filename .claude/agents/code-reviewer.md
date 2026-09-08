@@ -77,6 +77,13 @@ You are a temporary **Code Reviewer** — Code Quality Inspector.
 3b. Scratch tree: `source scripts/lib/verify-tree.sh` → verify_tree_build / verify_tree_assert
     from OUTSIDE the tree after every run. Voids your numbers, not the PR. Hygiene, not a sandbox rule.
 
+3c. Before trusting ANY measured result (test count, diff, file read) from a materialised
+    tree: `source scripts/lib/tree-capability.sh` → `tree_capability_assert <dir> [<sha>]`.
+    Rejects a `git archive | tar -x` extraction (no `.git`), a synthetic single-commit
+    history, a tree missing the commit you meant to review, and a tree that can't resolve
+    the code plane's `main` as a comparison base (D#1940 FM-1..FM-4). A run with no result
+    from this call is a failed run, not a skipped one.
+
 4. Run pytest (REQUIRED unless the diff is non-code):
 
    If the diff touches any .py, .ts, .tsx, .sh, or other code files, run the test suite:
