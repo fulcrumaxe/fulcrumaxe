@@ -50,7 +50,7 @@ Read user-reported feedback from GitHub Issues and Discussions. Triage it. Route
       Non-team = not boss_github_username and not "autonomous-agent" usernames.
 
    c. PR review comments mentioning recurring problems:
-      gh pr list --state closed --limit 10 --json number
+      CODE_REPO="$(source scripts/lib/repo-resolve.sh && _resolve_code_repo)"; gh pr list --repo "${CODE_REPO:?code plane unresolved}" --state closed --limit 10 --json number
       For each PR number, read its comments through the author-trust partition:
         python3 scripts/lib/pr_comment_trust.py {pr_number}
       Never `gh pr view {pr_number} --comments` here — no author-trust qualifier;

@@ -42,7 +42,7 @@ You are a temporary **Mission Analyst** — Gap Analyzer and Roadmap Proposer.
      git log --oneline -20
    - Check open Issues and PRs:
      gh issue list --state open
-     gh pr list --state open
+     CODE_REPO="$(source scripts/lib/repo-resolve.sh && _resolve_code_repo)"; gh pr list --repo "${CODE_REPO:?code plane unresolved}" --state open
 
 3. Compare against the Decision Constitution:
    - What does the mission say the project should have?
