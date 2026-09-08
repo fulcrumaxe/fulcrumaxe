@@ -9,10 +9,11 @@ from __future__ import annotations
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import contextmanager, redirect_stderr
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -41,10 +42,14 @@ from run_analyst import (
     classify_hook_event_spam,
     classify_transcript_repetition,
     classify_spec_impl_semantic_gap,
-    classify_branch_drift,
+    classify_branch_drift_current,
+    classify_branch_drift_historical,
     classify_stale_snapshot_consumption,
     classify_budget_cap_proximity,
     classify_pre_spawn_check_missing,
+    collect_run_derived_findings,
+    collect_findings,
+    _tag,
     build_report,
     parse_since,
     load_loop_metrics,
@@ -130,6 +135,55 @@ FIXTURE_NEEDS_FIX_PRS = [
         "createdAt": (NOW - timedelta(hours=48)).isoformat(),
     }
 ]
+
+# D#1932 role-efficiency fixture that would fire classify_cost_outliers if it
+# ran: median([4000, 5000, 5500]) = 5000, expensive-role=80000 >> 2*5000.
+# Reused by the honest-zero tests to prove the run-derived gate is keyed on
+# runs_analyzed, not on whether this particular input happens to be empty --
+# it never is empty here, and the outlier must still not fire when
+# runs_analyzed == 0.
+FIXTURE_COST_OUTLIER_ROLE_EFFICIENCY = {
+    "roles": {
+        "executor": {"avg_tokens_per_pass": 4000},
+        "code-reviewer": {"avg_tokens_per_pass": 5000},
+        "project-manager": {"avg_tokens_per_pass": 5500},
+        "expensive-role": {"avg_tokens_per_pass": 80000},
+    }
+}
+
+
+def _run_git(args: list[str], cwd: Path) -> None:
+    result = subprocess.run(
+        ["git", *args], cwd=str(cwd), capture_output=True, text=True, timeout=10,
+    )
+    if result.returncode != 0:
+        raise AssertionError(f"git {args} failed in {cwd}: {result.stderr}")
+
+
+def _make_main_and_worktree(tmp: Path, main_branch: str = "main") -> tuple[Path, Path]:
+    """Build a REAL git repo on *main_branch* plus a genuine linked worktree
+    on a separate branch -- actual git plumbing, not a hand-faked directory
+    layout, because get_current_branch() shells out to a real
+    ``git branch --show-current``.
+
+    Precedent: tests/test_hooks_repo_root.py::
+    test_genuine_linked_worktree_resolves_to_main_not_worktree does the
+    filesystem-only version of this for hooks/repo_root.py; this is the
+    real-git version backend/repo_root.py (and thus this classifier) needs.
+    """
+    main_repo = tmp / "main-repo"
+    main_repo.mkdir()
+    _run_git(["init", "--initial-branch", main_branch], main_repo)
+    _run_git(["config", "user.email", "test@example.com"], main_repo)
+    _run_git(["config", "user.name", "Test"], main_repo)
+    (main_repo / "README.md").write_text("fixture\n")
+    _run_git(["add", "README.md"], main_repo)
+    _run_git(["commit", "-m", "init"], main_repo)
+
+    worktree = tmp / "worktree"
+    _run_git(["worktree", "add", "-b", "worktree-agent-fixture1", str(worktree)], main_repo)
+
+    return main_repo, worktree
 
 
 class TestParseSince(unittest.TestCase):
@@ -471,6 +525,18 @@ class TestBuildReport(unittest.TestCase):
         report = build_report(SINCE, [], runs_analyzed=0)
         self.assertEqual(report["findings"], [])
 
+    def test_report_preserves_runs_analyzed_key(self):
+        """D#1932 criterion 6. dashboard/src/pages/runs/AnalystFindingsTile.tsx
+        reads report['runs_analyzed'] as an int -- this key must not move or
+        change type.
+
+        Mutation: rename or retype the key in build_report -- this test goes red.
+        """
+        report = build_report(SINCE, [], runs_analyzed=7)
+        self.assertIn("runs_analyzed", report)
+        self.assertIsInstance(report["runs_analyzed"], int)
+        self.assertEqual(report["runs_analyzed"], 7)
+
 
 class TestChunkSize(unittest.TestCase):
     def test_chunk_size_constant(self):
@@ -807,32 +873,165 @@ class TestSpecImplSemanticGap(unittest.TestCase):
 
 
 class TestBranchDrift(unittest.TestCase):
-    @patch("run_analyst.get_current_branch")
-    def test_detects_non_main_branch(self, mock_branch):
-        mock_branch.return_value = "discussion-99-some-feature"
-        findings = classify_branch_drift([])
+    """D#1932 criterion 7: rewritten, not merely kept green.
+
+    All four of these used to @patch("run_analyst.get_current_branch") --
+    mocking the exact function whose cwd was the bug, so every one of them
+    passed identically before and after any fix. None of them mock
+    get_current_branch any more. The two that exercise the live git probe
+    (test_detects_non_main_branch, test_severity_high_for_current_drift) use
+    a real temp git repo via _make_main_and_worktree and patch only
+    main_repo_root -- a legitimate lower-level dependency, not the function
+    under test. test_detects_historical_drift_from_feed calls
+    classify_branch_drift_historical directly; that classifier never touches
+    get_current_branch at all, so it needs no git fixture either.
+    """
+
+    def test_detects_non_main_branch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            main_repo, _worktree = _make_main_and_worktree(Path(tmp))
+            _run_git(["checkout", "-b", "discussion-99-some-feature"], main_repo)
+            with patch("run_analyst.main_repo_root", return_value=main_repo):
+                findings = classify_branch_drift_current()
         self.assertTrue(any(f["category"] == "branch_drift" for f in findings))
 
-    @patch("run_analyst.get_current_branch")
-    def test_no_flag_on_main(self, mock_branch):
-        mock_branch.return_value = "main"
-        findings = classify_branch_drift([])
+    def test_no_flag_on_main(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            main_repo, _worktree = _make_main_and_worktree(Path(tmp))
+            with patch("run_analyst.main_repo_root", return_value=main_repo):
+                findings = classify_branch_drift_current()
         drift = [f for f in findings if f["category"] == "branch_drift"]
         self.assertEqual(drift, [])
 
-    @patch("run_analyst.get_current_branch")
-    def test_detects_historical_drift_from_feed(self, mock_branch):
-        mock_branch.return_value = "main"
+    def test_detects_historical_drift_from_feed(self):
         events = [make_event("parent repo branch drifted off main — worktree contamination detected")]
-        findings = classify_branch_drift(events)
+        findings = classify_branch_drift_historical(events)
         self.assertTrue(any(f["category"] == "branch_drift" for f in findings))
 
-    @patch("run_analyst.get_current_branch")
-    def test_severity_high_for_current_drift(self, mock_branch):
-        mock_branch.return_value = "feat/broken-branch"
-        findings = classify_branch_drift([])
+    def test_severity_high_for_current_drift(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            main_repo, _worktree = _make_main_and_worktree(Path(tmp))
+            _run_git(["checkout", "-b", "feat/broken-branch"], main_repo)
+            with patch("run_analyst.main_repo_root", return_value=main_repo):
+                findings = classify_branch_drift_current()
         high = [f for f in findings if f["severity"] == "high"]
         self.assertTrue(len(high) > 0)
+
+
+class TestBranchDriftReadsMainNotCwd(unittest.TestCase):
+    """D#1932 criteria 1 and 2 -- the actual bug fix, proven against real git."""
+
+    def test_branch_drift_reads_main_checkout_not_cwd(self):
+        """Criterion 1. A genuine linked worktree on a non-main branch must
+        not be mistaken for the main checkout. REPO_ROOT is patched to the
+        worktree path to reproduce the exact confusion the bug had --
+        get_current_branch must ignore it and read main_repo_root() instead.
+
+        Mutation: restore cwd=str(REPO_ROOT) in get_current_branch() -- with
+        REPO_ROOT patched to the worktree (non-main branch) below, that
+        mutation makes this assertion fail.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            main_repo, worktree = _make_main_and_worktree(Path(tmp))
+            with patch("run_analyst.main_repo_root", return_value=main_repo), \
+                 patch("run_analyst.REPO_ROOT", worktree):
+                findings = classify_branch_drift_current()
+        self.assertEqual(
+            findings, [],
+            "get_current_branch must read the MAIN checkout (on 'main' here), "
+            "not REPO_ROOT (the worktree, on a non-main branch here)",
+        )
+
+    def test_branch_drift_still_fires_when_main_checkout_off_main(self):
+        """Criterion 2. Blocks the 'suppress whenever running in a worktree'
+        shortcut: real drift in the MAIN checkout must still be reported,
+        even though REPO_ROOT (this process's own cwd-equivalent) is a
+        worktree throughout.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            main_repo, worktree = _make_main_and_worktree(Path(tmp))
+            _run_git(["checkout", "-b", "feature/drifted"], main_repo)
+            with patch("run_analyst.main_repo_root", return_value=main_repo), \
+                 patch("run_analyst.REPO_ROOT", worktree):
+                findings = classify_branch_drift_current()
+        drift = [f for f in findings if f["category"] == "branch_drift"]
+        self.assertTrue(len(drift) > 0)
+        self.assertTrue(all(f["severity"] == "high" for f in drift))
+
+
+class TestHonestZeroRunsGate(unittest.TestCase):
+    """D#1932 criteria 3, 4, 5 -- the empty-corpus behaviour."""
+
+    def test_zero_runs_emits_no_run_derived_findings(self):
+        """Criterion 3. Corpus (feed_events/loop_logs/audit) is empty, but
+        role_efficiency carries an outlier that would otherwise make
+        classify_cost_outliers fire. No run-derived finding may appear, and
+        stdout must carry the explicit honest-zero line.
+
+        Mutation: remove the runs_analyzed==0 guard in
+        collect_run_derived_findings -- the outlier then fires and this test
+        goes red.
+        """
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            findings = collect_run_derived_findings(
+                feed_events=[], loop_logs=[], audit=[],
+                role_efficiency=FIXTURE_COST_OUTLIER_ROLE_EFFICIENCY,
+                cost_tracker={}, needs_fix_prs=[], loop_metrics=[],
+                budget_data={}, hook_events=[], since=SINCE, runs_analyzed=0,
+            )
+        runs = [f for f in findings if f.get("provenance") == "runs"]
+        self.assertEqual(runs, [])
+        self.assertIn("0 runs analysed — no run-derived findings possible", buf.getvalue())
+
+    def test_zero_runs_still_emits_environment_findings(self):
+        """Criterion 4. Empty corpus, MAIN checkout off main. The
+        environment-derived branch_drift finding must still appear, tagged
+        'environment' -- over-suppression (trading a false positive for a
+        false negative) is exactly what this blocks. Goes through
+        collect_findings (not the narrower collect_run_derived_findings) so
+        a mutation that widens the runs_analyzed==0 gate to also swallow
+        environment-derived findings is actually reachable from this test.
+
+        Mutation: widen the runs_analyzed==0 guard in collect_findings to
+        also swallow environment-derived findings -- this test goes red.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            main_repo, worktree = _make_main_and_worktree(Path(tmp))
+            _run_git(["checkout", "-b", "feature/drifted"], main_repo)
+            with patch("run_analyst.main_repo_root", return_value=main_repo), \
+                 patch("run_analyst.REPO_ROOT", worktree):
+                findings = collect_findings(
+                    feed_events=[], loop_logs=[], audit=[], role_efficiency={},
+                    cost_tracker={}, needs_fix_prs=[], loop_metrics=[],
+                    budget_data={}, hook_events=[], since=SINCE, runs_analyzed=0,
+                )
+
+        runs = [f for f in findings if f.get("provenance") == "runs"]
+        self.assertEqual(runs, [])
+
+        drift = [f for f in findings if f["category"] == "branch_drift"]
+        self.assertTrue(len(drift) > 0)
+        self.assertTrue(all(f["provenance"] == "environment" for f in drift))
+
+    def test_nonzero_runs_emits_run_derived_findings(self):
+        """Criterion 5. Genuine run rows in the corpus -- run-derived
+        findings must still appear, tagged 'runs'. This is the counterpart
+        to criterion 3: the gate must not become a permanent off switch.
+
+        Mutation: leave the runs_analyzed==0 guard permanently engaged (e.g.
+        `if True:`) -- this test goes red.
+        """
+        findings = collect_run_derived_findings(
+            feed_events=FIXTURE_EVENTS, loop_logs=[], audit=[],
+            role_efficiency=FIXTURE_COST_OUTLIER_ROLE_EFFICIENCY,
+            cost_tracker={}, needs_fix_prs=[], loop_metrics=[],
+            budget_data={}, hook_events=[], since=SINCE,
+            runs_analyzed=len(FIXTURE_EVENTS),
+        )
+        runs = [f for f in findings if f.get("provenance") == "runs"]
+        self.assertTrue(len(runs) > 0)
+        self.assertTrue(any(f["category"] == "cost_outlier" for f in runs))
 
 
 class TestStaleSnapshotConsumption(unittest.TestCase):
@@ -975,7 +1174,8 @@ class TestNewClassifiersNoRunaway(unittest.TestCase):
         classify_hook_event_spam([])
         classify_transcript_repetition(events, [])
         classify_spec_impl_semantic_gap(events, [], [])
-        classify_branch_drift(events)
+        classify_branch_drift_current()
+        classify_branch_drift_historical(events)
         classify_stale_snapshot_consumption([], events)
         classify_budget_cap_proximity({})
         classify_pre_spawn_check_missing(events, [])
