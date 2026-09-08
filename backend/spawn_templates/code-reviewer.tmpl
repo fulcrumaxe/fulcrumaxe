@@ -99,8 +99,8 @@ Review checklist:
      chrome.storage, __proto__, server.py, *.env*, auth/, secret/, credential/, token/, manifest*.json
 
 6. Surgical-changes check (Working Principle #3):
-   - Count total diff lines (additions + deletions): `gh pr diff {{pr_number}} | grep "^[+-]" | grep -v "^---\|^+++" | wc -l`
-   - List files touched: `gh pr diff {{pr_number}} --name-only`
+   - Count total diff lines (additions + deletions): `gh pr diff {{pr_number}} --repo {{CODE_REPO}} | grep "^[+-]" | grep -v "^---\|^+++" | wc -l`
+   - List files touched: `gh pr diff {{pr_number}} --repo {{CODE_REPO}} --name-only`
    - For each file touched, ask: does this file trace directly to the spec's stated scope?
    - Any line or file that does NOT trace to the spec → call out as severity "suggestion" in AGENT_OUTPUT issues.
    - If >300 diff lines OR >5 files unrelated to the immediate ask → severity "error", verdict "needs-fix".
