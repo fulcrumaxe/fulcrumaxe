@@ -107,9 +107,32 @@ get_changed_files() {
 }
 
 get_changed_python_files() {
-    local out
-    out=$(get_changed_files) || return 1
-    echo "$out" | grep '\.py$' || true
+    # Stream instead of materializing the full path list in a variable.
+    # get_changed_files() already printf's to stdout, so nothing needs
+    # buffering here — a large diff (D#2394 measured 715 changed paths,
+    # ~188KB) held in a shell variable makes every external command
+    # subsequently run in this shell fail with E2BIG, and the old
+    # `echo "$out" | grep ... || true` swallowed that failure as "no
+    # Python files changed" instead of surfacing it.
+    #
+    # PIPESTATUS lets us still see get_changed_files' own exit code (an
+    # unresolvable diff base) and grep's, and to tell a real grep error
+    # (exit >=2) apart from "no matches" (exit 1) — `|| true` used to
+    # swallow both identically. Snapshot the whole array in one assignment:
+    # under `set -u` (every caller of this file runs with it), reading
+    # PIPESTATUS[0] and PIPESTATUS[1] as two separate indexed accesses can
+    # leave the second read unbound on bash 5.3 — a single array-copy
+    # assignment does not have that problem.
+    local -a pstat
+    get_changed_files | grep '\.py$'
+    pstat=("${PIPESTATUS[@]}")
+    if [ "${pstat[0]}" -ne 0 ]; then
+        return 1
+    fi
+    if [ "${pstat[1]}" -ge 2 ]; then
+        return 1
+    fi
+    return 0
 }
 
 # ── Always-run gates ──────────────────────────────────────────────────────────
