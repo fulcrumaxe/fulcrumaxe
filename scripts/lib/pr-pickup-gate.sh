@@ -30,6 +30,31 @@
 
 _PR_PICKUP_GATE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# D#2422: resolved once, the same way sweep-stuck-prs.sh resolves its own
+# $REPO — via repo-resolve.sh's bash-side resolver, not pr_intake_gate.py's
+# internal default (which reads a *different* file, backend._repo.py's
+# project.json, at a different precedence order). Both callers of
+# `check-pr` share one on-disk PR-head-baseline store keyed by repo slug
+# (pr_head_baseline.pr_key()); if this caller and the sweeper resolved to
+# different slugs, they would silently maintain two separate baseline
+# entries for the same real PR, and whichever one runs second would treat
+# an already-drifted head as a fresh first observation — the anti-drift
+# check D#2421 exists for, bypassed. Pinning both to the same bash-side
+# resolver is what keeps that from happening.
+#
+# `2>/dev/null || true`, not `_require_code_repo`: this file is sourced by
+# a library, not run as its own script (repo-resolve.sh's own header
+# documents this pattern for exactly that reason — a top-level `exit` in a
+# sourced file would kill the caller). When the bash resolver can't find a
+# slug (no .autonomous-team/config.json and no AUTONOMOUS_TEAM_REPO — the
+# case in a bare checkout with no local operator config, e.g. this file's
+# own unit tests), $_PR_PICKUP_GATE_REPO stays empty and check-pr is called
+# exactly as before this change: no --repo, falling back to its own
+# internal default. That preserves existing behaviour anywhere the bash
+# resolver has nothing to resolve, and unifies the two callers everywhere
+# it does.
+_PR_PICKUP_GATE_REPO="$(source "$_PR_PICKUP_GATE_LIB_DIR/repo-resolve.sh" && _resolve_code_repo 2>/dev/null || true)"
+
 # Reason for the most recent pr_pickup_blocked call. Empty when not blocked.
 _PR_GATE_REASON=""
 
@@ -87,8 +112,12 @@ pr_pickup_blocked() {
   _PR_GATE_REASON=""
   _PR_GATE_HINT=""
 
+  local -a _ppg_check_pr_cmd=(python3 "$_PR_PICKUP_GATE_LIB_DIR/pr_intake_gate.py" check-pr "$pr")
+  if [ -n "$_PR_PICKUP_GATE_REPO" ]; then
+    _ppg_check_pr_cmd+=(--repo "$_PR_PICKUP_GATE_REPO")
+  fi
   local gate_json
-  gate_json=$(python3 "$_PR_PICKUP_GATE_LIB_DIR/pr_intake_gate.py" check-pr "$pr" 2>/dev/null) || true
+  gate_json=$("${_ppg_check_pr_cmd[@]}" 2>/dev/null) || true
   if [ -z "$gate_json" ]; then
     _PR_GATE_REASON="gate_check_failed"
     # No JSON was produced at all, so there is no `hint` field to read — this
@@ -98,16 +127,27 @@ pr_pickup_blocked() {
     return 0
   fi
 
+  # D#2422: one `jq` call replaces the three python3 subprocesses this used
+  # to spawn (the gate call above plus a separate python3 per field). `jq`
+  # is already a hard dependency of this file (see classify_open_prs below).
+  # Line-based output, not @tsv: bash's IFS whitespace-collapsing treats a
+  # tab as ordinary whitespace even when IFS is set to just "\t", so two
+  # consecutive tabs (an empty middle field, e.g. blocked=false with no
+  # reason) silently merge and shift every field after it. Newlines don't
+  # collapse under mapfile, so an empty reason/hint stays its own line.
   local blocked
-  blocked=$(printf '%s' "$gate_json" \
-    | python3 -c "import sys,json; d=json.load(sys.stdin); print(str(d.get('blocked',True)).lower())" 2>/dev/null \
-    || echo "true")
-  _PR_GATE_REASON=$(printf '%s' "$gate_json" \
-    | python3 -c "import sys,json; print(json.load(sys.stdin).get('reason',''))" 2>/dev/null \
-    || echo "gate_check_failed")
-  _PR_GATE_HINT=$(printf '%s' "$gate_json" \
-    | python3 -c "import sys,json; print(json.load(sys.stdin).get('hint',''))" 2>/dev/null \
-    || echo "")
+  local -a _ppg_fields
+  mapfile -t _ppg_fields < <(printf '%s' "$gate_json" \
+    | jq -r '(if has("blocked") then .blocked else true end), (.reason // ""), (.hint // "")' 2>/dev/null)
+  if [ "${#_ppg_fields[@]}" -eq 3 ]; then
+    blocked="${_ppg_fields[0]}"
+    _PR_GATE_REASON="${_ppg_fields[1]}"
+    _PR_GATE_HINT="${_ppg_fields[2]}"
+  else
+    blocked="true"
+    _PR_GATE_REASON="gate_check_failed"
+    _PR_GATE_HINT=""
+  fi
   if [ -z "$_PR_GATE_HINT" ]; then
     _PR_GATE_HINT="awaiting intake-approved from a maintainer"
   fi

@@ -143,6 +143,24 @@ def _labeled_event(actor, created_at=_UNSET, name="intake-approved", event_id=10
 
 
 # ---------------------------------------------------------------------------
+# D#2422 item 3 — fetch_pr_meta no longer collects an unread author_id.
+#
+# The login-based trust resolver (this module) and the ID-based one
+# (external_intake_gate.py, D#1840) are deliberately different mechanisms for
+# different callers; this module was carrying a field for the latter that
+# nothing here ever read. A dead-but-plausible field is worse than an absent
+# one — the next reader has to go prove it isn't secretly load-bearing
+# somewhere else. This asserts it stays gone.
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_pr_meta_does_not_carry_author_id():
+    meta = gate.fetch_pr_meta(7, SLUG, gh=_gh_fake(author="team-bot"))
+    assert meta["fetch_ok"] is True
+    assert "author_id" not in meta
+
+
+# ---------------------------------------------------------------------------
 # AC1 — a PR from outside the trust set is blocked
 # ---------------------------------------------------------------------------
 
