@@ -79,6 +79,7 @@
     "scripts/ci/coldstart-backlog-importer-agreement-guard.sh": "b2f8c58015532d1e71ebcc2368d94db8f706be30b96a8505833c47443c2f3555",
     "scripts/ci/dangling-doc-commands.sh": "8cbbd54637801eb15b41c306a487dda6ad05d60b8c76f46b9a408180bb7c6fc3",
     "scripts/ci/pr-link-policy.sh": "93860a9b0cb9ab72c46f9bde03ca9522ced3d737a8180f8fe0ca6d8b66c90b78",
+    "scripts/ci/pr-mutation-evidence.sh": "c66495a3c08523653aeda35847e7a77f0e9658dd78df15daf92fec8346c7073c",
     "scripts/ci/publish-denylist.sh": "32a5fbe6f78b3a5a6c101b40a0beae848ee783681bd60ce8f4d7d08af5cf397e",
     "scripts/ci/readme-links.sh": "9e20698b339438194616e0b5e82c97ded29110974e4c8f1b96722a2941b23e77",
     "scripts/ci/repo-target-gate.sh": "34e7e1c0431a303bb5cff638ac8ac0f47dd594510b1bf9e723e2a0fbc6a5dda1",
