@@ -459,9 +459,9 @@ if [ "$RUN_PYTHON" = "true" ]; then
     # no timeout at all) and with AUTONOMOUS_TEAM_STATE_DIR exported to a
     # scratch dir — backend/state_paths.py deliberately raises under pytest
     # when that var is unset (see CLAUDE.md's AUTONOMOUS_TEAM_STATE_DIR note).
-    PYTEST_TIMEOUT="${RUN_PR_TESTS_PYTEST_TIMEOUT:-900}"
+    PR_TESTS_TIMEOUT_SECONDS="${RUN_PR_TESTS_PYTEST_TIMEOUT:-900}"
     PYTEST_STATE_DIR=$(mktemp -d)
-    RUN_SUITE_TIMEOUT_SECONDS="$PYTEST_TIMEOUT" \
+    RUN_SUITE_TIMEOUT_SECONDS="$PR_TESTS_TIMEOUT_SECONDS" \
       run_suite "pytest" "python3 -m pytest $PYTEST_ARGS -q" "$REPO_ROOT" \
       env AUTONOMOUS_TEAM_STATE_DIR="$PYTEST_STATE_DIR" python3 -m pytest ${TEST_DIRS[@]} -q
   fi
