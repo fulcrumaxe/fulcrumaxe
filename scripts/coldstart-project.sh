@@ -256,7 +256,10 @@ for placeholder in state.db audit.jsonl agent-feed.jsonl circuit-breaker-history
 done
 
 # D#1883 — seed the dial directive allowlist so set_dial() isn't a no-op.
-AUTONOMOUS_TEAM_STATE_DIR="$STATE_DIR" bash "$SCRIPT_DIR/provision-dial-allowlist.sh" "$REPO_SLUG" || true
+AUTONOMOUS_TEAM_STATE_DIR="$STATE_DIR" bash "$SCRIPT_DIR/provision-dial-allowlist.sh" "$REPO_SLUG" || {
+    rc=$?
+    echo "[!] WARN: dial allowlist provisioning failed (exit $rc) — coldstart continues; set_dial() may be a no-op until you run it by hand." >&2
+}
 
 # stats.duckdb requires a valid DuckDB file header — touch creates an empty
 # file that DuckDB rejects with "not a valid DuckDB database file".

@@ -225,6 +225,78 @@ fi
 rm -rf "$DIR13"
 echo ""
 
+# ── Item 14: coldstart's own exit status and stderr are unaffected by a
+#    dial-provisioning failure (D#1946 PR 1 — the coldstart-project.sh side
+#    of the four residuals, not the protected provision-dial-allowlist.sh
+#    itself) ──────────────────────────────────────────────────────────────
+echo "--- Item 14: coldstart-project.sh survives a provisioning failure ---"
+
+# Copies coldstart-project.sh + lib/coldstart-state-root.sh into a fresh dir
+# next to a stub provision-dial-allowlist.sh that exits <stub_exit>, then
+# runs the copy against a throwaway git repo. SCRIPT_DIR (coldstart-project.sh
+# line 33) resolves to that fresh dir, so the copy calls the stub instead of
+# the real, sandbox-protected script. Writes stdout/stderr/status into
+# $RUN_TMP/coldstart-<label>.{stdout,stderr,status}.
+_run_coldstart_stub() {
+  local stub_exit="$1" label="$2"
+  local hdir repo state_root
+  hdir="$(mktemp -d)"
+  mkdir -p "$hdir/lib"
+  cp "$REPO_ROOT/scripts/coldstart-project.sh" "$hdir/coldstart-project.sh"
+  cp "$REPO_ROOT/scripts/lib/coldstart-state-root.sh" "$hdir/lib/coldstart-state-root.sh"
+  cat > "$hdir/provision-dial-allowlist.sh" <<STUB
+#!/usr/bin/env bash
+exit $stub_exit
+STUB
+  chmod +x "$hdir/coldstart-project.sh" "$hdir/provision-dial-allowlist.sh"
+
+  repo="$(mktemp -d)"
+  git init -q "$repo"
+  state_root="$(mktemp -d)"
+
+  COLDSTART_STATE_ROOT="$state_root" HOME="$state_root" \
+    bash "$hdir/coldstart-project.sh" "$repo" "harness${label}$$" \
+    >"$RUN_TMP/coldstart-${label}.stdout" 2>"$RUN_TMP/coldstart-${label}.stderr"
+  echo "$?" > "$RUN_TMP/coldstart-${label}.status"
+
+  rm -rf "$hdir" "$repo" "$state_root"
+}
+
+_run_coldstart_stub 0 ok
+_run_coldstart_stub 1 fail
+
+STATUS_OK="$(cat "$RUN_TMP/coldstart-ok.status")"
+STATUS_FAIL="$(cat "$RUN_TMP/coldstart-fail.status")"
+
+# Not asserting exit 0 specifically: coldstart-project.sh's REPO_ROOT
+# (line 320, "$SCRIPT_DIR/..") resolves to this harness's scratch parent
+# rather than the real repo root, so the script's absolute exit status here
+# is harness-dependent. The falsifiable claim is that the stub's own exit
+# code does not change coldstart's — i.e. the two runs agree with EACH
+# OTHER, whatever that shared value is.
+if [[ "$STATUS_OK" == "$STATUS_FAIL" ]]; then
+  _pass "coldstart exit status is unchanged by a provisioning failure"
+else
+  _fail "coldstart exit status is unchanged by a provisioning failure" \
+    "ok-stub exit=$STATUS_OK fail-stub exit=$STATUS_FAIL"
+fi
+
+if grep -q 'dial allowlist provisioning failed' "$RUN_TMP/coldstart-fail.stderr"; then
+  _pass "coldstart warns on stderr when dial provisioning fails"
+else
+  _fail "coldstart warns on stderr when dial provisioning fails" \
+    "stderr was: $(cat "$RUN_TMP/coldstart-fail.stderr")"
+fi
+if grep -q 'dial allowlist provisioning failed' "$RUN_TMP/coldstart-ok.stderr"; then
+  _fail "no provisioning-failure warning when provisioning succeeds" \
+    "unexpected warning in stderr: $(cat "$RUN_TMP/coldstart-ok.stderr")"
+else
+  _pass "no provisioning-failure warning when provisioning succeeds"
+fi
+
+rm -f "$RUN_TMP"/coldstart-ok.* "$RUN_TMP"/coldstart-fail.*
+echo ""
+
 rm -f $RUN_TMP/provision-item2.out $RUN_TMP/provision-item3.out $RUN_TMP/provision-item4.out $RUN_TMP/provision-item5.stdout
 
 # ── Summary ─────────────────────────────────────────────────────────────
