@@ -330,6 +330,18 @@ def test_complete_run_idempotent_second_call(isolated_db):
     assert len(matching) == 1
 
 
+def test_complete_run_sets_end_source_observed(isolated_db):
+    """complete_run stamps end_source='observed' — a real, recorded finish (D#2479).
+
+    This is what makes an observed duration distinguishable from one a sweeper
+    filled in after the fact.
+    """
+    start_run(agent_id="executor-end-source-9000", role="executor")
+    complete_run(agent_id="executor-end-source-9000", verdict="done")
+    row = _fetch_run(isolated_db, "executor-end-source-9000")
+    assert row["end_source"] == "observed"
+
+
 # ---------------------------------------------------------------------------
 # Multiple runs — querying / filtering behaviour
 # ---------------------------------------------------------------------------
@@ -833,6 +845,177 @@ def test_reconcile_auto_close_verdict_is_reconciled_stale(isolated_db):
     assert row["verdict"] == "reconciled-stale", (
         f"Expected verdict='reconciled-stale', got {row['verdict']!r}. "
         "run-analyst needs this exact value to distinguish ghosts from completions."
+    )
+
+
+def test_reconcile_sets_end_source_reconciled(isolated_db):
+    """reconcile_open_runs stamps end_source='reconciled' on auto-closed rows (D#2479).
+
+    This is the assignment that lets a reader tell a sweeper-filled end_ts apart
+    from one complete_run() actually observed. If the reconcile path's
+    end_source assignment is removed, this test goes red.
+    """
+    _insert_open_run(isolated_db, "exec-end-source-reconciled", "executor", 60)
+    closed = reconcile_open_runs(live_ids=[], stale_after_min=30, db_path=isolated_db)
+    assert closed == 1
+    row = _fetch_run(isolated_db, "exec-end-source-reconciled")
+    assert row["end_source"] == "reconciled", (
+        f"Expected end_source='reconciled', got {row['end_source']!r}. "
+        "reconcile_open_runs must stamp end_source so a swept end_ts is "
+        "distinguishable from an observed one (D#2479)."
+    )
+
+
+# ---------------------------------------------------------------------------
+# end_source migration + conservative backfill (D#2479)
+# ---------------------------------------------------------------------------
+
+
+def _create_pre_end_source_table(db_file: Path) -> None:
+    """Build the agent_run table exactly as it existed before this PR.
+
+    Every column that predates D#2479 is here (including the five prior
+    ALTER TABLE migrations) — only end_source is missing, so _ensure_schema
+    has real migration work to do when it runs against this table.
+    """
+    import duckdb
+    conn = duckdb.connect(str(db_file))
+    try:
+        conn.execute("""
+            CREATE TABLE agent_run (
+                agent_id               VARCHAR PRIMARY KEY,
+                role                   VARCHAR NOT NULL,
+                discussion             INTEGER,
+                pr                     INTEGER,
+                start_ts               TIMESTAMPTZ NOT NULL,
+                end_ts                 TIMESTAMPTZ,
+                duration_s             DOUBLE,
+                verdict                VARCHAR,
+                model                  VARCHAR,
+                input_tok              INTEGER,
+                output_tok             INTEGER,
+                cache_read             INTEGER,
+                cache_write            INTEGER,
+                cache_creation_tokens  INTEGER,
+                blocked_reason         VARCHAR,
+                event_id               VARCHAR,
+                first_write_turn       INTEGER,
+                total_turns            INTEGER,
+                routed_via             TEXT,
+                auto_routed            BOOLEAN
+            )
+        """)
+    finally:
+        conn.close()
+
+
+def test_migration_backfills_end_source_conservatively(tmp_path):
+    """_ensure_schema's one-time backfill is conservative (D#2479 acceptance #5).
+
+    Seeds a pre-migration table with one 'reconciled-stale' row and one
+    ordinary completed row, runs the migration, and asserts: the stale row
+    reads 'reconciled', and the ordinary row reads NULL — never 'observed',
+    because that would invent certainty the table never actually recorded.
+    """
+    import duckdb
+    db_file = tmp_path / "pre_migration.duckdb"
+    _create_pre_end_source_table(db_file)
+
+    now = datetime.now(timezone.utc)
+    conn = duckdb.connect(str(db_file))
+    try:
+        conn.execute(
+            "INSERT INTO agent_run (agent_id, role, start_ts, end_ts, verdict, duration_s) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ["exec-stale-row", "executor", now, now, "reconciled-stale", 743040.0],
+        )
+        conn.execute(
+            "INSERT INTO agent_run (agent_id, role, start_ts, end_ts, verdict, duration_s) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ["exec-ordinary-row", "executor", now, now, "done", 120.0],
+        )
+    finally:
+        conn.close()
+
+    # Run the migration — this is the real ALTER TABLE + backfill path, not a preview.
+    conn = duckdb.connect(str(db_file))
+    try:
+        tracker_mod._ensure_schema(conn)
+    finally:
+        conn.close()
+
+    stale_row = _fetch_run(db_file, "exec-stale-row")
+    ordinary_row = _fetch_run(db_file, "exec-ordinary-row")
+    assert stale_row["end_source"] == "reconciled", (
+        f"reconciled-stale row must backfill to 'reconciled', got {stale_row['end_source']!r}"
+    )
+    assert ordinary_row["end_source"] is None, (
+        "an ordinary pre-migration row must stay NULL (unknown), never be "
+        f"promoted to 'observed' — got {ordinary_row['end_source']!r}"
+    )
+
+
+def test_migration_idempotent_no_recreate(tmp_path):
+    """Running _ensure_schema twice against a pre-migration DB doesn't reset data.
+
+    Acceptance #1: proves the migration happens in place rather than
+    recreating the table (which would drop existing rows).
+    """
+    db_file = tmp_path / "pre_migration_idempotent.duckdb"
+    _create_pre_end_source_table(db_file)
+
+    import duckdb
+    now = datetime.now(timezone.utc)
+    conn = duckdb.connect(str(db_file))
+    try:
+        conn.execute(
+            "INSERT INTO agent_run (agent_id, role, start_ts, end_ts, verdict) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ["exec-survives", "executor", now, now, "done"],
+        )
+        tracker_mod._ensure_schema(conn)
+        tracker_mod._ensure_schema(conn)  # second call must be a no-op, not a reset
+    finally:
+        conn.close()
+
+    row = _fetch_run(db_file, "exec-survives")
+    assert row is not None, "existing row must survive repeated migration calls"
+    assert row["verdict"] == "done"
+
+
+def test_end_source_observed_sum_lower_than_unfiltered_sum(isolated_db):
+    """The filterable set exists (D#2479 acceptance #6).
+
+    SUM(duration_s) restricted to end_source='observed' must be strictly less
+    than the unfiltered SUM(duration_s) once the table also contains
+    reconciled (sweeper-closed) rows — that delta is the deliverable.
+    """
+    # One real observed completion.
+    start_run(agent_id="exec-observed-sum", role="executor")
+    complete_run(agent_id="exec-observed-sum", verdict="done", duration_s=60.0)
+
+    # One reconciled ghost carrying a huge, meaningless duration — this is
+    # exactly the D#2479 pattern (a stale sweep masquerading as a long run).
+    _insert_open_run(isolated_db, "exec-reconciled-sum", "executor", 60)
+    reconcile_open_runs(live_ids=[], stale_after_min=30, db_path=isolated_db)
+
+    conn = _connect(isolated_db)
+    try:
+        unfiltered_sum = conn.execute(
+            "SELECT SUM(duration_s) FROM agent_run"
+        ).fetchone()[0]
+        observed_sum = conn.execute(
+            "SELECT SUM(duration_s) FROM agent_run WHERE end_source = 'observed'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert observed_sum is not None
+    assert unfiltered_sum is not None
+    assert observed_sum < unfiltered_sum, (
+        f"observed_sum={observed_sum} must be strictly less than "
+        f"unfiltered_sum={unfiltered_sum} — the reconciled row's duration "
+        "must not count toward the 'observed' total."
     )
 
 
