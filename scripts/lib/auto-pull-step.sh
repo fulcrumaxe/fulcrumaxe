@@ -53,6 +53,19 @@ _APS_SCRIPT_DIR="$(cd "${_APS_LIB_DIR}/.." && pwd)"
 source "${_APS_LIB_DIR}/auto-pull-recover.sh"
 # shellcheck source=scripts/lib/auto-pull-stash-recover.sh
 source "${_APS_LIB_DIR}/auto-pull-stash-recover.sh"
+# shellcheck source=scripts/lib/repo-resolve.sh
+source "${_APS_LIB_DIR}/repo-resolve.sh"
+
+# _REPO — the escalation-Issue guards below (unmerged-paths and
+# modified-file collision) file and comment on the `needs-boss` Bug Issue,
+# which is a Discussion-plane surface, not the code plane. Resolved once
+# here, at source time, same pattern as post-merge-hook.sh:131-132's
+# _CODE_REPO/_DISCUSSION_REPO. The production caller never set _REPO at all
+# (D#2487) — every one of the six `gh --repo "${_REPO:-}"` sites below ran
+# against an empty pin, which `gh` resolves from the invoking checkout's git
+# remote instead of failing. A caller (or a test) may still override _REPO by
+# assigning it after sourcing this file — this is only a default.
+_REPO="$(_resolve_discussion_repo)"
 
 auto_pull_step_teamlog() {
   bash "${_APS_SCRIPT_DIR}/rotate-team-log.sh" comment "$1" || true
@@ -103,14 +116,7 @@ auto_pull_step() {
     git -C "$repo_root" worktree prune 2>/dev/null || true
 
     # Fetch first; handle "no such ref was fetched" — symptom of parent on orphan branch
-    #
-    # LC_ALL=C for the same reason the two pulls below carry it: the grep on the
-    # next line gates on git's English error text. Under a translated locale the
-    # match silently stops firing, and the branch it guards is the destructive
-    # `checkout -B main origin/main` that recovers a parent stranded on an orphan
-    # branch — so the repo stays stranded and nothing says so. Measured: under
-    # LANGUAGE=de this fetch says "Konnte Remote-Referenz main nicht finden."
-    FETCH_OUT=$(LC_ALL=C git -C "$repo_root" fetch origin main 2>&1) && FETCH_RC=0 || FETCH_RC=$?
+    FETCH_OUT=$(git -C "$repo_root" fetch origin main 2>&1) && FETCH_RC=0 || FETCH_RC=$?
     if [[ $FETCH_RC -ne 0 ]]; then
       if echo "$FETCH_OUT" | grep -q "no such ref was fetched\|couldn't find remote ref"; then
         RECOVERY_MSG="[$(date +%H:%M)] post-merge-hook: fetch origin main failed ('no such ref') — forcing reset to origin/main"
@@ -155,17 +161,17 @@ auto_pull_step() {
 
           # Open idempotent Bug Issue (deduped by exact title match)
           BUG_TITLE="[Bug] post-merge-hook auto-pull blocked by unmerged paths in parent repo"
-          EXISTING_ISSUE=$(gh issue list --repo "${_REPO:-}" --state open \
+          EXISTING_ISSUE=$(gh issue list --repo "${_REPO:?auto-pull-step: could not resolve the Discussion-plane repo for the needs-boss escalation Issue}" --state open \
             --json number,title \
             --jq "[.[] | select(.title == \"$BUG_TITLE\")] | first | .number" \
             2>/dev/null || echo "")
           if [[ -n "$EXISTING_ISSUE" && "$EXISTING_ISSUE" != "null" ]]; then
-            gh issue comment "$EXISTING_ISSUE" --repo "${_REPO:-}" \
+            gh issue comment "$EXISTING_ISSUE" --repo "${_REPO:?auto-pull-step: could not resolve the Discussion-plane repo for the needs-boss escalation Issue}" \
               --body "Recurred at ${TS}. Unmerged files: ${UNMERGED_LIST}" \
               2>/dev/null || true
             echo "[post-merge-hook] auto-pull: updated Bug Issue #$EXISTING_ISSUE (recurrence)"
           else
-            NEW_ISSUE_URL=$(gh issue create --repo "${_REPO:-}" \
+            NEW_ISSUE_URL=$(gh issue create --repo "${_REPO:?auto-pull-step: could not resolve the Discussion-plane repo for the needs-boss escalation Issue}" \
               --title "$BUG_TITLE" \
               --label "needs-boss" \
               --body "Detected at ${TS}. Parent repo has unmerged paths blocking auto-pull.
@@ -281,17 +287,17 @@ ${AUTO_PULL_RECOVER_SKIPPED}Pull output: $PULL_OUT"
 
                 # Open idempotent Bug Issue (deduped by exact title match)
                 BUG_TITLE="[Bug] post-merge-hook auto-pull blocked by a modified-file collision"
-                EXISTING_ISSUE=$(gh issue list --repo "${_REPO:-}" --state open \
+                EXISTING_ISSUE=$(gh issue list --repo "${_REPO:?auto-pull-step: could not resolve the Discussion-plane repo for the needs-boss escalation Issue}" --state open \
                   --json number,title \
                   --jq "[.[] | select(.title == \"$BUG_TITLE\")] | first | .number" \
                   2>/dev/null || echo "")
                 if [[ -n "$EXISTING_ISSUE" && "$EXISTING_ISSUE" != "null" ]]; then
-                  gh issue comment "$EXISTING_ISSUE" --repo "${_REPO:-}" \
+                  gh issue comment "$EXISTING_ISSUE" --repo "${_REPO:?auto-pull-step: could not resolve the Discussion-plane repo for the needs-boss escalation Issue}" \
                     --body "Recurred at ${TS}. ${AUTO_PULL_STASH_SUMMARY}. Checkout is ${BEHIND_COUNT} commit(s) behind origin/main.${STASH_NOTE}" \
                     2>/dev/null || true
                   echo "[post-merge-hook] auto-pull: updated Bug Issue #$EXISTING_ISSUE (recurrence)"
                 else
-                  NEW_ISSUE_URL=$(gh issue create --repo "${_REPO:-}" \
+                  NEW_ISSUE_URL=$(gh issue create --repo "${_REPO:?auto-pull-step: could not resolve the Discussion-plane repo for the needs-boss escalation Issue}" \
                     --title "$BUG_TITLE" \
                     --label "needs-boss" \
                     --body "Detected at ${TS}. ${AUTO_PULL_STASH_SUMMARY}. Checkout is ${BEHIND_COUNT} commit(s) behind origin/main.${STASH_NOTE}
