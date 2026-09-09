@@ -247,7 +247,7 @@
     "scripts/run-pr-tests.sh": "d759fc9b1d283d38cbedd3b0bdfb54edb9afe916c0c4206a5938b296c50f2a00",
     "scripts/run-scenarios.sh": "74f32b12bbcdec5a25de6c795460561cebc153dfec78e256889724163348505a",
     "scripts/scan-orphan-worktrees.sh": "8f97d550dd237d5dee3ca087acc8f727eb60458b1601dd7f1a903cf92f1659ec",
-    "scripts/schedule/dispatcher.sh": "adfe70c5eb025d8b7d564fdfa84c808a63867b30b46bbf80ab271d9a6cd8aba2",
+    "scripts/schedule/dispatcher.sh": "4a7c8f36ad2b39c4ad29694eb5c27b49f4739893ffb794a6af67a062ce60d49b",
     "scripts/schedule/jobs/corpus-drift-audit.sh": "b1078c48f832a9b9e99d3a894a7abf955eeef24d772ea2c590dbe96da2f565d9",
     "scripts/schedule/jobs/heartbeat.sh": "5d64b01d9a7cab8ad969742533b76ebce9811ff78c4a1e2ce69c29cdda0ecdc0",
     "scripts/schedule/jobs/tui-tester-pilot-sweep.sh": "9c233b6c99ebeaf97c2218a6159cb06b642ae51c236c7b218179b36d673f8240",
