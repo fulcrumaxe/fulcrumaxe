@@ -58,7 +58,8 @@ Schema (also created by ``_ensure_schema``)::
         first_write_turn       INTEGER,
         total_turns            INTEGER,
         routed_via             TEXT,
-        auto_routed            BOOLEAN
+        auto_routed            BOOLEAN,
+        end_source             TEXT
     );
     CREATE INDEX idx_agent_run_role_start ON agent_run(role, start_ts);
     CREATE INDEX idx_agent_run_pr ON agent_run(pr);
@@ -199,7 +200,8 @@ def _ensure_schema(conn: Any) -> None:
             first_write_turn       INTEGER,
             total_turns            INTEGER,
             routed_via             TEXT,
-            auto_routed            BOOLEAN
+            auto_routed            BOOLEAN,
+            end_source             TEXT
         )
     """)
     # Backward-compat column migrations.
@@ -221,6 +223,20 @@ def _ensure_schema(conn: Any) -> None:
             conn.execute("ALTER TABLE agent_run ADD COLUMN routed_via TEXT")
         if "auto_routed" not in cols:
             conn.execute("ALTER TABLE agent_run ADD COLUMN auto_routed BOOLEAN")
+        if "end_source" not in cols:
+            conn.execute("ALTER TABLE agent_run ADD COLUMN end_source TEXT")
+            # One-time, conservative backfill (D#2479): the only historical rows
+            # whose end_source is actually knowable are the ones a sweeper
+            # closed — verdict='reconciled-stale', written by
+            # reconcile_open_runs. Every other pre-existing row stays NULL
+            # ("unknown, predates the column") rather than being guessed at
+            # as 'observed' — that would invent the exact certainty this
+            # column exists to stop claiming. This block only runs the moment
+            # the column is added, so it never re-runs on a later call.
+            conn.execute(
+                "UPDATE agent_run SET end_source = 'reconciled' "
+                "WHERE verdict = 'reconciled-stale' AND end_source IS NULL"
+            )
     except Exception:  # noqa: BLE001
         pass  # migration is best-effort; table may not exist yet on first call
     conn.execute(
@@ -492,14 +508,17 @@ def complete_run(
                      end_ts, duration_s, verdict, model,
                      input_tok, output_tok, cache_read, cache_write,
                      cache_creation_tokens, blocked_reason, event_id,
-                     first_write_turn, total_turns, routed_via, auto_routed)
+                     first_write_turn, total_turns, routed_via, auto_routed,
+                     end_source)
                 VALUES (?, ?, ?, ?,
                         ?, ?, ?, ?,
                         ?, ?, ?, ?,
                         ?, ?, ?,
-                        ?, ?, ?, ?)
+                        ?, ?, ?, ?,
+                        ?)
                 ON CONFLICT (agent_id) DO UPDATE SET
                     end_ts                = excluded.end_ts,
+                    end_source            = excluded.end_source,
                     duration_s            = COALESCE(excluded.duration_s,     agent_run.duration_s),
                     verdict               = COALESCE(excluded.verdict,         agent_run.verdict),
                     model                 = COALESCE(excluded.model,           agent_run.model),
@@ -539,6 +558,7 @@ def complete_run(
                     total_turns,
                     routed_via,
                     auto_routed,
+                    "observed",  # complete_run always represents an observed completion (D#2479)
                 ],
             )
         finally:
@@ -631,8 +651,9 @@ def reconcile_open_runs(
                 conn.execute(
                     """
                     UPDATE agent_run
-                    SET end_ts    = ?,
-                        verdict   = 'reconciled-stale',
+                    SET end_ts     = ?,
+                        verdict    = 'reconciled-stale',
+                        end_source = 'reconciled',
                         duration_s = COALESCE(
                             duration_s,
                             epoch(? - start_ts)
