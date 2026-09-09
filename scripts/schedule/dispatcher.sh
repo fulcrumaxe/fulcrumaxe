@@ -6,7 +6,8 @@
 #
 # Per tick:
 #   1. Check control-plane gate (gates.scheduled_jobs). Exit 0 if off.
-#   2. Parse and validate jobs.yaml (cached by mtime — no per-minute re-parse).
+#   2. Parse and validate jobs.yaml (cached by content hash — no per-minute
+#      re-parse unless the manifest's bytes actually changed).
 #   3. Compute which jobs are due this minute.
 #   4. For each due job: flock + setsid + timeout, log result.
 #
@@ -23,9 +24,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-# shellcheck source=../lib/platform-compat.sh
-source "$REPO_ROOT/scripts/lib/platform-compat.sh"
-MANIFEST="$SCRIPT_DIR/jobs.yaml"
+# No longer sources scripts/lib/platform-compat.sh: the manifest cache below
+# used to be the only pc_stat_mtime caller in this file (D#2495 fix switched
+# it to a `cksum` content hash), and nothing else here calls a pc_* helper.
+# DISPATCHER_MANIFEST/DISPATCHER_HASH_CACHE_FILE/DISPATCHER_JOBS_CACHE_FILE
+# exist so a test can point a tick at a private manifest + cache pair
+# instead of the real jobs.yaml and the real /tmp cache files (D#2495) --
+# unset in production, so the defaults below are unchanged.
+MANIFEST="${DISPATCHER_MANIFEST:-$SCRIPT_DIR/jobs.yaml}"
 REGISTRY="$SCRIPT_DIR/jobs"
 PARSE_HELPER="$SCRIPT_DIR/parse_jobs.py"
 LOCK_BASE="/tmp/autonomous-scheduled-jobs"
@@ -39,8 +45,10 @@ LOG_BASE="${AUTONOMOUS_TEAM_STATE_DIR:-$REPO_ROOT/.autonomous-team}/scheduled-jo
 AUDIT_LOG="$REPO_ROOT/.autonomous-team/audit.jsonl"
 RUN_LOG="${AUTONOMOUS_TEAM_STATE_DIR:-$REPO_ROOT/.autonomous-team}/scheduled-jobs/runs.jsonl"
 
-# Mtime cache file — stores last known mtime + cached validated job list
-MTIME_CACHE_FILE="/tmp/autonomous-sched-manifest-cache.txt"
+# Manifest content-hash cache file — stores the last-seen `cksum` of the
+# manifest, plus a separate cache of the validated job list keyed off it.
+MANIFEST_HASH_CACHE_FILE="${DISPATCHER_HASH_CACHE_FILE:-/tmp/autonomous-sched-manifest-cache.txt}"
+CACHED_JOBS_FILE="${DISPATCHER_JOBS_CACHE_FILE:-/tmp/autonomous-sched-jobs-cache.json}"
 
 # ── Utility: log scrubber ─────────────────────────────────────────────────────
 scrub_secrets() {
@@ -91,24 +99,33 @@ if [[ "$GATE_VAL" != "true" ]]; then
     exit 0
 fi
 
-# ── Manifest mtime-cached parse ───────────────────────────────────────────────
-# CURRENT_MTIME is only ever compared for equality against the cached value
-# below, so "0" on a genuine stat failure is a safe fallback here — it just
-# forces a re-parse (and re-parsing an unreadable manifest fails loudly on
-# its own). This used to be a uname==Darwin branch: on any host that isn't
-# literally "Darwin" but also isn't GNU (or vice versa), it silently landed
-# on "0" every tick, which never changes — so a manifest edit would never
-# be picked up until the cache file was deleted by hand (D#2263).
-CURRENT_MTIME=$(pc_stat_mtime "$MANIFEST" 2>/dev/null) || CURRENT_MTIME=0
-
-CACHED_MTIME=""
-CACHED_JOBS_FILE="/tmp/autonomous-sched-jobs-cache.json"
-
-if [[ -f "$MTIME_CACHE_FILE" ]]; then
-    CACHED_MTIME=$(cat "$MTIME_CACHE_FILE" 2>/dev/null || echo "")
+# ── Manifest content-hash-cached parse ────────────────────────────────────────
+# CURRENT_HASH is a `cksum` of the manifest's bytes, not an mtime. mtime went
+# through pc_stat_mtime, which fails on any host where its `stat` flag probe
+# can't find a working GNU or BSD form; the old fallback (`|| CURRENT_MTIME=0`)
+# put that same literal "0" on both sides of the equality check below, so
+# after the first failed stat every later tick compared "0" != "0", found no
+# difference, and never re-read the manifest again -- silently, forever
+# (D#2495; same defect class D#2457 fixed in tutor.sh's _agents_fingerprint).
+# `cksum` reads the manifest's own bytes directly and has no host-dependent
+# flag dialect to fail on, so it removes that failure mode rather than
+# handling it -- there is nothing here for a stat-incompatible host to
+# collapse. The one way `cksum` itself fails is the manifest being genuinely
+# unreadable, which is a real error, not a "couldn't measure" sentinel, so it
+# exits loudly here instead of ever entering the cache comparison.
+if ! CURRENT_HASH=$(cksum "$MANIFEST" 2>/dev/null); then
+    TS_ERR="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    run_log_line "dispatcher" "$TS_ERR" "$TS_ERR" 1 "manifest_unreadable"
+    audit_line "scheduler" "manifest_unreadable" "dispatcher" "1"
+    exit 1
 fi
 
-if [[ "$CURRENT_MTIME" != "$CACHED_MTIME" ]] || [[ ! -f "$CACHED_JOBS_FILE" ]]; then
+CACHED_HASH=""
+if [[ -f "$MANIFEST_HASH_CACHE_FILE" ]]; then
+    CACHED_HASH=$(cat "$MANIFEST_HASH_CACHE_FILE" 2>/dev/null || echo "")
+fi
+
+if [[ "$CURRENT_HASH" != "$CACHED_HASH" ]] || [[ ! -f "$CACHED_JOBS_FILE" ]]; then
     # Validate manifest — exit on schema error
     VALIDATE_OUT=$(python3 "$PARSE_HELPER" \
         --manifest "$MANIFEST" \
@@ -121,12 +138,12 @@ if [[ "$CURRENT_MTIME" != "$CACHED_MTIME" ]] || [[ ! -f "$CACHED_JOBS_FILE" ]]; 
         team_log "schema_invalid: manifest failed validation — dispatcher exiting. Error: $VALIDATE_OUT"
         exit "$EXIT_CODE"
     }
-    # Cache the validated job list so mtime check is meaningful next tick
+    # Cache the validated job list so the hash check is meaningful next tick
     python3 "$PARSE_HELPER" \
         --manifest "$MANIFEST" \
         --registry "$REGISTRY" \
         --all-jobs > "$CACHED_JOBS_FILE" 2>/dev/null || true
-    echo "$CURRENT_MTIME" > "$MTIME_CACHE_FILE"
+    echo "$CURRENT_HASH" > "$MANIFEST_HASH_CACHE_FILE"
 fi
 
 # ── Compute due jobs ──────────────────────────────────────────────────────────
