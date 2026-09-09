@@ -272,7 +272,7 @@
     "scripts/sweep-stale-worktrees.sh": "7866b821521a74675468cf7ec1bd11411373a495390f4d35859d716e9bbef662",
     "scripts/sweep-stalled-discussions.sh": "8f83c717e825c2e7b319c426b69c8ef265cc3860a7fb9e56763da54a4f456885",
     "scripts/sweep-stuck-prs.sh": "eadba10a5da8d17cbd110a9f472dc3b6b59949dc255751ba281d7104baf701bc",
-    "scripts/sync-wiki.sh": "51028ec69b5104e27dabda632a71446f1cc9bedd1baae013a74a56d1de646bee",
+    "scripts/sync-wiki.sh": "e8a26355675e18c4c1d6d19c9db6c155efc361c9b360c7687ddb00f493887489",
     "scripts/tail-agents.sh": "2482a6d9f713bf4158118a1782698fa4c8ab118edaa4f6dd834856a2f53fc7b8",
     "scripts/team-lead-iteration.sh": "4274e3f1486a73966ac5b28d52c45768d7d189b049054c612e3a15485b4be43a",
     "scripts/test-auto-plan.sh": "0a2db7ca2f0c0210887989d3dbd4f34b16238f1124505abb1891def1f6a49f3e",
