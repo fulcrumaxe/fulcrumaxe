@@ -1,0 +1,18 @@
+{
+  "note": "Reconciled by scripts/ci/hook-registry-check.py (D#2362 PR-a). 'exempt' = referenced by no settings file (.claude/settings.json, .claude/settings.local.json, ~/.claude/settings.json). 'own_step' = referenced by a settings file AND worth a recorded reason beyond the default pass. Library entries below (imports verified by the check at run time, not by this note) are marked so in their reason text; that text is documentation, not the mechanism.",
+  "own_step": {},
+  "exempt": {
+    "__init__.py": "package init; loaded automatically whenever any hooks.* module is imported. Not itself a PreToolUse/SubagentStop entry point.",
+    "_retry_common.py": "library: imported by hooks/bash_retry_warn.py and hooks/cosmetic_retry_breaker.py, neither of which is registered in a tracked settings file.",
+    "background_rules.py": "library: imported only by hooks/sandbox.py for background-command classification. Never invoked as its own hook.",
+    "repo_root.py": "library: imported by hooks/sandbox_rules.py (hence transitively by hooks/sandbox.py, hooks/background_rules.py and hooks/fleet_register.py) and directly by hooks/subagent_stop_dial_audit.py.",
+    "sandbox_rules.py": "library: the sandbox rule set, imported by hooks/sandbox.py, hooks/background_rules.py and hooks/fleet_register.py. Never invoked as a standalone hook.",
+    "payload_shape.py": "library: imported only by hooks/sandbox.py to record payload shape. Never invoked as its own hook.",
+    "spawn_tag_redaction.py": "library: imported by hooks/sandbox.py, hooks/subagent_stop_dial_audit.py and hooks/cosmetic_retry_breaker.py to scrub spawn tags from block-log writes.",
+    "bash_retry_warn.py": "opt-in warn-only hook. scripts/install-bash-retry-warn-hook.sh registers it into ~/.claude/settings.json (operator-local, not tracked) on request; not wired into the tracked settings by default.",
+    "claude_execve_fence.py": "not a Claude Code lifecycle hook — a standalone seccomp CLI fence invoked directly by scripts and integration tests as `python3 hooks/claude_execve_fence.py -- <cmd>`. Its own module docstring states it is deliberately not wired through spawn-agent.sh or any settings file.",
+    "cosmetic_retry_breaker.py": "PreToolUse-shaped hook gated by control-plane flag gates.cosmetic_retry_breaker (default false, per its own docstring). No settings entry exists while the feature is off by default.",
+    "repo_scope_warn.py": "opt-in enforcement hook. scripts/install-enforcement-hooks.sh registers it into .claude/settings.local.json (gitignored, operator-local) on request. D#2362's filed defect was that no operator had run that installer here. Answering D#2362's second question explicitly: this PR leaves it unregistered rather than registering it, because registering it changes tool-call behaviour (a new warning starts firing on every gh call), and D#2362 rules that out of scope for a registration-reconciliation PR ('No behaviour change to any hook's adjudication logic in either PR'). Running the installer is an operator decision, not a code change.",
+    "runaway_loop_guard.py": "opt-in enforcement hook, same installer (scripts/install-enforcement-hooks.sh -> .claude/settings.local.json) and the same left-unregistered-by-this-PR reasoning as repo_scope_warn.py above."
+  }
+}
