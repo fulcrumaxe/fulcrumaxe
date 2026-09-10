@@ -243,6 +243,9 @@ fi
 
 # First entry used for backward-compat single-Discussion fields
 DISCUSSION="${DISCUSSIONS[0]:-}"
+# BEGIN D#2372 discussion-targeting-fix
+FIRST_DISCUSSION="$DISCUSSION"
+# END D#2372 discussion-targeting-fix
 
 # Export context for hook-event.sh ID generation
 export HOOK_ROLE="merge"
@@ -302,6 +305,19 @@ fi
 # "single PR, safe to close", which closed D#1997 twice in one hour with
 # five PRs still open and gated on it.
 if ! hook_event_has_step "discussion_close"; then
+  # BEGIN D#2372 discussion-targeting-fix
+  # DISCUSSION is reused below as the loop variable — it walks every
+  # Discussion the PR closes, and after `done` it holds the LAST one, not
+  # the FIRST_DISCUSSION set above. cost_comment / completion_block /
+  # stats_metrics below are single-Discussion, backward-compat fields and
+  # must target FIRST_DISCUSSION, so PRIMARY_DISC_ID / PRIMARY_CURRENT_BODY
+  # snapshot that Discussion's state at the end of its own iteration
+  # (after any STATUS/close mutation), and DISCUSSION/DISC_ID/CURRENT_BODY
+  # are restored to it right after the loop.
+  PRIMARY_DISC_ID=""
+  PRIMARY_CURRENT_BODY=""
+  PRIMARY_CAPTURED=false
+  # END D#2372 discussion-targeting-fix
   for DISCUSSION in "${DISCUSSIONS[@]}"; do
     # Fetch Discussion body and id together. An empty/unreadable body here
     # (fetch degraded but the node id still resolved) used to run the close
@@ -440,8 +456,25 @@ print('\n'.join(n.get('body', '') for n in nodes))
         fi
       fi
     fi
+
+    # BEGIN D#2372 discussion-targeting-fix
+    if [[ "$PRIMARY_CAPTURED" != "true" ]]; then
+      PRIMARY_DISC_ID="$DISC_ID"
+      PRIMARY_CURRENT_BODY="$CURRENT_BODY"
+      PRIMARY_CAPTURED=true
+    fi
+    # END D#2372 discussion-targeting-fix
   done
   hook_event_mark_step "discussion_close"
+
+  # BEGIN D#2372 discussion-targeting-fix
+  # Restore the backward-compat single-Discussion fields to FIRST_DISCUSSION
+  # (see the comment above the loop) — the loop just clobbered DISCUSSION,
+  # DISC_ID and CURRENT_BODY with the LAST Discussion's values.
+  DISCUSSION="$FIRST_DISCUSSION"
+  DISC_ID="$PRIMARY_DISC_ID"
+  CURRENT_BODY="$PRIMARY_CURRENT_BODY"
+  # END D#2372 discussion-targeting-fix
 fi
 
 # ── 2a. Cost comment — post per-Discussion spend to the closed Discussion ──────
@@ -471,17 +504,17 @@ except Exception:
         if [[ -n "$COST_MD" ]]; then
           ESCAPED_MD=$(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$COST_MD" 2>/dev/null || echo "")
           if [[ -n "$ESCAPED_MD" ]]; then
-            # NOTE: `gh api` has no --repo flag (measured 2026-09-04, gh on the
-            # operator host: `unknown flag: --repo`, rc=1), so this argument has
-            # never been accepted and this cost comment has never posted. It is
-            # classified onto the Discussion plane here — the comment targets a
-            # Discussion — rather than removed, because removing it would start
-            # posting a comment this hook has never posted. That is a behaviour
-            # change, and this PR is a slug split that must stay a no-op. Filed
-            # for a separate fix.
+            # D#2372: `gh api` has no --repo flag (measured, gh 2.96.0:
+            # `unknown flag: --repo`, rc=1), so this call has never once
+            # succeeded — the cost comment has never posted. Repaired by
+            # dropping the flag rather than removing the call: the mutation
+            # addresses the Discussion by its global `discussionId` node id,
+            # exactly like the closeDiscussion/updateDiscussion/
+            # addDiscussionComment (hold-reason) mutations elsewhere in this
+            # same loop, none of which carry --repo and all of which work.
+            # No repo context was ever needed here; the flag was just wrong.
             gh api graphql \
               -f query="mutation { addDiscussionComment(input:{discussionId:\"$DISC_ID\", body:$ESCAPED_MD}) { comment { id } } }" \
-              --repo "$_DISCUSSION_REPO" \
               2>/dev/null \
               && echo "[post-merge-hook] Cost comment posted to Discussion #$DISCUSSION (total: \$$COST_TOTAL)" \
               || echo "[post-merge-hook] Warning: cost comment GraphQL mutation failed (non-fatal)" >&2
