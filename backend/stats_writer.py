@@ -796,7 +796,16 @@ def registered_metrics() -> frozenset[str]:
         "cost_attribution_unresolved_count",  # D#2282 — suppression counter when the resolver isn't agent_run
         "pr_file_conflict_score",
         "spec_to_first_pr_latency_seconds",
-        "acceptance_criteria_pass_rate",
+        # "acceptance_criteria_pass_rate" intentionally NOT here (D#2476):
+        # the writer was retired in scripts/post-merge-hook.sh — its scorer
+        # was a lexical-overlap check between two documents the same author
+        # wrote, not an acceptance measurement. Deregistering it (rather than
+        # leaving it here with no writer) makes is_monitored() in
+        # backend/stats/freshness.py return False for it, same as
+        # "bootstrap_ping" — the 336 pre-existing sentinel rows keep
+        # reporting their real age but are never flagged stale, since nobody
+        # can act on the staleness of a metric that will never be written
+        # again.
         "reviewer_acceptance_latency_seconds",
     })
     return REGISTERED_WRITERS | _external
