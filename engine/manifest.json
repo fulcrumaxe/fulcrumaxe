@@ -82,7 +82,7 @@
     "scripts/ci/pr-mutation-evidence.sh": "c66495a3c08523653aeda35847e7a77f0e9658dd78df15daf92fec8346c7073c",
     "scripts/ci/publish-denylist.sh": "32a5fbe6f78b3a5a6c101b40a0beae848ee783681bd60ce8f4d7d08af5cf397e",
     "scripts/ci/readme-links.sh": "9e20698b339438194616e0b5e82c97ded29110974e4c8f1b96722a2941b23e77",
-    "scripts/ci/repo-target-gate.sh": "34e7e1c0431a303bb5cff638ac8ac0f47dd594510b1bf9e723e2a0fbc6a5dda1",
+    "scripts/ci/repo-target-gate.sh": "27e269abfbde5bd6fb26e841d648b55f65e8e8bf4725e316fd6a89f22c6762ee",
     "scripts/ci/run-guards.sh": "63be7d7866a10c8ac7579ef3e303965ab7c07491a9818bd648edc0179b67cacd",
     "scripts/ci/triage-discard-unreadable-meta-guard.sh": "860b25ea2513a6abb4a6332282854270d86c891c2d53b99839b0bbfe989c625e",
     "scripts/ci/ts-backend-test-integrity.sh": "681c61a8092f8f77ec48924b9b7d7d76f1cfaa6d6eddd6f26fa53a6cc5244d70",

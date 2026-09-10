@@ -5,6 +5,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { fileURLToPath } from 'node:url';
 import { BackendEvent, ReadyEvent } from './types.js';
+import { resolveRepo } from './config/repo.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SESSION_PATH = path.join(REPO_ROOT, '.autonomous-team', 'session.json');
@@ -72,7 +73,7 @@ export class BackendClient extends EventEmitter {
         AF_PROVIDER: process.env['AF_PROVIDER'],
         AF_MODEL: process.env['AF_MODEL'],
         AF_BASE_URL: process.env['AF_BASE_URL'],
-        GH_REPO: 'autonomous-agent-7/autonomous-forever',
+        GH_REPO: resolveRepo(),
         AF_REQUEST_TIMEOUT: '0',
       },
       stdio: ['pipe', 'pipe', 'pipe'],
