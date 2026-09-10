@@ -105,7 +105,6 @@ REPO="$(_require_code_repo "run-pr-tests")" || exit 1
 #   tests/test_scheduler_dispatcher.sh    — rc=0 dur=38s 16 passed, 0 failed
 #   tests/test_spawn_agent_start_run.sh   — rc=0 dur=23s 25 passed, 0 failed
 BASH_SUITE_DENYLIST=(
-  "tests/smoke-3spawn-d984.sh:bug(D#2168) — FileNotFoundError: a3.json never written; SUBAGENT_STOP_DRY_RUN write path swallows its own error (2>/dev/null || true)"
   "tests/test_append_loop_metrics.sh:bug(D#2166) — missing field: ts; appended row carries key 'timestamp', not 'ts'"
   "tests/test_dashboard_lifecycle.sh:host-env(dashboard ports) — reconciled against the real 120s bound (dur=79s, still fails): Vite dev server did not respond on port 5273 within 30s"
   "tests/test_dial_bypass_coverage.sh:bug(D#2167) — FAIL B4: graphql mutation from worktree — expected exit 2 (blocked), got exit 0"
