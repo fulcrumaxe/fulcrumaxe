@@ -265,7 +265,7 @@
     "scripts/start-tui.sh": "d53fad29f11f1e6eb48fd7e2723f88567cc4bd96f364910d20a074c03b3c1c8c",
     "scripts/stop-dashboard.sh": "312565c19237cc59b567f0343788d13ccfceda587cfb39d07a83b61863071790",
     "scripts/stop-live-analyst.sh": "48f856beecf2fcee73c94db9849eb55b838cf3c63a275a9f2e5db0651592f73f",
-    "scripts/subagent-stop-hook.sh": "9b4b8859bc7978adda1fdd55775687e10854cb342869c9310d1828a66ef94b29",
+    "scripts/subagent-stop-hook.sh": "99b59e31b365af732a10d52f41273b68392d15b878b5a568d94c9d65045f42c2",
     "scripts/sweep-bugs.sh": "4514de0e01a54b7f9550d8244a0ffdacc487e468c82fd9c254740dff8dd14bad",
     "scripts/sweep-hook-events.sh": "72f4abcd89045ccdb27d76f9b1af9be104f1a2fcba98ead0d0a375757958dac6",
     "scripts/sweep-jsonl.sh": "ceaa6747a096f7b6c954a4aa8bca219063fb5c19851bc5e4daa969daa94eca53",

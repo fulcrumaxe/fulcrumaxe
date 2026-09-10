@@ -113,25 +113,15 @@ else
   fail "hook_event_id absent" "prompt does not contain 'hook_event_id=...' line"
 fi
 
-# ── Test 2: hook_event_id is the last non-empty line ──────────────────────────
+# ── Test 2: hook_event_id tag is present and shape-valid ──────────────────────
+# Position is not contractual: backend/prompt_builder.py emits prompt_manifest
+# (section 13) after hook_event_id (section 12) by design, and recovery
+# (scripts/lib/transcript_event_id.py) recovers the tag via a shape-validated
+# scan of the whole transcript, not by reading a fixed line position. So this
+# test checks presence + shape (<role>-<disc>-<unix_ts>) instead of "last line".
 
 echo ""
-echo "Test 2: hook_event_id is the last line of the assembled prompt"
-
-write_allow_stub
-PROMPT_OUT=$(run_spawn_copy)
-
-LAST_LINE=$(printf '%s' "$PROMPT_OUT" | grep -v '^$' | tail -1)
-if echo "$LAST_LINE" | grep -q "^hook_event_id="; then
-  pass "hook_event_id is the last non-empty line ('$LAST_LINE')"
-else
-  fail "hook_event_id not last" "last non-empty line was: '$LAST_LINE'"
-fi
-
-# ── Test 3: hook_event_id value matches expected format <role>-<disc>-<ts> ────
-
-echo ""
-echo "Test 3: hook_event_id value has format executor-834-<timestamp>"
+echo "Test 2: hook_event_id tag is present with format executor-834-<timestamp>"
 
 write_allow_stub
 PROMPT_OUT=$(run_spawn_copy)
@@ -145,10 +135,10 @@ else
   fail "hook_event_id format" "expected executor-834-<timestamp>, got '$EVID_VAL'"
 fi
 
-# ── Test 4: hook_event_id appears even when TEMPLATE_BODY is empty ────────────
+# ── Test 3: hook_event_id appears even when TEMPLATE_BODY is empty ────────────
 
 echo ""
-echo "Test 4: hook_event_id present when no --template flag is passed (TEMPLATE_BODY empty)"
+echo "Test 3: hook_event_id present when no --template flag is passed (TEMPLATE_BODY empty)"
 
 write_allow_stub
 PROMPT_OUT=$(run_spawn_copy)
