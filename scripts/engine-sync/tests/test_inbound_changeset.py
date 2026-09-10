@@ -257,6 +257,130 @@ def test_merge_base_none_for_disjoint_history(scratch_repo):
     assert changeset.merge_base(seed, "unrelated", repo_dir=scratch_repo) is None
 
 
+# ---------------------------------------------------------------------------
+# D#2454 PR 4 -- the opt-in re-root bridge
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def reroot_repo(scratch_repo) -> dict:
+    """The same re-root shape the real defect has: `marker` shares no
+    history with `remote`, but `remote`'s sole root R's tree already
+    contains the marker's content whole (a GitHub squash-merge onto an
+    empty base). `R..remote` then holds one further real commit."""
+    # scratch_repo starts as an unborn "main" -- no commits yet, so the first
+    # branch needs no rm-and-clear dance, unlike `_orphan_root` below (which
+    # is always called against an already-committed history).
+    _git(scratch_repo, "checkout", "-q", "-b", "marker-line")
+    marker = _commit(scratch_repo, "marker seed", {"a.txt": "1\n"})
+
+    root = _orphan_root(scratch_repo, "remote-line", "squash merge (#99)", {"a.txt": "1\n", "b.txt": "brand new\n"})
+    tip = _commit(scratch_repo, "more work (#100)", {"a.txt": "2\n"})
+
+    return {"marker": marker, "root": root, "tip": tip}
+
+
+def test_find_reroot_root_matches_the_absorbing_root(reroot_repo, scratch_repo):
+    assert (
+        changeset.find_reroot_root(reroot_repo["marker"], "remote-line", repo_dir=scratch_repo)
+        == reroot_repo["root"]
+    )
+
+
+def test_find_reroot_root_none_when_history_genuinely_unrelated(scratch_repo):
+    seed = _commit(scratch_repo, "seed", {"a.txt": "1\n"})
+    _orphan_root(scratch_repo, "unrelated", "unrelated root", {"z.txt": "z\n"})
+    assert changeset.find_reroot_root(seed, "unrelated", repo_dir=scratch_repo) is None
+
+
+def test_find_reroot_root_none_when_remote_has_more_than_one_root(scratch_repo):
+    """Leg (a): exactly one root is required. Two orphan lines merged
+    together give remote_ref two roots, so the bridge must not apply even
+    if one of them happens to be zero-D against the marker."""
+    seed = _commit(scratch_repo, "seed", {"a.txt": "1\n"})
+    _git(scratch_repo, "checkout", "-q", "--orphan", "second-root")
+    _git(scratch_repo, "rm", "-rfq", "--cached", ".")
+    for p in list(scratch_repo.glob("*")):
+        if p.name != ".git" and p.is_file():
+            p.unlink()
+    _commit(scratch_repo, "second root", {"c.txt": "c\n"})
+    _git(scratch_repo, "checkout", "-q", "main")
+    _git(scratch_repo, "merge", "-q", "--allow-unrelated-histories", "-m", "merge both roots", "second-root")
+
+    assert changeset.find_reroot_root(seed, "main", repo_dir=scratch_repo) is None
+
+
+def test_resolve_reroot_bridge_all_three_legs(reroot_repo, scratch_repo):
+    root, reason = changeset.resolve_reroot_bridge(
+        reroot_repo["marker"], "remote-line", reroot_repo["marker"], repo_dir=scratch_repo
+    )
+    assert root == reroot_repo["root"], reason
+    assert reason is None
+
+
+def test_resolve_reroot_bridge_refuses_stale_allow_reroot_from(reroot_repo, scratch_repo):
+    """Leg (c): --allow-reroot-from must name the marker's OWN CURRENT sha,
+    not merely any sha that happens to be near it."""
+    root, reason = changeset.resolve_reroot_bridge(
+        reroot_repo["marker"], "remote-line", reroot_repo["root"], repo_dir=scratch_repo
+    )
+    assert root is None
+    assert "does not name the marker" in reason, reason
+
+
+def test_resolve_reroot_bridge_none_requested(reroot_repo, scratch_repo):
+    root, reason = changeset.resolve_reroot_bridge(
+        reroot_repo["marker"], "remote-line", None, repo_dir=scratch_repo
+    )
+    assert root is None
+    assert "not requested" in reason
+
+
+def test_build_changeset_with_root_bridge_enumerates_synthetic_root_plus_real_commits(reroot_repo, scratch_repo):
+    """Item 21's satisfied shape: R enumerated as one synthetic entry whose
+    name-status is `diff marker R`, then R..remote as today."""
+    cs = changeset.build_changeset(
+        reroot_repo["marker"], "remote-line", repo_dir=scratch_repo, root_bridge=reroot_repo["root"]
+    )
+    assert cs["commit_count"] == 2, cs["commits"]
+    assert cs["commits"][0]["sha"] == reroot_repo["root"]
+    assert cs["commits"][0]["synthetic_root_bridge"] is True
+    assert cs["commits"][1]["sha"] == reroot_repo["tip"]
+    assert cs["commits"][1]["synthetic_root_bridge"] is False
+    # b.txt only ever appears at the root (zero-D against the marker, which
+    # never had it) -- an A against the marker, not a giant phantom addition
+    # of the whole tree.
+    assert cs["touched_paths"]["b.txt"]["statuses"] == ["A"]
+    assert reroot_repo["root"] in cs["touched_paths"]["b.txt"]["commits"]
+    # a.txt changes on the real tip commit only -- the bridge's synthetic
+    # root diff is zero-D and a.txt is identical there, so it must not also
+    # appear against the root.
+    assert cs["touched_paths"]["a.txt"]["commits"] == [reroot_repo["tip"]]
+    assert cs["root_bridge"] == reroot_repo["root"]
+
+
+def test_build_changeset_without_root_bridge_is_unchanged(scratch_repo):
+    """root_bridge=None (the default) must be byte-for-byte identical to
+    build_changeset's pre-PR-4 behaviour."""
+    seed = _commit(scratch_repo, "seed", {"a.txt": "1\n"})
+    _commit(scratch_repo, "add b (#1)", {"b.txt": "1\n"})
+    cs = changeset.build_changeset(seed, "HEAD", repo_dir=scratch_repo)
+    assert cs["root_bridge"] is None
+    assert all(not c["synthetic_root_bridge"] for c in cs["commits"])
+
+
+def test_diff_name_status_and_numstat_intra_plane(reroot_repo, scratch_repo):
+    entries = changeset.diff_name_status_detailed(reroot_repo["marker"], reroot_repo["root"], repo_dir=scratch_repo)
+    statuses = {status for status, _path, _synth in entries}
+    assert "D" not in statuses
+    paths = {path for _status, path, _synth in entries}
+    assert paths == {"b.txt"}  # a.txt identical at marker and root -- not in the diff at all
+
+    ins, dele = changeset.diff_numstat(reroot_repo["marker"], reroot_repo["root"], repo_dir=scratch_repo)
+    assert ins >= 1
+    assert dele == 0
+
+
 def test_never_calls_two_tree_diff(scratch_repo, tmp_path, monkeypatch):
     """Tree-diff-trap regression guard: a fake `git` earlier on PATH fails
     loudly if invoked with `diff <ref-a> <ref-b>` OR `diff-tree <ref-a>

@@ -19,6 +19,17 @@ propose deleting it. Real drift between the marker and the remote tip is a
 handful of commits; walking them one at a time, never comparing the two
 trees wholesale, is what keeps this file honest.
 
+ONE narrow, deliberate exception (D#2454 PR 4): `diff_name_status_detailed`/
+`diff_numstat` and their callers (`find_reroot_root`, `resolve_reroot_bridge`,
+`build_changeset`'s `root_bridge` leg) do call `git diff a b` between two
+refs -- but always an INTRA-plane pair (the marker and a candidate root, both
+code-plane commits), never the CROSS-plane pair (code plane tip vs engine
+tip) this file's rule exists to forbid. The cross-plane pair is unsafe
+because the export filter guarantees thousands of manufactured differences
+no amount of D-counting could explain away; the intra-plane pair has no such
+filter to fool it, which is exactly why the bridge's zero-D leg is trustworthy
+evidence there and would not be across planes.
+
 Every git call takes an explicit `repo_dir` (default REPO_ROOT) so tests can
 point this at a disposable scratch repository -- this module never assumes
 the caller's cwd.
@@ -132,6 +143,90 @@ def marker_is_ancestor(marker: str, remote_ref: str, repo_dir: Path = REPO_ROOT)
     return proc.returncode == 0
 
 
+def find_reroot_root(marker: str, remote_ref: str, repo_dir: Path = REPO_ROOT) -> str | None:
+    """When *marker* and *remote_ref* share no history at all, look for the
+    shape this channel has actually hit (D#2454): a single root commit of
+    *remote_ref*'s own history whose tree already contains every path the
+    marker's tree has. `git diff --name-status marker root` with zero `D`
+    entries means the marker's CONTENT survived into that commit whole --
+    typically a GitHub squash-merge landed on an empty base, which discards
+    commit identity (no parent, no shared history) but not the tree.
+
+    Returns the absorbing root's sha, or None when remote_ref does not have
+    exactly one root, or that root does not pass the zero-D test (a
+    genuinely unrelated history, not a re-root). Used both to word the PR 2
+    refusal (naming the re-root) and, when the caller supplies
+    `--allow-reroot-from`, as leg (a)+(b) of the PR 4 bridge below -- the
+    same shape answers both questions, so there is exactly one place that
+    computes it."""
+    roots_out = subprocess.run(
+        ["git", "rev-list", "--max-parents=0", remote_ref],
+        cwd=str(repo_dir),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if roots_out.returncode != 0:
+        return None
+    roots = [line for line in roots_out.stdout.split() if line.strip()]
+    if len(roots) != 1:
+        return None
+    root = roots[0]
+    statuses = {status for status, _path, _synthetic in diff_name_status_detailed(marker, root, repo_dir=repo_dir)}
+    if "D" in statuses:
+        return None
+    return root
+
+
+def resolve_reroot_bridge(
+    marker: str,
+    remote_ref: str,
+    allow_reroot_from: str | None,
+    repo_dir: Path = REPO_ROOT,
+) -> tuple[str | None, str | None]:
+    """Decide whether the opt-in re-root bridge (D#2454 PR 4,
+    `--allow-reroot-from`) applies, and return (root_sha, refusal_reason) --
+    exactly one of the two is non-None.
+
+    Three legs must ALL hold for the bridge to apply:
+      (a) *remote_ref* has exactly one root commit R (`rev-list
+          --max-parents=0`, count == 1);
+      (b) `git diff --name-status marker R` has zero D entries -- R's tree
+          already contains the marker's content whole (see
+          `find_reroot_root`, which checks both (a) and (b));
+      (c) the caller passed `--allow-reroot-from` naming the marker's OWN
+          CURRENT sha -- proving the operator resolved the marker
+          themselves, rather than the bridge silently reinterpreting a
+          stale `--allow-reroot-from` against a marker that has since
+          advanced (this channel's marker is only ever moved by a
+          successful run, never by hand -- D#2454 Q1 -- so a mismatch here
+          means the caller's information is stale, not that the marker is
+          wrong).
+
+    Only meaningful when *marker* is NOT already an ancestor of
+    *remote_ref* -- the healthy case needs no bridge and must stay
+    byte-for-byte unchanged (D#2454 PR 4 item 21); callers must check
+    `marker_is_ancestor` first and never call this otherwise."""
+    if allow_reroot_from is None:
+        return None, "re-root bridge not requested (--allow-reroot-from not given)"
+    marker_sha = resolve_commit(marker, repo_dir=repo_dir)
+    if marker_sha is None:
+        return None, f"marker does not resolve to a commit: {marker!r}"
+    if allow_reroot_from != marker_sha:
+        return None, (
+            f"--allow-reroot-from {allow_reroot_from!r} does not name the marker's current sha "
+            f"{marker_sha!r}; refusing rather than bridge from a stale sha"
+        )
+    root = find_reroot_root(marker, remote_ref, repo_dir=repo_dir)
+    if root is None:
+        return None, (
+            "no re-rooting shape detected: remote_ref does not have exactly one root, or its root's "
+            "tree does not contain the marker's content whole (a zero-D `git diff --name-status "
+            "marker root` is required)"
+        )
+    return root, None
+
+
 def commit_subject(sha: str, repo_dir: Path = REPO_ROOT) -> str:
     return _git(["show", "-s", "--format=%s", sha], repo_dir=repo_dir).strip()
 
@@ -150,19 +245,13 @@ def extract_pr_number(subject: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
-def commit_name_status_detailed(sha: str, repo_dir: Path = REPO_ROOT) -> list[tuple[str, str, bool]]:
-    """[(status, path, synthetic), ...] for one commit -- the same walk as
-    `commit_name_status` below, plus one bit per entry saying whether git
-    reported that path itself or whether this module manufactured the entry.
-
-    Exactly one kind of entry is synthetic: the ("D", old_path) a rename
-    contributes on top of its destination path. Everything git printed is
-    synthetic=False. That bit is what lets a caller report an honest
-    "files changed" figure alongside the (larger) count of paths the gates
-    have to rule on -- see build_changeset's `files_changed_count`. Without
-    it the two numbers are indistinguishable, and the smaller, more
-    intuitive one is the one a reader assumes they are being shown."""
-    raw = _git(["show", "--format=", "--name-status", sha], repo_dir=repo_dir)
+def _parse_name_status(raw: str) -> list[tuple[str, str, bool]]:
+    """Shared parser behind `commit_name_status_detailed` and
+    `diff_name_status_detailed` below -- one rename/copy/delete parsing rule,
+    read from either a per-commit `git show --name-status` or a direct `git
+    diff --name-status a b`. See `commit_name_status_detailed`'s docstring
+    for what the synthetic bit means and why a rename must report the old
+    path as a separate ("D", ...) entry."""
     out: list[tuple[str, str, bool]] = []
     for line in raw.splitlines():
         if not line.strip():
@@ -177,6 +266,61 @@ def commit_name_status_detailed(sha: str, repo_dir: Path = REPO_ROOT) -> list[tu
         elif len(parts) >= 2:
             out.append((status, parts[1], False))
     return out
+
+
+def commit_name_status_detailed(sha: str, repo_dir: Path = REPO_ROOT) -> list[tuple[str, str, bool]]:
+    """[(status, path, synthetic), ...] for one commit -- the same walk as
+    `commit_name_status` below, plus one bit per entry saying whether git
+    reported that path itself or whether this module manufactured the entry.
+
+    Exactly one kind of entry is synthetic: the ("D", old_path) a rename
+    contributes on top of its destination path. Everything git printed is
+    synthetic=False. That bit is what lets a caller report an honest
+    "files changed" figure alongside the (larger) count of paths the gates
+    have to rule on -- see build_changeset's `files_changed_count`. Without
+    it the two numbers are indistinguishable, and the smaller, more
+    intuitive one is the one a reader assumes they are being shown."""
+    raw = _git(["show", "--format=", "--name-status", sha], repo_dir=repo_dir)
+    return _parse_name_status(raw)
+
+
+def diff_name_status_detailed(a: str, b: str, repo_dir: Path = REPO_ROOT) -> list[tuple[str, str, bool]]:
+    """[(status, path, synthetic), ...] for a direct two-ref `git diff
+    --name-status a b`.
+
+    THIS IS THE TWO-TREE DIFF THE MODULE DOCSTRING FORBIDS FOR CHANGE-SET
+    ENUMERATION -- do not call it from `build_changeset`'s ordinary walk, and
+    do not call it across planes. Its one sanctioned caller is the re-root
+    bridge (D#2454 PR 4, `resolve_reroot_bridge`/`find_reroot_root` below):
+    an INTRA-plane comparison between the marker and a candidate absorbing
+    root, both code-plane refs. The tree-diff trap this module exists to
+    avoid is specifically the CROSS-plane shape (code plane tip vs engine
+    tip), where the export filter guarantees thousands of manufactured
+    differences no amount of D-counting could explain away. A same-plane
+    candidate root either passes the bridge's zero-D leg or it does not --
+    there is no export filter here to fool it."""
+    raw = _git(["diff", "--name-status", a, b], repo_dir=repo_dir)
+    return _parse_name_status(raw)
+
+
+def diff_numstat(a: str, b: str, repo_dir: Path = REPO_ROOT) -> tuple[int, int]:
+    """(insertions, deletions) for a direct two-ref `git diff --numstat a b`.
+    Same one sanctioned intra-plane caller as `diff_name_status_detailed`
+    above -- see its docstring."""
+    raw = _git(["diff", "--numstat", a, b], repo_dir=repo_dir)
+    insertions = deletions = 0
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        ins, dele = parts[0], parts[1]
+        if ins != "-":
+            insertions += int(ins)
+        if dele != "-":
+            deletions += int(dele)
+    return insertions, deletions
 
 
 def commit_name_status(sha: str, repo_dir: Path = REPO_ROOT) -> list[tuple[str, str]]:
@@ -253,11 +397,30 @@ def blob_hash_at(ref: str, relpath: str, repo_dir: Path = REPO_ROOT) -> str | No
     return proc.stdout.strip() or None
 
 
-def build_changeset(marker: str, remote_ref: str, repo_dir: Path = REPO_ROOT) -> dict:
+def build_changeset(
+    marker: str,
+    remote_ref: str,
+    repo_dir: Path = REPO_ROOT,
+    *,
+    root_bridge: str | None = None,
+) -> dict:
     """The full enumerated changeset: every commit from marker to
     remote_ref, and every path any of them touched, with per-path
     attribution back to the commit(s) that touched it. Read-only -- makes
     no git call that writes anything.
+
+    `root_bridge`, when given, is a commit sha (the re-root bridge's
+    absorbing root R -- see `find_reroot_root`/`resolve_reroot_bridge`
+    above) whose walk is spliced in ahead of the ordinary `R..remote_ref`
+    commit walk. Used ONLY by the opt-in re-root bridge (D#2454 PR 4,
+    `--allow-reroot-from`), and only after the caller has already verified
+    the zero-D leg: R's own diff-tree against its (nonexistent) parent is
+    NEVER read here -- that giant phantom addition is exactly the failure
+    this bridge exists to avoid. Instead R is enumerated as one synthetic
+    entry whose name-status/numstat come from `diff_name_status_detailed`/
+    `diff_numstat(marker, R)`, and every other commit is walked exactly as
+    `list_commits` always has. `root_bridge=None` (the default) is
+    byte-for-byte identical to this function's behaviour before PR 4.
 
     TWO path counts come out of here, and they are different numbers on any
     change set containing a rename:
@@ -281,7 +444,10 @@ def build_changeset(marker: str, remote_ref: str, repo_dir: Path = REPO_ROOT) ->
     field formerly called `touched_path_count` was the first of these
     wearing the second one's name, which is exactly the defect shape this
     whole channel exists to stop shipping."""
-    commits = list_commits(marker, remote_ref, repo_dir=repo_dir)
+    if root_bridge is not None:
+        commits = [root_bridge] + list_commits(root_bridge, remote_ref, repo_dir=repo_dir)
+    else:
+        commits = list_commits(marker, remote_ref, repo_dir=repo_dir)
     commit_infos = []
     touched: dict[str, dict] = {}
     real_paths: set[str] = set()
@@ -292,12 +458,23 @@ def build_changeset(marker: str, remote_ref: str, repo_dir: Path = REPO_ROOT) ->
     for sha in commits:
         subject = commit_subject(sha, repo_dir=repo_dir)
         subject_pr_hint = extract_pr_number(subject)  # untrusted -- see extract_pr_number's docstring
-        ins, dele = commit_numstat(sha, repo_dir=repo_dir)
+        is_bridge_entry = root_bridge is not None and sha == root_bridge
+        if is_bridge_entry:
+            ins, dele = diff_numstat(marker, root_bridge, repo_dir=repo_dir)
+            entries = diff_name_status_detailed(marker, root_bridge, repo_dir=repo_dir)
+        else:
+            ins, dele = commit_numstat(sha, repo_dir=repo_dir)
+            entries = commit_name_status_detailed(sha, repo_dir=repo_dir)
         total_insertions += ins
         total_deletions_lines += dele
-        commit_infos.append({"sha": sha, "subject": subject, "subject_pr_hint": subject_pr_hint})
+        commit_infos.append({
+            "sha": sha,
+            "subject": subject,
+            "subject_pr_hint": subject_pr_hint,
+            "synthetic_root_bridge": is_bridge_entry,
+        })
 
-        for status, path, synthetic in commit_name_status_detailed(sha, repo_dir=repo_dir):
+        for status, path, synthetic in entries:
             entry = touched.setdefault(path, {"commits": [], "statuses": []})
             entry["commits"].append(sha)
             entry["statuses"].append(status)
@@ -317,6 +494,7 @@ def build_changeset(marker: str, remote_ref: str, repo_dir: Path = REPO_ROOT) ->
         "file_deletions": file_deletions,
         "total_insertions": total_insertions,
         "total_deletion_lines": total_deletions_lines,
+        "root_bridge": root_bridge,
     }
 
 

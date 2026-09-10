@@ -64,7 +64,27 @@ import gate  # noqa: E402
 import pull  # noqa: E402
 
 DEFAULT_MAX_FILES = 50
-DEFAULT_MAX_LINES = 500
+#: 500 (pre-D#2454 PR 4) rejected roughly a quarter of ordinary merges on
+#: this plane -- a tripwire that fires that often on the normal case is not
+#: a tripwire. MEASURED directly against real commit history, not a
+#: synthetic fixture (host nixos, 2026-09-10): walked every commit from the
+#: re-root bridge's absorbing root `5f263e8808824a239a0b299288bee37643002bfb`
+#: to `code-plane/main` at `245eb284bc2d37c394eb268cc7c66ffb0a4434ab`
+#: (`git rev-list --reverse <root>..<tip>`, then per-commit `git show
+#: --format= --numstat <sha>`, insertions+deletions summed per commit) --
+#: 96 commits, max 1183 lines in one commit, median 279, 26 of 96 (27%)
+#: over the OLD 500-line ceiling, 0 of 96 over 5000. Recalibrated to 5000:
+#: about 4.2x the largest real commit actually observed (comfortable
+#: headroom without approaching the artifact root's own scale -- 14574
+#: lines for that one-time synthetic bridge entry, itself far below the
+#: 500000+ the pre-PR-2 disjoint-marker walk reported). Re-run the walk
+#: above at a later tip to re-derive; these numbers are a snapshot, not a
+#: frozen constant to copy forward. `test_inbound_apply.py`'s
+#: `test_line_ceiling_recalibration_admits_ordinary_merges_the_old_one_rejected`
+#: exercises the RELATIONSHIP this ceiling depends on (a synthetic fixture,
+#: not a measurement) -- it is a regression guard, not the evidence for the
+#: number above.
+DEFAULT_MAX_LINES = 5000
 
 EXIT_OK = 0
 EXIT_REFUSED = 3
@@ -134,58 +154,16 @@ def _is_trusted_author(login, allowlist):
 
 
 def _find_absorbing_root(marker: str, remote_ref: str, repo_dir: Path) -> str | None:
-    """When *marker* and *remote_ref* share no history at all, look for the
-    shape this channel has actually hit (D#2454): a single root commit of
-    *remote_ref*'s own history whose tree already contains every path the
-    marker's tree has. `git diff --name-status marker root` with zero `D`
-    entries means the marker's CONTENT survived into that commit whole --
-    typically a GitHub squash-merge landed on an empty base, which discards
-    commit identity (no parent, no shared history) but not the tree.
-
-    Returns the absorbing root's sha, or None when remote_ref does not have
-    exactly one root, or that root does not pass the zero-D test (a
-    genuinely unrelated history, not a re-root).
-
-    This is an INTRA-plane comparison -- marker and remote_ref are both
-    code-plane refs -- not the cross-plane `git diff <a> <b>` that
-    changeset.py's module docstring forbids for change-set ENUMERATION.
-    That prohibition is about comparing one plane's tip against the
-    other's, where the export filter guarantees thousands of manufactured
-    differences no amount of D-counting could explain away. A same-plane
-    candidate root either passes zero-D or it doesn't; there is no filter
-    here to fool it, and the result is used only to word a refusal message
-    -- never to enumerate or apply anything, and it runs at most once per
-    call, only when the shared-history check has already decided to
-    refuse."""
+    """Diagnostic-only, best-effort wrapper over `changeset.find_reroot_root`
+    (promoted there in D#2454 PR 4, alongside the opt-in re-root bridge that
+    reuses the identical shape -- one root, zero-D against the marker -- to
+    decide whether it may actually bridge). Never raises: this result only
+    words a refusal message, and it runs at most once per call, only after
+    the shared-history check has already decided to refuse."""
     try:
-        roots_out = subprocess.run(
-            ["git", "rev-list", "--max-parents=0", remote_ref],
-            cwd=str(repo_dir),
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
+        return changeset.find_reroot_root(marker, remote_ref, repo_dir=repo_dir)
     except Exception:  # noqa: BLE001 -- diagnostic best-effort, never blocks the refusal itself
         return None
-    if roots_out.returncode != 0:
-        return None
-    roots = [line for line in roots_out.stdout.split() if line.strip()]
-    if len(roots) != 1:
-        return None
-    root = roots[0]
-    diff = subprocess.run(
-        ["git", "diff", "--name-status", marker, root],
-        cwd=str(repo_dir),
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    if diff.returncode != 0:
-        return None
-    statuses = {line.split("\t", 1)[0] for line in diff.stdout.splitlines() if line.strip()}
-    if "D" in statuses:
-        return None
-    return root
 
 
 def _reroot_refusal_reason(
@@ -257,6 +235,7 @@ def classify_report(
     extra_paths: dict | None = None,
     known_commit_trust: dict | None = None,
     allow_disjoint_marker: bool = False,
+    allow_reroot_from: str | None = None,
 ) -> dict:
     """The full pipeline. Injectable seams (resolve_trust_allowlist,
     resolve_pr_author, is_trusted_author, resolve_surface_patterns,
@@ -276,6 +255,17 @@ def classify_report(
     like -- it never widens what gets classified as writable, and this
     function never writes anything regardless of it. The pairing with
     apply_inbound.py's `--dry-run` is enforced by that caller, not here.
+
+    `allow_reroot_from` (D#2454 PR 4) is the REAL fix, tried first: when
+    given and it names the marker's own current sha, and remote_ref's
+    history actually has the re-root shape (see
+    `changeset.resolve_reroot_bridge`), the enumeration is built from the
+    honest `R..remote_ref` walk plus one synthetic root entry, instead of
+    the degenerate "all of remote_ref". Unlike `allow_disjoint_marker`, this
+    is not diagnostic-only -- a successful bridge produces the real change
+    set apply_inbound.py's write-set machinery operates on, in a real run.
+    Tried before `allow_disjoint_marker` below: when the bridge applies, the
+    disjoint-marker escape is never reached at all.
 
     `local_ref` is what "the engine's own copy" means when hash-classifying
     -- it defaults to `main`, not `HEAD`, specifically so that running this
@@ -323,6 +313,8 @@ def classify_report(
     # marker never pays for the expensive per-commit walk unless an operator
     # explicitly asked to see it via allow_disjoint_marker. ---
     disjoint_bypass: dict | None = None
+    root_bridge_used: dict | None = None
+    root_bridge_sha: str | None = None
     if not changeset.marker_is_ancestor(marker, remote_ref, repo_dir=repo_dir):
         marker_sha = changeset.resolve_commit(marker, repo_dir=repo_dir)
         remote_sha = changeset.resolve_commit(remote_ref, repo_dir=repo_dir)
@@ -338,41 +330,74 @@ def classify_report(
             merge_base_sha=merge_base_sha,
             reroot_sha=reroot_sha,
         )
-        if not allow_disjoint_marker:
+
+        # D#2454 PR 4: try the real fix first. If the bridge applies, the
+        # enumeration below uses the honest R..remote_ref walk (plus the
+        # synthetic root entry) and neither the disjoint refusal nor the
+        # diagnostic-only --allow-disjoint-marker escape is ever reached.
+        bridge_root, bridge_refusal = changeset.resolve_reroot_bridge(
+            marker, remote_ref, allow_reroot_from, repo_dir=repo_dir
+        )
+        if bridge_root is not None:
+            root_bridge_sha = bridge_root
+            root_bridge_used = {
+                "used": True,
+                "marker": marker,
+                "marker_sha": marker_sha,
+                "remote_ref": remote_ref,
+                "remote_sha": remote_sha,
+                "root_sha": bridge_root,
+            }
+        elif not allow_disjoint_marker:
             return {
                 "marker": marker,
                 "remote_ref": remote_ref,
                 "refused": True,
                 "refusal_reason": reroot_reason,
             }
-        # --allow-disjoint-marker: diagnostic-only escape (D#2454 PR 2). This
-        # function does not itself know about --dry-run -- report.py never
-        # writes anything regardless of the flag (see module docstring); the
-        # pairing with --dry-run is enforced by apply_inbound.py, the only
-        # caller that can actually write. Proceeds past the refusal so the
-        # operator sees the (misleadingly large) change set the marker
-        # actually produces; every other check below, ceiling included,
-        # still runs completely unchanged.
-        disjoint_bypass = {
-            "used": True,
-            "marker": marker,
-            "marker_sha": marker_sha,
-            "remote_ref": remote_ref,
-            "remote_sha": remote_sha,
-            "bypassed_reason": reroot_reason,
-        }
+        else:
+            # --allow-disjoint-marker: diagnostic-only escape (D#2454 PR 2).
+            # This function does not itself know about --dry-run -- report.py
+            # never writes anything regardless of the flag (see module
+            # docstring); the pairing with --dry-run is enforced by
+            # apply_inbound.py, the only caller that can actually write.
+            # Proceeds past the refusal so the operator sees the
+            # (misleadingly large) change set the marker actually produces;
+            # every other check below, ceiling included, still runs
+            # completely unchanged.
+            disjoint_bypass = {
+                "used": True,
+                "marker": marker,
+                "marker_sha": marker_sha,
+                "remote_ref": remote_ref,
+                "remote_sha": remote_sha,
+                "bypassed_reason": reroot_reason,
+            }
 
     def _with_bypass(d: dict) -> dict:
         if disjoint_bypass is not None:
             d["disjoint_marker_bypass"] = disjoint_bypass
+        if root_bridge_used is not None:
+            d["root_bridge_used"] = root_bridge_used
         return d
 
-    cs = changeset.build_changeset(marker, remote_ref, repo_dir=repo_dir)
+    cs = changeset.build_changeset(marker, remote_ref, repo_dir=repo_dir, root_bridge=root_bridge_sha)
 
     # --- Ceiling check: a change set this large, from commit enumeration
     # alone, means something is wrong upstream of this tool (or the marker
     # is badly stale) -- refuse rather than print a report nobody asked for
-    # at this size. ---
+    # at this size.
+    #
+    # D#2454 PR 4 item 25: this check sits upstream of the per-commit
+    # provenance resolution below (resolve_prs_for_commit -> GitHub's `GET
+    # /repos/<repo>/commits/<sha>/pulls`, one call per commit in range), so
+    # it is currently the ONLY bound on this tool's GitHub API spend -- and
+    # that spend scales with COMMIT COUNT, which neither this ceiling nor
+    # the write-set ceiling in apply_inbound.py measures at any threshold.
+    # Raising max_lines therefore silently raises an unnamed API budget too.
+    # A `max_commits` bound is deliberately NOT added here -- it belongs
+    # with the scheduling Discussion, where cadence (the thing that actually
+    # sets commit count) is decided. ---
     if cs["gated_path_count"] > max_files or cs["total_insertions"] + cs["total_deletion_lines"] > max_lines:
         return _with_bypass({
             "marker": marker,
@@ -653,6 +678,15 @@ def build_parser() -> argparse.ArgumentParser:
         "writes anything regardless of this flag; the pairing with --dry-run that "
         "apply_inbound.py enforces does not apply here.",
     )
+    parser.add_argument(
+        "--allow-reroot-from",
+        default=None,
+        metavar="MARKER_SHA",
+        help="the re-root bridge (D#2454 PR 4): proceed past the re-rooted-marker refusal by "
+        "repairing the enumeration to the honest R..remote_ref walk, instead of bypassing it. "
+        "Must name the marker's own current sha (tried before --allow-disjoint-marker); refused "
+        "when remote_ref does not have the re-rooting shape.",
+    )
     return parser
 
 
@@ -671,6 +705,7 @@ def main(argv: list[str] | None = None) -> int:
             do_fetch=not args.no_fetch,
             local_ref=args.local_ref,
             allow_disjoint_marker=args.allow_disjoint_marker,
+            allow_reroot_from=args.allow_reroot_from,
         )
     except changeset.GitError as exc:
         # Fail closed, but readably: an operator (or the loop) reading this
