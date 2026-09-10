@@ -117,15 +117,15 @@ WT_TMP="/tmp/wt-testid"
 
 assert_blocked "AC1: git checkout main" \
   "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git checkout main\"},\"cwd\":\"$WT_CLAUDE\"}" \
-  "blocked by sandbox: git write-verb outside worktree"
+  "blocked by sandbox: git checkout: always blocked for sub-agents regardless of cwd"
 
 assert_blocked "AC1: git -C main-repo checkout" \
   "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git -C $MAIN_REPO checkout main\"},\"cwd\":\"$WT_CLAUDE\"}" \
-  "blocked by sandbox: git write-verb outside worktree"
+  "blocked by sandbox: git checkout: always blocked for sub-agents regardless of cwd"
 
 assert_blocked "AC1: cd main-repo && git checkout" \
   "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $MAIN_REPO && git checkout main\"},\"cwd\":\"$WT_CLAUDE\"}" \
-  "blocked by sandbox: git write-verb outside worktree"
+  "blocked by sandbox: git checkout: always blocked for sub-agents regardless of cwd"
 
 assert_blocked "AC1: bash -c git reset" \
   "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"bash -c \\\"git reset --hard origin/main\\\"\"},\"cwd\":\"$WT_CLAUDE\"}" \
@@ -133,11 +133,11 @@ assert_blocked "AC1: bash -c git reset" \
 
 assert_blocked "AC1: git switch main" \
   "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git switch main\"},\"cwd\":\"$WT_CLAUDE\"}" \
-  "blocked by sandbox: git write-verb outside worktree"
+  "blocked by sandbox: git switch: always blocked for sub-agents regardless of cwd"
 
 assert_blocked "AC1: git branch -D feature-x from worktree" \
   "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git branch -D feature-x\"},\"cwd\":\"$WT_CLAUDE\"}" \
-  "blocked by sandbox: git write-verb outside worktree"
+  "blocked by sandbox: git branch: always blocked for sub-agents regardless of cwd"
 
 # ---------------------------------------------------------------------------
 # D#2058 — _GIT_ALWAYS_BLOCKED_VERBS ignored flags: `git branch`/`git worktree`
@@ -186,46 +186,46 @@ assert_allowed "D#2058 c4: git worktree list --porcelain" \
 # Criterion 5: write spellings of the SAME verbs stay refused.
 assert_blocked "D#2058 c5: git branch -D foo" \
   "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git branch -D foo\"},\"cwd\":\"$WT_CLAUDE\"}" \
-  "blocked by sandbox: git write-verb outside worktree"
+  "blocked by sandbox: git branch: always blocked for sub-agents regardless of cwd"
 
 assert_blocked "D#2058 c5: git branch -d foo" \
   "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git branch -d foo\"},\"cwd\":\"$WT_CLAUDE\"}" \
-  "blocked by sandbox: git write-verb outside worktree"
+  "blocked by sandbox: git branch: always blocked for sub-agents regardless of cwd"
 
 assert_blocked "D#2058 c5: git branch -m a b" \
   "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git branch -m a b\"},\"cwd\":\"$WT_CLAUDE\"}" \
-  "blocked by sandbox: git write-verb outside worktree"
+  "blocked by sandbox: git branch: always blocked for sub-agents regardless of cwd"
 
 assert_blocked "D#2058 c5: git branch --set-upstream-to=origin/x" \
   "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git branch --set-upstream-to=origin/x\"},\"cwd\":\"$WT_CLAUDE\"}" \
-  "blocked by sandbox: git write-verb outside worktree"
+  "blocked by sandbox: git branch: always blocked for sub-agents regardless of cwd"
 
 assert_blocked "D#2058 c5: git worktree add /tmp/x" \
   "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git worktree add /tmp/x\"},\"cwd\":\"$WT_CLAUDE\"}" \
-  "blocked by sandbox: git write-verb outside worktree"
+  "blocked by sandbox: git worktree: always blocked for sub-agents regardless of cwd"
 
 assert_blocked "D#2058 c5: git worktree remove /tmp/x" \
   "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git worktree remove /tmp/x\"},\"cwd\":\"$WT_CLAUDE\"}" \
-  "blocked by sandbox: git write-verb outside worktree"
+  "blocked by sandbox: git worktree: always blocked for sub-agents regardless of cwd"
 
 # Criterion 6: unrecognised flags/subcommands fail closed (allowlist, not denylist).
 assert_blocked "D#2058 c6: git branch --some-future-flag" \
   "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git branch --some-future-flag\"},\"cwd\":\"$WT_CLAUDE\"}" \
-  "blocked by sandbox: git write-verb outside worktree"
+  "blocked by sandbox: git branch: always blocked for sub-agents regardless of cwd"
 
 assert_blocked "D#2058 c6: git worktree some-future-subcommand" \
   "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git worktree some-future-subcommand\"},\"cwd\":\"$WT_CLAUDE\"}" \
-  "blocked by sandbox: git write-verb outside worktree"
+  "blocked by sandbox: git worktree: always blocked for sub-agents regardless of cwd"
 
 # Criterion 7: chained read-only-then-write escape (D#1729 F3) must still block
 # — a per-invocation escape must not resurrect first-verb-wins.
 assert_blocked "D#2058 c7: git log;git reset --hard origin/main" \
   "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git log;git reset --hard origin/main\"},\"cwd\":\"$WT_CLAUDE\"}" \
-  "blocked by sandbox: git write-verb outside worktree"
+  "blocked by sandbox: git reset: always blocked for sub-agents regardless of cwd"
 
 assert_blocked "D#2058 c7: git status && git worktree remove /tmp/x" \
   "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git status && git worktree remove /tmp/x\"},\"cwd\":\"$WT_CLAUDE\"}" \
-  "blocked by sandbox: git write-verb outside worktree"
+  "blocked by sandbox: git worktree: always blocked for sub-agents regardless of cwd"
 
 # ---------------------------------------------------------------------------
 # AC2 — read-only git allowlist
@@ -695,7 +695,7 @@ assert_blocked "D#1756: git -C main-repo push --force still blocks" \
 
 assert_blocked "D#1756: git log && git checkout main still blocks (F3 multi-verb walker)" \
   "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git log && git checkout main\"},\"cwd\":\"$WT_CLAUDE\"}" \
-  "blocked by sandbox: git write-verb outside worktree"
+  "blocked by sandbox: git checkout: always blocked for sub-agents regardless of cwd"
 
 # ---------------------------------------------------------------------------
 # D#1792 — a quoted `/`-prefixed redirect target was invisible to the

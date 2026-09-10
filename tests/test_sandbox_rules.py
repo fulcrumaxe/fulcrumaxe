@@ -57,6 +57,13 @@ _MAIN_REPO = FIXTURE_MAIN_REPO
 _WT_CLAUDE = f"{_MAIN_REPO}/.claude/worktrees/abc123"
 _WT_TMP = "/tmp/wt-testid"
 
+# D#2012 item 3: an always-blocked-verb Decision (checkout/switch/branch/
+# reset/clean/worktree/restore, non-readonly spelling) no longer claims
+# "outside worktree" — that path never checks any CWD, so the claim was
+# untrue. The message now embeds the specific verb, so tests assert this
+# marker substring rather than a fixed-literal whole-string match.
+_GIT_ALWAYS_BLOCKED_REASON_MARKER = "always blocked for sub-agents regardless of cwd"
+
 _WT_CWDS = [
     _WT_CLAUDE,
     _WT_CLAUDE + "/src",
@@ -152,7 +159,7 @@ class TestAC1GitWriteRejection:
     def test_git_checkout_with_minus_c_escape(self) -> None:
         d = classify_bash(f"git -C {_MAIN_REPO} checkout main", _WT_CLAUDE)
         assert not d.allow
-        assert "git write-verb outside worktree" in d.reason
+        assert _GIT_ALWAYS_BLOCKED_REASON_MARKER in d.reason
 
     def test_bash_wrapper_escape(self) -> None:
         d = classify_bash('bash -c "git reset --hard origin/main"', _WT_CLAUDE)
@@ -349,6 +356,133 @@ class TestAC4MergeRejection:
         )
         assert not d.allow
         assert "sandbox_block_gh_api_mutation" in d.reason
+
+
+# ---------------------------------------------------------------------------
+# D#2012 item 5 — the `gh pr merge` guard (both `_is_gh_merge` and the
+# `_GH_MUTATION_ALIASES`-derived alias check inside `_is_gh_api_mutation`)
+# must be command-position aware, not a raw substring search over the whole
+# command string. Live measured over-block: `grep -rn 'gh pr merge'
+# scripts/` (searching FOR the phrase, not running it) was refused with
+# "sub-agents may not merge".
+# ---------------------------------------------------------------------------
+
+
+class TestD2012MergePhraseCommandPosition:
+    """Spec criteria 3-5. Each 'still blocked' case is deliberately the same
+    verb pair as the allowed grep case, so that deleting the command-position
+    check and reverting to a raw substring search would flip these to the
+    wrong verdict."""
+
+    def test_merge_phrase_in_grep_pattern_allowed(self) -> None:
+        # Criterion 3 — the exact measured shape from the Discussion table.
+        d = classify_bash("grep -rn 'gh pr merge' scripts/", _WT_CLAUDE)
+        assert d.allow, f"Expected ALLOW for grep searching for the merge phrase, got reason={d.reason!r}"
+
+    def test_merge_phrase_in_body_string_allowed(self) -> None:
+        # Same bug, a different quoting shape — --body text, not a grep
+        # pattern (this is what tripped the alias check inside
+        # _is_gh_api_mutation independently of _is_gh_merge).
+        d = classify_bash(
+            "gh pr comment 1 --body 'never run gh pr merge from a worktree'",
+            _WT_CLAUDE,
+        )
+        assert d.allow, f"Expected ALLOW for merge phrase inside --body text, got reason={d.reason!r}"
+
+    def test_guard_would_fail_without_command_position_check(self) -> None:
+        """Sanity check that the OLD raw-substring approach really would have
+        blocked the grep case — proving the test above exercises a real fix,
+        not a tautology (mirrors test_guard_would_fail_without_command_position_check
+        in TestD2225GhApiMutationCommandPosition below, same technique)."""
+        old_pattern = re.compile(r"\bgh\s+pr\s+merge\b")
+        command = "grep -rn 'gh pr merge' scripts/"
+        assert old_pattern.search(command), (
+            "expected the old raw-substring pattern to match the grep pattern "
+            "(this proves test_merge_phrase_in_grep_pattern_allowed actually "
+            "exercises the fix)"
+        )
+        d = classify_bash(command, _WT_CLAUDE)
+        assert d.allow
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh pr merge 999 --squash",
+            "gh pr merge 1",
+        ],
+    )
+    def test_real_merge_invocation_still_blocked(self, command: str) -> None:
+        # Criterion 4 — negative control: deleting the rule instead of fixing
+        # it would also make the grep case above pass, so a genuine
+        # invocation must still block.
+        d = classify_bash(command, _WT_CLAUDE)
+        assert not d.allow, f"Expected BLOCK for real gh pr merge invocation: {command!r}"
+        assert "sub-agents may not merge" in d.reason
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "echo hi; gh pr merge 1",
+            "echo hi && gh pr merge 1",
+            "echo hi | gh pr merge 1",
+            "( gh pr merge 1 )",
+            "$(gh pr merge 1)",
+            "bash -c 'gh pr merge 1'",
+        ],
+    )
+    def test_real_merge_invocation_as_later_stage_still_blocked(self, command: str) -> None:
+        # Criterion 5 — second negative control: the fix must distinguish
+        # executable position from argument text, not merely check the first
+        # token — a merge invocation later in a pipeline/chain must still
+        # block.
+        d = classify_bash(command, _WT_CLAUDE)
+        assert not d.allow, f"Expected BLOCK for chained real merge invocation: {command!r}"
+        assert "sub-agents may not merge" in d.reason
+
+    def test_mutation_reverting_to_bare_substring_would_over_permit_grep_and_still_block_real_merge(
+        self,
+    ) -> None:
+        """Mutation (documented, not applied here): reverting
+        _gh_pr_merge_in_command_position's body to `return bool(re.search(r"\\bgh\\s+pr\\s+merge\\b", command))`
+        makes test_merge_phrase_in_grep_pattern_allowed and
+        test_merge_phrase_in_body_string_allowed FAIL (both flip to BLOCK)
+        while test_real_merge_invocation_still_blocked keeps passing — proof
+        the fix, not merely "some check ran", is what those two tests pin."""
+        assert classify_bash("grep -rn 'gh pr merge' scripts/", _WT_CLAUDE).allow
+        assert classify_bash("gh pr merge 1", _WT_CLAUDE).allow is False
+
+
+class TestD2012MutationAliasCommandPosition:
+    """The other half of item 5: `_is_gh_api_mutation`'s alias check
+    (`_gh_mutation_alias_in_command_position`, replacing the old
+    `_GH_MUTATION_ALIASES` bare regex) covers `gh issue close`, `gh issue
+    delete`, `gh pr close`, and `gh pr review ... --request-changes` the
+    same way — real invocation blocked, inert mention allowed."""
+
+    @pytest.mark.parametrize(
+        "command,mentioned_in",
+        [
+            ("gh issue close 5", "grep -rn 'gh issue close' scripts/"),
+            ("gh issue delete 5", "grep -rn 'gh issue delete' scripts/"),
+            ("gh pr close 5", "grep -rn 'gh pr close' scripts/"),
+            (
+                "gh pr review 5 --request-changes",
+                "echo 'never run gh pr review --request-changes'",
+            ),
+        ],
+    )
+    def test_real_alias_invocation_blocked_mention_allowed(
+        self, command: str, mentioned_in: str
+    ) -> None:
+        d_real = classify_bash(command, _WT_CLAUDE)
+        assert not d_real.allow, f"Expected BLOCK for real invocation: {command!r}"
+        assert "sandbox_block_gh_api_mutation" in d_real.reason
+
+        d_mention = classify_bash(mentioned_in, _WT_CLAUDE)
+        assert d_mention.allow, (
+            f"Expected ALLOW for inert mention: {mentioned_in!r}, "
+            f"got reason={d_mention.reason!r}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1850,7 +1984,7 @@ class TestGluedShellOperators:
         like it already blocks the spaced form."""
         d = classify_bash("true;git worktree remove " + _WT_CLAUDE, _WT_CLAUDE)
         assert not d.allow
-        assert "git write-verb outside worktree" in d.reason
+        assert _GIT_ALWAYS_BLOCKED_REASON_MARKER in d.reason
 
     def test_spaced_form_still_blocks_no_regression(self) -> None:
         d = classify_bash("true ; git worktree remove " + _WT_CLAUDE, _WT_CLAUDE)
@@ -1928,7 +2062,7 @@ class TestF1SubshellAndCommandSubstitutionOperators:
     def test_glued_and_spaced_subshell_forms_block(self, command: str) -> None:
         d = classify_bash(command, _WT_CLAUDE)
         assert not d.allow, f"expected BLOCK for {command!r}, got allow with reason={d.reason!r}"
-        assert "git write-verb outside worktree" in d.reason
+        assert _GIT_ALWAYS_BLOCKED_REASON_MARKER in d.reason
 
     def test_paren_subshell_extracts_worktree_verb(self) -> None:
         assert _extract_git_verb(f"(git worktree remove {_WT_CLAUDE})") == "worktree"
@@ -1966,7 +2100,7 @@ class TestF2AbsolutePathGitBinary:
     def test_absolute_path_git_blocks_via_classify_bash(self) -> None:
         d = classify_bash(f"/usr/bin/git worktree remove {_WT_CLAUDE}", _WT_CLAUDE)
         assert not d.allow
-        assert "git write-verb outside worktree" in d.reason
+        assert _GIT_ALWAYS_BLOCKED_REASON_MARKER in d.reason
 
     def test_absolute_path_git_glued_semicolon_blocks(self) -> None:
         """Absolute-path git combined with a glued separator (F1 + F2 together)."""
@@ -1991,12 +2125,12 @@ class TestF3FirstVerbWinsMultiVerbSequences:
     def test_readonly_log_no_longer_shields_reset_hard(self) -> None:
         d = classify_bash("git log;git reset --hard origin/main", _WT_CLAUDE)
         assert not d.allow, f"expected BLOCK, got allow with reason={d.reason!r}"
-        assert "git write-verb outside worktree" in d.reason
+        assert _GIT_ALWAYS_BLOCKED_REASON_MARKER in d.reason
 
     def test_readonly_status_no_longer_shields_worktree_remove(self) -> None:
         d = classify_bash(f"git status && git worktree remove {_WT_CLAUDE}", _WT_CLAUDE)
         assert not d.allow
-        assert "git write-verb outside worktree" in d.reason
+        assert _GIT_ALWAYS_BLOCKED_REASON_MARKER in d.reason
 
     def test_readonly_diff_before_push_stays_allowed_when_no_escape(self) -> None:
         """`git diff && git push --force` (Kai's third F3 repro) with no `-C`/`cd`
@@ -2078,12 +2212,12 @@ class TestF4ValueTakingGlobalOptionsDisplaceVerb:
     def test_dash_c_confirmed_repro_blocks_via_classify_bash(self) -> None:
         d = classify_bash("git -c core.pager=cat checkout main", _WT_CLAUDE)
         assert not d.allow, f"expected BLOCK, got allow with reason={d.reason!r}"
-        assert "git write-verb outside worktree" in d.reason
+        assert _GIT_ALWAYS_BLOCKED_REASON_MARKER in d.reason
 
     def test_dash_c_worktree_remove_blocks(self) -> None:
         d = classify_bash(f"git -c foo.bar=baz worktree remove {_WT_CLAUDE}", _WT_CLAUDE)
         assert not d.allow
-        assert "git write-verb outside worktree" in d.reason
+        assert _GIT_ALWAYS_BLOCKED_REASON_MARKER in d.reason
 
     @pytest.mark.parametrize(
         "opt,value",
@@ -2142,7 +2276,7 @@ class TestF5BackslashNewlineContinuation:
         command = "git \\\n checkout main"
         d = classify_bash(command, _WT_CLAUDE)
         assert not d.allow, f"expected BLOCK, got allow with reason={d.reason!r}"
-        assert "git write-verb outside worktree" in d.reason
+        assert _GIT_ALWAYS_BLOCKED_REASON_MARKER in d.reason
 
     def test_backslash_newline_before_worktree_remove_blocks(self) -> None:
         command = f"git \\\n worktree remove {_WT_CLAUDE}"
@@ -2649,7 +2783,7 @@ class TestD1756RegressionTrap:
         # C — criterion 21, the D#1729 F3 multi-verb walker must be untouched.
         d = classify_bash("git log && git checkout main", _WT_CLAUDE)
         assert not d.allow
-        assert "git write-verb outside worktree" in d.reason
+        assert _GIT_ALWAYS_BLOCKED_REASON_MARKER in d.reason
 
     def test_unquoted_and_piped_writes_to_main_repo_still_block(self) -> None:
         # C — criterion 22, sanity check the redirect/tee path itself wasn't touched.
@@ -3051,7 +3185,7 @@ class TestD1746GluedLongOptionForm:
         assert _extract_all_git_verbs("git --namespace=x checkout main") == ["checkout"]
         d = classify_bash("git --namespace=x checkout main", _WT_CLAUDE)
         assert not d.allow
-        assert "git write-verb outside worktree" in d.reason
+        assert _GIT_ALWAYS_BLOCKED_REASON_MARKER in d.reason
 
     def test_glued_dash_c_read_only_stays_allowed(self) -> None:
         """No over-block: glued `--git-dir=`/`--work-tree=` on a read-only
@@ -3606,7 +3740,7 @@ class TestD2058Rule2WriteSpellingsStillBlocked:
     def test_write_spelling_blocked(self, cmd: str) -> None:
         d = classify_bash(cmd, _WT_CLAUDE)
         assert not d.allow, f"Expected BLOCK for: {cmd!r}"
-        assert d.reason == "git write-verb outside worktree"
+        assert _GIT_ALWAYS_BLOCKED_REASON_MARKER in d.reason, f"got reason={d.reason!r}"
 
     def test_mutation_removing_branch_worktree_from_set_would_under_block(self) -> None:
         """Mutation (required, documented in the PR body): removing `branch`
@@ -3658,7 +3792,7 @@ class TestD2058Rule2ChainedEscapeRegression:
     def test_chained_escape_still_blocked(self, cmd: str) -> None:
         d = classify_bash(cmd, _WT_CLAUDE)
         assert not d.allow, f"Expected BLOCK for: {cmd!r}"
-        assert d.reason == "git write-verb outside worktree"
+        assert _GIT_ALWAYS_BLOCKED_REASON_MARKER in d.reason, f"got reason={d.reason!r}"
 
     def test_mutation_first_readonly_verb_return_allow_would_under_block(self) -> None:
         """Mutation (required, documented in the PR body): making the new
@@ -3720,6 +3854,215 @@ class TestD2058IsGitReadonlyInvocationUnit:
         for verb in ("checkout", "switch", "reset", "clean", "restore"):
             assert _is_git_readonly_invocation(verb, []) is False
             assert _is_git_readonly_invocation(verb, ["--some-flag"]) is False
+
+
+# ---------------------------------------------------------------------------
+# D#2012 item 3 — the always-blocked-verb reason must not claim "outside
+# worktree": that branch never checks any CWD, so `git checkout -b
+# feature/x` run from INSIDE the agent's own worktree was refused with a
+# reason claiming the write was "outside" it. Investigated by test
+# (criterion 6): does the verdict depend on is_worktree(cwd), or does it
+# fire unconditionally?
+# ---------------------------------------------------------------------------
+
+
+class TestD2012AlwaysBlockedReasonInvestigation:
+    """Establishes, by test, what `git checkout -b <name>` / `git switch -c
+    <name>`'s current BLOCK actually depends on, before deciding whether to
+    change the verdict (Spec option a) or just the message (option b).
+
+    Finding: the block is unconditional. `is_worktree(_WT_CLAUDE)` is
+    truthy (the cwd genuinely IS the agent's own worktree, confirmed below)
+    and the command is refused anyway — checkout/switch/reset/clean/restore
+    have no read-only spelling in `_GIT_ALWAYS_BLOCKED_VERBS` and are
+    refused regardless of cwd, matching the standing brief's documented
+    constraint ("checkout/switch/branch/reset/clean/restore are refused by
+    the sandbox") and the code comment directly above the raise site in
+    classify_bash ("these can corrupt the parent repo's branch state even
+    when run from within the worktree"). Per the Spec: 'If the block turns
+    out to be correct and only the message is wrong, fixing the message
+    alone is a complete and acceptable outcome for this criterion' — option
+    (b) was chosen; the verdict (BLOCK) is unchanged, only the reason text.
+    """
+
+    def test_cwd_genuinely_is_the_agents_own_worktree(self) -> None:
+        # The premise the old "outside worktree" reason claimed was false.
+        assert is_worktree(_WT_CLAUDE) is not None
+
+    def test_checkout_dash_b_blocked_from_inside_its_own_worktree(self) -> None:
+        d = classify_bash("git checkout -b feature/x", _WT_CLAUDE)
+        assert not d.allow
+
+    def test_switch_dash_c_blocked_from_inside_its_own_worktree(self) -> None:
+        d = classify_bash("git switch -c feature/x", _WT_CLAUDE)
+        assert not d.allow
+
+    def test_block_is_unconditional_not_cwd_dependent(self) -> None:
+        """The defining measurement: the SAME command, run with a cwd that
+        is NOT a worktree at all, is refused with the IDENTICAL reason —
+        proving the verdict (and its message) does not depend on
+        is_worktree(cwd) the way the old "outside worktree" wording implied.
+        (classify_bash itself has no Team-Lead exemption — that is enforced
+        one layer up, in hooks/sandbox.py's main() — so this only
+        demonstrates the verb rule itself is unconditional, not that Team
+        Lead would ever reach this code path.)"""
+        assert is_worktree(_MAIN_REPO) is None  # not a worktree cwd at all
+        wt_decision = classify_bash("git checkout -b feature/x", _WT_CLAUDE)
+        non_wt_decision = classify_bash("git checkout -b feature/x", _MAIN_REPO)
+        assert not wt_decision.allow
+        assert not non_wt_decision.allow
+        assert wt_decision.reason == non_wt_decision.reason, (
+            "if the reason depended on cwd, these would differ: "
+            f"wt={wt_decision.reason!r} non_wt={non_wt_decision.reason!r}"
+        )
+
+    def test_new_reason_states_the_true_cause_not_a_location_claim(self) -> None:
+        d = classify_bash("git checkout -b feature/x", _WT_CLAUDE)
+        assert "outside worktree" not in d.reason
+        assert _GIT_ALWAYS_BLOCKED_REASON_MARKER in d.reason
+        assert "checkout" in d.reason
+
+    def test_readonly_spellings_unaffected_by_the_message_fix(self) -> None:
+        """The always-blocked-verb rule itself (which spellings still
+        escape) is untouched by this fix — only the block's reason text
+        changed. Regression pin for D#2058's read-only escapes."""
+        assert classify_bash("git branch --show-current", _WT_CLAUDE).allow
+        assert classify_bash("git worktree list", _WT_CLAUDE).allow
+
+
+# ---------------------------------------------------------------------------
+# D#2012 — regression corpus for the eight measured shapes (the Discussion's
+# investigation table: items 1, 2, 3, 4, 5, 8, 9, 10 — items 6/7 are
+# explicitly deferred in the frozen Spec and are not part of this corpus).
+# Items 9/10's LIVE over-block, when it happens, comes from a harness layer
+# above this repo (confirmed: `grep -rn 'too complex to verify' hooks/
+# scripts/` returns nothing) — these two rows here only pin that OUR
+# classify_bash function correctly allows the shape, not that the harness
+# layer does; that part is out of scope, reported upstream, not fixed here.
+# ---------------------------------------------------------------------------
+
+
+def _classify_item1(command: str) -> Decision:
+    return check_claude_spawn([], command)
+
+
+def _classify_via_bash(command: str) -> Decision:
+    return classify_bash(command, _WT_CLAUDE)
+
+
+_D2012_CORPUS: list[tuple[str, object, str, bool]] = [
+    (
+        "item1_claude_projects_path_substring",
+        _classify_item1,
+        "cat $(ls $HOME/.claude/projects/p/subagents/agent-x.jsonl)",
+        True,
+    ),
+    (
+        "item2_git_branch_show_current",
+        _classify_via_bash,
+        "git branch --show-current",
+        True,
+    ),
+    (
+        # Also this corpus's deliberately-blocked control case (criterion 2)
+        # — see test_corpus_has_a_deliberately_blocked_control below.
+        "item3_git_checkout_dash_b",
+        _classify_via_bash,
+        "git checkout -b feature/x",
+        False,
+    ),
+    (
+        "item4_heredoc_write_to_tmp",
+        _classify_via_bash,
+        "cat <<'EOF' > /tmp/d2012-scratch-note.txt\nline one\nline two\nEOF",
+        True,
+    ),
+    (
+        "item5_merge_phrase_in_grep_pattern",
+        _classify_via_bash,
+        "grep -rn 'gh pr merge' scripts/",
+        True,
+    ),
+    (
+        "item8_control_plane_dials_readonly_query",
+        _classify_via_bash,
+        "python3 backend/control_plane.py dials",
+        True,
+    ),
+    (
+        "item9_for_loop_over_gh_pr_view",
+        _classify_via_bash,
+        "for i in 1 2 3; do gh pr view $i --json number; done",
+        True,
+    ),
+    (
+        "item10_gh_api_piped_to_head",
+        _classify_via_bash,
+        "gh api repos/autonomous-agent-7/autonomous-forever/pulls/1 | head -5",
+        True,
+    ),
+]
+
+
+class TestD2012RegressionCorpus:
+    """Spec criteria 1-2. Pins all eight measured shapes from the Discussion
+    in place, each with its OWN expected verdict (not merely 'allowed') —
+    six already-fixed rows assert allow, item 3 asserts the post-fix BLOCK
+    verdict (and doubles as this corpus's non-vacuity control, criterion 2),
+    item 5 asserts the fix this PR makes."""
+
+    @pytest.mark.parametrize(
+        "case_id,classify,command,expect_allow",
+        _D2012_CORPUS,
+        ids=[c[0] for c in _D2012_CORPUS],
+    )
+    def test_corpus_case(self, case_id, classify, command, expect_allow) -> None:
+        d = classify(command)
+        # Non-vacuity (criterion 2): assert on the returned Decision object
+        # itself, not merely a truthy/falsy read of .allow.
+        assert isinstance(d, Decision), (
+            f"{case_id}: classifier did not return a Decision, got {d!r}"
+        )
+        assert d.allow is expect_allow, (
+            f"{case_id}: expected allow={expect_allow} for {command!r}, "
+            f"got allow={d.allow} reason={d.reason!r}"
+        )
+        if expect_allow:
+            assert d.reason == "", (
+                f"{case_id}: ALLOW Decision should carry no reason, got {d.reason!r}"
+            )
+        else:
+            assert d.reason != "", f"{case_id}: BLOCK Decision must carry a reason"
+
+    def test_corpus_has_a_deliberately_blocked_control(self) -> None:
+        """Criterion 2: a corpus where every case returns allow cannot
+        distinguish 'the classifier permits these' from 'the classifier was
+        never called'. Pin that at least one row is a control BLOCK case,
+        and that it actually blocks."""
+        blocked_rows = [c for c in _D2012_CORPUS if c[3] is False]
+        assert len(blocked_rows) >= 1
+        for case_id, classify, command, _expect_allow in blocked_rows:
+            d = classify(command)
+            assert not d.allow, f"{case_id}: control case must actually BLOCK"
+
+
+class TestD2012Criterion7ReasonNeverContradictsIsWorktree:
+    """Spec criterion 7: no Decision returned for a cwd where
+    is_worktree(cwd) is truthy carries a reason containing the words
+    'outside worktree'. Checked as one property over the D#2012 regression
+    corpus above (every classify_bash-routed case there resolves
+    _WT_CLAUDE, a genuine worktree cwd), not case by case."""
+
+    def test_property_holds_over_corpus(self) -> None:
+        assert is_worktree(_WT_CLAUDE) is not None  # the property's premise
+        for case_id, classify, command, _expect_allow in _D2012_CORPUS:
+            if classify is not _classify_via_bash:
+                continue  # check_claude_spawn's Decision isn't cwd-scoped the same way
+            d = classify(command)
+            assert "outside worktree" not in d.reason, (
+                f"{case_id}: reason={d.reason!r} claims 'outside worktree' "
+                f"while is_worktree(_WT_CLAUDE) is truthy"
+            )
 
 
 # ---------------------------------------------------------------------------
