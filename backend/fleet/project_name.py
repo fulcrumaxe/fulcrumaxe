@@ -26,6 +26,20 @@ Resolution order:
   4. Raise ``ProjectNameUnresolvable`` — a loud failure. A silent mis-key
      (the previous ``"autonomous-forever"`` fallback) is explicitly not
      acceptable per D#2314's Spec item 2: it is what caused the bug.
+
+D#2473 note: re-checked and ruled out as the cause of a later, separate
+"fleet.db reads near-zero while agents run" symptom. Both
+scripts/pre-spawn-check.sh (write side) and the dashboard's read side
+resolve through this same module and landed on the identical key
+("fulcrumaxe") on the host that symptom was measured on — this resolver
+was not disagreeing with itself. That symptom's actual causes were (1)
+scripts/pre-spawn-check.sh registering under a pid guaranteed to be dead
+within moments (its own subshell pid, not any process that outlives it —
+see that script's own D#2473 comment) and (2) message-resumed agents never
+re-registering after their first SubagentStop (see
+hooks/fleet_register.py's D#2473 coverage enumeration). Do not re-open the
+project-name-mismatch hypothesis without new evidence that this resolver
+itself has drifted from the read side.
 """
 
 from __future__ import annotations

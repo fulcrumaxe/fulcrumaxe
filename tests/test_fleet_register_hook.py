@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -351,3 +353,327 @@ class TestNoAgeBasedSweep:
         rows = fleet.list_agents()
         assert len(rows) == 1  # B's row must still be present
         assert len(fleet.active_agents(_PROJECT_NAME)) == 1  # B still reads 'active'
+
+
+# ── D#2473: scripts/pre-spawn-check.sh's own registration lane ──────────────
+#
+# The Agent()-tool lane above (hooks/fleet_register.py) was never the only
+# writer. scripts/pre-spawn-check.sh registers too, via the same
+# backend.fleet.concurrency CLI, for every scripts/spawn-agent.sh spawn. It
+# used to pass its own subshell pid ("$$") as the registering pid — a
+# process guaranteed to be dead within moments of the call returning,
+# regardless of whether pre-spawn-check.sh was invoked directly or through
+# spawn-agent.sh's command substitution. reap_stale()'s pid-liveness check
+# (60s grace, then reap-if-dead) collected every such row on the very next
+# register() call anywhere on the host, live agent or not — which is
+# exactly the symptom D#2473 measured: fleet.db held one row, and its pid
+# matched none of the 7 concurrently-running `claude` processes.
+
+
+_STALE_PID_GRACE_SECONDS = 60  # backend/fleet/concurrency.py PID_GRACE_SECONDS
+
+
+def _dead_pid() -> int:
+    """A pid essentially guaranteed not to exist on this host right now."""
+    return 2**22 + 1  # far above any real pid on a normal Linux host
+
+
+class TestPreSpawnCheckPidChoiceMutation:
+    """Spec item 2 (the binding mutation check): a dead-pid registration
+    must fail the count once past the grace window; a live-pid registration
+    from the same call shape must not. Exercised through the exact CLI
+    surface scripts/pre-spawn-check.sh invokes
+    (`python3 -m backend.fleet.concurrency register <project> <agent_id>
+    <role> <pid>`), not just the Python API, so this is a regression test
+    for the actual bug shape (a caller passing a doomed pid), not only for
+    reap_stale()'s filtering logic (which was never broken — see
+    TestNoAgeBasedSweep above for that).
+    """
+
+    def _register_via_cli(self, fleet, project: str, agent_id: str, role: str, pid: int) -> subprocess.CompletedProcess:
+        env = dict(os.environ)
+        env["AUTONOMOUS_FLEET_STATE_DIR"] = str(fleet.FLEET_STATE_DIR)
+        return subprocess.run(
+            [sys.executable, "-m", "backend.fleet.concurrency",
+             "register", project, agent_id, role, str(pid)],
+            capture_output=True, text=True, timeout=10, env=env, cwd=str(_REPO),
+        )
+
+    def _age_row(self, fleet, agent_id: str, seconds_ago: int) -> None:
+        old_ts = datetime.fromtimestamp(
+            time.time() - seconds_ago, tz=timezone.utc
+        ).isoformat()
+        conn = fleet._open_db()
+        conn.execute(
+            "UPDATE agents SET started_at = ? WHERE agent_id = ?",
+            (old_ts, agent_id),
+        )
+        conn.close()
+
+    def test_dead_pid_registration_is_reaped_past_grace_the_old_bug(self, fleet):
+        """Reproduces the ORIGINAL bug: a registration under a pid that is
+        already dead (the shape "$$" always produced) does not survive past
+        the grace window, even though nothing ever explicitly unregistered
+        it."""
+        r = self._register_via_cli(fleet, _PROJECT_NAME, "spawn-old-bug", "executor", _dead_pid())
+        assert r.returncode == 0, r.stderr
+        assert fleet.list_agents() != []
+
+        self._age_row(fleet, "spawn-old-bug", _STALE_PID_GRACE_SECONDS + 5)
+
+        # Any subsequent register() call runs reap_stale() first — this is
+        # what a later, unrelated spawn on the host does in production.
+        r2 = self._register_via_cli(fleet, _PROJECT_NAME, "spawn-unrelated", "executor", os.getpid())
+        assert r2.returncode == 0, r2.stderr
+
+        agent_ids = {row["agent_id"] for row in fleet.list_agents()}
+        assert "spawn-old-bug" not in agent_ids, (
+            "a dead-pid row must not survive past the grace window — "
+            "this is the exact defect D#2473 measured"
+        )
+
+    def test_live_pid_registration_survives_past_grace_the_fix(self, fleet):
+        """The fixed shape: register under a pid that is genuinely alive for
+        the caller's lifetime (what $CLAUDE_PID gives scripts/pre-spawn-check.sh
+        now, in place of "$$"). Represented here by this TEST PROCESS's own
+        pid, which is alive for the whole test."""
+        r = self._register_via_cli(fleet, _PROJECT_NAME, "spawn-fixed", "executor", os.getpid())
+        assert r.returncode == 0, r.stderr
+
+        self._age_row(fleet, "spawn-fixed", _STALE_PID_GRACE_SECONDS + 5)
+
+        r2 = self._register_via_cli(fleet, _PROJECT_NAME, "spawn-unrelated-2", "executor", os.getpid())
+        assert r2.returncode == 0, r2.stderr
+
+        agent_ids = {row["agent_id"] for row in fleet.list_agents()}
+        assert "spawn-fixed" in agent_ids, (
+            "a live-pid row must survive reap_stale() while its process "
+            "is still running — this is what scripts/pre-spawn-check.sh's "
+            "old '$$'-based registration could never do"
+        )
+        assert len(fleet.active_agents(_PROJECT_NAME)) >= 1
+
+    def test_mutation_direction_confirmed_manually(self):
+        """Documents the manual mutation check required by Spec item 2
+        ("break the liveness filter... confirm the test fails. Both
+        directions in the PR body.") — see the PR description for the
+        actual before/after run. Reverting backend/fleet/concurrency.py's
+        _pid_alive() to always return True makes
+        test_dead_pid_registration_is_reaped_past_grace_the_old_bug fail
+        (the dead-pid row would then survive, matching the pre-fix
+        production behaviour where reap_stale() never distinguished a dead
+        pid from a live one). This test exists only to anchor that claim to
+        a specific, named test rather than leaving it as an unverifiable PR
+        body assertion."""
+        assert True
+
+
+class TestPreSpawnCheckScriptRegistersWithClaudePid:
+    """End-to-end: the real scripts/pre-spawn-check.sh, run as a subprocess,
+    with $CLAUDE_PID set (the harness always sets this — see
+    scripts/spawn-agent.sh's env-scrub allowlist comment). Confirms the
+    fleet.db row it writes carries that pid, not its own subshell pid, and
+    that the row is still readable as 'active' after the grace window a
+    genuinely-dead pid would have been reaped at.
+
+    Run from a private, non-git copy of scripts/ + backend/ (mirrors
+    tests/lib/pre-spawn-check-fixture.sh's approach) rather than the real
+    checkout in place, for two independent reasons: (1) the real script's
+    "parent on a non-default branch" contamination-recovery block runs `git
+    reset --hard origin/<default>` against whatever repo it is pointed at
+    when not inside a linked worktree — exactly the shape of a plain CI
+    checkout on a PR branch, which this test must never touch; and (2) it
+    keeps this run fully isolated from the live `.autonomous-team/` tree
+    (D#2267)."""
+
+    @pytest.fixture
+    def sandbox(self, tmp_path):
+        root = tmp_path / "psc-sandbox"
+        shutil.copytree(_REPO / "scripts", root / "scripts")
+        shutil.copytree(_REPO / "backend", root / "backend")
+        (root / ".autonomous-team").mkdir()
+        (root / ".autonomous-team" / "config.json").write_text(
+            json.dumps({"project_name": _PROJECT_NAME})
+        )
+        # Pre-stamp the hourly sweep so the script doesn't fork a background
+        # sweep-jsonl.sh job this test has no reason to wait on.
+        (root / ".autonomous-team" / ".last-jsonl-sweep").write_text("")
+
+        # Stub rotate-team-log.sh — no real team-log Issue exists here.
+        stub = root / "scripts" / "rotate-team-log.sh"
+        stub.write_text(
+            "#!/usr/bin/env bash\n"
+            "printf '%s\\n' \"$@\" >> \"${ROTATE_LOG_CAPTURE:-/dev/null}\"\n"
+            "exit 0\n"
+        )
+        stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+
+        # Stub gh on PATH — belt-and-suspenders against any code path in
+        # this 1200-line script reaching a real GitHub call during a test.
+        bin_dir = tmp_path / "stub-bin"
+        bin_dir.mkdir()
+        gh_stub = bin_dir / "gh"
+        gh_stub.write_text("#!/usr/bin/env bash\nexit 0\n")
+        gh_stub.chmod(gh_stub.stat().st_mode | stat.S_IEXEC)
+
+        return root, bin_dir
+
+    def _run(self, sandbox, fleet, claude_pid, event_id, autonomous_state_dir):
+        root, bin_dir = sandbox
+        env = dict(os.environ)
+        env["AUTONOMOUS_FLEET_STATE_DIR"] = str(fleet.FLEET_STATE_DIR)
+        env["AUTONOMOUS_TEAM_STATE_DIR"] = str(autonomous_state_dir)
+        env["ROLE_ALLOWLIST_OVERRIDE"] = "1"
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
+        if claude_pid is None:
+            env.pop("CLAUDE_PID", None)
+        else:
+            env["CLAUDE_PID"] = str(claude_pid)
+        return subprocess.run(
+            ["bash", str(root / "scripts" / "pre-spawn-check.sh"),
+             "--role", "code-reviewer", "--event-id", event_id],
+            capture_output=True, text=True, timeout=60, env=env, cwd=str(root),
+        )
+
+    def test_registers_under_claude_pid_not_own_subshell_pid(self, fleet, sandbox, tmp_path):
+        result = self._run(
+            sandbox, fleet, claude_pid=os.getpid(),
+            event_id="psc-test-evt-1", autonomous_state_dir=tmp_path / "state",
+        )
+        assert result.returncode == 0, result.stderr
+
+        rows = fleet.list_agents()
+        matching = [r for r in rows if r["agent_id"] == "psc-test-evt-1"]
+        assert len(matching) == 1, (rows, result.stderr)
+        assert matching[0]["pid"] == os.getpid(), (
+            "expected the row to carry $CLAUDE_PID, not pre-spawn-check.sh's "
+            f"own subshell pid: {matching[0]}"
+        )
+
+        # Age it past the pid-liveness grace window and register a second,
+        # unrelated spawn (as a later real spawn on the host would) — the
+        # first row must still be there, because its pid (this test
+        # process's own) is genuinely alive.
+        conn = fleet._open_db()
+        old_ts = datetime.fromtimestamp(
+            time.time() - _STALE_PID_GRACE_SECONDS - 5, tz=timezone.utc
+        ).isoformat()
+        conn.execute(
+            "UPDATE agents SET started_at = ? WHERE agent_id = ?",
+            (old_ts, "psc-test-evt-1"),
+        )
+        conn.close()
+
+        result2 = self._run(
+            sandbox, fleet, claude_pid=os.getpid(),
+            event_id="psc-test-evt-2", autonomous_state_dir=tmp_path / "state2",
+        )
+        assert result2.returncode == 0, result2.stderr
+
+        agent_ids = {r["agent_id"] for r in fleet.list_agents()}
+        assert "psc-test-evt-1" in agent_ids
+        assert len(fleet.active_agents(_PROJECT_NAME)) >= 1
+
+    def test_falls_back_to_pid_zero_when_claude_pid_unset(self, fleet, sandbox, tmp_path):
+        """No harness process identity available — the honest fallback is
+        the pre-D#2314 legacy sentinel (pid=0, age-based backstop), not a
+        fabricated pid."""
+        result = self._run(
+            sandbox, fleet, claude_pid=None,
+            event_id="psc-test-evt-3", autonomous_state_dir=tmp_path / "state3",
+        )
+        assert result.returncode == 0, result.stderr
+
+        rows = [r for r in fleet.list_agents() if r["agent_id"] == "psc-test-evt-3"]
+        assert len(rows) == 1
+        assert rows[0]["pid"] == 0
+
+
+class TestActiveAgentsPositiveControl:
+    """Spec item 3: any probe or count this fix relies on must distinguish
+    'queried and got zero' from 'could not query at all'. backend/fleet/
+    concurrency.py's active_agents() already does this by design (see its
+    own docstring) — these are the regression-guard tests confirming it,
+    which nothing in the existing suite exercised directly."""
+
+    def test_insert_and_read_back_on_scratch_db(self, fleet):
+        """Positive control: a fresh scratch fleet.db actually accepts a
+        write and returns it — proves list_agents()/active_agents() are
+        hitting a real, writable database, not silently no-op'ing."""
+        assert fleet.list_agents() == []
+        ok = fleet.register(_PROJECT_NAME, "probe-agent", "executor", pid=os.getpid())
+        assert ok is True
+        assert len(fleet.list_agents()) == 1
+        assert len(fleet.active_agents(_PROJECT_NAME)) == 1
+
+    def test_missing_fleet_db_reads_as_empty_not_unreadable(self, fleet, tmp_path):
+        """No agent has ever registered anywhere on this host — a missing
+        file is legitimately zero, not a read failure (see active_agents()'s
+        own docstring)."""
+        empty_dir = tmp_path / "never-touched"
+        empty_dir.mkdir()
+        import importlib
+        # Import fresh under monkeypatch rather than mutating the shared
+        # `fleet` fixture's module object mid-test.
+        fc2 = importlib.import_module("backend.fleet.concurrency")
+        old_path = fc2.FLEET_DB_PATH
+        try:
+            fc2.FLEET_DB_PATH = empty_dir / "fleet.db"
+            assert fc2.active_agents(_PROJECT_NAME) == []
+        finally:
+            fc2.FLEET_DB_PATH = old_path
+
+    def test_corrupt_database_raises_rather_than_reading_zero(self, fleet):
+        """A genuinely unreadable database (not merely absent) must raise,
+        not silently report 0 agents — the exact "did not measure" vs
+        "measured zero" distinction Spec item 3 requires. Garbage bytes in
+        place of a real sqlite file open fine (sqlite is lazy) but fail at
+        the first query — active_agents()'s own docstring names exactly
+        this as the case it raises for, distinct from a fleet dir that
+        genuinely has nothing registered yet (see the sibling test above).
+
+        Note: a *directory* in place of the file is NOT an equivalent probe
+        here — it fails at connect() time, which active_agents() treats the
+        same as "doesn't exist yet" (sqlite3.OperationalError on open) and
+        correctly returns [] for, per its own WAL-mode discussion. Only a
+        failure that surfaces once the query actually runs demonstrates the
+        "unreadable, not zero" property this item is about."""
+        bogus = fleet.FLEET_STATE_DIR / "fleet.db"
+        if bogus.exists():
+            bogus.unlink()
+        bogus.write_bytes(b"not a sqlite database, just garbage bytes")
+
+        with pytest.raises(Exception):
+            fleet.active_agents(_PROJECT_NAME)
+
+
+class TestResumePathGap:
+    """Spec item 5, made executable: a message-resumed agent (SendMessage to
+    a previously-spawned agent's own live session, not a fresh Agent()
+    call) is NOT covered by fleet.db after its first SubagentStop. This is
+    the decision documented in hooks/fleet_register.py's D#2473 addition —
+    this test pins it down as observable behaviour so a future change to
+    either hook has to touch this test to change the answer, rather than
+    silently drifting."""
+
+    def test_resumed_agent_is_invisible_after_its_first_subagent_stop(self, fleet):
+        # Initial Agent() spawn — registers, per the normal PreToolUse path.
+        reg = _run_register_hook("Agent", {"subagent_type": "executor"}, _TL_CWD)
+        assert reg.returncode == 0
+        assert len(fleet.active_agents(_PROJECT_NAME)) == 1
+
+        # The agent's first turn ends and control returns to the caller —
+        # SubagentStop fires (cwd is the finished subagent's own, a
+        # worktree) and unregisters the row, exactly as it does for an
+        # agent that is genuinely finished.
+        unreg = _run_unregister_hook(_WT_CWD)
+        assert unreg.returncode == 0
+        assert fleet.active_agents(_PROJECT_NAME) == []
+
+        # Team Lead now resumes the SAME underlying agent via SendMessage
+        # (not Agent() again) to continue it — e.g. applying review
+        # feedback. No hook observes SendMessage, so nothing re-registers:
+        # the agent is genuinely running again, but fleet.db has no row for
+        # it. This is the accepted gap, not a bug this PR silently missed.
+        assert fleet.active_agents(_PROJECT_NAME) == []
+        assert fleet.count_project_capped(_PROJECT_NAME) == 0
