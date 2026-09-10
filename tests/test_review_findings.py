@@ -489,3 +489,99 @@ class TestCommentParsing:
         # only the non-blocking two belong in NON_BLOCKING_SEVERITIES.
         assert set(NON_BLOCKING_SEVERITIES) == {"suggestion", "warning"}
         assert "error" not in NON_BLOCKING_SEVERITIES
+
+
+# ---------------------------------------------------------------------------
+# D#2426 fix round: the two-literal-prefix marker check failed to recognize
+# the phrasing code-reviewer actually posts in production. These prefixes
+# are taken verbatim from trusted comments on PR #114 (2026-09-10), fetched
+# via `python3 scripts/lib/pr_comment_trust.py 114 --json` — not invented
+# phrasing, per the HARD RULE above: no network calls in this file, so the
+# bodies are reconstructed inline from that live fetch rather than replayed
+# live here.
+# ---------------------------------------------------------------------------
+
+class TestLivePhrasingRecognition:
+    def test_recognizes_live_needs_fix_phrasing(self):
+        assert is_code_reviewer_comment(
+            "Code review: needs-fix, on CI grounds. Everything I could verify "
+            "about the actual change checked out — but this PR is currently red "
+            "on two required checks."
+        )
+
+    def test_recognizes_live_passed_phrasing(self):
+        assert is_code_reviewer_comment(
+            "Code review: passed.\n\nRe-checked all three items after the "
+            "second fix round, independently rather than from description."
+        )
+
+    def test_still_recognizes_template_phrasing(self):
+        # code-reviewer.md:119/127's own template strings must keep working.
+        assert is_code_reviewer_comment("Code review issues:\n\n- x")
+        assert is_code_reviewer_comment("Code review passed.\n\nOne minor non-blocking note: ...")
+
+    def test_case_insensitive(self):
+        assert is_code_reviewer_comment("CODE REVIEW: PASSED.")
+        assert is_code_reviewer_comment("code review issues:\n- x")
+
+    def test_still_rejects_non_review_comments(self):
+        assert not is_code_reviewer_comment("LGTM, nice work!")
+        assert not is_code_reviewer_comment("")
+        assert not is_code_reviewer_comment("Reviewed the code today, looks fine.")
+        # A trusted follow-up comment that isn't itself a verdict post (like
+        # PR #114's middle comment, "Follow-up after the fix round: ...")
+        # must stay unrecognized — broadening the marker must not swallow
+        # every trusted comment on a PR.
+        assert not is_code_reviewer_comment(
+            "Follow-up after the fix round:\n\n- engine-manifest-guard: re-verified independently."
+        )
+
+    def test_real_pr114_corpus_no_longer_reports_measured_zero_findings(self):
+        """Regression for the exact defect the reviewer found: 3 trusted
+        comments from PR #114, none matching the old literal markers, so
+        corpus_report() returned status=measured, comments_read=3,
+        findings=0 — indistinguishable from a corpus that genuinely has no
+        findings. Bodies are trimmed to the parts that matter for
+        recognition/extraction, taken from that live fetch.
+        """
+        comments = [
+            {
+                "author": "autonomous-agent-7",
+                "url": "https://github.com/fulcrumaxe/fulcrumaxe/pull/114#issuecomment-5618775613",
+                "body": (
+                    "Code review: needs-fix, on CI grounds. Everything checked out "
+                    "except two required checks.\n\n"
+                    "- One minor, non-blocking note: `backend/api.py`'s `_REASON_MAP`, "
+                    "`SpawnBlockReason`, and `REASON_COLORS` still reference "
+                    "`worktree_cap_reached` — dead entries a follow-up could prune.\n"
+                ),
+            },
+            {
+                "author": "autonomous-agent-7",
+                "url": "https://github.com/fulcrumaxe/fulcrumaxe/pull/114#issuecomment-5618955216",
+                "body": "Follow-up after the fix round:\n\n- engine-manifest-guard: re-verified independently.\n",
+            },
+            {
+                "author": "autonomous-agent-7",
+                "url": "https://github.com/fulcrumaxe/fulcrumaxe/pull/114#issuecomment-5618999387",
+                "body": "Code review: passed.\n\nRe-checked all three items after the second fix round.\n",
+            },
+        ]
+        report = corpus_report(comments)
+        assert report["status"] == "measured"
+        assert report["comments_read"] == 3
+        # Old behavior (pre-fix): 0 recognized, 0 findings — a false "no
+        # findings" reading. Post-fix: 2 of 3 comments open with "Code
+        # review" and are recognized; the "Follow-up..." comment correctly
+        # stays unrecognized.
+        assert report["comments_recognized"] == 2
+        assert len(report["findings"]) == 1
+        assert "REASON_MAP" in report["findings"][0]["text"]
+
+    def test_comments_recognized_absent_vs_zero_vs_measured(self):
+        assert corpus_report(None)["comments_recognized"] is None
+        assert corpus_report([])["comments_recognized"] == 0
+        recognized = corpus_report(
+            [{"author": "a", "url": "u", "body": "Code review passed."}]
+        )["comments_recognized"]
+        assert recognized == 1

@@ -48,12 +48,17 @@ The one property every function here is built around: a field, a column, or
 a corpus that was never measured must never render the same as one that was
 measured and came back empty. See ``issues_field_report`` (``None`` vs
 ``0``) and ``corpus_report`` (``"unmeasured"`` vs ``"no_data"`` vs
-``"measured"``).
+``"measured"``). The same property recurs one layer below ``findings``:
+``corpus_report``'s ``comments_recognized`` distinguishes "read N comments,
+none of them matched the code-review marker" from "read N comments, all
+recognized, none held a finding" — see ``is_code_reviewer_comment``'s
+docstring for why the marker match was broadened to catch this.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from typing import Any, Iterable, Optional
 
@@ -69,11 +74,21 @@ TERMINAL_VERDICTS: tuple[str, ...] = ("pass", "needs-fix")
 # about.
 NON_BLOCKING_SEVERITIES: tuple[str, ...] = ("suggestion", "warning")
 
-# The two markers code-reviewer.md step 6 actually posts. A comment that
-# doesn't start with one of these is not a code-review finding comment —
-# it might be a debater note, an acceptance-tester note, or an outside
-# comment (already partitioned out by pr_comment_trust before this runs).
-_CODE_REVIEWER_MARKERS: tuple[str, ...] = ("Code review issues:", "Code review passed")
+# code-reviewer.md:119/127's own template says "Code review passed." and
+# "Code review issues:" verbatim — but the live corpus (trusted PR #114
+# comments, 2026-09-10) shows the agent actually posts "Code review: needs-fix,
+# on CI grounds." and "Code review: passed.", which the old literal-prefix
+# check (two exact strings) silently failed to recognize: a real 3-comment
+# corpus round-tripped through corpus_report() as comments_read=3, findings=0
+# — indistinguishable from a corpus that genuinely has no findings, which is
+# the exact defect class this module exists to make visible. Match on the
+# stable two-word opening instead of the punctuation that follows it, so
+# "issues:", "passed", ": needs-fix", ": passed." and any other verdict
+# phrasing the agent settles on all recognize. A comment that doesn't start
+# this way is not a code-review finding comment — it might be a debater note,
+# an acceptance-tester note, or an outside comment (already partitioned out by
+# pr_comment_trust before this runs).
+_CODE_REVIEWER_MARKER_RE = re.compile(r"^code review\b", re.IGNORECASE)
 
 
 def _now_iso() -> str:
@@ -154,9 +169,10 @@ def issues_field_report(conn: Any) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def is_code_reviewer_comment(body: str) -> bool:
-    """True when *body* is one of code-reviewer.md's own posted shapes."""
+    """True when *body* opens the way code-reviewer.md's posted comments do,
+    template or live phrasing alike (see ``_CODE_REVIEWER_MARKER_RE``)."""
     stripped = (body or "").lstrip()
-    return any(stripped.startswith(marker) for marker in _CODE_REVIEWER_MARKERS)
+    return bool(_CODE_REVIEWER_MARKER_RE.match(stripped))
 
 
 def classify_linkage(finding: dict[str, Any]) -> str:
@@ -221,24 +237,38 @@ def corpus_report(
       genuinely has nothing in it. Measured zero, not absent.
     * ``comments`` non-empty    -> "measured": findings (if not supplied,
       extracted from *comments* directly) are reported with linkage.
+
+    ``comments_recognized`` carries the same absent-vs-zero discipline as
+    everything else in this module, one layer below ``findings``: it counts
+    how many of the *comments* actually matched ``is_code_reviewer_comment``,
+    so a recognition failure (every comment read, none of them recognized as
+    a code-review comment) is visible as ``comments_recognized: 0`` rather
+    than silently reading identically to a genuinely findings-free corpus.
+    Without it, ``findings: []`` cannot be told apart from "the marker check
+    didn't recognize any of these comments" — which is exactly how the old
+    two-literal-string check failed against the real PR #114 corpus.
     """
     if comments is None:
         return {
             "status": "unmeasured",
             "comments_read": None,
+            "comments_recognized": None,
             "findings": None,
         }
     if not comments:
         return {
             "status": "no_data",
             "comments_read": 0,
+            "comments_recognized": 0,
             "findings": [],
         }
+    recognized = sum(1 for c in comments if is_code_reviewer_comment(c.get("body", "") or ""))
     found = findings if findings is not None else extract_findings(comments)
     labelled = [dict(f, linkage=classify_linkage(f)) for f in found]
     return {
         "status": "measured",
         "comments_read": len(comments),
+        "comments_recognized": recognized,
         "findings": labelled,
     }
 
@@ -325,8 +355,16 @@ def render_report(report: dict[str, Any]) -> str:
     else:
         lines.append(
             f"{corpus['comments_read']} trusted comments read; "
+            f"{corpus['comments_recognized']} recognized as code-review comments; "
             f"{len(corpus['findings'])} findings extracted."
         )
+        if corpus["comments_recognized"] < corpus["comments_read"]:
+            unrecognized = corpus["comments_read"] - corpus["comments_recognized"]
+            lines.append(
+                f"  {unrecognized} trusted comment(s) did not match the code-review marker "
+                "and were skipped — a recognition gap, not evidence those comments held no "
+                "findings."
+            )
         for finding in corpus["findings"]:
             lines.append(f"  [{finding['linkage']}] {finding['text']}")
 
