@@ -490,9 +490,19 @@ def revert_expired() -> int:
     Check all directives and revert any that have passed their TTL.
 
     Returns the count of classes that were reverted.
+
+    A read-only caller (``list_directives()``) runs this on every call, so it
+    must not write when there is nothing to prune — otherwise a read-only RPC
+    silently writes the registry file on every request (D#2435). The registry
+    is saved only when this pass actually changed something: either a class's
+    directive list was pruned of expired entries, or its level changed. Note
+    the two are not the same condition — pruning can happen with the level
+    unchanged (e.g. one of several live directives expired), so "the pruned
+    list differs" has to be tracked on its own, not inferred from `reverted`.
     """
     registry = _load_registry()
     reverted = 0
+    changed = False
 
     for class_name, state in registry.items():
         directives = state.get("directives", [])
@@ -519,12 +529,14 @@ def revert_expired() -> int:
         old_level = state["level"]
         state["directives"] = live
         state["level"] = new_level
+        changed = True
 
         if new_level != old_level:
             _emit_dial_change(class_name, old_level, new_level, None, None)
             reverted += 1
 
-    _save_registry(registry)
+    if changed:
+        _save_registry(registry)
     return reverted
 
 
