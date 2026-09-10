@@ -197,7 +197,7 @@ while IFS= read -r f; do
   # run. Keeping this separate also means touching a test file still triggers
   # pytest, as it did before.
   case "$f" in
-    scripts/post-merge-hook.sh|scripts/lib/auto-pull-step.sh|scripts/lib/auto-pull-recover.sh|tests/test_post_merge_hook_pull.sh|tests/test_post_merge_hook_wiring.sh|tests/test_no_heredoc_hook_copies.sh|tests/test_auto_pull_recover.sh|tests/test_post_merge_hook_unmerged_paths.sh)
+    scripts/post-merge-hook.sh|scripts/lib/auto-pull-step.sh|scripts/lib/auto-pull-recover.sh|tests/test_post_merge_hook_pull.sh|tests/test_post_merge_hook_wiring.sh|tests/test_no_heredoc_hook_copies.sh|tests/test_auto_pull_recover.sh|tests/test_post_merge_hook_unmerged_paths.sh|tests/test_post_merge_hook_ac_rate.sh)
       RUN_POST_MERGE_HOOK=true
       [ -z "$suite" ] && suite="post-merge-hook"
       ;;
@@ -550,6 +550,9 @@ if [ "${RUN_POST_MERGE_HOOK:-false}" = "true" ] && [ -f "$REPO_ROOT/tests/test_p
   RUN_SUITE_TIMEOUT_SECONDS="${RUN_PR_TESTS_BASH_TIMEOUT:-120}" \
     run_suite "auto-pull-recover" "bash tests/test_auto_pull_recover.sh" \
     "$REPO_ROOT" bash tests/test_auto_pull_recover.sh
+  RUN_SUITE_TIMEOUT_SECONDS="${RUN_PR_TESTS_BASH_TIMEOUT:-120}" \
+    run_suite "post-merge-hook:ac-rate" "bash tests/test_post_merge_hook_ac_rate.sh" \
+    "$REPO_ROOT" bash tests/test_post_merge_hook_ac_rate.sh
 fi
 
 # TUI anti-pattern pre-merge gate — blocks on error-severity findings

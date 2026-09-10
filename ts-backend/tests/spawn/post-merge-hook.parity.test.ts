@@ -7,7 +7,7 @@
  * step — the primary deterministic, store-mutating step.
  *
  * # What IS parity-tested here
- *   - stepStatsMetrics(): 8 metric rows written to stats.duckdb, identical
+ *   - stepStatsMetrics(): 7 metric rows written to stats.duckdb, identical
  *     metric names, units, source, and tag structure between bash and TS.
  *   - recordMetrics(): DuckDB INSERT idempotency — double-call on same inputs
  *     does not duplicate rows (INSERT OR IGNORE).
@@ -151,15 +151,17 @@ const SAMPLE_INPUT: StatsMetricsInput = {
   prCreatedAt: SAMPLE_PR_CREATED,
   specReadyTs: SAMPLE_SPEC_READY,
   reviewerAcceptTs: SAMPLE_REVIEWER_ACCEPT,
-  acPassRate: 0.875,
 };
 
 // ---------------------------------------------------------------------------
 // Expected metric names (mirrors bash rows array exactly)
+//
+// "acceptance_criteria_pass_rate" intentionally absent (D#2476): the writer
+// was retired in both scripts/post-merge-hook.sh and stepStatsMetrics()
+// above, not repaired — see the comment on stepStatsMetrics for why.
 // ---------------------------------------------------------------------------
 
 const EXPECTED_METRIC_NAMES = [
-  "acceptance_criteria_pass_rate",
   "cost_per_merged_pr_usd",
   "fix_cycle_count",
   "fix_rounds_per_pr",
@@ -188,8 +190,8 @@ describe("post-merge-hook parity", () => {
     }
   });
 
-  // ── 1. recordMetrics: all 8 expected metric names written ──────────────────
-  it("recordMetrics writes all 8 expected metric names", async () => {
+  // ── 1. recordMetrics: all 7 expected metric names written ──────────────────
+  it("recordMetrics writes all 7 expected metric names", async () => {
     const rows: MetricRow[] = EXPECTED_METRIC_NAMES.map((metric) => ({
       metric,
       value: 1.0,
@@ -256,9 +258,6 @@ describe("post-merge-hook parity", () => {
     // pr_file_conflict_score must equal conflictScore
     expect(byName["pr_file_conflict_score"]!.value).toBe(3);
 
-    // acceptance_criteria_pass_rate must equal acPassRate
-    expect(byName["acceptance_criteria_pass_rate"]!.value).toBeCloseTo(0.875, 4);
-
     // spec_to_first_pr_latency_seconds: created - specReady = 3600s
     // (specReady=09:00, prCreated=10:00 → 3600s)
     expect(byName["spec_to_first_pr_latency_seconds"]!.value).toBeCloseTo(3600, 0);
@@ -276,7 +275,7 @@ describe("post-merge-hook parity", () => {
     await stepStatsMetrics(SAMPLE_INPUT, tsStatsDb);
 
     const written = await readMetricRows(tsStatsDb);
-    expect(written.length).toBe(8);
+    expect(written.length).toBe(7);
     for (const row of written) {
       expect(row.source).toBe("post-merge-hook");
       // tags JSON must contain pr and tag fields
@@ -302,14 +301,18 @@ describe("post-merge-hook parity", () => {
     expect(byName["reviewer_acceptance_latency_seconds"]!.value).toBe(-1);
   });
 
-  // ── 6. stepStatsMetrics: missing acPassRate uses -1 ───────────────────────
-  it("stepStatsMetrics uses -1 for NaN acPassRate", async () => {
-    const input: StatsMetricsInput = { ...SAMPLE_INPUT, acPassRate: NaN };
-    await stepStatsMetrics(input, tsStatsDb);
+  // ── 6. stepStatsMetrics: acceptance_criteria_pass_rate is never emitted ────
+  // D#2476: the writer was retired, not repaired — it must never appear as a
+  // row, under any input, not even as a sentinel. (Its historical -1 rows
+  // stay in the DB from before the retirement; this asserts nothing writes
+  // a *new* one.)
+  it("stepStatsMetrics never writes an acceptance_criteria_pass_rate row", async () => {
+    await stepStatsMetrics(SAMPLE_INPUT, tsStatsDb);
 
     const written = await readMetricRows(tsStatsDb);
-    const byName = Object.fromEntries(written.map((r) => [r.metric, r]));
-    expect(byName["acceptance_criteria_pass_rate"]!.value).toBe(-1);
+    const names = written.map((r) => r.metric);
+    expect(names).not.toContain("acceptance_criteria_pass_rate");
+    expect("acPassRate" in SAMPLE_INPUT).toBe(false);
   });
 
   // ── 7. stepStatsMetrics: stdout contains expected [post-merge-hook] prefixes
@@ -463,7 +466,8 @@ describe("post-merge-hook parity", () => {
     const bashStatsDb = join(bashStateDir, "stats.duckdb");
 
     try {
-      // Simulate bash's Python block: call record_many with same 8 rows
+      // Simulate bash's Python block: call record_many with same 7 rows
+      // ("acceptance_criteria_pass_rate" retired, D#2476 — see above)
       const pyCode =
         "import sys, json\n" +
         "sys.path.insert(0, sys.argv[1])\n" +
@@ -475,7 +479,6 @@ describe("post-merge-hook parity", () => {
         "    {'metric': 'cost_per_merged_pr_usd',              'value': 0.042, 'unit': 'usd',     'tags': tags, 'source': 'post-merge-hook'},\n" +
         "    {'metric': 'pr_file_conflict_score',              'value': 3.0,   'unit': 'count',   'tags': tags, 'source': 'post-merge-hook'},\n" +
         "    {'metric': 'spec_to_first_pr_latency_seconds',    'value': 3600.0,'unit': 'seconds', 'tags': tags, 'source': 'post-merge-hook'},\n" +
-        "    {'metric': 'acceptance_criteria_pass_rate',       'value': 0.875, 'unit': 'ratio',   'tags': tags, 'source': 'post-merge-hook'},\n" +
         "    {'metric': 'reviewer_acceptance_latency_seconds', 'value': 3600.0,'unit': 'seconds', 'tags': tags, 'source': 'post-merge-hook'},\n" +
         "    {'metric': 'fix_rounds_per_pr',                   'value': 2.0,   'unit': 'count',   'tags': tags, 'source': 'post-merge-hook'},\n" +
         "]\n" +
@@ -498,7 +501,6 @@ describe("post-merge-hook parity", () => {
         prCreatedAt: new Date(Date.now() - 100_000).toISOString(), // 100s ago
         specReadyTs: new Date(Date.now() - 100_000 - 3_600_000).toISOString(), // 1h before prCreated
         reviewerAcceptTs: new Date(Date.now() - 100_000 + 3_600_000).toISOString(), // 1h after prCreated
-        acPassRate: 0.875,
       };
 
       await stepStatsMetrics(tsInput, tsStatsDb);
@@ -527,7 +529,8 @@ describe("post-merge-hook parity", () => {
       expect(tsByName["fix_rounds_per_pr"]!.value).toBeCloseTo(bashByName["fix_rounds_per_pr"]!.value, 4);
       expect(tsByName["cost_per_merged_pr_usd"]!.value).toBeCloseTo(bashByName["cost_per_merged_pr_usd"]!.value, 4);
       expect(tsByName["pr_file_conflict_score"]!.value).toBeCloseTo(bashByName["pr_file_conflict_score"]!.value, 4);
-      expect(tsByName["acceptance_criteria_pass_rate"]!.value).toBeCloseTo(bashByName["acceptance_criteria_pass_rate"]!.value, 4);
+      expect(bashNames).not.toContain("acceptance_criteria_pass_rate");
+      expect(tsNames).not.toContain("acceptance_criteria_pass_rate");
     } finally {
       if (existsSync(bashStateDir)) {
         rmSync(bashStateDir, { recursive: true, force: true });

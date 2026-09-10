@@ -100,8 +100,13 @@ class TestRegisteredMetricsCoversAllWatched:
         # These are the metrics that exist in the live DB (validated 2026-05-19).
         # The test would catch any new metric written without a corresponding
         # registered_metrics() entry.
+        #
+        # "acceptance_criteria_pass_rate" is deliberately absent from this list
+        # (D#2476): its writer was retired, so it is no longer a "live metric"
+        # that should have a registered writer — see
+        # TestAcceptanceCriteriaPassRateRetired below, which asserts the
+        # opposite: that it is unmonitored, same as "bootstrap_ping".
         live_metrics = [
-            "acceptance_criteria_pass_rate",
             "cost_per_merged_pr_usd",
             "fix_cycle_count",
             "fix_rounds_per_pr",
@@ -194,3 +199,57 @@ class TestRegisteredMetricsCoversAllWatched:
             f"{sorted(DEAD_METRICS)}. Run the migration to clean them up:\n"
             f"  python3 backend/migrations/001_drop_dead_metrics.py"
         )
+
+
+# ---------------------------------------------------------------------------
+# acceptance_criteria_pass_rate — retired, not fixed (D#2476)
+# ---------------------------------------------------------------------------
+#
+# The writer for this metric was deleted from scripts/post-merge-hook.sh
+# rather than repaired (its heading regex matched 0/51 real Spec bodies, and
+# the scorer behind it was a same-author lexical-overlap check, not an
+# acceptance measurement — see D#2476). Its 336 pre-existing "-1" rows stay
+# on disk (pruning them is a separate, out-of-scope change), so this is not
+# the ordinary "dead metric never had rows" case above — it is a metric that
+# genuinely was live and has now been intentionally stopped. The watchdog
+# must treat those old rows the same way it already treats "bootstrap_ping":
+# report their real age, never assert them stale.
+
+class TestAcceptanceCriteriaPassRateRetired:
+    """The retired writer must be unmonitored, not just unregistered."""
+
+    def test_is_not_registered(self) -> None:
+        assert "acceptance_criteria_pass_rate" not in registered_metrics()
+
+    def test_is_not_monitored(self) -> None:
+        """Same treatment as the existing unmonitored precedent, bootstrap_ping."""
+        from backend.stats.freshness import is_monitored  # noqa: PLC0415
+
+        assert is_monitored("acceptance_criteria_pass_rate") is False
+        assert is_monitored("bootstrap_ping") is False
+
+    def test_old_sentinel_rows_are_dropped_from_monitored_rows(self) -> None:
+        """A stale-looking row for the retired metric is excluded, not alerted.
+
+        Shapes the row the way ``stats_freshness_watchdog._query_freshness()``
+        does (30 days old — far past any staleness threshold) and asserts
+        ``monitored_rows()`` drops it, so ``warn_stale()`` never sees it.
+        """
+        from backend.stats.freshness import is_monitored  # noqa: PLC0415
+        from backend.stats_freshness_watchdog import monitored_rows  # noqa: PLC0415
+
+        rows = [
+            {
+                "metric_name": "acceptance_criteria_pass_rate",
+                "age_seconds": 30 * 86400,
+                "monitored": is_monitored("acceptance_criteria_pass_rate"),
+            },
+            {
+                "metric_name": "time_to_merge_seconds",
+                "age_seconds": 30 * 86400,
+                "monitored": is_monitored("time_to_merge_seconds"),
+            },
+        ]
+        kept = [r["metric_name"] for r in monitored_rows(rows)]
+        assert "acceptance_criteria_pass_rate" not in kept
+        assert "time_to_merge_seconds" in kept

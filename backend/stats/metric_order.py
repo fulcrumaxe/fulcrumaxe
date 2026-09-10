@@ -18,7 +18,11 @@ METRIC_ORDER: list[str] = [
     "fix_cycle_count",
     "spec_to_first_pr_latency_seconds",
     "reviewer_acceptance_latency_seconds",
-    "acceptance_criteria_pass_rate",
+    # "acceptance_criteria_pass_rate" intentionally removed (D#2476): its
+    # writer was retired, not repaired. Left out of the explicit order so it
+    # doesn't claim a permanent display slot; its 336 historical rows still
+    # surface, just sorted alphabetically after this list like any other
+    # unordered metric.
     "cost_per_merged_pr_usd",
     "cost_attribution_unresolved_count",
     "pr_file_conflict_score",
