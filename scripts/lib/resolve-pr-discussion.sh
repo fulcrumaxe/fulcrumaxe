@@ -26,11 +26,23 @@
 # single-repo behaviour this function had before, and the right answer for a
 # fork with no private twin.
 #
-# Matches (case-insensitive): Closes/Fixes/Resolves followed by D#N or #N in the
-# PR body. Bare "D#N" / "Discussion #N" mentions with no closing keyword are
-# intentionally excluded — they may reference related-but-not-originating work.
-# Each candidate is validated via GraphQL so Issues/PRs sharing the same number
-# space are rejected; only real Discussions are returned.
+# Matches (case-insensitive): Closes/Fixes/Resolves followed by D#N or #N, OR
+# Refs/Part of/Towards followed by D#N (D#2401), in the PR body. The advancing
+# verbs are accepted ONLY in the D# form — never bare #N. `Refs #123` is an
+# ordinary cross-reference to a PR or Issue on the code plane, and reading it
+# as Discussion 123 would silently resolve to the wrong thing; the closing
+# verbs keep their existing `(D#|#)` leniency unchanged, since that one is
+# relied on elsewhere (an Issue closed via `Closes #N`). When a body carries
+# both a closing and an advancing reference, the closing one is preferred —
+# every closing candidate is tried before any advancing candidate, so a PR
+# that both names and finishes its Discussion resolves to that Discussion
+# rather than to some unrelated one only `Refs`'d in passing.
+#
+# Bare "D#N" / "Discussion #N" mentions with no verb at all (closing or
+# advancing) are intentionally excluded — they may reference related-but-not-
+# originating work. Each candidate is validated via GraphQL so Issues/PRs
+# sharing the same number space are rejected; only real Discussions are
+# returned.
 #
 # Echoes the first valid Discussion number found, or nothing (empty string) if
 # none could be resolved. Callers MUST treat an empty result as "unresolvable"
@@ -140,10 +152,24 @@ resolve_pr_discussion() {
 
   pr_body=$(gh pr view "$pr" --repo "$code_repo" --json body --jq '.body' 2>/dev/null || echo "")
 
-  raw_nums=$(echo "$pr_body" \
+  # Closing candidates keep the existing `(D#|#)` leniency. Advancing
+  # candidates (D#2401) are restricted to the `D#` form only — see the header
+  # comment for why `Refs #123` must never be read as Discussion 123.
+  local raw_nums_close raw_nums_advance
+  raw_nums_close=$(echo "$pr_body" \
     | grep -oiE '([Cc]loses|[Rr]esolves|[Ff]ixes) (D#|#)[0-9]+' \
     | grep -oE '[0-9]+' \
     | sort -u)
+  raw_nums_advance=$(echo "$pr_body" \
+    | grep -oiE '([Rr]efs|[Pp]art of|[Tt]owards) D#[0-9]+' \
+    | grep -oE '[0-9]+' \
+    | sort -u)
+
+  # Closing candidates first, advancing candidates after, deduped by first
+  # occurrence — this is what makes "prefer the closing one" true: the single
+  # (non-`--all`) mode returns on the first candidate that validates, so a
+  # body carrying both resolves to the closing target.
+  raw_nums=$(printf '%s\n%s\n' "$raw_nums_close" "$raw_nums_advance" | awk 'NF && !seen[$0]++')
 
   for cand in $raw_nums; do
     # `gh api graphql --jq` exits non-zero on a GraphQL error but STILL prints
