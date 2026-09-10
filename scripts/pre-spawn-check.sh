@@ -721,6 +721,10 @@ if [[ -n "$DISCUSSION" && "$DRY_RUN" != "1" ]]; then
   _INTAKE_GATE_JSON=$(python3 "$SCRIPT_DIR/lib/external_intake_gate.py" check-discussion "$DISCUSSION" 2>/dev/null || echo '{"blocked":true,"reason":"gate_check_failed"}')
   _INTAKE_BLOCKED=$(echo "$_INTAKE_GATE_JSON" | python3 -c "import sys,json; print(str(json.load(sys.stdin).get('blocked',True)).lower())" 2>/dev/null || echo "true")
   _INTAKE_REASON=$(echo "$_INTAKE_GATE_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('reason',''))" 2>/dev/null || echo "gate_check_failed")
+  # D#2376 follow-up: the gate attaches a reason-specific `message` field for
+  # discussion_unreachable (naming the repo, explicitly saying intake-approved
+  # won't help) — surface it when present instead of only ever reading .reason.
+  _INTAKE_MESSAGE=$(echo "$_INTAKE_GATE_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('message',''))" 2>/dev/null || echo "")
   if [[ "$_INTAKE_BLOCKED" == "true" ]]; then
     bash "$SCRIPT_DIR/rotate-team-log.sh" comment \
       "[$(date +%H:%M)] team-lead: external-intake gate blocked spawn of $ROLE for D#$DISCUSSION (${_INTAKE_REASON})" \
@@ -740,6 +744,20 @@ if [[ -n "$DISCUSSION" && "$DRY_RUN" != "1" ]]; then
         ;;
       external_awaiting_intake_approval)
         _INTAKE_MSG="provenance:external without intake-approved. A human maintainer must apply the intake-approved label before this Discussion can be spawned against."
+        ;;
+      discussion_unreachable)
+        # D#2376: the Discussion could not be fetched at all (hard `gh`
+        # failure, timeout, malformed JSON, or a successful fetch whose
+        # discussion node came back null) — its provenance and approval state
+        # are UNKNOWN, not "external and awaiting approval". Applying
+        # intake-approved does nothing for this and would be the wrong thing
+        # to reach for, especially fleet-wide during an outage. Prefer the
+        # gate's own repo-naming message when it supplied one.
+        if [[ -n "$_INTAKE_MESSAGE" ]]; then
+          _INTAKE_MSG="$_INTAKE_MESSAGE"
+        else
+          _INTAKE_MSG="the Discussion could not be read (fetch failed or returned no Discussion node), so its provenance and approval state are unknown — this is NOT the same as external-and-awaiting-approval. Applying intake-approved will not help. Restore access (token scope, outage, etc.) and re-check."
+        fi
         ;;
       *)
         _INTAKE_MSG="(${_INTAKE_REASON}). A human maintainer must apply the intake-approved label before this Discussion can be spawned against."

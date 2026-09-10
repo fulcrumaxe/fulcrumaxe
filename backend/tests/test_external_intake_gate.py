@@ -291,6 +291,50 @@ class TestShouldBlockSpawn:
 
 
 # ---------------------------------------------------------------------------
+# D#2376 — discussion_present: an unreachable Discussion must not report
+# "external_awaiting_intake_approval". Unit-level coverage of the new
+# should_block_spawn() parameter directly; TestDiscussionUnreachableReason
+# below exercises the same distinction through the real fetch/parse path.
+# ---------------------------------------------------------------------------
+
+
+class TestShouldBlockSpawnDiscussionPresent:
+    def test_discussion_present_false_blocks_with_unreachable_reason(self):
+        # Even a would-be-internal author/empty-labels combination — the one
+        # shape most likely to look "fine" by accident — must still report
+        # unreachable, not fall through to any other branch.
+        allowlist = {"example-owner", "example-bot"}
+        blocked, reason = gate.should_block_spawn(
+            "example-bot", [], allowlist, discussion_present=False
+        )
+        assert blocked is True
+        assert reason == "discussion_unreachable"
+
+    def test_discussion_present_false_overrides_would_be_approval(self):
+        # A caller that (incorrectly) still has a stale labels list including
+        # intake-approved from a prior successful fetch must not let it grant
+        # external_approved once the CURRENT fetch is known to be unreachable.
+        allowlist = {"example-owner", "example-bot"}
+        blocked, reason = gate.should_block_spawn(
+            "random-attacker",
+            ["intake-approved"],
+            allowlist,
+            baseline_verdict="match",
+            discussion_present=False,
+        )
+        assert blocked is True
+        assert reason == "discussion_unreachable"
+
+    def test_discussion_present_defaults_true_existing_callers_unchanged(self):
+        # Backward compatibility: every 3-arg/4-arg call site in this suite
+        # (and in the module) must behave exactly as before.
+        allowlist = {"example-owner", "example-bot"}
+        blocked, reason = gate.should_block_spawn("random-attacker", [], allowlist)
+        assert blocked is True
+        assert reason == "external_awaiting_intake_approval"
+
+
+# ---------------------------------------------------------------------------
 # AC11 — label authority, not text (the [team-lead-signed] forgery lesson)
 # ---------------------------------------------------------------------------
 
@@ -482,6 +526,149 @@ class TestSecurityRequiredCliFailClosed:
         # both cases used to collapse onto the same {"labels": []} shape).
         failure = self._run_cli(tmp_path, ["security-required", "1"], gh_exit=1)
         assert failure.returncode != 1
+
+    def test_security_required_still_unknown_and_exit_3_after_the_fix(self, tmp_path):
+        # D#2376 item 5: prove the discussion_unreachable fix did not disturb
+        # this already-correct path — same call as above, run again after
+        # the should_block_spawn change to guard against regression.
+        result = self._run_cli(tmp_path, ["security-required", "1"], gh_exit=1)
+        assert result.returncode == 3
+        assert result.stdout.strip() == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# D#2376 — real resolution path, not a mocked `_gh_graphql` return. Runs the
+# actual script as a subprocess with a stub `gh` binary on PATH, matching the
+# pattern above (TestSecurityRequiredCliFailClosed) for the analogous
+# existing bug: real subprocess.run -> gh -> JSON-parse, only the `gh`
+# binary itself is swapped out. `gh api graphql` is sandbox-blocked from an
+# executor worktree, so this is how this suite reaches the real boundary
+# without touching the network (D#2149 — evidence must come from the real
+# guarded path, not a preview of it).
+# ---------------------------------------------------------------------------
+
+
+class TestDiscussionUnreachableReason:
+    def _run_cli(self, tmp_path, args, gh_script):
+        import os
+        import subprocess
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        gh_stub = bin_dir / "gh"
+        gh_stub.write_text(gh_script)
+        gh_stub.chmod(0o755)
+
+        env = dict(os.environ)
+        env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
+
+        script = _REPO_ROOT / "scripts" / "lib" / "external_intake_gate.py"
+        return subprocess.run(
+            ["python3", str(script), *args],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+
+    def test_hard_fetch_failure_names_unreachable_not_awaiting_approval(self, tmp_path):
+        # Spec item 1 — gh exits non-zero -> _gh_graphql returns None ->
+        # _META_FAILURE_SHAPE. Must NOT read external_awaiting_intake_approval.
+        result = self._run_cli(
+            tmp_path, ["check-discussion", "1"], "#!/usr/bin/env bash\nexit 1\n"
+        )
+        assert result.returncode == 1  # still blocked
+        payload = json.loads(result.stdout)
+        assert payload["blocked"] is True
+        assert payload["reason"] == "discussion_unreachable"
+        assert payload["reason"] != "external_awaiting_intake_approval"
+
+    def test_null_discussion_node_names_unreachable_not_awaiting_approval(self, tmp_path):
+        # Spec item 2 — the shape the filing missed: gh exits 0 with
+        # well-formed JSON, but data.repository.discussion is null, so
+        # fetch_ok is True. Only "id" (None either way) tells the two
+        # failure shapes apart from a genuinely-fetched Discussion.
+        body = json.dumps({"data": {"repository": {"discussion": None}}})
+        gh_script = f"#!/usr/bin/env bash\ncat <<'GHSTUBEOF'\n{body}\nGHSTUBEOF\n"
+        result = self._run_cli(tmp_path, ["check-discussion", "1"], gh_script)
+        assert result.returncode == 1  # still blocked
+        payload = json.loads(result.stdout)
+        assert payload["blocked"] is True
+        assert payload["reason"] == "discussion_unreachable"
+        assert payload["reason"] != "external_awaiting_intake_approval"
+
+    def test_unreachable_message_names_the_repo_and_disclaims_intake_approved(self, monkeypatch):
+        # Spec item 1's human-readable-message half. Monkeypatched at the
+        # _gh_graphql boundary here (unit-level, not the CLI) purely to reach
+        # a specific repo_slug value cheaply — the reason-string distinction
+        # itself is already proven end-to-end by the two tests above.
+        monkeypatch.setattr(gate, "_gh_graphql", lambda _args: None)
+        result = gate.check_discussion(1, repo_slug="autonomous-agent-7/fulcrumaxe")
+        assert result["reason"] == "discussion_unreachable"
+        assert "autonomous-agent-7/fulcrumaxe" in result["message"]
+        assert "intake-approved" in result["message"]
+        assert "will not" in result["message"]
+
+    def test_genuinely_fetched_external_without_approval_is_unchanged(self, monkeypatch):
+        # Spec item 3 — regression guard: a real, reachable external
+        # Discussion with no intake-approved label must still read
+        # external_awaiting_intake_approval, unchanged.
+        def _fake(_args):
+            return {
+                "data": {
+                    "repository": {
+                        "discussion": {
+                            "id": "D_1",
+                            "author": {"login": "random-attacker"},
+                            "labels": {"nodes": []},
+                        }
+                    }
+                }
+            }
+
+        monkeypatch.setattr(gate, "_gh_graphql", _fake)
+        monkeypatch.setattr(gate, "resolve_allowlist_ids", lambda **_kw: {"U_bot"})
+        result = gate.check_discussion(1)
+        assert result["blocked"] is True
+        assert result["reason"] == "external_awaiting_intake_approval"
+        assert "message" not in result
+
+    def test_genuinely_fetched_internal_is_unchanged(self, monkeypatch):
+        # Spec item 4 — regression guard: a real, reachable internal
+        # Discussion must still read blocked: False, reason: internal.
+        def _fake(_args):
+            return {
+                "data": {
+                    "repository": {
+                        "discussion": {
+                            "id": "D_1",
+                            "author": {"login": "example-bot", "id": "U_bot"},
+                            "labels": {"nodes": []},
+                        }
+                    }
+                }
+            }
+
+        monkeypatch.setattr(gate, "_gh_graphql", _fake)
+        monkeypatch.setattr(gate, "resolve_allowlist_ids", lambda **_kw: {"U_bot"})
+        result = gate.check_discussion(1)
+        assert result["blocked"] is False
+        assert result["reason"] == "internal"
+        assert "message" not in result
+
+    def test_classify_and_label_also_reports_unreachable_not_awaiting_approval(self, monkeypatch):
+        # classify_and_label() is the Team Lead's Step-3 loop-scan chokepoint
+        # and shares the same fetch_discussion_meta -> should_block_spawn
+        # wiring as check_discussion() — covered separately since it also
+        # guards the provenance-label write (must not label on a fetch that
+        # never actually reached the Discussion; unaffected here since
+        # apply_provenance_label is already gated on meta["id"]).
+        monkeypatch.setattr(gate, "_gh_graphql", lambda _args: None)
+        result = gate.classify_and_label(1, repo_slug="autonomous-agent-7/fulcrumaxe")
+        assert result["blocked"] is True
+        assert result["reason"] == "discussion_unreachable"
+        assert result["labeled"] is False
+        assert "autonomous-agent-7/fulcrumaxe" in result["message"]
 
 
 # ---------------------------------------------------------------------------

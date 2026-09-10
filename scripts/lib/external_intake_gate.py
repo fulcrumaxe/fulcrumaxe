@@ -526,6 +526,17 @@ def should_block_spawn(
     allowlist: set,
     *,
     baseline_verdict: Optional[str] = None,
+    # Fail-open by construction: any future call site that omits this
+    # keyword silently gets discussion_present=True, i.e. "trust the labels
+    # I was handed even though I never confirmed a real Discussion was
+    # fetched." That is exactly the shape of bug D#2376 fixed — a failure
+    # to fetch collapsing into the same path as a genuine fetch. Today's
+    # three call sites (check_discussion, classify_and_label,
+    # pr_intake_gate.py) are all safe — the third already fails closed
+    # earlier on its own fetch failure before reaching this function — but
+    # any new caller MUST thread the real fetch outcome through explicitly
+    # rather than relying on this default.
+    discussion_present: bool = True,
 ) -> tuple[bool, str]:
     """Decide whether automation may act on a Discussion.
 
@@ -533,6 +544,22 @@ def should_block_spawn(
     function never inspects body/comment text (HG-3, the `[team-lead-signed]`
     forgery lesson). A Discussion whose body merely CONTAINS the string
     "intake-approved" is not approved; only a real `intake-approved` label is.
+
+    *discussion_present* (D#2376, keyword-only, defaults to True for backward
+    compatibility with every existing 3-arg and 4-arg call site) tells this
+    function whether a real Discussion node actually came back from the fetch.
+    The caller passes False for EITHER of two shapes that collapse to the same
+    "I don't actually know" state from here: a hard fetch failure (`gh` exit
+    non-zero, `fetch_ok: False`), and a fetch that succeeded but returned no
+    Discussion node at all (`data.repository.discussion == null`, where
+    `fetch_ok` is still True). Both used to fall straight through to the
+    label check below with an empty label list and report
+    "external_awaiting_intake_approval" — a reason that tells an operator a
+    human needs to click `intake-approved`, when the true cause is that the
+    Discussion could not be reached at all and clicking that label would not
+    help (D#2376). Checked first, before provenance is even classified,
+    because an unreachable Discussion has no author/labels worth classifying.
+    Still fails closed — `blocked` stays True — only the reason changes.
 
     *baseline_verdict* (D#1672, keyword-only, defaults to None for backward
     compatibility with every existing 3-arg call site) is the already-computed
@@ -546,6 +573,9 @@ def should_block_spawn(
 
     Returns (blocked: bool, reason: str).
     """
+    if not discussion_present:
+        return True, "discussion_unreachable"
+
     provenance = classify_provenance(author_login, allowlist)
     if provenance == PROVENANCE_INTERNAL:
         return False, "internal"
@@ -1096,6 +1126,23 @@ def _reconcile_baseline(
     }
 
 
+def _unreachable_message(repo_slug: str) -> str:
+    """Human-readable remedy text for reason == "discussion_unreachable"
+    (D#2376 item 1). Names the repo the gate tried and says explicitly that
+    applying `intake-approved` will not help — the whole harm this fixes is
+    an operator reading "awaiting approval" during an outage and granting
+    real authority, in bulk, for a reason that was never true.
+    """
+    return (
+        f"Could not reach {repo_slug} to read this Discussion, so its "
+        "provenance and approval state are unknown — this is NOT the same "
+        "as \"external and awaiting intake-approved\". Applying "
+        "intake-approved will not fix this: that label only changes what "
+        "happens once the Discussion is reachable again. Restore access to "
+        f"{repo_slug} (token scope, outage, etc.) and re-check."
+    )
+
+
 def check_discussion(number: int, repo_slug: str = DEFAULT_DISCUSSION_REPO_SLUG) -> dict:
     """Live gate check for a single Discussion — used by pre-spawn-check.sh and
     the loop Discussion scan. Always re-derives provenance from live author
@@ -1105,6 +1152,11 @@ def check_discussion(number: int, repo_slug: str = DEFAULT_DISCUSSION_REPO_SLUG)
     meta = fetch_discussion_meta(number, repo_slug)
     allowlist_ids = resolve_allowlist_ids(repo_slug=repo_slug)
     provenance = classify_provenance(meta.get("author_id"), allowlist_ids)
+    # D#2376: "id" comes back non-None only when a real Discussion node was
+    # fetched — None covers BOTH a hard fetch failure (_META_FAILURE_SHAPE)
+    # AND a successful fetch whose data.repository.discussion was null. Both
+    # are the same "can't tell" state to should_block_spawn.
+    discussion_present = meta.get("id") is not None
 
     baseline_verdict = None
     if provenance == PROVENANCE_EXTERNAL:
@@ -1113,15 +1165,22 @@ def check_discussion(number: int, repo_slug: str = DEFAULT_DISCUSSION_REPO_SLUG)
         baseline_verdict = transition["verdict"]
 
     blocked, reason = should_block_spawn(
-        meta.get("author_id"), meta.get("labels", []), allowlist_ids, baseline_verdict=baseline_verdict
+        meta.get("author_id"),
+        meta.get("labels", []),
+        allowlist_ids,
+        baseline_verdict=baseline_verdict,
+        discussion_present=discussion_present,
     )
-    return {
+    result = {
         "discussion": number,
         "author": meta.get("author"),
         "provenance": provenance,
         "blocked": blocked,
         "reason": reason,
     }
+    if reason == "discussion_unreachable":
+        result["message"] = _unreachable_message(repo_slug)
+    return result
 
 
 def classify_and_label(number: int, repo_slug: str = DEFAULT_DISCUSSION_REPO_SLUG) -> dict:
@@ -1138,6 +1197,8 @@ def classify_and_label(number: int, repo_slug: str = DEFAULT_DISCUSSION_REPO_SLU
     allowlist_ids = resolve_allowlist_ids(repo_slug=repo_slug)
     provenance = classify_provenance(meta.get("author_id"), allowlist_ids)
     existing_labels = meta.get("labels") or []
+    # D#2376: see check_discussion() — "id" None subsumes both failure shapes.
+    discussion_present = meta.get("id") is not None
 
     labeled = False
     if not any(l.startswith("provenance:") for l in existing_labels):
@@ -1154,9 +1215,13 @@ def classify_and_label(number: int, repo_slug: str = DEFAULT_DISCUSSION_REPO_SLU
         baseline_verdict = transition["verdict"]
 
     blocked, reason = should_block_spawn(
-        meta.get("author_id"), existing_labels, allowlist_ids, baseline_verdict=baseline_verdict
+        meta.get("author_id"),
+        existing_labels,
+        allowlist_ids,
+        baseline_verdict=baseline_verdict,
+        discussion_present=discussion_present,
     )
-    return {
+    result = {
         "discussion": number,
         "author": meta.get("author"),
         "provenance": provenance,
@@ -1164,6 +1229,9 @@ def classify_and_label(number: int, repo_slug: str = DEFAULT_DISCUSSION_REPO_SLU
         "blocked": blocked,
         "reason": reason,
     }
+    if reason == "discussion_unreachable":
+        result["message"] = _unreachable_message(repo_slug)
+    return result
 
 
 def _security_required_check(number: int, repo_slug: str = DEFAULT_DISCUSSION_REPO_SLUG) -> tuple[str, int]:
