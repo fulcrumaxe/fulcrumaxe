@@ -328,7 +328,11 @@ Wait for it to exit (it completes in <10s). The oracle posts an
 all files, symbols, and Discussion references in the current body. If the oracle
 finds zero context it stays silent (no noise on small Discussions).
 
-Then update the Discussion body with the full Spec.
+Then update the Discussion body with the full Spec, and run the acceptance-item
+linter against it before treating it as final: `python3 scripts/spec-acceptance-lint.py
+<discussion_number>` — it reports items naming a file that does not exist or whose
+criterion is a bare count (D#2377); silent when clean, and its findings are advisory
+so fix and re-post rather than override.
 
 Use the three-section template. Every new HEAVY/MEDIUM SPEC_READY Discussion MUST
 include all three sections. Spec lines must be eval-shaped — every item in
