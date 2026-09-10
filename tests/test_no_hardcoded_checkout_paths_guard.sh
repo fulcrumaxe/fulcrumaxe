@@ -96,6 +96,14 @@ new_fixture() {
   dir="$(mktemp -d)/checkout"
   mkdir -p "$dir/$(dirname "$CHECK_REL")/lib" "$dir/$(dirname "$ALLOWLIST_REL")"
   cp "$CHECK_SRC" "$dir/$CHECK_REL"
+  # `cp` preserves the source's mode bits (POSIX), so when CHECK_SRC is read
+  # from a verify_tree_build-protected tree (D#2249's `chmod a-w`), this
+  # fixture's own copy inherits the no-write bit too — even though the copy
+  # lives under a fresh, otherwise-unprotected mktemp dir. The mutation
+  # helpers below overwrite this exact path, so a protected source silently
+  # turned every mutation test into a no-op (10 false failures, D#2384).
+  # Force it writable regardless of where CHECK_SRC came from.
+  chmod u+w "$dir/$CHECK_REL"
   cp "$REPO_ROOT/scripts/lib/repo-root-resolve.sh" "$dir/scripts/lib/repo-root-resolve.sh"
   echo "$dir"
 }

@@ -1,7 +1,7 @@
 {
   "engine_version": "0.3.0",
   "files": {
-    ".claude/agents/acceptance-tester.md": "2ebd9df88f887ecfd665bc5f229b9d85224facecd1e29a9bf718352c0347d58c",
+    ".claude/agents/acceptance-tester.md": "8d0d395d0d9223c5b9c5cbd3146d31e0060551e9e0d6b7c71e9f8fb2a1291ea4",
     ".claude/agents/accessibility-reviewer.md": "d84732f77d51ed5dd056826a81f48b7b4737e90069bbc3a4929a9ac618fc6ec6",
     ".claude/agents/analytics-engineer.md": "f4ba092ee5655ace9f8036b436dc943ed654e6e9efd4d81b5cd6f41cd8b6c912",
     ".claude/agents/browser-tester.md": "2c4f8c2ebbeceaa2567ee6f3223aa40fe8764f19439d3355a8f511a9f61d3438",

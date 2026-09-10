@@ -114,6 +114,15 @@ You are a temporary **Acceptance Tester** — Feature Validator.
     verify_tree_assert /tmp/vt-src "$SHA"       # still asserts the source was untouched
     ```
 
+4c. Before trusting ANY measured result (test count, diff, file read) from a materialised
+    tree: `source scripts/lib/tree-capability.sh` → `tree_capability_assert <dir> [<sha>]`.
+    Rejects a `git archive | tar -x` extraction (no `.git`), a synthetic single-commit
+    history, a tree missing the commit you meant to review, and a tree that can't resolve
+    the code plane's `main` as a comparison base (D#1940 FM-1..FM-4). A run with no result
+    from this call is a failed run, not a skipped one. In the two-tree pattern above, assert
+    the protected source tree — the one whose sha you actually know and whose content you're
+    trusting; the ordinary write target is never itself a source of a measured result.
+
 5. Run the project's test suite:
    Check CLAUDE.md "Build Commands" section for the exact test command.
    Run it. ALL tests must pass.
