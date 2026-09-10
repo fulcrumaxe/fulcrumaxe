@@ -11,6 +11,9 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPTS_DIR="$REPO_ROOT/scripts"
 
+# shellcheck source=tests/lib/script-fixture.sh
+source "$REPO_ROOT/tests/lib/script-fixture.sh"
+
 PASS=0
 FAIL=0
 
@@ -31,13 +34,28 @@ make_ws() {
   cp "$REPO_ROOT/.autonomous-team/config.json" "$ws/.autonomous-team/config.json" 2>/dev/null || \
     echo '{"gates":{},"policies":{"researcher":{"token_cap":50000}}}' > "$ws/.autonomous-team/config.json"
 
-  # Copy required scripts
-  cp "$SCRIPTS_DIR/pre-spawn-check.sh" "$ws/scripts/"
-  cp -r "$SCRIPTS_DIR/lib/"           "$ws/scripts/lib/"
+  # Copy required scripts — pre-spawn-check.sh plus only the scripts/lib/*.sh
+  # files it actually sources (transitively), never the whole of scripts/lib/
+  # (D#2163; a bare `cp -r` here used to double-nest into scripts/lib/lib
+  # whenever the destination already existed).
+  stage_script_with_libs "$REPO_ROOT" "pre-spawn-check.sh" "$ws/scripts"
   cp "$SCRIPTS_DIR/rotate-team-log.sh" "$ws/scripts/" 2>/dev/null || \
     printf '#!/bin/bash\nexit 0\n' > "$ws/scripts/rotate-team-log.sh"
   cp "$SCRIPTS_DIR/agent-feed-append.sh" "$ws/scripts/" 2>/dev/null || \
     printf '#!/bin/bash\nexit 0\n' > "$ws/scripts/agent-feed-append.sh"
+
+  # scripts/lib/external_intake_gate.py is invoked by `python3 <path>`, not
+  # `source`d — outside stage_script_with_libs's mandate (bash source deps
+  # only), and outside D#2163's scope to fix for real (it makes live GitHub
+  # API calls). Stub it the same way budget.py/control_plane.py below are
+  # stubbed, so the D#1588 gate this test never meant to exercise doesn't
+  # nondeterministically block a spawn that has nothing to do with intake.
+  cat > "$ws/scripts/lib/external_intake_gate.py" <<'PYEOF'
+import json, sys
+if __name__ == "__main__":
+    print(json.dumps({"blocked": False, "reason": ""}))
+    sys.exit(0)
+PYEOF
 
   chmod +x "$ws/scripts/"*.sh "$ws/scripts/lib/"*.sh 2>/dev/null || true
 
@@ -181,9 +199,15 @@ cat > "$WS2/scripts/lib/self-observe-gate.sh"  <<'EOF'
 self_observe_gate_block() { echo ""; }
 EOF
 
+# --no-register: this test is about the token_cap gate (line ~346), not the
+# fleet-wide/per-project registration gates further down (~line 904), which
+# resolve backend.fleet.project_name against $REPO_ROOT — a real backend
+# package this scratch fixture never carries. Skipping registration is a
+# real, documented pre-spawn-check.sh flag (--no-register / --dry-run-fleet),
+# not a test-only workaround.
 RC2=0
 OUTPUT3=$(cd "$WS2" && bash scripts/pre-spawn-check.sh \
-  --role researcher --discussion 647 --event-id "test-cap-3" 2>&1) || RC2=$?
+  --role researcher --discussion 647 --event-id "test-cap-3" --no-register 2>&1) || RC2=$?
 
 if [[ "$RC2" -eq 0 ]]; then
   ok "sufficient-budget researcher spawn allowed"

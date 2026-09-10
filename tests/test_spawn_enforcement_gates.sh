@@ -22,6 +22,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SPAWN_SCRIPT="$REPO_ROOT/scripts/spawn-agent.sh"
 
+# shellcheck source=tests/lib/script-fixture.sh
+source "$SCRIPT_DIR/lib/script-fixture.sh"
+
 PASS=0
 FAIL=0
 ERRORS=()
@@ -38,6 +41,23 @@ mkdir -p "$TEST_DIR/backend"
 mkdir -p "$TEST_DIR/.autonomous-team"
 mkdir -p "$TEST_DIR/lib"
 
+# Stage spawn-agent.sh plus only the scripts/lib/*.sh files it actually
+# sources (transitively) — D#2163. Done first so the manual stubs below
+# (gh-token.sh, pre-spawn-check.sh, etc.) still win where this suite wants
+# to control behavior; stage_script_with_libs never skips a lib just
+# because a caller plans to overwrite it after.
+stage_script_with_libs "$REPO_ROOT" "spawn-agent.sh" "$SCRIPTS_DIR"
+
+# D#2163 Spec item 7 (isolation check): scripts/lib/panel-helpers.sh is real
+# in $REPO_ROOT/scripts/lib but spawn-agent.sh never sources it — confirm
+# stage_script_with_libs did NOT stage it. A helper that copied the whole of
+# scripts/lib/ into the fixture would make this assertion fail.
+if [[ -f "$SCRIPTS_DIR/lib/panel-helpers.sh" ]]; then
+  fail "isolation" "scripts/lib/panel-helpers.sh was staged even though spawn-agent.sh never sources it — stage_script_with_libs is copying more than it should"
+else
+  pass "stage_script_with_libs does not stage an unsourced lib (panel-helpers.sh absent)"
+fi
+
 # Stub rotate-team-log.sh
 cat > "$SCRIPTS_DIR/rotate-team-log.sh" <<'STUB'
 #!/usr/bin/env bash
@@ -53,7 +73,6 @@ STUB
 chmod +x "$SCRIPTS_DIR/setup-state-dir.sh"
 
 # Stub lib/gh-token.sh
-mkdir -p "$SCRIPTS_DIR/lib"
 cat > "$SCRIPTS_DIR/lib/gh-token.sh" <<'STUB'
 #!/usr/bin/env bash
 # stub: no-op
@@ -86,10 +105,25 @@ exit 0
 STUB
 chmod +x "$SCRIPTS_DIR/post-agent-hook.sh"
 
-# Stub agent_run_tracker.py
+# Stub agent_run_tracker.py — spawn-agent.sh's concurrency-cap block both
+# runs this as a CLI subprocess (reconcile/complete — a plain exit 0 is
+# correct there) AND imports it as a module (`from backend.agent_run_tracker
+# import _db_path`) to find the DuckDB file. A bare top-level `sys.exit(0)`
+# fires on import too (SystemExit isn't caught by the caller's `except
+# Exception`), silently killing that inline python block before it ever
+# reads the fake duckdb shim below — the cap check then fails open with no
+# error, which looks like "cap check didn't fire" rather than "stub is
+# stale". Guarding the exit under __main__ and defining _db_path (pointing
+# at the touch'd stats.duckdb further down) fixes both call shapes.
 cat > "$TEST_DIR/backend/agent_run_tracker.py" <<'STUB'
 import sys
-sys.exit(0)
+from pathlib import Path
+
+def _db_path():
+    return Path(__file__).resolve().parent.parent / ".autonomous-team" / "stats.duckdb"
+
+if __name__ == "__main__":
+    sys.exit(0)
 STUB
 
 # Stub control_plane.py — returns default caps
@@ -128,8 +162,8 @@ exit 0
 STUB
 chmod +x "$TEST_DIR/gh"
 
-# Copy and patch spawn-agent.sh to use TEST_DIR as REPO_ROOT
-cp "$SPAWN_SCRIPT" "$SCRIPTS_DIR/spawn-agent.sh"
+# Patch the already-staged spawn-agent.sh (see stage_script_with_libs above)
+# to use TEST_DIR as REPO_ROOT
 SPAWN_COPY="$SCRIPTS_DIR/spawn-agent.sh"
 # Allow REPO_ROOT override via environment
 sed -i 's|REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"|REPO_ROOT="${REPO_ROOT:-$(cd "$SCRIPT_DIR/.." \&\& pwd)}"|' \
@@ -144,13 +178,32 @@ echo ""
 echo "Test 1: Concurrency cap blocks when executor count >= 4"
 
 # Fake duckdb shim in PYTHONPATH
+#
+# spawn-agent.sh's cap check issues two different queries against this
+# connection: a grouped "role, COUNT(*)" query to decide whether the cap is
+# hit, and — only once it is — a detailed "agent_id, role, start_ts" query
+# to render which rows were counted (D#2089). The shim has to answer both
+# shapes; returning the same 2-column rows for the second query crashes the
+# real script's `for agent_id, r_role, start_ts in counted_rows:` unpack
+# (ValueError: not enough values to unpack) the moment it tries to explain
+# the block it just found — silently making this test "fail closed" instead
+# of exercising the block it's supposed to verify.
 SHIM_DIR="$TEST_DIR/pyshim"
 mkdir -p "$SHIM_DIR"
 cat > "$SHIM_DIR/duckdb.py" <<'PYSHIM'
 class Connection:
     def execute(self, query):
+        self._query = query
         return self
     def fetchall(self):
+        if "agent_id" in self._query:
+            # Detailed row listing: agent_id, role, start_ts
+            from datetime import datetime, timezone
+            now = datetime.now(timezone.utc)
+            return [
+                (f"agent-exec-{i}", "executor", now) for i in range(1, 6)
+            ]
+        # Grouped counts: role, cnt
         return [("executor", 5), ("code-reviewer", 1)]
     def close(self):
         pass
@@ -163,7 +216,11 @@ PYSHIM
 touch "$TEST_DIR/.autonomous-team/stats.duckdb"
 
 # Run spawn — expect it to be blocked by concurrency cap
+# AUTONOMOUS_TEAM_REPO: repo-resolve.sh is now actually staged and runs
+# (D#2163) — it needs something to resolve, and TEST_DIR has no
+# .autonomous-team/config.json "repo" field, so the env var supplies one.
 OUT=$(REPO_ROOT="$TEST_DIR" \
+  AUTONOMOUS_TEAM_REPO="test-org/test-repo" \
   PYTHONPATH="$SHIM_DIR${PYTHONPATH:+:$PYTHONPATH}" \
   PATH="$TEST_DIR:$SCRIPTS_DIR:$PATH" \
   SPAWN_AGENT_ALLOW_NO_SPEC=1 \
@@ -187,6 +244,7 @@ fi
 
 # Test 1b: --override-cap bypasses the check and proceeds past the cap gate
 OUT2=$(REPO_ROOT="$TEST_DIR" \
+  AUTONOMOUS_TEAM_REPO="test-org/test-repo" \
   PYTHONPATH="$SHIM_DIR${PYTHONPATH:+:$PYTHONPATH}" \
   PATH="$TEST_DIR:$SCRIPTS_DIR:$PATH" \
   SPAWN_AGENT_ALLOW_NO_SPEC=1 \
