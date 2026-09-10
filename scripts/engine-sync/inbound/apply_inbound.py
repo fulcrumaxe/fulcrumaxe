@@ -88,6 +88,30 @@ import report as report_mod  # noqa: E402
 #: the API within half an hour of the loop's cadence.
 DEFAULT_MAX_CONSECUTIVE_FAILURES = 3
 
+#: D#2454 PR 4 item 24. `gated_path_count` (report.py's ceiling) bounds how
+#: much the tool RULED ON; nothing bounded how much the engine actually
+#: ADOPTS until this. Checked after partition_write_set, before the branch
+#: is built -- see the write-set ceiling check in _run below. Same one-shot
+#: override pattern as --max-files/--max-lines: pass --max-write-set on the
+#: invocation that needs it, nothing persisted.
+#:
+#: UNLIKE DEFAULT_MAX_LINES, this is a JUDGMENT CALL, not a measurement: no
+#: run of this channel has ever completed (that is the reason D#2454 exists
+#: at all), so there is no real write-set-size history to calibrate
+#: against -- the honest first run is expected to be ~179 paths (see the
+#: Discussion's backlog figure), which this default deliberately does NOT
+#: try to admit; that backlog is meant to require the explicit one-shot
+#: override, spelled out and recorded, not a quietly generous default. 25
+#: was chosen as a conservative cap for the steady-state case AFTER the
+#: backlog is cleared -- comfortably above the ~3-path median an ordinary
+#: run is expected to produce (see report.py's DEFAULT_MAX_LINES comment for
+#: that per-commit distribution), comfortably below a number large enough to
+#: stop being a meaningful checkpoint on what a human reviews in one PR body.
+#: Revisit once PR 4's own end-to-end run (item 26) produces real adoption
+#: data -- there is deliberately no synthetic test standing in as evidence
+#: for this number the way there is for DEFAULT_MAX_LINES.
+DEFAULT_MAX_WRITE_SET = 25
+
 STATE_FILE_NAME = "engine-sync-inbound-apply.json"
 
 RESULT_DISABLED = "disabled"
@@ -783,11 +807,13 @@ def apply_inbound(
     local_ref: str = "main",
     max_files: int,
     max_lines: int,
+    max_write_set: int = DEFAULT_MAX_WRITE_SET,
     max_consecutive_failures: int = DEFAULT_MAX_CONSECUTIVE_FAILURES,
     do_fetch: bool = True,
     remote_ref: str | None = None,
     dry_run: bool = False,
     allow_disjoint_marker: bool = False,
+    allow_reroot_from: str | None = None,
     classify=None,
     push_branch=None,
     open_pr=None,
@@ -798,6 +824,13 @@ def apply_inbound(
     `classify`, `push_branch` and `open_pr` are injectable so tests can drive
     the decision logic against scratch repositories without a network. They
     default to the live implementations.
+
+    `allow_reroot_from` (D#2454 PR 4) is the real re-root fix, forwarded to
+    `classify` via `_run`'s own `**classify_kwargs` exactly like
+    `allow_disjoint_marker` already is -- see `report.classify_report`'s
+    docstring for the bridge itself. Unlike `allow_disjoint_marker` it is
+    NOT dry-run-only: a successful bridge produces the real, honest change
+    set this function's write-set machinery is meant to operate on.
 
     `allow_disjoint_marker` (D#2454 PR 2) is diagnostic-only: report.py
     refuses a marker that is not an ancestor of remote_ref by naming the
@@ -853,6 +886,7 @@ def apply_inbound(
             local_ref=local_ref,
             max_files=max_files,
             max_lines=max_lines,
+            max_write_set=max_write_set,
             do_fetch=do_fetch,
             remote_ref=remote_ref,
             dry_run=dry_run,
@@ -861,6 +895,7 @@ def apply_inbound(
             open_pr=open_pr,
             failures=failures,
             allow_disjoint_marker=allow_disjoint_marker,
+            allow_reroot_from=allow_reroot_from,
             **classify_kwargs,
         )
     except ApplyRefused as exc:
@@ -903,6 +938,7 @@ def _run(
     local_ref: str,
     max_files: int,
     max_lines: int,
+    max_write_set: int,
     do_fetch: bool,
     remote_ref: str | None,
     dry_run: bool,
@@ -1074,6 +1110,23 @@ def _run(
             "resolved": resolved_paths,
             "consecutive_failures": 0,
         }
+
+    # D#2454 PR 4 item 24: a second ceiling, on the WRITE set rather than the
+    # enumeration. `report.py`'s max_files/max_lines (via `gated_path_count`)
+    # bound how much this run RULED ON; nothing bounded how much it would
+    # actually ADOPT until this. Checked after partition_write_set and the
+    # conflict/empty-write-set exits above (an empty or conflict-refused run
+    # never reaches here), before the branch is built -- same one-shot
+    # override pattern as --max-files/--max-lines (--max-write-set), and it
+    # applies to a --dry-run preview too, exactly like the enumeration
+    # ceiling already does.
+    if len(write_set) > max_write_set:
+        raise ApplyRefused(
+            f"write set exceeds ceiling: {len(write_set)} path(s) would be written (max {max_write_set}); "
+            f"{report.get('gated_path_count')} gated paths were ruled on in this run's enumeration -- that "
+            "figure bounds what was RULED ON, this ceiling bounds what would actually be ADOPTED, and "
+            "nothing bounded the latter before D#2454 PR 4"
+        )
 
     commit_order = [c["sha"] for c in report.get("commits", [])]
     assignment = assign_paths_to_commits(write_set, commit_order)
@@ -1250,6 +1303,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--local-ref", default="main")
     parser.add_argument("--max-files", type=int, default=report_mod.DEFAULT_MAX_FILES)
     parser.add_argument("--max-lines", type=int, default=report_mod.DEFAULT_MAX_LINES)
+    parser.add_argument(
+        "--max-write-set",
+        type=int,
+        default=DEFAULT_MAX_WRITE_SET,
+        help="D#2454 PR 4: ceiling on how many paths this run may actually WRITE (as opposed to "
+        "--max-files/--max-lines, which bound how much it enumerates and rules on). One-shot "
+        "override, same as those two.",
+    )
     parser.add_argument("--no-fetch", action="store_true")
     parser.add_argument(
         "--dry-run",
@@ -1263,6 +1324,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="diagnostic-only (D#2454 PR 2): proceed past the re-rooted/unrelated-marker refusal "
         "to see the change set it would otherwise refuse before printing. Accepted ONLY together "
         "with --dry-run -- a real run with this flag is refused before touching the remote.",
+    )
+    parser.add_argument(
+        "--allow-reroot-from",
+        default=None,
+        metavar="MARKER_SHA",
+        help="the re-root bridge (D#2454 PR 4): repairs the enumeration to the honest "
+        "R..remote_ref walk instead of bypassing the refusal about it. Must name the marker's "
+        "own current sha. Unlike --allow-disjoint-marker this is NOT dry-run-only -- it produces "
+        "the real change set a real run applies.",
     )
     return parser
 
@@ -1304,9 +1374,11 @@ def main(argv: list[str] | None = None) -> int:
         local_ref=args.local_ref,
         max_files=args.max_files,
         max_lines=args.max_lines,
+        max_write_set=args.max_write_set,
         do_fetch=not args.no_fetch,
         dry_run=args.dry_run,
         allow_disjoint_marker=args.allow_disjoint_marker,
+        allow_reroot_from=args.allow_reroot_from,
     )
     print(json.dumps(result, indent=2, sort_keys=True))
     if result["result"] in (RESULT_APPLIED, RESULT_NOTHING, "dry-run"):

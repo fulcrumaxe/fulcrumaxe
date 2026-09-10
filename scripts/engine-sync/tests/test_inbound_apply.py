@@ -683,6 +683,182 @@ def test_allow_disjoint_marker_writes_no_record_when_marker_is_healthy(engine, s
 
 
 # ---------------------------------------------------------------------------
+# D#2454 PR 4 -- the re-root bridge (the real fix), the write-set ceiling,
+# and the recalibrated file/line ceilings
+# ---------------------------------------------------------------------------
+
+def test_allow_reroot_from_real_run_bridges_writes_and_advances_marker(reroot_engine, state_dir):
+    """Unlike --allow-disjoint-marker, this is the REAL fix: a REAL (non
+    dry) run with --allow-reroot-from naming the marker's current sha must
+    bridge past the re-root refusal, build and push a branch, open a PR, and
+    advance the marker to the plane's tip -- exactly the end-to-end shape
+    item 26 exercises against the live plane."""
+    rec = Recorder()
+    result = apply_inbound.apply_inbound(
+        repo_dir=reroot_engine["repo"],
+        state_dir=state_dir,
+        engine_remote="origin",
+        engine_repo_slug="example/engine",
+        code_repo_slug="example/code",
+        local_ref="main",
+        max_files=50,
+        max_lines=500,
+        do_fetch=False,
+        remote_ref="reroot-plane",
+        classify=lambda **kw: _classify_reroot(
+            reroot_engine, **{k: v for k, v in kw.items() if k in _CLASSIFY_KEYS | {"allow_reroot_from"}}
+        ),
+        push_branch=rec.push,
+        open_pr=rec.open_pr,
+        dry_run=False,
+        allow_reroot_from=reroot_engine["marker_sha"],
+    )
+
+    assert result["result"] == apply_inbound.RESULT_APPLIED, result
+    assert len(rec.pushes) == 1 and len(rec.prs) == 1, result
+    # backend/extra.py is a create introduced at the synthetic root; backend/
+    # shared.py goes shared v1 -> shared v2 on the real tip commit. Both must
+    # actually land in the write set -- this is the bridge doing real work,
+    # not merely refusing more quietly.
+    assert set(result["written"]) == {"backend/extra.py", "backend/shared.py"}, result
+    assert (
+        _git(reroot_engine["repo"], "rev-parse", "refs/synced/code-plane").strip() == reroot_engine["tip_sha"]
+    ), "the marker must advance to the plane's tip as a PRODUCT of the run, not by hand"
+
+
+def test_allow_reroot_from_stale_sha_refuses_per_pr2_even_in_a_real_run(reroot_engine, state_dir):
+    """Leg (c): a --allow-reroot-from that does not name the marker's OWN
+    CURRENT sha must fall through to the ordinary PR 2 refusal -- naming
+    re-root, never ceiling -- and must not touch the remote."""
+    rec = Recorder()
+    result = apply_inbound.apply_inbound(
+        repo_dir=reroot_engine["repo"],
+        state_dir=state_dir,
+        engine_remote="origin",
+        engine_repo_slug="example/engine",
+        code_repo_slug="example/code",
+        local_ref="main",
+        max_files=50,
+        max_lines=500,
+        do_fetch=False,
+        remote_ref="reroot-plane",
+        classify=lambda **kw: _classify_reroot(
+            reroot_engine, **{k: v for k, v in kw.items() if k in _CLASSIFY_KEYS | {"allow_reroot_from"}}
+        ),
+        push_branch=rec.push,
+        open_pr=rec.open_pr,
+        dry_run=False,
+        allow_reroot_from=reroot_engine["root_sha"],  # names the root, not the marker -- stale/wrong
+    )
+
+    assert result["result"] == apply_inbound.RESULT_REFUSED, result
+    assert "re-root" in result["reason"] or "re-rooted" in result["reason"], result
+    assert "ceiling" not in result["reason"], result
+    assert rec.pushes == [] and rec.prs == []
+
+
+def test_write_set_ceiling_refuses_before_branch_is_built(engine, state_dir):
+    """Item 24: the write set from the `engine` fixture is 3 paths
+    (backend/shared.py, backend/new.py, backend/second.py) -- a ceiling of 2
+    must refuse before anything is built or pushed, naming the write-set
+    ceiling (never the enumeration ceiling, which this change set clears)."""
+    marker_before = _git(engine["repo"], "rev-parse", "refs/synced/code-plane").strip()
+    rec = Recorder()
+    result = _run(engine, state_dir, rec, max_write_set=2)
+
+    assert result["result"] == apply_inbound.RESULT_REFUSED, result
+    assert "write set exceeds ceiling" in result["reason"], result["reason"]
+    assert "2 path" in result["reason"] or "3 path" in result["reason"], result["reason"]
+    assert rec.pushes == [] and rec.prs == []
+    assert _git(engine["repo"], "rev-parse", "refs/synced/code-plane").strip() == marker_before
+
+
+def test_write_set_ceiling_override_lets_the_same_run_through(engine, state_dir):
+    """The one-shot override: the identical fixture that refuses at
+    max_write_set=2 above must proceed to a normal apply once the ceiling is
+    raised to admit its actual write-set size."""
+    rec = Recorder()
+    result = _run(engine, state_dir, rec, max_write_set=3)
+    assert result["result"] == apply_inbound.RESULT_APPLIED, result
+    assert len(rec.pushes) == 1 and len(rec.prs) == 1
+
+
+def test_write_set_ceiling_does_not_fire_at_the_default(engine, state_dir):
+    """The default (25) must not fire on this fixture's ordinary 3-path
+    write set -- proved directly rather than only inferred from the other
+    passing tests that happen to use the default."""
+    assert apply_inbound.DEFAULT_MAX_WRITE_SET == 25
+    rec = Recorder()
+    result = _run(engine, state_dir, rec)
+    assert result["result"] == apply_inbound.RESULT_APPLIED, result
+
+
+def test_line_ceiling_recalibration_admits_ordinary_merges_the_old_one_rejected(scratch_repo_for_ceilings):
+    """A REGRESSION GUARD on the ceiling's behaviour, not evidence for the
+    5000 constant -- that evidence is a real measurement, cited with its
+    command and numbers in report.py's DEFAULT_MAX_LINES comment, not here.
+    This fixture's commit sizes are hand-picked to straddle the OLD 500-line
+    ceiling on purpose, so this test would keep passing even if the real
+    plane's distribution later shifted; it exists to catch the ceiling being
+    silently lowered back down or the file ceiling stopping to catch an
+    oversized commit, not to justify any particular number."""
+    import changeset
+    import report as report_mod
+
+    repo, seed, root, ordinary_tips = scratch_repo_for_ceilings
+
+    over_old_line_ceiling = 0
+    over_new_line_ceiling = 0
+    for tip in ordinary_tips:
+        cs = changeset.build_changeset(seed, tip, repo_dir=repo)
+        total_lines = cs["total_insertions"] + cs["total_deletion_lines"]
+        assert cs["gated_path_count"] <= report_mod.DEFAULT_MAX_FILES, "an ordinary merge must never trip the file ceiling"
+        if total_lines > 500:
+            over_old_line_ceiling += 1
+        if total_lines > report_mod.DEFAULT_MAX_LINES:
+            over_new_line_ceiling += 1
+
+    root_cs = changeset.build_changeset(seed, root, repo_dir=repo)
+    assert root_cs["gated_path_count"] > report_mod.DEFAULT_MAX_FILES, "the artifact-root-shaped commit must still trip the file ceiling"
+
+    assert report_mod.DEFAULT_MAX_LINES == 5000
+    assert over_old_line_ceiling >= len(ordinary_tips) // 2 - 1, (
+        f"expected roughly half of {len(ordinary_tips)} ordinary merges over the OLD 500-line ceiling, "
+        f"got {over_old_line_ceiling}"
+    )
+    assert over_new_line_ceiling == 0, "the recalibrated ceiling must admit every ordinary merge in this distribution"
+
+
+@pytest.fixture
+def scratch_repo_for_ceilings(tmp_path):
+    """A disposable, SYNTHETIC repo -- not a sample of real history -- for
+    the regression guard above: one oversized 'artifact root' commit (many
+    files, well over the file ceiling) and several ordinary single-file
+    merges whose hand-picked line counts straddle the OLD 500-line ceiling
+    on purpose. See report.py's DEFAULT_MAX_LINES comment for the actual
+    measurement this PR's ceiling value is calibrated against."""
+    repo = tmp_path / "ceilings"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "Test")
+    seed = _commit(repo, "seed", {"seed.txt": "0\n"})
+
+    root = _commit(repo, "artifact root (#1)", {f"artifact/f{i}.txt": f"content {i}\n" for i in range(65)})
+
+    _git(repo, "checkout", "-q", seed)
+    sizes = [200, 600, 150, 900, 50, 1200, 300, 700]
+    tips = []
+    for i, n in enumerate(sizes):
+        _git(repo, "checkout", "-q", "-B", f"ordinary-{i}", seed)
+        tip = _commit(repo, f"ordinary merge {i} (#{i + 2})", {f"f{i}.txt": "x\n" * n})
+        tips.append(tip)
+    _git(repo, "checkout", "-q", "main")
+
+    return repo, seed, root, tips
+
+
+# ---------------------------------------------------------------------------
 # C5 -- the failure counter disables, and a success resets it
 # ---------------------------------------------------------------------------
 
