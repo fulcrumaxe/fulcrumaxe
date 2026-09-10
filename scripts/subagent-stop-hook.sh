@@ -114,10 +114,14 @@ PARSE_OK="${PARSE_OK:-false}"
 
 # ── 3. Derive idempotent event-id ─────────────────────────────────────────────
 # Canonical format: {role}-{disc}-{timestamp}  (set by spawn-agent.sh start_run)
-# The spawn prompt injects "hook_event_id=..." as its last line (a user message).
-# We scan user-role transcript lines for this tag so complete_run() updates the
-# same row that start_run() inserted.  Falls back to {role}-{disc}-{session_id}
-# when the tag is absent (legacy transcripts, non-worktree agents).
+# The spawn prompt injects "hook_event_id=...". Its position in the assembled
+# prompt is not contractual — prompt_builder.py emits later sections (e.g.
+# prompt_manifest) after it by design. Recovery is a shape-validated scan
+# (scripts/lib/transcript_event_id.py) over the transcript that accepts only
+# the canonical <role>-<disc>-<unix_ts> shape, so complete_run() updates the
+# same row that start_run() inserted regardless of where the tag lands.
+# Falls back to {role}-{disc}-{session_id} when the tag is absent (legacy
+# transcripts, non-worktree agents).
 #
 # EVENT_ID is always set in the if/else below. Initialize to empty here so that
 # set -u cannot fire on any early-exit or unexpected code path before we reach
