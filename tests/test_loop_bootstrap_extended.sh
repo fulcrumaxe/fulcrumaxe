@@ -65,7 +65,7 @@ assert_not_contains() {
   local file="$1"
   local pattern="$2"
   local label="${3:-$pattern}"
-  if ! grep -q "$pattern" "$file" 2>/dev/null; then
+  if ! grep -q -- "$pattern" "$file" 2>/dev/null; then
     pass "does not contain '$label' in ${file##$TARGET/}"
   else
     fail "should NOT contain '$label' in ${file##$TARGET/}"

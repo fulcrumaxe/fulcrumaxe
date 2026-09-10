@@ -80,7 +80,7 @@ assert_contains() {
 
 assert_not_contains() {
   local label="$1" absent_substr="$2" actual="$3"
-  if echo "$actual" | grep -qF "$absent_substr"; then
+  if echo "$actual" | grep -qF -- "$absent_substr"; then
     echo "  FAIL: $label"
     echo "        expected NOT to contain: $absent_substr"
     echo "        actual output:"
