@@ -392,6 +392,19 @@ jobs:
       # quietly runs no guards is the silent skip this replaces, not an
       # improvement on it.
       #
+      # scripts/ci/ruff-ratchet.py (discovered by the runner above) refuses
+      # to compare — exit 2, not a pass — when `ruff` isn't on PATH. This
+      # runner only ever had Python from actions/setup-python, so every run
+      # here hit that arm: the ratchet's "could not tell" case fired on
+      # every single CI run, which reddened a required check for a reason
+      # nobody could see locally (ruff is provisioned by flake.nix, entered
+      # nowhere in this workflow). Pinned to the exact version the baseline
+      # in scripts/ruff-known-findings.txt was generated with — the ratchet
+      # itself refuses to compare across versions, so this pin and that
+      # file's `# ruff-version:` header must move together.
+      - name: Install ruff (pinned to match scripts/ruff-known-findings.txt)
+        run: pip install ruff==0.15.22
+
       # Same naming caveat as every step in this job: the job's name is
       # string-matched by CI_REQUIRED_CHECKS in scripts/lib/ci-status-check.sh
       # — add steps here freely, do not rename the job.
