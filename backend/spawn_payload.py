@@ -28,6 +28,44 @@ import sys
 from typing import Mapping
 
 
+def _route_warnings(warnings: list, role: str, discussion: str) -> None:
+    """Route pre-spawn-check.sh's WARNINGS array to a durable, greppable sink.
+
+    D#2144: pre-spawn-check.sh has always produced these (9 WARNINGS+= sites,
+    JSON key 'warnings') but nothing ever consumed them -- stderr is discarded
+    at spawn-agent.sh's call site and this dict never read the JSON key. The
+    9 sites are read-only reporting; this function does not change what
+    pre-spawn-check.sh decides, and must never turn a warning into a block.
+
+    One audit_trail row per warning, source="pre_spawn_check". Measured
+    2026-09-10 (20 real, non-stubbed invocations across every named role,
+    this host): 0/20 fired, so all 9 sites route -- none showed the volume
+    that would justify excluding any of them.
+
+    Never raises: a routing failure here must not fail build_payload(), which
+    would block the spawn build_payload() feeds (spawn-agent.sh treats a
+    non-zero exit or empty SPAWN_PROMPT_JSON from this module as a hard
+    "Spawn blocked").
+    """
+    if not warnings:
+        return
+    try:
+        from backend.audit_trail import get_audit_trail  # noqa: PLC0415
+
+        trail = get_audit_trail()
+        for warning_text in warnings:
+            trail.emit(
+                source="pre_spawn_check",
+                action="warning",
+                key=f"role={role or 'unknown'} discussion={discussion or ''}",
+                old_value=None,
+                new_value=warning_text,
+                actor=role or "unknown",
+            )
+    except Exception:
+        pass
+
+
 def build_payload(env: Mapping[str, str]) -> dict:
     """Build the dict serialized into SPAWN_PROMPT_JSON for backend.prompt_builder.
 
@@ -43,6 +81,8 @@ def build_payload(env: Mapping[str, str]) -> dict:
 
     disc_raw = env.get("_DISC", "")
     pr_raw = env.get("_PR", "")
+
+    _route_warnings(psc.get("warnings") or [], env.get("_ROLE", ""), disc_raw)
 
     return {
         "role":                  env.get("_ROLE", ""),
