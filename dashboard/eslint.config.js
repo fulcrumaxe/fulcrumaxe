@@ -84,7 +84,6 @@ export default tseslint.config(
     files: [
       'src/pages/runs/ActiveAgentsTile.tsx',
       'src/pages/runs/StuckRunsTile.tsx',
-      'src/pages/runs/SdkVsCcTile.tsx',
       'src/pages/runs/RecentRunsFeedTile.tsx',
       'src/pages/runs/AnalystFindingsTile.tsx',
       'src/pages/runs/DurationPercentilesTile.tsx',

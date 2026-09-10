@@ -66,7 +66,6 @@ import {
 import {
   handleFreshnessList,
   handleWeeklyVelocity,
-  handleSdkVsCc,
   handleDuckdbWriters,
   handleDialUsage,
   handleDialRejections,
@@ -378,7 +377,6 @@ const NATIVE_HANDLERS: Record<string, (params: Record<string, unknown>) => Promi
   // stats.* cluster — native TS (P6a-native batch 3)
   "stats.freshness_list": handleFreshnessList,
   "stats.weekly_velocity": handleWeeklyVelocity,
-  "stats.sdk_vs_cc": handleSdkVsCc,
   "stats_duckdb_writers": handleDuckdbWriters,
   "stats.dial_usage": handleDialUsage,
   "stats.dial_rejections": handleDialRejections,
@@ -413,8 +411,10 @@ const NATIVE_HANDLERS: Record<string, (params: Record<string, unknown>) => Promi
 // Note: runs.* methods removed (now native, batch 1).
 // Note: stats.* batch 2 methods removed (now native, batch 2).
 // Note: stats.* batch 3 methods removed (now native, batch 3):
-//   freshness_list, weekly_velocity, sdk_vs_cc, stats_duckdb_writers,
+//   freshness_list, weekly_velocity, stats_duckdb_writers,
 //   dial_usage, dial_rejections, analyst_findings, verdict_overturns.
+// Note: stats.sdk_vs_cc retired entirely (D#2352) — removed from both this
+//   dispatch table and its Python source; no longer proxied or native.
 // Note: stats.sdk_lane and stats.cost_per_outcome remain proxied:
 //   sdk_lane   — depends on CreditTracker (sdk_credit.json) + billing_regime + env combo
 //   cost_per_outcome — depends on CostTracker + DuckDB project scoping

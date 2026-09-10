@@ -327,8 +327,6 @@ _CLASSIFICATIONS: dict[str, tuple[str, str]] = {
                                     "reachable via STATS_DB_PATH"),
 
     # -- Class (a)/(b): env-addressable, now scoped at the dispatcher -------
-    "stats.sdk_vs_cc": (SCOPED, "_db_path() reads state_paths.STATS_DB at call "
-                                 "time; reachable via STATS_DB_PATH"),
     "stats.dial_usage": (SCOPED, "falls back to state_paths.STATE_DIR when no "
                                   "explicit state_dir is given; reachable via "
                                   "AUTONOMOUS_TEAM_STATE_DIR"),

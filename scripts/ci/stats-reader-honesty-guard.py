@@ -1,23 +1,28 @@
 #!/usr/bin/env python3
 """stats-reader-honesty-guard.py — behavioral guard for the stats readers behind
-the Runs and Stats pages (D#2316 PR-c, findings 2 and 6).
+the Runs and Stats pages (D#2316 PR-c, finding 6).
 
 Background
 ----------
-Two readers were each reporting a confident value they had never measured.
+This guard originally covered two readers, each of which had reported a
+confident value it had never measured.
 
 **`backend/stats/sdk_vs_cc.py`** computed its pass rate as
 ``AVG(CASE WHEN verdict IN ('done','pass') THEN 1.0 ELSE 0.0 END)`` over every
 row the route filter let through. Measured on the operator host: every
 ``routed_via='cc'`` row is dispatcher bookkeeping that stopped on 2026-08-19 and
 never recorded a verdict (5526 rows, 0 verdicts), and every verdict-bearing row
-has ``routed_via IS NULL`` (1949 rows, 1949 verdicts). The populations are
+has ``routed_via IS NULL`` (1949 rows, 1949 verdicts). The populations were
 disjoint, so the expression averaged thousands of NULLs as zeros and all 22
-roles read ``0.0%`` — a zero-denominator rate rendered as a measurement. The
-denominator is now ``COUNT(verdict)`` and an empty one yields ``None``, which
-the tile renders as an em-dash. The response also reports how many rows the
-route filter dropped, so a caller can tell "1949 runs are not attributed to a
-route" from "there are no runs".
+roles read ``0.0%`` — a zero-denominator rate rendered as a measurement. That
+reader (and the `SdkVsCcTile` it backed) was retired in D#2352: the two
+populations never merged in the six days between finding 6 and the retirement
+measurement, and `SdkLaneTile` already reports the SDK lane's true state
+("dispatcher off — 0 SDK runs") without implying a comparison the system could
+never make. The sdk_vs_cc-specific fixture and checks that used to live in this
+file were removed with it; this reasoning is kept here rather than in the
+retired module because it is the clearest record of why the reader had to
+change shape, not just why it was removed.
 
 **`backend/stats_freshness_watchdog.py`** branched on
 ``hasattr(last_ts, "astimezone")`` before normalising ``metric_event.ts``. Every
@@ -29,13 +34,13 @@ with negative ``age_seconds``, down to -8141s. On a UTC host the offset is zero,
 which is why it survived. Separately, ``bootstrap_ping`` — written once at
 bootstrap, never again — had been asserting 1243h of staleness at the top of
 every page for 51 days. It is now labelled unmonitored rather than muted, so a
-genuinely stale monitored metric still flags.
+genuinely stale monitored metric still flags. This reader is unaffected by the
+D#2352 retirement and remains this file's only subject.
 
 This is a behavioral probe, not a lint over source text: it builds a fixture
-``stats.duckdb`` in a tmpdir (via ``STATS_DB_PATH``, which both readers resolve
-through and which bypasses the pytest state-dir guard — see
-``backend/state_paths.py``) and calls the real ``sdk_vs_cc_by_role()`` and the
-real ``check()`` against it, with ``metric_event`` rows written by the real
+``stats.duckdb`` in a tmpdir (via ``STATS_DB_PATH``, which bypasses the pytest
+state-dir guard — see ``backend/state_paths.py``) and calls the real
+``check()`` against it, with ``metric_event`` rows written by the real
 ``stats_writer.record()``. Every expectation is derived from the fixture
 construction below it — no literal population counts anywhere in this file, per
 D#2316's constraint (the filing's own 77% reading was 64% four hours later).
@@ -72,82 +77,6 @@ FAILURES: list[str] = []
 def _fail(detail: str) -> None:
     FAILURES.append(detail)
     print(f"FAIL {detail}")
-
-
-# ---------------------------------------------------------------------------
-# Fixture: agent_run rows for the sdk_vs_cc reader
-# ---------------------------------------------------------------------------
-
-@dataclass(frozen=True)
-class RunRow:
-    """One synthetic agent_run row."""
-
-    agent_id: str
-    role: str
-    routed_via: str | None
-    verdict: str | None
-
-
-_PASS_VERDICTS = frozenset({"done", "pass"})
-
-
-def _build_run_fixture() -> list[RunRow]:
-    """Construct the agent_run rows the sdk_vs_cc checks are derived from.
-
-    Three deliberate populations:
-      * ``no-verdict-role`` — routed, but nothing ever recorded a verdict.
-        This is the live shape of every ``routed_via='cc'`` row.
-      * ``mixed-verdict-role`` — routed, with a constructed pass/fail mix.
-      * unrouted rows — what the route filter drops, and what the response
-        must now report a count for.
-    """
-    rows: list[RunRow] = []
-
-    # Routed, zero verdicts. pass_rate must be None, not 0.0.
-    for i in range(4):
-        rows.append(RunRow(f"fixture-noverdict-{i}", "no-verdict-role", "cc", None))
-
-    # Routed, constructed verdict mix. Includes a non-pass verdict that is a
-    # real measurement ('needs-fix') — it belongs in the denominator — and a
-    # NULL that does not.
-    for i, verdict in enumerate(["done", "pass", "needs-fix", "fail", None, None]):
-        rows.append(RunRow(f"fixture-mixed-{i}", "mixed-verdict-role", "cc", verdict))
-
-    # Unrouted. Dropped by the route filter; the count must be reported.
-    for i, verdict in enumerate(["done", "pass", "needs-fix"]):
-        rows.append(RunRow(f"fixture-unrouted-{i}", "executor", None, verdict))
-
-    return rows
-
-
-def _write_run_fixture(db_path: Path, rows: list[RunRow]) -> None:
-    import duckdb  # noqa: PLC0415
-
-    from backend.agent_run_tracker import _ensure_schema  # noqa: PLC0415
-
-    base = datetime(2026, 9, 4, 3, 0, 0, tzinfo=timezone.utc)
-    conn = duckdb.connect(str(db_path))
-    try:
-        _ensure_schema(conn)
-        for i, r in enumerate(rows):
-            conn.execute(
-                "INSERT INTO agent_run"
-                " (agent_id, role, start_ts, end_ts, verdict, routed_via,"
-                "  input_tok, output_tok)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                [
-                    r.agent_id,
-                    r.role,
-                    base + timedelta(seconds=i),
-                    base + timedelta(seconds=i + 10),
-                    r.verdict,
-                    r.routed_via,
-                    1000,
-                    100,
-                ],
-            )
-    finally:
-        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -216,110 +145,6 @@ def _write_metric_fixture(rows: list[MetricRow]) -> datetime:
             ts=written_at - timedelta(seconds=r.age_s),
         )
     return written_at
-
-
-# ---------------------------------------------------------------------------
-# Checks — sdk_vs_cc
-# ---------------------------------------------------------------------------
-
-def _rows_by_role(result: dict) -> dict[str, dict]:
-    return {r["role"]: r for r in result["rows"]}
-
-
-def check_zero_denominator_is_none(result: dict, fixture: list[RunRow]) -> None:
-    """Item 16 (first half): a role whose rows all have ``verdict IS NULL``
-    gets ``pass_rate: None`` — not ``0.0``."""
-    by_role = _rows_by_role(result)
-    roles_with_no_verdict = {
-        r.role
-        for r in fixture
-        if r.routed_via is not None
-    } - {
-        r.role
-        for r in fixture
-        if r.routed_via is not None and r.verdict is not None
-    }
-
-    if not roles_with_no_verdict:
-        _fail("zero-denominator: fixture constructed no verdict-free routed role")
-
-    for role in sorted(roles_with_no_verdict):
-        row = by_role.get(role)
-        if row is None:
-            _fail(f"zero-denominator: reader returned no row for role {role!r}")
-            continue
-        if row["pass_rate"] is not None:
-            _fail(
-                f"zero-denominator: role {role!r} has no verdict-bearing runs but "
-                f"pass_rate={row['pass_rate']!r} — expected None. A rate with a "
-                "zero denominator is not a measurement; 0.0 renders as '0.0%' and "
-                "reads as one."
-            )
-        if row.get("verdict_count") != 0:
-            _fail(
-                f"zero-denominator: role {role!r} expected verdict_count=0, "
-                f"got {row.get('verdict_count')!r}"
-            )
-
-
-def check_mixed_verdicts_match_fixture(result: dict, fixture: list[RunRow]) -> None:
-    """Item 16 (second half): a role with a constructed verdict mix gets the
-    fraction the fixture constructed, over verdict-bearing rows only."""
-    by_role = _rows_by_role(result)
-
-    routed = [r for r in fixture if r.routed_via is not None]
-    roles_with_verdicts = {r.role for r in routed if r.verdict is not None}
-
-    if not roles_with_verdicts:
-        _fail("mixed-verdicts: fixture constructed no routed role carrying verdicts")
-
-    for role in sorted(roles_with_verdicts):
-        group = [r for r in routed if r.role == role]
-        verdict_bearing = [r for r in group if r.verdict is not None]
-        passes = [r for r in verdict_bearing if r.verdict in _PASS_VERDICTS]
-        expected = len(passes) / len(verdict_bearing)
-
-        row = by_role.get(role)
-        if row is None:
-            _fail(f"mixed-verdicts: reader returned no row for role {role!r}")
-            continue
-        actual = row["pass_rate"]
-        if actual is None or abs(actual - expected) > 1e-4:
-            _fail(
-                f"mixed-verdicts: role {role!r} fixture has {len(passes)} passes over "
-                f"{len(verdict_bearing)} verdict-bearing runs (of {len(group)} total) "
-                f"=> pass_rate should be ~{expected:.4f}, got {actual!r}"
-            )
-        if row.get("verdict_count") != len(verdict_bearing):
-            _fail(
-                f"mixed-verdicts: role {role!r} expected "
-                f"verdict_count={len(verdict_bearing)}, got {row.get('verdict_count')!r}"
-            )
-
-
-def check_excluded_rows_are_reported(result: dict, fixture: list[RunRow]) -> None:
-    """Item 17: the response states how many rows the route filter dropped, so
-    "N runs are unattributed" is distinguishable from "there are no runs"."""
-    expected = len([r for r in fixture if r.routed_via is None])
-    if expected == 0:
-        _fail("excluded-rows: fixture constructed no unrouted rows to exclude")
-
-    actual = result.get("excluded_unrouted_runs")
-    if actual != expected:
-        _fail(
-            f"excluded-rows: fixture constructed {expected} row(s) with "
-            f"routed_via IS NULL, response reports excluded_unrouted_runs={actual!r}. "
-            "Silently dropping them makes an unattributed population look like an "
-            "empty one."
-        )
-
-    # And those rows must not have leaked into the per-role table.
-    unrouted_only_roles = {r.role for r in fixture if r.routed_via is None} - {
-        r.role for r in fixture if r.routed_via is not None
-    }
-    leaked = unrouted_only_roles & set(_rows_by_role(result))
-    if leaked:
-        _fail(f"excluded-rows: unrouted-only role(s) {sorted(leaked)} appeared in rows")
 
 
 # ---------------------------------------------------------------------------
@@ -450,22 +275,10 @@ def main() -> int:
             print("stats-reader-honesty-guard: duckdb not installed — cannot run, failing closed")
             return 1
 
-        from backend.stats.sdk_vs_cc import sdk_vs_cc_by_role  # noqa: PLC0415
         from backend.stats_freshness_watchdog import check  # noqa: PLC0415
-
-        run_fixture = _build_run_fixture()
-        _write_run_fixture(db_path, run_fixture)
 
         metric_fixture = _build_metric_fixture()
         written_at = _write_metric_fixture(metric_fixture)
-
-        sdk_result = sdk_vs_cc_by_role(db_path=db_path)
-        if sdk_result["error"]:
-            _fail(f"sdk_vs_cc_by_role returned error: {sdk_result['error']}")
-        else:
-            check_zero_denominator_is_none(sdk_result, run_fixture)
-            check_mixed_verdicts_match_fixture(sdk_result, run_fixture)
-            check_excluded_rows_are_reported(sdk_result, run_fixture)
 
         freshness_rows = check()
         if not freshness_rows:

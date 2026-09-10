@@ -2264,12 +2264,6 @@ def _rpc_stats_pre_write_burn(params: dict) -> dict:
     return _with_project_stats_db(project, lambda: stats_pre_write_burn.handle(params))
 
 
-@_rpc_method("stats.sdk_vs_cc")
-def _rpc_stats_sdk_vs_cc(params: dict) -> dict:
-    from backend.rpc import stats_sdk_vs_cc  # noqa: PLC0415
-    return stats_sdk_vs_cc.handle(params)
-
-
 @_rpc_method("stats.parity_trend")
 def _rpc_stats_parity_trend(params: dict) -> dict:
     from backend.rpc import stats_parity_trend  # noqa: PLC0415
