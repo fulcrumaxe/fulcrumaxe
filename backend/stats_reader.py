@@ -40,6 +40,19 @@ def _open_conn():
         return get_read_connection()
     except RuntimeError as exc:
         raise SystemExit(str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        # Narrow, deliberate: only a genuine DuckDB lock conflict (after
+        # get_read_connection()'s own bounded retry gave up) is folded into
+        # the same "no data available" SystemExit path as a missing DB.
+        # Anything else re-raises unchanged — a blanket catch here would make
+        # a genuinely missing table render as an empty dashboard, which is
+        # the exact defect class D#2524 F3 documents (a read failure that
+        # looks identical to "no data"). We only ever want to widen for the
+        # lock case, never for everything.
+        import duckdb  # noqa: PLC0415
+        if isinstance(exc, duckdb.IOException):
+            raise SystemExit(f"stats_reader: lock conflict on {db}: {exc}") from exc
+        raise
 
 
 def _parse_since(since: str | None) -> datetime | None:

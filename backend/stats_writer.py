@@ -2,6 +2,8 @@
 
 Public API:
     record(metric, value, unit, tags=None, source=None)
+    record_many(rows)  — atomic bulk write: one connection, one transaction,
+                          all rows commit or none do (D#2524 PR-a)
     record_loop_iter(ts, duration_s, team_lead_input_tokens, team_lead_output_tokens,
                      team_lead_cache_read, team_lead_cache_write)
 
@@ -107,19 +109,71 @@ def record(
         conn.close()
 
 
-def record_many(rows: list[dict[str, Any]]) -> None:
-    """Bulk-write metric events. Each dict must have keys: metric, value, unit.
-    Optional keys: tags, source, ts.
+#: Default bound (seconds) on how long record_many() retries acquiring the
+#: write connection before giving up and raising. See stats_connection's
+#: docstring for the measured hold-time data this is sized against (D#2524).
+_RECORD_MANY_RETRY_BUDGET_S = 5.0
+
+
+def record_many(rows: list[dict[str, Any]], retry_budget_s: float = _RECORD_MANY_RETRY_BUDGET_S) -> None:
+    """Bulk-write metric events atomically. Each dict must have keys: metric,
+    value, unit. Optional keys: tags, source, ts.
+
+    Opens exactly ONE connection for the whole batch and wraps every insert in
+    a single transaction, so the batch commits in full or not at all — never a
+    prefix. This replaces the old `for row in rows: record(row)` loop, which
+    opened a fresh connection per row: a lock conflict on a later row left
+    earlier rows already committed (D#2524 F2).
+
+    The retry is on the connection *acquisition* only (bounded by
+    retry_budget_s), not per statement — DuckDB's file lock is held for a
+    connection's whole lifetime, not per query, so once the connection opens
+    the whole batch already holds the lock and no other process can interleave
+    with it. A permanently-held conflicting lock causes this to raise IOError
+    after the budget is exhausted rather than blocking indefinitely.
     """
-    for row in rows:
-        record(
-            metric=row["metric"],
-            value=row["value"],
-            unit=row["unit"],
-            tags=row.get("tags"),
-            source=row.get("source"),
-            ts=row.get("ts"),
-        )
+    if not rows:
+        return
+
+    try:
+        import duckdb  # noqa: PLC0415  # lazy import — only fail at call time if missing
+    except ImportError as exc:
+        raise RuntimeError(
+            "duckdb not installed — run: pip install duckdb"
+        ) from exc
+
+    from backend.stats_connection import _connect_with_retry  # noqa: PLC0415
+
+    db = _db_path()
+    db.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        conn = _connect_with_retry(str(db), read_only=False, retry_budget_s=retry_budget_s)
+    except duckdb.IOException as exc:
+        raise IOError(f"stats_writer: lock conflict on {db}: {exc}") from exc
+
+    try:
+        _ensure_schema(conn)
+        conn.execute("BEGIN TRANSACTION")
+        try:
+            for row in rows:
+                ts = row.get("ts") or datetime.now(timezone.utc)
+                ts_str = ts.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+                tags_json = json.dumps(row.get("tags") or {}, sort_keys=True)
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO metric_event (ts, metric, tags, value, unit, source)
+                    VALUES (CAST(? AS TIMESTAMP), ?, CAST(? AS JSON), ?, ?, ?)
+                    """,
+                    [ts_str, row["metric"], tags_json, float(row["value"]), row["unit"], row.get("source")],
+                )
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        else:
+            conn.execute("COMMIT")
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------

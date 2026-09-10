@@ -2,7 +2,7 @@
 
 Covers:
     record()                        — write, deduplicate, read-back, tags, source, explicit ts
-    record_many()                   — bulk write, partial failure isolation
+    record_many()                   — atomic bulk write (all rows or none), lock-conflict retry
     record_loop_iter()              — loop_metrics table, tokens_per_iter computation
     emit_verdict()                  — role_verdict metric rows
     role_success_rate_24h()         — aggregation over pass/done verdicts
@@ -27,8 +27,11 @@ Run with:
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import tempfile
+import textwrap
+import time as _time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -81,6 +84,61 @@ def _query(db_file: Path, sql: str, params=None):
         return conn.execute(sql).fetchall()
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Real cross-process lock-conflict helper (D#2524 items 2, 4, 6, 13)
+# ---------------------------------------------------------------------------
+#
+# A mock or a same-process second connection does not exercise the real
+# mechanism (D#2149: a preview is not evidence about the guarded path). This
+# spawns an actual second OS process that opens a real DuckDB connection in a
+# given mode against the same file and holds it for a controlled duration,
+# synchronized via a ready-file so the test never races the holder's own
+# connect() call.
+
+_HOLDER_SCRIPT_TMPL = textwrap.dedent("""\
+    import sys, time
+    sys.path.insert(0, {root!r})
+    import duckdb
+    conn = duckdb.connect({db!r}, read_only={read_only!r})
+    with open({ready!r}, "w") as fh:
+        fh.write("acquired")
+    time.sleep({hold_s!r})
+    conn.close()
+""")
+
+
+def _start_holder(tmp_path: Path, db_file: Path, *, read_only: bool, hold_s: float):
+    """Spawn a subprocess that holds a real DuckDB lock on db_file for hold_s.
+
+    Blocks until the holder confirms it has actually acquired the connection
+    (via a ready-file), so the caller never races the holder's own connect().
+    Returns the Popen handle — caller must terminate()/wait() it.
+    """
+    # db_file must exist and be a valid (if empty) DuckDB file before a
+    # read_only holder can open it.
+    if not db_file.exists():
+        _duckdb_mod.connect(str(db_file)).close()
+
+    ready_file = tmp_path / f"holder_ready_{id(db_file)}_{_time.monotonic_ns()}.flag"
+    script = _HOLDER_SCRIPT_TMPL.format(
+        root=str(_REPO_ROOT), db=str(db_file), read_only=read_only,
+        ready=str(ready_file), hold_s=hold_s,
+    )
+    script_path = tmp_path / f"holder_{_time.monotonic_ns()}.py"
+    script_path.write_text(script)
+
+    proc = subprocess.Popen([sys.executable, str(script_path)])
+    deadline = _time.monotonic() + 10.0
+    while not ready_file.exists():
+        if proc.poll() is not None:
+            raise RuntimeError(f"holder process exited early (rc={proc.returncode}) before acquiring the lock")
+        if _time.monotonic() > deadline:
+            proc.kill()
+            raise RuntimeError("holder process never signaled that it acquired the lock")
+        _time.sleep(0.01)
+    return proc
 
 
 # ---------------------------------------------------------------------------
@@ -243,6 +301,122 @@ class TestRecordMany:
         sw.record("sentinel", 1.0, "count")
         rows = _query(isolated_db, "SELECT COUNT(*) FROM metric_event")
         assert rows[0][0] == 1  # only the sentinel, not from the empty batch
+
+
+# ===========================================================================
+# record_many() — atomicity under a REAL competing process (D#2524 PR-a)
+#
+# Binding acceptance items 2-4, 6, 13 from D#2524's frozen Spec. Every test
+# here spawns a real second OS process holding a real DuckDB lock — not a
+# mock, not a same-process second connection (D#2149: a preview proves
+# nothing about the guarded path). record_many() must open exactly ONE
+# connection for the whole batch and commit it atomically: either every row
+# lands or none do, never a proper prefix of the input order.
+# ===========================================================================
+
+
+class TestRecordManyAtomicity:
+
+    _ROWS = [
+        {"metric": "atomic_a", "value": 1.0, "unit": "count"},
+        {"metric": "atomic_b", "value": 2.0, "unit": "count"},
+        {"metric": "atomic_c", "value": 3.0, "unit": "count"},
+    ]
+    _METRIC_NAMES = [r["metric"] for r in _ROWS]
+
+    def test_full_batch_commits_with_no_competing_holder(self, isolated_db):
+        """Item 3: with no competitor, every row lands — proving the 'empty'
+        outcome in the conflict tests below isn't achieved by declining to
+        write at all."""
+        sw.record_many(self._ROWS)
+        rows = _query(isolated_db, "SELECT metric FROM metric_event ORDER BY metric")
+        assert [r[0] for r in rows] == self._METRIC_NAMES
+
+    def test_permanent_conflict_writes_nothing_not_a_prefix(self, tmp_path, isolated_db):
+        """Item 2 (the 'empty' branch) + item 6's bound: a real second process
+        holds read_only=True for the whole call. record_many must raise
+        (never silently drop the batch) and must not commit any partial
+        subset of the rows -- confirmed by querying the table afterward."""
+        holder = _start_holder(tmp_path, isolated_db, read_only=True, hold_s=5.0)
+        try:
+            start = _time.monotonic()
+            with pytest.raises(IOError):
+                sw.record_many(self._ROWS, retry_budget_s=0.5)
+            elapsed = _time.monotonic() - start
+            # Must give up well before the holder's 5s hold ends -- if this
+            # blocked until the holder released, the bound in item 6 would
+            # not be real.
+            assert elapsed < 3.0, f"record_many did not give up promptly: {elapsed:.2f}s"
+        finally:
+            holder.terminate()
+            holder.wait(timeout=10)
+
+        # metric_event may not even exist -- record_many never obtained a
+        # connection to create it. Either shape (table absent, or present
+        # with zero matching rows) satisfies "nothing written".
+        if isolated_db.exists():
+            conn = _open(isolated_db)
+            try:
+                has_table = conn.execute(
+                    "SELECT table_name FROM information_schema.tables WHERE table_name='metric_event'"
+                ).fetchall()
+                if has_table:
+                    written = conn.execute(
+                        "SELECT metric FROM metric_event WHERE metric IN (?, ?, ?)",
+                        self._METRIC_NAMES,
+                    ).fetchall()
+                    assert written == [], f"partial write detected -- a proper prefix landed: {written}"
+            finally:
+                conn.close()
+
+    def test_holder_releases_before_budget_full_batch_lands(self, tmp_path, isolated_db):
+        """Item 4 (success branch): a competing holder that releases before
+        the retry budget expires does not stop the batch -- record_many
+        waits it out on ONE acquisition attempt and writes the complete set."""
+        holder = _start_holder(tmp_path, isolated_db, read_only=True, hold_s=0.4)
+        try:
+            sw.record_many(self._ROWS, retry_budget_s=3.0)
+        finally:
+            holder.wait(timeout=10)
+
+        rows = _query(isolated_db, "SELECT metric FROM metric_event ORDER BY metric")
+        assert [r[0] for r in rows] == self._METRIC_NAMES
+
+    def test_lock_acquired_once_not_per_row(self, tmp_path, isolated_db):
+        """Item 4, decidable without counting rows: a 20-row batch against a
+        holder that releases partway through the retry budget still lands
+        COMPLETE. If record_many still acquired the lock once per row (the
+        pre-fix behaviour), only however many rows happened to race past the
+        holder's release would land -- not reliably all 20."""
+        many_rows = [
+            {"metric": f"bulk_{i:02d}", "value": float(i), "unit": "count"}
+            for i in range(20)
+        ]
+        holder = _start_holder(tmp_path, isolated_db, read_only=True, hold_s=0.3)
+        try:
+            sw.record_many(many_rows, retry_budget_s=3.0)
+        finally:
+            holder.wait(timeout=10)
+        rows = _query(isolated_db, "SELECT COUNT(*) FROM metric_event")
+        assert rows[0][0] == 20
+
+    def test_never_hangs_past_the_retry_budget(self, tmp_path, isolated_db):
+        """Item 6: assert the raise directly, bounded by a wall-clock check.
+        A regression to unbounded retry would make this test HANG instead of
+        failing outright, so the wall-clock assertion is load-bearing."""
+        holder = _start_holder(tmp_path, isolated_db, read_only=True, hold_s=30.0)
+        try:
+            start = _time.monotonic()
+            with pytest.raises(IOError):
+                sw.record_many(self._ROWS, retry_budget_s=0.3)
+            elapsed = _time.monotonic() - start
+            assert elapsed < 2.0, (
+                f"record_many blocked for {elapsed:.2f}s against a 0.3s retry budget "
+                "-- retry is not bounded"
+            )
+        finally:
+            holder.terminate()
+            holder.wait(timeout=10)
 
 
 # ===========================================================================
