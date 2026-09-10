@@ -14,6 +14,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 HOOK="${REPO_ROOT}/scripts/post-merge-hook.sh"
 
+# shellcheck source=tests/lib/script-fixture.sh
+source "$SCRIPT_DIR/lib/script-fixture.sh"
+
 PASS=0
 FAIL=0
 ERRORS=()
@@ -56,8 +59,21 @@ setup_env() {
   local tmpdir
   tmpdir=$(mktemp -d)
 
-  # Minimal git repo so hook_event_init works with a real REPO_ROOT
+  # Minimal git repo so hook_event_init works with a real REPO_ROOT.
+  #
+  # symbolic-ref HEAD refs/heads/main: this host's git has no
+  # init.defaultBranch set, so a bare `git init` leaves HEAD on 'master'.
+  # scripts/lib/auto-pull-step.sh's auto_pull_step (now actually sourced and
+  # run — D#2163) treats any non-'main' current branch as worktree
+  # contamination and tries `git checkout main` to recover; with zero commits
+  # in this fixture that checkout has nothing to switch to, fails, and
+  # auto_pull_step returns 2 (fatal) — which post-merge-hook.sh's own case
+  # statement turns into a silent `exit 1` well before it ever reaches the
+  # browser_tour_queue step this suite exists to test. Naming the unborn
+  # branch 'main' up front avoids that path entirely, matching what a real
+  # checkout looks like.
   git -C "$tmpdir" init -q
+  git -C "$tmpdir" symbolic-ref HEAD refs/heads/main
   git -C "$tmpdir" config user.email "test@test.com"
   git -C "$tmpdir" config user.name "Test"
 
@@ -65,9 +81,11 @@ setup_env() {
   mkdir -p "$tmpdir/.autonomous-team/hook-events"
   mkdir -p "$tmpdir/scripts/lib"
 
-  # Copy needed scripts
-  cp "${REPO_ROOT}/scripts/post-merge-hook.sh" "$tmpdir/scripts/"
-  cp "${REPO_ROOT}/scripts/lib/hook-event.sh" "$tmpdir/scripts/lib/"
+  # Stage post-merge-hook.sh plus only the scripts/lib/*.sh files it actually
+  # sources (transitively) — D#2163. Done first so the manual stub below for
+  # lib/worktree-registry.sh still wins; stage_script_with_libs never skips
+  # a lib just because a caller plans to overwrite it after.
+  stage_script_with_libs "$REPO_ROOT" "post-merge-hook.sh" "$tmpdir/scripts"
   # Stub rotate-team-log.sh
   cat > "$tmpdir/scripts/rotate-team-log.sh" <<'SH'
 #!/usr/bin/env bash
@@ -123,9 +141,23 @@ make_mock_gh_dashboard() {
 #!/usr/bin/env bash
 # Mock gh for browser_tour_queue tests
 # The hook calls: gh pr view N --repo ... --json files --jq '[.files[].path | select(...)] | join("\n")'
-# Since --jq is processed by the real gh, the mock must return already-filtered output
+# Since --jq is processed by the real gh, the mock must return already-filtered output.
+#
+# post-merge-hook.sh's tmux_reload_flag step (D#2163: now actually reached,
+# since the hook no longer dies earlier on a missing scripts/lib/*.sh) makes
+# a SECOND "pr view ... --json files" call with a different --jq (counts
+# CLAUDE.md, not dashboard/ paths). Matching on --json files alone used to
+# hand that call the dashboard-file list too, which `[[ "$COUNT" -gt 0 ]]`
+# then tried to arithmetic-evaluate under `set -u` and blew up on
+# "dashboard: unbound variable" — never reaching the step this suite tests.
 if [[ "$*" == *"pr view"* && "$*" == *"--json files"* ]]; then
-  # Return newline-separated dashboard file paths (as --jq would produce)
+  if [[ "$*" == *"length"* ]]; then
+    # tmux_reload_flag's CLAUDE.md-count query — this PR doesn't touch it.
+    echo "0"
+    exit 0
+  fi
+  # browser_tour_queue's dashboard/ filter — newline-separated file paths
+  # (as --jq would produce).
   printf 'dashboard/src/pages/IdeasPage.tsx\ndashboard/src/components/Chart.tsx\n'
   exit 0
 fi
@@ -180,7 +212,10 @@ echo "Test 1: dashboard-touching PR queues browser-tour entry"
   export PATH="$mockbin:$PATH"
   export SKIP_WIKI_SYNC=1  # not used, but document intent
 
-  out=$(REPO_ROOT="$tmpdir" bash "${tmpdir}/scripts/post-merge-hook.sh" --pr 42 2>&1) && rc=0 || rc=$?
+  # AUTONOMOUS_TEAM_REPO: repo-resolve.sh is now actually staged and runs
+  # (D#2163) — it needs something to resolve, and tmpdir has no
+  # .autonomous-team/config.json "repo" field, so the env var supplies one.
+  out=$(REPO_ROOT="$tmpdir" AUTONOMOUS_TEAM_REPO="test-org/test-repo" bash "${tmpdir}/scripts/post-merge-hook.sh" --pr 42 2>&1) && rc=0 || rc=$?
 
   if [[ -f "$QUEUE_FILE" ]] && [[ -s "$QUEUE_FILE" ]]; then
     queue_content=$(cat "$QUEUE_FILE")
@@ -212,7 +247,7 @@ echo "Test 2: non-dashboard PR skips browser-tour queue"
   QUEUE_FILE="${tmpdir}/.autonomous-team/browser-tour-queue.jsonl"
   export PATH="$mockbin:$PATH"
 
-  out=$(REPO_ROOT="$tmpdir" bash "${tmpdir}/scripts/post-merge-hook.sh" --pr 99 2>&1) && rc=0 || rc=$?
+  out=$(REPO_ROOT="$tmpdir" AUTONOMOUS_TEAM_REPO="test-org/test-repo" bash "${tmpdir}/scripts/post-merge-hook.sh" --pr 99 2>&1) && rc=0 || rc=$?
 
   if [[ -f "$QUEUE_FILE" ]] && [[ -s "$QUEUE_FILE" ]]; then
     fail "queue file should be empty for non-dashboard PR"
@@ -232,10 +267,16 @@ echo "Test 3: component file outside pages/ triggers / tour"
   mockbin="${tmpdir}/mockbin"
   mkdir -p "$mockbin"
 
-  # Mock: only a non-page dashboard file (simulate --jq returning dashboard paths)
+  # Mock: only a non-page dashboard file (simulate --jq returning dashboard paths).
+  # See make_mock_gh_dashboard above for why the tmux_reload_flag step's
+  # separate "--json files ... length" query needs its own branch.
   cat > "$mockbin/gh" <<'GH'
 #!/usr/bin/env bash
 if [[ "$*" == *"pr view"* && "$*" == *"--json files"* ]]; then
+  if [[ "$*" == *"length"* ]]; then
+    echo "0"
+    exit 0
+  fi
   printf 'dashboard/src/components/AgentFeed.tsx\n'
   exit 0
 fi
@@ -254,7 +295,7 @@ GH
 
   QUEUE_FILE="${tmpdir}/.autonomous-team/browser-tour-queue.jsonl"
 
-  out=$(REPO_ROOT="$tmpdir" bash "${tmpdir}/scripts/post-merge-hook.sh" --pr 77 2>&1) && rc=0 || rc=$?
+  out=$(REPO_ROOT="$tmpdir" AUTONOMOUS_TEAM_REPO="test-org/test-repo" bash "${tmpdir}/scripts/post-merge-hook.sh" --pr 77 2>&1) && rc=0 || rc=$?
 
   if [[ -f "$QUEUE_FILE" ]] && [[ -s "$QUEUE_FILE" ]]; then
     queue_content3=$(cat "$QUEUE_FILE")

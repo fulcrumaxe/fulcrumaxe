@@ -24,6 +24,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SPAWN_SCRIPT="$REPO_ROOT/scripts/spawn-agent.sh"
 
+# shellcheck source=tests/lib/script-fixture.sh
+source "$SCRIPT_DIR/lib/script-fixture.sh"
+
 PASS=0
 FAIL=0
 ERRORS=()
@@ -38,6 +41,13 @@ SCRIPTS_DIR="$TEST_DIR/scripts"
 mkdir -p "$SCRIPTS_DIR/lib"
 mkdir -p "$TEST_DIR/backend"
 mkdir -p "$TEST_DIR/.autonomous-team"
+
+# Stage spawn-agent.sh plus only the scripts/lib/*.sh files it actually
+# sources (transitively) — D#2163. Done first so the manual stubs below
+# (gh-token.sh, pre-spawn-check.sh, etc.) still win where this suite wants
+# to control behavior; stage_script_with_libs never skips a lib just
+# because a caller plans to overwrite it after.
+stage_script_with_libs "$REPO_ROOT" "spawn-agent.sh" "$SCRIPTS_DIR"
 
 # Stub rotate-team-log.sh
 cat > "$SCRIPTS_DIR/rotate-team-log.sh" <<'STUB'
@@ -118,8 +128,8 @@ import sys
 sys.exit(1)
 STUB
 
-# Copy and patch spawn-agent.sh to use TEST_DIR as REPO_ROOT
-cp "$SPAWN_SCRIPT" "$SCRIPTS_DIR/spawn-agent.sh"
+# Patch the already-staged spawn-agent.sh (see stage_script_with_libs above)
+# to use TEST_DIR as REPO_ROOT
 SPAWN_COPY="$SCRIPTS_DIR/spawn-agent.sh"
 sed -i 's|REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"|REPO_ROOT="${REPO_ROOT:-$(cd "$SCRIPT_DIR/.." \&\& pwd)}"|' \
   "$SPAWN_COPY"
@@ -142,8 +152,14 @@ run_spawn() {
   printf '%s' "$git_stub" > "$stub_bin/git"
   chmod +x "$stub_bin/git"
 
+  # AUTONOMOUS_TEAM_REPO: now that repo-resolve.sh is actually staged and
+  # runs (D#2163), spawn-agent.sh's --touchpoints gate calls
+  # _resolve_code_repo, which needs *something* to resolve — TEST_DIR has no
+  # .autonomous-team/config.json "repo" field, so the env var is the
+  # hermetic way to give it one without writing a fixture config file.
   local out rc
   out=$(REPO_ROOT="$TEST_DIR" \
+    AUTONOMOUS_TEAM_REPO="test-org/test-repo" \
     PATH="$stub_bin:$TEST_DIR:$SCRIPTS_DIR:$PATH" \
     SPAWN_AGENT_ALLOW_NO_SPEC=1 \
     OVERRIDE_CAP=1 \
