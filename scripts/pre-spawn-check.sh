@@ -808,27 +808,28 @@ _load_context() {
   rm -f "$_ctx_err"
 
 
-  # Worktree cap check — only applies to worktree-isolated spawns.
-  # Roles that don't use isolation:worktree share the main checkout and are never capped here.
-  if [[ "$ISOLATION" == "worktree" && -f "$SCRIPT_DIR/lib/worktree-registry.sh" && "$DRY_RUN" != "1" ]]; then
-    # shellcheck source=scripts/lib/worktree-registry.sh
-    source "$SCRIPT_DIR/lib/worktree-registry.sh" 2>/dev/null || true
-    ACTIVE_WORKTREES=$(worktree_registry count-disk 2>/dev/null || echo "0")
-    WORKTREE_CAP_VAL="${WORKTREE_CAP:-8}"
-    if [[ "$ACTIVE_WORKTREES" -ge "$WORKTREE_CAP_VAL" ]] 2>/dev/null; then
-      # D#2059 amendment: this used to `exit 1` here. Enforcement is deferred
-      # until (1) D#2001 lands a working reaper -- there is no in-band way
-      # back under a cumulative, monotonically-growing directory count today
-      # -- and (2) D#2097 settles what this threshold should even be counting
-      # (it was chosen for a *live* count, not this cumulative one). Until
-      # then this is a warning: emit the audit row, log it, and let the
-      # spawn proceed. The `exit 1` this replaced would have blocked every
-      # worktree-isolated spawn on hosts where cleanup hasn't run.
-      emit_spawn_block "worktree_cap_reached" "worktree cap (${WORKTREE_CAP_VAL}) reached" "{\"active_worktrees\":${ACTIVE_WORKTREES},\"cap\":${WORKTREE_CAP_VAL}}"
+  # Worktree disk-space warning — only applies to worktree-isolated spawns.
+  # Roles that don't use isolation:worktree share the main checkout and are never
+  # checked here.
+  #
+  # D#2097: replaces the old cumulative-directory-count-vs-8 cap. That 8 was
+  # actually the fleet concurrency cap (backend/fleet/concurrency.py
+  # DEFAULT_FLEET_CAP), copied onto an unrelated disk metric, and it never
+  # blocked a spawn in its life (D#2059 removed its `exit 1`; nothing replaced
+  # it, so it just logged a team-log line claiming the spawn was held back,
+  # every single time, while letting it through). This checks the thing
+  # actually worth watching instead: free bytes on the filesystem holding
+  # .claude/worktrees. Warning only — never exits non-zero, and fails open
+  # (no warning) if the probe itself fails.
+  if [[ "$ISOLATION" == "worktree" && -f "$SCRIPT_DIR/lib/worktree-disk-guard.sh" && "$DRY_RUN" != "1" ]]; then
+    # shellcheck source=scripts/lib/worktree-disk-guard.sh
+    source "$SCRIPT_DIR/lib/worktree-disk-guard.sh" 2>/dev/null || true
+    DISK_GUARD_VERDICT=$(worktree_disk_guard_check "$REPO_ROOT/.claude/worktrees" 2>/dev/null || echo "unknown")
+    if [[ "$DISK_GUARD_VERDICT" == "warn" ]]; then
       bash "$SCRIPT_DIR/rotate-team-log.sh" comment \
-        "[$(date +%H:%M)] team-lead: WARNING — worktree cap (${WORKTREE_CAP_VAL}) reached, deferring spawn for ${ROLE}" \
+        "[$(date +%H:%M)] team-lead: WARNING — free disk below the ${WORKTREE_DISK_GUARD_FLOOR_GB:-10}GB floor for .claude/worktrees, spawning ${ROLE} anyway" \
         2>/dev/null || true
-      echo "WARNING: worktree cap ($WORKTREE_CAP_VAL) reached — $ACTIVE_WORKTREES active. Allowing spawn of $ROLE; enforcement deferred (see D#2059)." >&2
+      echo "WARNING: free disk below the ${WORKTREE_DISK_GUARD_FLOOR_GB:-10}GB floor for .claude/worktrees. Allowing spawn of $ROLE anyway." >&2
     fi
   fi
 

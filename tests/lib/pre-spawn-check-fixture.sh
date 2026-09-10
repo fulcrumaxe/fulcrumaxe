@@ -70,7 +70,7 @@ install_sandbox() {
   cp "$SCRIPTS_DIR/agent-feed-append.sh" "$ws/scripts/agent-feed-append.sh"
   cp "$SCRIPTS_DIR/lib/state-dir.sh" "$ws/scripts/lib/state-dir.sh"
   cp "$SCRIPTS_DIR/lib/hook-event.sh" "$ws/scripts/lib/hook-event.sh"
-  cp "$SCRIPTS_DIR/lib/worktree-registry.sh" "$ws/scripts/lib/worktree-registry.sh"
+  cp "$SCRIPTS_DIR/lib/worktree-disk-guard.sh" "$ws/scripts/lib/worktree-disk-guard.sh"
   cp "$REPO_ROOT/backend/agent_feed.py" "$ws/backend/agent_feed.py"
 
   cat > "$ws/scripts/rotate-team-log.sh" << 'STUBEOF'
