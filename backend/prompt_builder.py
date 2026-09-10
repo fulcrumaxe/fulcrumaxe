@@ -342,6 +342,7 @@ class SpawnPrompt:
     task_prompt: str = ""
     persona_voice: str = ""
     working_principles: str = ""
+    agent_scratchpad: str = ""
     self_observe_gate: str = ""
     gate_line: str = ""
     worktree_path: str | None = None
@@ -420,17 +421,18 @@ class SpawnPrompt:
           2. CHECKLIST_BLOCK — executor Pre-Code Checklist or code-reviewer enforcement
           3. PERSONA_VOICE   — from pre-spawn-check
           4. WORKING_PRINCIPLES — from pre-spawn-check
-          5. SELF_OBSERVE_GATE  — from pre-spawn-check
+          5. AGENT_SCRATCHPAD — from pre-spawn-check (D#2360)
+          6. SELF_OBSERVE_GATE  — from pre-spawn-check
           --- VOLATILE_BOUNDARY ---
-          6. SECURITY_BLOCK — if security_block=True
-          7. WORKTREE_BLOCK  — if worktree_path is set (provisioned path), else
+          7. SECURITY_BLOCK — if security_block=True
+          8. WORKTREE_BLOCK  — if worktree_path is set (provisioned path), else
                                the unprovisioned block if worktree_unprovisioned=True
-          8. PRIOR_TEST_RUNS_BLOCK — if prior_test_runs_block is set
-          9. PREVIOUS_ATTEMPT_CONTEXT — if circuit breaker has failures for this Discussion
-         10. TASK_PROMPT     — the actual work description
-         11. GATE_LINE       — current control-plane gate values
-         12. hook_event_id line
-         13. prompt_manifest line
+          9. PRIOR_TEST_RUNS_BLOCK — if prior_test_runs_block is set
+         10. PREVIOUS_ATTEMPT_CONTEXT — if circuit breaker has failures for this Discussion
+         11. TASK_PROMPT     — the actual work description
+         12. GATE_LINE       — current control-plane gate values
+         13. hook_event_id line
+         14. prompt_manifest line
 
         D#1956: the env-scrub prompt-injection block used to render here, right
         after VOLATILE_BOUNDARY. It was removed — it was denied by the
@@ -477,6 +479,8 @@ class SpawnPrompt:
             parts.append(self.persona_voice)
         if self.working_principles:
             parts.append(self.working_principles)
+        if self.agent_scratchpad:
+            parts.append(self.agent_scratchpad)
         if self.self_observe_gate:
             parts.append(self.self_observe_gate)
 
@@ -562,6 +566,7 @@ def build_from_psc(
     """
     persona_voice = psc_json.get("persona_voice", "")
     working_principles = psc_json.get("working_principles", "")
+    agent_scratchpad = psc_json.get("agent_scratchpad", "")
     self_observe_gate = psc_json.get("self_observe_gate", "")
 
     gates = psc_json.get("gate_context", {}).get("gates", {})
@@ -577,6 +582,7 @@ def build_from_psc(
         task_prompt=task_prompt,
         persona_voice=persona_voice,
         working_principles=working_principles,
+        agent_scratchpad=agent_scratchpad,
         self_observe_gate=self_observe_gate,
         gate_line=gate_line,
         worktree_path=worktree_path,
@@ -624,6 +630,7 @@ def _main_render(argv: list[str]) -> int:
     psc_fields = {
         "persona_voice": data.get("persona_voice", ""),
         "working_principles": data.get("working_principles", ""),
+        "agent_scratchpad": data.get("agent_scratchpad", ""),
         "self_observe_gate": data.get("self_observe_gate", ""),
     }
     gates = data.get("gates", {})
@@ -656,6 +663,7 @@ def _main_render(argv: list[str]) -> int:
         task_prompt=task_prompt,
         persona_voice=psc_fields["persona_voice"],
         working_principles=psc_fields["working_principles"],
+        agent_scratchpad=psc_fields["agent_scratchpad"],
         self_observe_gate=psc_fields["self_observe_gate"],
         gate_line=gate_line,
         worktree_path=worktree_path,

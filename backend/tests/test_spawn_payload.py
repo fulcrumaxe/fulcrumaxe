@@ -86,7 +86,7 @@ class TestBuildPayloadOtherFields:
         )
         assert payload["gate_line"] == "[Control plane gates: lint_must_pass=True]"
 
-    def test_all_seventeen_keys_present(self):
+    def test_all_eighteen_keys_present(self):
         payload = build_payload({"_ROLE": "executor"})
         expected_keys = {
             "role",
@@ -94,6 +94,7 @@ class TestBuildPayloadOtherFields:
             "task_prompt",
             "persona_voice",
             "working_principles",
+            "agent_scratchpad",
             "self_observe_gate",
             "gate_line",
             "worktree_path",
@@ -108,3 +109,19 @@ class TestBuildPayloadOtherFields:
             "pr_branch",
         }
         assert set(payload.keys()) == expected_keys
+
+    def test_agent_scratchpad_forwarded_from_psc(self):
+        # D#2360 review round 1: this field reached pre-spawn-check.sh's
+        # --dry-run JSON but was never forwarded here, so it never reached a
+        # spawned agent. Mirrors the existing working_principles coverage.
+        payload = build_payload(
+            {
+                "_ROLE": "executor",
+                "PSC_JSON_INPUT": '{"agent_scratchpad": "## Scratchpad Convention\\nuse a subdirectory"}',
+            }
+        )
+        assert payload["agent_scratchpad"] == "## Scratchpad Convention\nuse a subdirectory"
+
+    def test_agent_scratchpad_defaults_empty(self):
+        payload = build_payload({"_ROLE": "executor"})
+        assert payload["agent_scratchpad"] == ""

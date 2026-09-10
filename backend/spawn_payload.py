@@ -90,6 +90,7 @@ def build_payload(env: Mapping[str, str]) -> dict:
         "task_prompt":           env.get("_TASK", ""),
         "persona_voice":         psc.get("persona_voice", ""),
         "working_principles":    psc.get("working_principles", ""),
+        "agent_scratchpad":      psc.get("agent_scratchpad", ""),
         "self_observe_gate":     psc.get("self_observe_gate", ""),
         "gate_line":             gate_line,
         "worktree_path":         json.loads(env.get("_WT_PATH") or "null"),
