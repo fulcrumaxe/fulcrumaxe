@@ -36,7 +36,7 @@ assert_contains() {
 
 assert_not_contains() {
   local label="$1" haystack="$2" needle="$3"
-  if echo "$haystack" | grep -qF "$needle"; then
+  if echo "$haystack" | grep -qF -- "$needle"; then
     fail "$label — unexpectedly found: $needle"
   else
     pass "$label"

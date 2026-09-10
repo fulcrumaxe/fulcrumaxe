@@ -36,7 +36,7 @@ _fail() { echo "  FAIL: $1"; ((FAIL++)) || true; }
 
 _assert_exit0()        { [[ "$1" -eq 0 ]] && _pass "$2" || _fail "$2 (exit=$1)"; }
 _assert_contains()     { echo "$1" | grep -qF "$2" && _pass "$3" || _fail "$3 (missing: '$2' in output)"; }
-_assert_not_contains() { ! echo "$1" | grep -qF "$2" && _pass "$3" || _fail "$3 (unexpected: '$2' in output)"; }
+_assert_not_contains() { ! echo "$1" | grep -qF -- "$2" && _pass "$3" || _fail "$3 (unexpected: '$2' in output)"; }
 
 # ---------------------------------------------------------------------------
 # Case 1 setup — one throwaway repo, one real bare "origin", five worktrees

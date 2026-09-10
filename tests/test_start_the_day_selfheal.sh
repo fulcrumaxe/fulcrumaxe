@@ -39,7 +39,7 @@ assert_contains() {
 
 assert_not_contains() {
   local name="$1" needle="$2" haystack="$3"
-  if ! echo "$haystack" | grep -qF "$needle"; then
+  if ! echo "$haystack" | grep -qF -- "$needle"; then
     ok "$name"
   else
     fail_test "$name" "expected NOT to find: $needle"

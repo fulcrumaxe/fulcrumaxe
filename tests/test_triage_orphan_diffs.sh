@@ -25,7 +25,7 @@ _fail() { echo "  FAIL: $1"; ((FAIL++)) || true; }
 _assert_exit0()  { [[ "$1" -eq 0 ]]  && _pass "$2" || _fail "$2 (exit=$1)"; }
 _assert_exit2()  { [[ "$1" -eq 2 ]]  && _pass "$2" || _fail "$2 (expected exit=2, got=$1)"; }
 _assert_contains() { echo "$1" | grep -qF "$2" && _pass "$3" || _fail "$3 (missing: '$2')"; }
-_assert_not_contains() { ! echo "$1" | grep -qF "$2" && _pass "$3" || _fail "$3 (unexpected: '$2')"; }
+_assert_not_contains() { ! echo "$1" | grep -qF -- "$2" && _pass "$3" || _fail "$3 (unexpected: '$2')"; }
 _assert_file_exists()  { [[ -f "$1" ]] && _pass "$2" || _fail "$2 (missing file: $1)"; }
 _assert_file_missing() { [[ ! -f "$1" ]] && _pass "$2" || _fail "$2 (file should not exist: $1)"; }
 

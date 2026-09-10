@@ -83,7 +83,7 @@ assert_contains() {
 
 assert_not_contains() {
   local label="$1" bad_substr="$2" actual="$3"
-  if printf '%s' "$actual" | grep -qF "$bad_substr"; then
+  if printf '%s' "$actual" | grep -qF -- "$bad_substr"; then
     echo "  FAIL: $label"; echo "        should NOT contain: $bad_substr"; echo "        actual: $actual"
     FAIL=$((FAIL + 1))
   else
