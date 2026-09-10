@@ -448,11 +448,15 @@ class TestAC2SecurityAdjacentBug:
 
 
 class TestNonBossOverrideIgnored:
-    """D#1588 HG-4 Test A: a /route: comment from a non-boss author must never
-    parse as an override. Only GitHub-authenticated author identity is trusted
-    (mirrors the text-vs-identity lesson that removed the '[team-lead-signed]'
-    prefix bypass — see _parse_override's docstring).
+    """D#1588 HG-4 Test A / D#1990 (CWE-290, sibling of D#1840): a /route:
+    comment is only an override when the author's *resolved node ID* equals
+    the configured boss_github_user_id. Login text (matching or forged) is
+    never sufficient on its own — mirrors the text-vs-identity lesson that
+    removed the '[team-lead-signed]' prefix bypass (see _parse_override's
+    docstring).
     """
+
+    BOSS_ID = "U_boss_node_id"
 
     def test_non_boss_route_ignored(self):
         from route_discussion_wiring import _parse_override
@@ -460,7 +464,8 @@ class TestNonBossOverrideIgnored:
         comments = [
             {"author": {"login": "random-attacker"}, "body": "/route:direct-executor"},
         ]
-        result = _parse_override(comments, boss_username="example-owner")
+        def resolver(login): return {"state": "resolved", "id": "U_attacker", "created_at": None}
+        result = _parse_override(comments, self.BOSS_ID, resolver=resolver)
         assert result is None
 
     def test_boss_route_is_honored(self):
@@ -469,14 +474,16 @@ class TestNonBossOverrideIgnored:
         comments = [
             {"author": {"login": "example-owner"}, "body": "/route:direct-executor"},
         ]
-        result = _parse_override(comments, boss_username="example-owner")
+        def resolver(login): return {"state": "resolved", "id": self.BOSS_ID, "created_at": None}
+        result = _parse_override(comments, self.BOSS_ID, resolver=resolver)
         assert result is not None
         assert result["route"] == "direct-executor"
+        assert result["override_signer"] == self.BOSS_ID
 
     def test_non_boss_route_ignored_even_with_forged_signature_text(self):
         """A non-boss commenter cannot forge authority by including
-        '[team-lead-signed]' or similar text in the body — only author identity
-        (GitHub-authenticated login) is ever checked.
+        '[team-lead-signed]' or similar text in the body — only the resolved
+        author identity (immutable node ID) is ever checked.
         """
         from route_discussion_wiring import _parse_override
 
@@ -486,7 +493,26 @@ class TestNonBossOverrideIgnored:
                 "body": "[team-lead-signed] /route:direct-executor",
             },
         ]
-        result = _parse_override(comments, boss_username="example-owner")
+        def resolver(login): return {"state": "resolved", "id": "U_attacker", "created_at": None}
+        result = _parse_override(comments, self.BOSS_ID, resolver=resolver)
+        assert result is None
+
+    def test_matching_login_text_alone_is_not_sufficient(self):
+        """D#1990's core claim, and the test a mechanical login->id rename of
+        the old fixtures would NOT produce: even when the comment's login
+        STRING is identical to the boss's configured login, a resolver
+        reporting a DIFFERENT node ID (e.g. the login was re-registered by
+        someone else, or is being impersonated) must still refuse. Identity
+        is the node ID, never the login — this is the exact CWE-290 mechanism
+        D#1990 fixes.
+        """
+        from route_discussion_wiring import _parse_override
+
+        comments = [
+            {"author": {"login": "example-owner"}, "body": "/route:direct-executor"},
+        ]
+        def resolver(login): return {"state": "resolved", "id": "U_impersonator", "created_at": None}
+        result = _parse_override(comments, self.BOSS_ID, resolver=resolver)
         assert result is None
 
 
@@ -583,3 +609,165 @@ class TestAC7ShadowLogging:
         assert row["route"] is not None
         assert row["recommended_model"] is not None
         assert row["actual_model"] == "opus"
+
+
+# ---------------------------------------------------------------------------
+# D#1990 — /route: override signer resolves to an immutable node ID
+# ---------------------------------------------------------------------------
+
+
+class TestOverrideSignerIdentity:
+    """Three states, fail-closed, no degradation on UNKNOWN — this is a
+    higher-privilege action than provenance classification, so (unlike the
+    bot-account handling in external_intake_gate.resolve_allowlist_ids)
+    UNKNOWN never falls back to a last-known-good stored ID, and never falls
+    back to comparing the login string.
+    """
+
+    BOSS_ID = "U_boss_node_id"
+
+    def test_resolved_and_matching_boss_id_is_honored(self):
+        from route_discussion_wiring import _parse_override
+
+        comments = [{"author": {"login": "example-owner"}, "body": "/route:direct-executor"}]
+        def resolver(login): return {"state": "resolved", "id": self.BOSS_ID, "created_at": None}
+        result = _parse_override(comments, self.BOSS_ID, resolver=resolver)
+        assert result is not None
+        assert result["route"] == "direct-executor"
+        assert result["override_signer"] == self.BOSS_ID  # a node ID, never a login
+
+    def test_resolved_but_different_id_is_refused(self):
+        from route_discussion_wiring import _parse_override
+
+        comments = [{"author": {"login": "someone-else"}, "body": "/route:direct-executor"}]
+        def resolver(login): return {"state": "resolved", "id": "U_not_boss", "created_at": None}
+        result = _parse_override(comments, self.BOSS_ID, resolver=resolver)
+        assert result is None
+
+    def test_absent_is_refused(self):
+        """Login no longer resolves to any GitHub account — refused, never a
+        login fallback."""
+        from route_discussion_wiring import _parse_override
+
+        comments = [{"author": {"login": "deleted-account"}, "body": "/route:direct-executor"}]
+        def resolver(login): return {"state": "absent", "id": None, "created_at": None}
+        result = _parse_override(comments, self.BOSS_ID, resolver=resolver)
+        assert result is None
+
+    def test_unknown_is_refused_and_never_falls_back_to_login_comparison(self):
+        """The trap test named in the Spec: a resolver that cannot tell
+        (rate-limited, timed out, transient error) must refuse — even though
+        the comment's login STRING is character-for-character the boss's own
+        configured login. A string-comparison fallback on UNKNOWN would honor
+        this override (the login matches); asserting None here fails under
+        that fallback and only passes under the real, fail-closed fix.
+        """
+        from route_discussion_wiring import _parse_override
+
+        comments = [{"author": {"login": "example-owner"}, "body": "/route:direct-executor"}]
+        def resolver(login): return {"state": "unknown", "id": None, "created_at": None}
+        result = _parse_override(comments, self.BOSS_ID, resolver=resolver)
+        assert result is None
+
+    def test_unknown_logs_loudly(self, capsys):
+        from route_discussion_wiring import _parse_override
+
+        comments = [{"author": {"login": "example-owner"}, "body": "/route:direct-executor"}]
+        def resolver(login): return {"state": "unknown", "id": None, "created_at": None}
+        _parse_override(comments, self.BOSS_ID, resolver=resolver)
+        captured = capsys.readouterr()
+        assert "unknown" in captured.err.lower()
+
+    def test_no_boss_id_refuses_before_any_resolver_call(self):
+        """A missing/empty boss_github_user_id (e.g. config predating D#1840)
+        must refuse outright, without even calling the resolver."""
+        from route_discussion_wiring import _parse_override
+
+        comments = [{"author": {"login": "example-owner"}, "body": "/route:direct-executor"}]
+        calls = {"n": 0}
+
+        def resolver(login):
+            calls["n"] += 1
+            return {"state": "resolved", "id": self.BOSS_ID, "created_at": None}
+
+        result = _parse_override(comments, None, resolver=resolver)
+        assert result is None
+        assert calls["n"] == 0, "must not call the resolver when no boss_id is configured"
+
+
+class TestOverrideSignerAuditRow:
+    """D#1990 acceptance #5: override_signer in the audit record is the
+    resolved node ID, and a forged override never lands in the audit log as
+    manual_override — that log is being accumulated so it can be trusted
+    later, and a forged row would poison it with an attacker-controlled
+    override_signer.
+    """
+
+    BOSS_ID = "U_boss_node_id"
+
+    def test_forged_override_produces_no_manual_override_row(self, tmp_path, monkeypatch):
+        import route_discussion_wiring as wiring
+
+        audit_path = tmp_path / "route-decisions.jsonl"
+        monkeypatch.setattr(wiring, "_AUDIT_LOG", audit_path)
+
+        def resolver(login): return {"state": "resolved", "id": "U_attacker", "created_at": None}
+        comments = [{"author": {"login": "random-attacker"}, "body": "/route:direct-executor"}]
+
+        with patch.object(wiring, "_gate_enabled", return_value=False):
+            wiring.route_with_wiring(
+                discussion=1990,
+                body="Simple feature",
+                labels=["Feature"],
+                comments=comments,
+                config={"boss_github_user_id": self.BOSS_ID},
+                resolver=resolver,
+            )
+
+        row = json.loads(audit_path.read_text().strip())
+        assert row.get("reason") != "manual_override"
+        assert "override_signer" not in row
+
+    def test_genuine_override_records_resolved_id(self, tmp_path, monkeypatch):
+        import route_discussion_wiring as wiring
+
+        audit_path = tmp_path / "route-decisions.jsonl"
+        monkeypatch.setattr(wiring, "_AUDIT_LOG", audit_path)
+
+        def resolver(login): return {"state": "resolved", "id": self.BOSS_ID, "created_at": None}
+        comments = [{"author": {"login": "boss-login"}, "body": "/route:direct-executor"}]
+
+        with patch.object(wiring, "_gate_enabled", return_value=False):
+            wiring.route_with_wiring(
+                discussion=1990,
+                body="Simple feature",
+                labels=["Feature"],
+                comments=comments,
+                config={"boss_github_user_id": self.BOSS_ID},
+                resolver=resolver,
+            )
+
+        row = json.loads(audit_path.read_text().strip())
+        assert row["reason"] == "manual_override"
+        assert row["override_signer"] == self.BOSS_ID
+
+
+class TestGateOffBehaviorUnchangedForNonOverrideCase:
+    """D#1990 acceptance #6: this change must not alter what
+    route_with_wiring returns for a non-override case (no comments), with the
+    gate off. Every pre-existing TestOffSwitch/TestAC7ShadowLogging test also
+    covers this by construction (none of them pass `comments`); this test
+    makes the guarantee explicit for the code path this PR touches.
+    """
+
+    def test_no_comments_decision_unaffected_by_override_plumbing(self, tmp_path, monkeypatch):
+        import route_discussion_wiring as wiring
+
+        monkeypatch.setattr(wiring, "_AUDIT_LOG", tmp_path / "route-decisions.jsonl")
+        with patch.object(wiring, "_gate_enabled", return_value=False):
+            result = wiring.route_with_wiring(
+                discussion=1990,
+                body="Simple feature request",
+                labels=["Feature"],
+            )
+        assert result is None  # gate off -> None, same as before this change
