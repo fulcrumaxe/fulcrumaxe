@@ -81,8 +81,8 @@ Label API: use `gh pr edit --add-label` / `--remove-label` — this is the confi
 spelling from a worktree-isolated context (measured directly on D#2045/D#2139). Re-read the
 label afterwards with an independent `gh pr view --json labels` call — don't trust the exit
 code alone.
-  Apply label:  gh pr edit {pr_number} --repo {{REPO}} --add-label security-review-passed
-  Remove label: gh pr edit {pr_number} --repo {{REPO}} --remove-label security-needs-fix
+  Apply label:  gh pr edit {pr_number} --repo {{CODE_REPO}} --add-label security-review-passed
+  Remove label: gh pr edit {pr_number} --repo {{CODE_REPO}} --remove-label security-needs-fix
 
 - Apply label 'security-review-passed' if no issues found.
 - Apply label 'security-needs-fix' with detailed inline PR comments if issues exist
