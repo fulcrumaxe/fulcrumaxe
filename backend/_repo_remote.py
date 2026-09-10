@@ -11,6 +11,19 @@ for a fork: a fork's origin is the adopter's own repo, so each clone resolves
 to itself instead of inheriting ours. That strengthens the D#1870 property the
 _repo.py docstring is protecting rather than weakening it.
 
+D#2443: the original version of this module read ``.git/config`` directly,
+which only works when ``.git`` is a directory — the main checkout, or a
+plain ``git clone``. Every *linked* worktree (``git worktree add``, which is
+how every agent worktree is created) has a ``.git`` that is a *file*
+containing a single ``gitdir: <path>`` line, and that ``<path>`` is a
+per-worktree admin directory (``.git/worktrees/<id>``) that holds no
+``config`` of its own — the real config lives back in the main checkout's
+``.git``. ``repo_slug_from_git_config`` now follows that indirection: the
+same ``/.git/worktrees/`` marker that ``hooks/repo_root.py``'s
+``derive_repo_root_from`` already uses to find a worktree's main root is
+reused here (see that module for the reasoning) to locate the main ``.git``
+directory and read config from there instead.
+
 Two properties this module guarantees to its callers:
 
   * It never raises. A missing .git, a worktree whose .git is a file rather
@@ -30,6 +43,53 @@ from pathlib import Path
 # outside this charset means the value isn't a clean OWNER/NAME and should
 # fall through to None rather than being guessed at.
 _VALID_SLUG_PART = re.compile(r"[A-Za-z0-9._-]+")
+
+# Marker embedded in the ``gitdir:`` line of a linked worktree's ``.git``
+# file — e.g. ``gitdir: /main/checkout/.git/worktrees/agent-abc123``. Same
+# constant hooks/repo_root.py uses for the same purpose (finding the main
+# checkout from a worktree copy); duplicated here rather than imported
+# because backend/ must not import hooks/ (see that module's docstring).
+_WORKTREE_GITDIR_MARKER = "/.git/worktrees/"
+
+
+def _worktree_config_path(git_entry: Path) -> Path | None:
+    """Return the main checkout's ``.git/config`` path for a worktree's
+    ``.git`` *file*, or None if it doesn't look like a linked worktree.
+
+    *git_entry* is the ``.git`` file itself (already confirmed to be a file,
+    not a directory). Reads its single ``gitdir: <path>`` line, resolves a
+    relative ``<path>`` against *git_entry*'s own parent directory (never
+    against the process's cwd — a worktree can be entered from anywhere),
+    and — only when the resolved path contains the
+    ``/.git/worktrees/<id>`` marker git itself writes — splits on that
+    marker to recover the main checkout root. A marker-less target (e.g. a
+    submodule's ``.git`` file, which points at ``.git/modules/<name>``
+    instead) is a layout this function doesn't know how to read config for;
+    returning None here is a deliberate "no guess" rather than a wrong one.
+    """
+    try:
+        text = git_entry.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("gitdir:"):
+            continue
+        gitdir = line[len("gitdir:") :].strip()
+        if not gitdir:
+            return None
+        gitdir_path = Path(gitdir)
+        if not gitdir_path.is_absolute():
+            gitdir_path = git_entry.parent / gitdir_path
+        gitdir_str = str(gitdir_path)
+        if _WORKTREE_GITDIR_MARKER not in gitdir_str:
+            return None
+        main_root = Path(gitdir_str.split(_WORKTREE_GITDIR_MARKER, 1)[0])
+        return main_root / ".git" / "config"
+
+    # No "gitdir:" line found at all — malformed .git file.
+    return None
 
 
 def _slug_from_url(url: str) -> str | None:
@@ -79,13 +139,27 @@ def _slug_from_url(url: str) -> str | None:
 
 
 def repo_slug_from_git_config(repo_root: Path | str) -> str | None:
-    """Return the OWNER/NAME slug of ``origin`` under *repo_root*, else None."""
+    """Return the OWNER/NAME slug of ``origin`` under *repo_root*, else None.
+
+    Handles both shapes ``.git`` can take: a directory (the main checkout,
+    or a plain ``git clone``) and a file (a linked worktree — see the
+    module docstring and :func:`_worktree_config_path`).
+    """
     # Imported here rather than at module scope: this step is unreachable in
     # any checkout that has a project.json (which includes this one), so the
     # import cost should only be paid by the clones that actually need it.
     import configparser  # noqa: PLC0415
 
-    config_path = Path(repo_root) / ".git" / "config"
+    git_entry = Path(repo_root) / ".git"
+    if git_entry.is_dir():
+        config_path = git_entry / "config"
+    elif git_entry.is_file():
+        config_path = _worktree_config_path(git_entry)
+        if config_path is None:
+            return None
+    else:
+        return None
+
     try:
         raw = config_path.read_text()
     except (OSError, UnicodeDecodeError):

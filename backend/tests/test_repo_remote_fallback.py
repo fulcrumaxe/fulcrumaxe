@@ -99,9 +99,10 @@ def test_no_git_directory_returns_none(tmp_path: Path) -> None:
     assert repo_slug_from_git_config(tmp_path) is None
 
 
-def test_git_is_a_file_returns_none(tmp_path: Path) -> None:
-    # What a linked worktree looks like: .git is a file, not a directory,
-    # so .git/config is not a readable path.
+def test_git_worktree_gitdir_target_missing_returns_none(tmp_path: Path) -> None:
+    # A .git file with a well-formed worktree gitdir: line, but the main
+    # checkout it points at doesn't actually exist (a stale or corrupted
+    # worktree admin dir). Never raises; returns None.
     (tmp_path / ".git").write_text("gitdir: /elsewhere/.git/worktrees/wt\n")
     assert repo_slug_from_git_config(tmp_path) is None
 
@@ -113,6 +114,85 @@ def test_config_without_origin_returns_none(tmp_path: Path) -> None:
 
 def test_malformed_config_returns_none(tmp_path: Path) -> None:
     _write_git_config(tmp_path, "this is not ini\n= = =\n")
+    assert repo_slug_from_git_config(tmp_path) is None
+
+
+# ---------------------------------------------------------------------------
+# .git as a FILE pointing at a real linked worktree (D#2443) — the case that
+# is every agent worktree. Mirrors what `git worktree add` actually writes:
+# the worktree's own ".git" file names a per-worktree admin dir under the
+# MAIN checkout's ".git/worktrees/<id>", and the main checkout's ".git" (a
+# directory) is where "config" actually lives — never inside the per-worktree
+# admin dir itself, which is why a naive "<gitdir>/config" read (what this
+# module did before D#2443) always fails here.
+# ---------------------------------------------------------------------------
+
+
+def _write_worktree_gitdir(worktree_root: Path, main_root: Path, worktree_id: str = "wt1") -> None:
+    """Point *worktree_root*'s .git at a worktree admin dir under *main_root*.
+
+    The admin dir itself (main_root/.git/worktrees/<id>) is deliberately not
+    created — repo_slug_from_git_config never reads inside it, only splits
+    the gitdir string on the marker to recover main_root, exactly as a real
+    `git worktree add` layout requires.
+    """
+    worktree_root.mkdir(parents=True, exist_ok=True)
+    gitdir = main_root / ".git" / "worktrees" / worktree_id
+    (worktree_root / ".git").write_text(f"gitdir: {gitdir}\n")
+
+
+def test_worktree_gitdir_file_reads_main_checkout_config(tmp_path: Path) -> None:
+    main_root = tmp_path / "main"
+    _write_git_config(main_root, _origin_config("https://github.com/adopter/theirfork.git"))
+    worktree_root = tmp_path / "worktrees" / "agent-abc123"
+    _write_worktree_gitdir(worktree_root, main_root)
+
+    assert repo_slug_from_git_config(worktree_root) == "adopter/theirfork"
+
+
+def test_worktree_relative_gitdir_resolves_against_git_file_dir(tmp_path: Path) -> None:
+    # git itself always writes an absolute gitdir:, but the module docstring
+    # promises relative resolution is against the .git file's own directory,
+    # never the process cwd — verify that promise directly.
+    main_root = tmp_path / "main"
+    _write_git_config(main_root, _origin_config("https://github.com/adopter/theirfork.git"))
+    worktree_root = tmp_path / "worktrees" / "agent-abc123"
+    worktree_root.mkdir(parents=True, exist_ok=True)
+    rel_gitdir = os.path.relpath(main_root / ".git" / "worktrees" / "wt1", worktree_root)
+    (worktree_root / ".git").write_text(f"gitdir: {rel_gitdir}\n")
+
+    assert repo_slug_from_git_config(worktree_root) == "adopter/theirfork"
+
+
+def test_worktree_gitdir_main_config_without_origin_returns_none(tmp_path: Path) -> None:
+    main_root = tmp_path / "main"
+    _write_git_config(main_root, "[core]\n\tbare = false\n")
+    worktree_root = tmp_path / "worktrees" / "agent-abc123"
+    _write_worktree_gitdir(worktree_root, main_root)
+
+    assert repo_slug_from_git_config(worktree_root) is None
+
+
+def test_worktree_gitdir_main_config_malformed_returns_none(tmp_path: Path) -> None:
+    main_root = tmp_path / "main"
+    _write_git_config(main_root, "this is not ini\n= = =\n")
+    worktree_root = tmp_path / "worktrees" / "agent-abc123"
+    _write_worktree_gitdir(worktree_root, main_root)
+
+    assert repo_slug_from_git_config(worktree_root) is None
+
+
+def test_git_file_without_gitdir_line_returns_none(tmp_path: Path) -> None:
+    # Malformed .git file content — no "gitdir:" line at all.
+    (tmp_path / ".git").write_text("this is not a gitdir pointer\n")
+    assert repo_slug_from_git_config(tmp_path) is None
+
+
+def test_git_file_marker_less_gitdir_returns_none(tmp_path: Path) -> None:
+    # A gitdir: target that doesn't contain the /.git/worktrees/ marker
+    # (e.g. a submodule's .git file, which points at .git/modules/<name>)
+    # is a layout this module doesn't know how to read config for.
+    (tmp_path / ".git").write_text("gitdir: /somewhere/.git/modules/sub\n")
     assert repo_slug_from_git_config(tmp_path) is None
 
 
