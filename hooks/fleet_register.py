@@ -68,6 +68,51 @@ this tier check applies ONLY here (the calling context at PreToolUse-time);
 hooks/fleet_unregister.py's SubagentStop fires with the *finished subagent's
 own* cwd (typically a worktree), not the caller's, so it does not reuse this
 same guard — see that file's docstring.
+
+D#2473 coverage enumeration (Spec item 1) — every path that starts or
+continues an agent, and what it does to fleet.db / agent_run:
+
+  path                          | registers in fleet.db | opens agent_run row
+  -------------------------------|------------------------|---------------------
+  Agent() tool call (this hook)  | yes — agent-tool-* row | yes (SDK-side)
+  scripts/spawn-agent.sh spawn   | yes — event-id row     | yes
+                                  | (scripts/pre-spawn-      |
+                                  |  check.sh's register()  |
+                                  |  call)                  |
+  SendMessage-resume of a live   | NO                     | no new row
+  agent (see workflow below)     |                        | (same agent_run
+                                  |                        | row, still open)
+
+  The gap is the third row, and it is real: this hook only fires on
+  PreToolUse matcher="Agent". A SendMessage tool call carries no matcher
+  this hook (or any hook) observes, so an agent resumed by message —
+  exactly the "route back to executor" pattern .claude/agents/executor.md
+  documents for review-fix cycles — registers nothing on resume.
+
+  What actually removes the row for a message-resumed agent: this hook's
+  SubagentStop counterpart, hooks/fleet_unregister.py, fires when the
+  agent's *current* turn ends and returns control to the caller — which
+  happens on the FIRST turn too, before any later SendMessage resumes it.
+  So the row this hook wrote is gone by the time the resumed turn starts
+  doing work, and nothing re-adds it. D#2473's own live measurement is
+  consistent with this: zero agent-tool-* rows were present against 7
+  concurrently-running `claude` processes on a host where several of those
+  were mid review-fix cycle (resumed, not freshly spawned).
+
+D#2473 resume-path decision (Spec item 5): a message-resumed agent does
+NOT count toward the fleet cap for the duration of its resumed activity.
+This is deliberate-by-necessity, not silently accepted: there is no
+PreToolUse(SendMessage) hook today, and adding one — plus giving it a way
+to key onto the SAME row this hook already wrote for the agent's initial
+spawn, rather than creating a second one — is registration-path work of
+its own, not a fix to this file's existing registration or to
+scripts/pre-spawn-check.sh's pid choice (D#2473's other, load-bearing fix;
+see that script's own D#2473 comment). Spec item 1 explicitly allows
+stopping here rather than growing this PR to cover it. Net effect: the
+fleet-cap counter under-counts by however many agents are currently
+resumed rather than freshly spawned — a real, known gap, tracked here
+rather than re-discovered the next time someone reads a cap number against
+`pgrep -af claude` and finds them disagreeing.
 """
 
 from __future__ import annotations
