@@ -268,7 +268,16 @@ POST_HOOK_ARGS=(
 # SUBAGENT_STOP_DRY_RUN=1 — test mode: write resolved args JSON to
 # SUBAGENT_STOP_ARGS_FILE instead of calling post-agent-hook.sh.
 if [[ "${SUBAGENT_STOP_DRY_RUN:-0}" == "1" && -n "${SUBAGENT_STOP_ARGS_FILE:-}" ]]; then
-  python3 -c "
+  # D#2168: this write used to redirect stderr to /dev/null and swallow the
+  # exit status with `|| true`, so an unwritable SUBAGENT_STOP_ARGS_FILE
+  # looked identical from the outside to section 3b's legitimate noise-drop —
+  # the original filing had no way to tell "the hook chose not to write"
+  # from "the hook crashed trying to write". Capture the callee's stderr and
+  # status instead and surface both, the same shape the real
+  # post-agent-hook.sh call below already uses (D#2111). SUBAGENT_STOP_DRY_RUN
+  # is test-only (never set in production), so exiting non-zero here does not
+  # touch this script's "always exit 0" contract for the real hook path.
+  _DRY_RUN_ERR=$(python3 -c "
 import json, sys
 args = sys.argv[1:]
 d = {}
@@ -288,7 +297,12 @@ for k in ('input_tokens','output_tokens','cache_read_tokens','cache_write_tokens
         except: pass
 with open('${SUBAGENT_STOP_ARGS_FILE}', 'w') as f:
     json.dump(d, f, indent=2)
-" "${POST_HOOK_ARGS[@]}" 2>/dev/null || true
+" "${POST_HOOK_ARGS[@]}" 2>&1 1>/dev/null)
+  _DRY_RUN_RC=$?
+  if [[ "$_DRY_RUN_RC" -ne 0 ]]; then
+    echo "[subagent-stop-hook] dry-run args write failed (exit $_DRY_RUN_RC) writing ${SUBAGENT_STOP_ARGS_FILE}: ${_DRY_RUN_ERR}" >&2
+    exit "$_DRY_RUN_RC"
+  fi
 else
   # D#2111: the old fixed-path tee target had exactly one writer and zero
   # readers — every concurrent agent clobbered it, and
