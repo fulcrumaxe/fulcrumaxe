@@ -729,7 +729,7 @@ def _seed_duckdb(project: str, rpc_project_scope) -> None:
         # gap later — feeds runs.roundtrip (executor-done -> reviewer-start
         # latency) and, because per_pr_summary() reads PR-tagged agent_run
         # rows, stats.cost_per_outcome's spend half. first_write_turn /
-        # total_turns feed stats.pre_write_burn, routed_via stats.sdk_vs_cc.
+        # total_turns feed stats.pre_write_burn.
         # roundtrip_latency() reads the executor side's end_ts and the
         # reviewer side's start_ts. start_ts is honoured only on
         # complete_run()'s INSERT branch and these rows go through

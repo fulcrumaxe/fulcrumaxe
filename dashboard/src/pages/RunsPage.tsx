@@ -18,7 +18,6 @@ import ActiveAgentsTile from './runs/ActiveAgentsTile'
 import DurationPercentilesTile from './runs/DurationPercentilesTile'
 import StuckRunsTile from './runs/StuckRunsTile'
 import RecentRunsFeedTile from './runs/RecentRunsFeedTile'
-import SdkVsCcTile from './runs/SdkVsCcTile'
 import AnalystFindingsTile from './runs/AnalystFindingsTile'
 
 const pageStyles: Record<string, React.CSSProperties> = {
@@ -84,11 +83,6 @@ export default function RunsPage() {
         {/* Side by side: percentiles and stuck runs */}
         <DurationPercentilesTile refreshSignal={refreshSignal} />
         <StuckRunsTile refreshSignal={refreshSignal} />
-
-        {/* Full-width: SDK vs CC comparison */}
-        <div style={pageStyles.fullWidth}>
-          <SdkVsCcTile refreshSignal={refreshSignal} />
-        </div>
 
         {/* Full-width: recent runs feed */}
         <div style={pageStyles.fullWidth}>
