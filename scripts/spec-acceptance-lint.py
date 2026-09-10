@@ -75,19 +75,47 @@ def parse_items(spec_text: str) -> list[tuple[int, str]]:
 # ---------------------------------------------------------------------------
 
 _BACKTICK_RE = re.compile(r"`([^`]+)`")
+_ALPHA_EXT_RE = re.compile(r"\.[A-Za-z][A-Za-z0-9]*$")
+# A protocol-less external reference — "docs.python.org/3/library/re.html" —
+# reads as a domain-plus-path, not a repo-relative path, even though it
+# contains "/" and ends in something that looks like a file extension.
+# Mirrors the existing http/https guard for the one shape that guard misses:
+# a domain with no scheme at all. Anchored so it only excludes tokens that
+# actually START with a dotted-label domain segment, never a bare filename
+# like "CLAUDE.md" (no "/", so this branch is never reached for it).
+_DOMAIN_TOKEN_RE = re.compile(r"^(?:[\w-]+\.)+[a-z]{2,6}(?:/|$)", re.IGNORECASE)
+# A bare token (no "/") has no directory structure to anchor it as a real
+# path, so "any alpha extension" is too permissive there — real-corpus
+# testing against D#2376 caught `data.repository.discussion` (a GraphQL
+# field-path expression, not a file) getting misread as a path once bare
+# tokens were opened up to any alpha suffix. A path-bearing token keeps
+# "any alpha extension" (above): a directory component makes that
+# misreading rare in practice. For a bare token, extend the known list with
+# exactly the extensions the review verified missing (a genuinely-missing
+# `schema.sql` was silently never checked) rather than opening it fully.
 _KNOWN_EXTENSIONS = (
     "py", "sh", "md", "json", "yml", "yaml", "txt", "js", "ts", "tsx", "jsx",
     "ini", "cfg", "toml", "html", "css", "ipynb",
+    "sql", "env", "lock", "csv", "rs", "go",
 )
 _BARE_NAME_RE = re.compile(r"^[\w.\-]+\.(?:" + "|".join(_KNOWN_EXTENSIONS) + r")$")
-_ALPHA_EXT_RE = re.compile(r"\.[A-Za-z][A-Za-z0-9]*$")
+# Conventional filenames with no extension at all — same category as any
+# other real repo file, just spelled without a dot.
+_EXTENSIONLESS_NAMES = frozenset({"Dockerfile", "Makefile"})
 
 
 def _looks_like_path(token: str) -> bool:
     """A conservative filter: would a human reading this backtick span read it as a
     bare file path? Excludes URLs, flags, and multi-word commands (those are split
     into words by the caller before this is checked, so a real command like
-    `bash tests/foo.sh` still yields the path half as its own word)."""
+    `bash tests/foo.sh` still yields the path half as its own word).
+
+    A bare filename (no "/") is checked against an extension list that now
+    includes the ones the review verified missing (`.sql`, `.env`, `.lock`,
+    `.csv`, `.rs`, `.go`), plus a short list of conventional extensionless
+    names — closing the gap where the identical missing file was flagged
+    with a directory but silently skipped without one (D#2377 PR #141
+    review, fix 3)."""
     token = token.strip().strip(",:;()")
     if not token or " " in token:
         return False
@@ -96,7 +124,11 @@ def _looks_like_path(token: str) -> bool:
     if "::" in token:
         token = token.split("::", 1)[0]
     if "/" in token:
+        if _DOMAIN_TOKEN_RE.match(token):
+            return False
         return bool(_ALPHA_EXT_RE.search(token))
+    if token in _EXTENSIONLESS_NAMES:
+        return True
     return bool(_BARE_NAME_RE.match(token))
 
 
@@ -152,12 +184,25 @@ _NUMBER_WORD = (
     r"thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|"
     r"forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand)"
 )
-_COUNT_NOUN = (
-    r"(?:occurrences?|consumers?|suites?|sites?|instances?|callers?|usages?|"
-    r"references?|matches?|hits?|spots?)"
-)
+# Nouns that only ever describe a static tally of something in the codebase
+# (grep results, call sites, consumers of a function) — unambiguous, always
+# flagged. "matches", "hits" and "instances" are different: they equally
+# describe an *observed runtime value* ("the endpoint returns 3 matches",
+# "the cache reports 5 hits"), which is exactly the behavioural-criterion
+# shape this tool's own design rationale prefers over a static proxy count.
+# Those three are only flagged when the item text also carries a codebase-
+# tally context cue (see _CODEBASE_TALLY_CONTEXT_RE below).
+_COUNT_NOUN_CODEBASE = r"(?:occurrences?|consumers?|suites?|sites?|callers?|usages?|references?|spots?)"
+_COUNT_NOUN_AMBIGUOUS = r"(?:matches?|hits?|instances?)"
+_COUNT_NOUN = rf"(?:{_COUNT_NOUN_CODEBASE}|{_COUNT_NOUN_AMBIGUOUS})"
 _BARE_COUNT_RE = re.compile(
-    rf"\b{_NUMBER_WORD}\b(?:\s+[A-Za-z][A-Za-z-]*){{0,3}}\s+{_COUNT_NOUN}\b",
+    rf"\b{_NUMBER_WORD}\b(?:\s+[A-Za-z][A-Za-z-]*){{0,3}}\s+(?P<noun>{_COUNT_NOUN})\b",
+    re.IGNORECASE,
+)
+_AMBIGUOUS_NOUN_RE = re.compile(rf"^{_COUNT_NOUN_AMBIGUOUS}$", re.IGNORECASE)
+_CODEBASE_TALLY_CONTEXT_RE = re.compile(
+    r"\b(?:grep\w*|codebase|repo(?:sitory)?|the\s+tree|source\s+code|call\s+sites?|"
+    r"in\s+the\s+code|across\s+the\s+code)\b",
     re.IGNORECASE,
 )
 
@@ -165,9 +210,13 @@ _BARE_COUNT_RE = re.compile(
 def find_bare_counts(items: list[tuple[int, str]]) -> list[Finding]:
     findings = []
     for num, text in items:
-        m = _BARE_COUNT_RE.search(text)
-        if m:
+        for m in _BARE_COUNT_RE.finditer(text):
+            if _AMBIGUOUS_NOUN_RE.match(m.group("noun")) and not _CODEBASE_TALLY_CONTEXT_RE.search(text):
+                # An observed-behaviour count (an endpoint's/cache's own
+                # report), not a static codebase tally — not this tool's shape.
+                continue
             findings.append(Finding(num, "bare_count", m.group(0).strip()))
+            break
     return findings
 
 

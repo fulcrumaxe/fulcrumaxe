@@ -82,6 +82,40 @@ FIXTURE_FRONTMATTER_ONLY = _wrap(
     "1. `CLAUDE.md` stays unchanged.\n"
 )
 
+# Two observed-runtime-behaviour criteria, quoted from the code review on PR #141:
+# an endpoint's own response count and a cache's own reported count. Both are
+# exactly the kind of criterion the tool's design rationale prefers (a behaviour,
+# not a static proxy for it) and must not be flagged as a bare_count. A third item
+# keeps the same ambiguous noun ("matches") but in a genuine codebase-tally
+# context (grepping the tree), which must still be flagged.
+FIXTURE_BEHAVIORAL_COUNTS = _wrap(
+    "---\n"
+    "planned_prs: 1\n"
+    "---\n\n"
+    "1. The /search?q=foo endpoint returns 3 matches for a known query.\n"
+    "2. The cache reports 5 hits after warmup on a cold start.\n"
+    "3. Grep the codebase and confirm there are 3 matches for the old pattern.\n"
+)
+
+# A Spec citing an external doc by domain-plus-path, no URL scheme — the exact
+# shape from the code review on PR #141. Must not be flagged missing_file.
+FIXTURE_DOMAIN_REFERENCE = _wrap(
+    "---\n"
+    "planned_prs: 1\n"
+    "---\n\n"
+    "1. Matches the behaviour documented at `docs.python.org/3/library/re.html`.\n"
+)
+
+# A bare filename (no directory) that genuinely does not exist anywhere in this
+# tree, with an extension the old fixed allowlist omitted. Verified: no `.sql`
+# file exists in this tree under any name.
+FIXTURE_BARE_MISSING_SQL = _wrap(
+    "---\n"
+    "planned_prs: 1\n"
+    "---\n\n"
+    "1. Apply `schema.sql` before running the migration.\n"
+)
+
 
 def test_lint_flags_missing_file_and_bare_count():
     findings = lint_module.lint(FIXTURE_WITH_ISSUES, _REPO_ROOT)
@@ -116,6 +150,59 @@ def test_frontmatter_files_are_not_linted():
     )
 
 
+def test_bare_count_does_not_flag_observed_behavioural_counts():
+    """D#2377 PR #141 review, fix 1: `find_bare_counts` must not flag a count
+    that describes observed runtime behaviour (an endpoint's own response, a
+    cache's own report) — only a static codebase tally. The same ambiguous
+    noun ("matches") in a genuine codebase-tally context (grepping the tree)
+    must still be caught."""
+    findings = lint_module.lint(FIXTURE_BEHAVIORAL_COUNTS, _REPO_ROOT)
+    by_item = {f.item: f for f in findings}
+
+    assert 1 not in by_item, (
+        f"item 1 ('the endpoint returns 3 matches for a known query') is an "
+        f"observed behavioural criterion, not a codebase tally, and must not "
+        f"be flagged, got {findings}"
+    )
+    assert 2 not in by_item, (
+        f"item 2 ('the cache reports 5 hits after warmup') is an observed "
+        f"behavioural criterion, not a codebase tally, and must not be "
+        f"flagged, got {findings}"
+    )
+    assert 3 in by_item, (
+        f"item 3 ('grep the codebase ... 3 matches for the old pattern') is "
+        f"a genuine codebase tally and must still be flagged, got {findings}"
+    )
+    assert by_item[3].kind == "bare_count"
+
+
+def test_looks_like_path_excludes_protocol_less_domain_reference():
+    """D#2377 PR #141 review, fix 2: a Spec citing an external doc by domain
+    plus path, without a URL scheme, must not be misread as a repo-relative
+    path and flagged missing_file."""
+    findings = lint_module.lint(FIXTURE_DOMAIN_REFERENCE, _REPO_ROOT)
+    assert findings == [], (
+        f"docs.python.org/3/library/re.html is a protocol-less external "
+        f"domain reference, not a repo path, and must not be flagged, "
+        f"got {findings}"
+    )
+
+
+def test_bare_filename_existence_check_matches_path_bearing_check():
+    """D#2377 PR #141 review, fix 3: a bare filename (no directory) must be
+    checked for existence using the same extension rule as a path-bearing
+    token, not a narrower fixed allowlist. `schema.sql` does not exist
+    anywhere in this tree and must be flagged, exactly like a path-bearing
+    reference to the same missing file already is."""
+    findings = lint_module.lint(FIXTURE_BARE_MISSING_SQL, _REPO_ROOT)
+    by_item = {f.item: f for f in findings}
+    assert 1 in by_item, (
+        f"item 1 names bare `schema.sql`, which does not exist anywhere in "
+        f"this tree, and must be flagged missing_file, got {findings}"
+    )
+    assert by_item[1].kind == "missing_file"
+
+
 def test_parse_items_keeps_multiline_items_whole():
     items = lint_module.parse_items(
         "---\nplanned_prs: 1\n---\n\n"
@@ -137,6 +224,9 @@ def test_parse_items_keeps_multiline_items_whole():
         ("--force", False),
         ("245eb284", False),
         ("backend/discussion_status.py::get_sections", True),
+        ("docs.python.org/3/library/re.html", False),
+        ("schema.sql", True),
+        ("Dockerfile", True),
     ],
 )
 def test_looks_like_path(token, expected):
