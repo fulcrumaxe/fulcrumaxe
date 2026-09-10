@@ -12,12 +12,13 @@
 #
 # Usage (source, then call the dispatcher):
 #   source scripts/lib/code-plane-pr.sh
-#   SHA=$(code_plane_pr build --target-ref code-plane/main \
+#   DIR=$(code_plane_pr extract --ref code-plane/main)   # resolved sha printed on stderr
+#   SHA=$(code_plane_pr build --target-ref code-plane/main --base-ref <sha extract printed> \
 #           --branch my-fix --message "fix the thing" \
 #           path/to/file.txt=/private/scratch/file.txt)
 #
 # Or invoke directly:
-#   bash scripts/lib/code-plane-pr.sh build --target-ref <ref> [--base-ref <ref>] \
+#   bash scripts/lib/code-plane-pr.sh build --target-ref <ref> --base-ref <ref> \
 #     --branch <name> --message <msg> <repo-path>=<local-file> [...]
 #   bash scripts/lib/code-plane-pr.sh extract --ref <ref>
 #   bash scripts/lib/code-plane-pr.sh push --remote <name> --branch <name> --commit <sha>
@@ -25,9 +26,13 @@
 # Three disciplines this file enforces so an agent never has to remember them:
 #
 #   1. Byte-identity by hash, not by eye. `build` takes a --target-ref (the
-#      commit the new commit is parented on) and an optional --base-ref (what
+#      commit the new commit is parented on) and a required --base-ref (what
 #      the caller believed the current state was when it started editing —
-#      defaults to --target-ref when omitted, i.e. no gap, no risk). For every
+#      pass the sha `extract` printed on stderr, or --target-ref's own value
+#      again for the genuine no-gap case). Omitting --base-ref is a usage
+#      error (exit 2): a plane-sensitive input that can be silently defaulted
+#      is exactly the defect this discipline exists to prevent — a caller who
+#      forgets the flag must be refused, not silently blended. For every
 #      touched path that exists on --target-ref, the blob recorded there is
 #      compared by hash against the blob recorded at the same path on
 #      --base-ref. If they differ, the path moved on the target between the
@@ -74,8 +79,10 @@ code_plane_pr_usage() {
 scripts/lib/code-plane-pr.sh — build a code-plane commit without touching a
 local ref, branch, index, or working tree.
 
-  build   --target-ref <ref> [--base-ref <ref>] --branch <name>
+  build   --target-ref <ref> --base-ref <ref> --branch <name>
           --message <msg> <repo-path>=<local-file> [<repo-path>=<local-file> ...]
+          --base-ref is required (pass the sha `extract` printed on stderr,
+          or --target-ref's own value again for the genuine no-gap case).
           Prints the built commit sha on stdout on success.
 
   extract --ref <ref>
@@ -125,7 +132,10 @@ code_plane_pr_build() {
     _cpp_err "build: --target-ref, --branch, --message and at least one PATH=LOCALFILE are required"
     return 2
   fi
-  [[ -n "$base_ref" ]] || base_ref="$target_ref"
+  if [[ -z "$base_ref" ]]; then
+    _cpp_err "build: --base-ref is required — pass the sha 'extract' printed on stderr for the tree you started from, or --target-ref's own value again if you genuinely have no prior base"
+    return 2
+  fi
 
   local target_sha base_sha
   target_sha="$(_cpp_resolve_commit target-ref "$target_ref")" || {
@@ -259,6 +269,10 @@ code_plane_pr_extract() {
     _cpp_err "extract: cannot resolve --ref '$ref'"
     return 2
   }
+  # Carry the resolved identity out on stderr (the discipline-1 fix in
+  # `build` needs a caller-supplied --base-ref; this is what a caller pins it
+  # to). Stdout stays exactly the directory path — never blend the two.
+  _cpp_err "extract: ref=$ref sha=$sha"
 
   local dir
   dir="$(mktemp -d)" || {

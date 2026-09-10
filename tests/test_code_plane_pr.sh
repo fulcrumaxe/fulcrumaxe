@@ -167,7 +167,7 @@ COMMIT_TARGET_6="$(git -C "$FX6" commit-tree "$TREE_TARGET_6" -m "executable tar
 LOCAL_EDIT_6="$TEST_SCRATCH/case6-run.sh"
 printf '#!/bin/sh\necho edited\n' > "$LOCAL_EDIT_6"
 
-OUT6="$(cd "$FX6" && code_plane_pr build --target-ref "$COMMIT_TARGET_6" \
+OUT6="$(cd "$FX6" && code_plane_pr build --target-ref "$COMMIT_TARGET_6" --base-ref "$COMMIT_TARGET_6" \
   --branch test-branch --message "edit an executable" "run.sh=$LOCAL_EDIT_6" 2>"$TEST_SCRATCH/case6.err")"
 RC6=$?
 
@@ -201,7 +201,7 @@ COMMIT_7B="$(git -C "$FX7B" commit-tree "$TREE_7B" -m "case 7b target")"
 LOCAL_UNCHANGED_7B="$TEST_SCRATCH/case7b-unchanged.txt"
 printf "$UNCHANGED_CONTENT_7B" > "$LOCAL_UNCHANGED_7B"
 
-OUT7B="$(cd "$FX7B" && code_plane_pr build --target-ref "$COMMIT_7B" \
+OUT7B="$(cd "$FX7B" && code_plane_pr build --target-ref "$COMMIT_7B" --base-ref "$COMMIT_7B" \
   --branch test-branch --message "no-op write" "unchanged.txt=$LOCAL_UNCHANGED_7B" 2>"$TEST_SCRATCH/case7b.err")"
 RC7B=$?
 
@@ -260,7 +260,7 @@ HEAD_BEFORE="$(git -C "$FX8" rev-parse HEAD 2>&1)"
 HEAD_RC_BEFORE=$?
 STATUS_BEFORE="$(git -C "$FX8" status --porcelain 2>&1)"
 
-(cd "$FX8" && code_plane_pr build --target-ref "$COMMIT_8" --branch test-branch --message "case 8" \
+(cd "$FX8" && code_plane_pr build --target-ref "$COMMIT_8" --base-ref "$COMMIT_8" --branch test-branch --message "case 8" \
   "file8.txt=$LOCAL_EDIT_8" >/dev/null 2>&1) || true
 
 HEAD_AFTER="$(git -C "$FX8" rev-parse HEAD 2>&1)"
@@ -389,6 +389,169 @@ else
 fi
 
 rm -rf "$REG_TEST_DIR"
+
+# ── D#2498 Case: build refuses (exit 2) when --base-ref is omitted (item 1) ──
+# Pre-fix, this silently defaulted base_ref to target_ref and built a commit
+# (exit 0) — the two independent resolutions of the moving ref were never
+# compared. Post-fix it's a usage error, named and actionable on stderr.
+echo ""
+echo "=== D#2498 Case: build without --base-ref exits 2, naming the flag (item 1) ==="
+FX_D2498_1="$(_fixture_repo)"
+BLOB_D2498_1="$(printf 'content for the required-base-ref case\n' | git -C "$FX_D2498_1" hash-object -w --stdin)"
+TREE_D2498_1="$(printf '100644 blob %s\tfile.txt\n' "$BLOB_D2498_1" | git -C "$FX_D2498_1" mktree)"
+COMMIT_D2498_1="$(git -C "$FX_D2498_1" commit-tree "$TREE_D2498_1" -m "d2498 item1 target")"
+LOCAL_D2498_1="$TEST_SCRATCH/d2498-1-edit.txt"
+printf 'edited\n' > "$LOCAL_D2498_1"
+
+OUT_D2498_1="$(cd "$FX_D2498_1" && code_plane_pr build --target-ref "$COMMIT_D2498_1" \
+  --branch test-branch --message "no base-ref" "file.txt=$LOCAL_D2498_1" 2>"$TEST_SCRATCH/d2498-1.err")"
+RC_D2498_1=$?
+if [[ "$RC_D2498_1" -eq 2 ]]; then
+  _pass "D#2498: build without --base-ref exits 2"
+else
+  _fail "D#2498: expected exit 2 without --base-ref, got $RC_D2498_1 (stdout='$OUT_D2498_1')"
+fi
+if [[ -z "$OUT_D2498_1" ]]; then
+  _pass "D#2498: build prints no commit sha without --base-ref"
+else
+  _fail "D#2498: expected empty stdout without --base-ref, got '$OUT_D2498_1'"
+fi
+if grep -q -- '--base-ref' "$TEST_SCRATCH/d2498-1.err"; then
+  _pass "D#2498: build's stderr names --base-ref when omitted"
+else
+  _fail "D#2498: build's stderr does not name --base-ref: $(cat "$TEST_SCRATCH/d2498-1.err")"
+fi
+rm -rf "$FX_D2498_1"
+
+# ── D#2498 Case: extract emits the resolved sha on stderr (item 2) ───────────
+# stdout must stay byte-for-byte the directory path alone — the resolved
+# identity goes out on stderr, never blended into stdout's contract and
+# never written into the extracted tree itself.
+echo ""
+echo "=== D#2498 Case: extract emits the resolved sha on stderr (item 2) ==="
+FX_D2498_2="$(_fixture_repo)"
+BLOB_D2498_2="$(printf 'extract case content\n' | git -C "$FX_D2498_2" hash-object -w --stdin)"
+TREE_D2498_2="$(printf '100644 blob %s\tfile.txt\n' "$BLOB_D2498_2" | git -C "$FX_D2498_2" mktree)"
+COMMIT_D2498_2="$(git -C "$FX_D2498_2" commit-tree "$TREE_D2498_2" -m "d2498 item2 target")"
+
+RAW_STDOUT_D2498_2="$TEST_SCRATCH/d2498-2.out"
+(cd "$FX_D2498_2" && code_plane_pr extract --ref "$COMMIT_D2498_2" >"$RAW_STDOUT_D2498_2" 2>"$TEST_SCRATCH/d2498-2.err")
+RC_D2498_2=$?
+DIR_D2498_2="$(cat "$RAW_STDOUT_D2498_2")"
+
+if [[ "$RC_D2498_2" -eq 0 && -n "$DIR_D2498_2" && -d "$DIR_D2498_2" ]]; then
+  _pass "D#2498: extract succeeds and prints a directory"
+else
+  _fail "D#2498: extract failed: rc=$RC_D2498_2 dir='$DIR_D2498_2'"
+fi
+LINE_COUNT_D2498_2="$(wc -l < "$RAW_STDOUT_D2498_2")"
+if [[ "$LINE_COUNT_D2498_2" -eq 1 ]]; then
+  _pass "D#2498: extract's stdout is exactly one line — unchanged from current behaviour"
+else
+  _fail "D#2498: extract's stdout is not exactly one line ($LINE_COUNT_D2498_2 lines): $(cat "$RAW_STDOUT_D2498_2")"
+fi
+RESOLVED_SHA_D2498_2="$(git -C "$FX_D2498_2" rev-parse "$COMMIT_D2498_2^{commit}")"
+if [[ "$RESOLVED_SHA_D2498_2" =~ ^[0-9a-f]{40}$ ]] && grep -qE "\b$RESOLVED_SHA_D2498_2\b" "$TEST_SCRATCH/d2498-2.err"; then
+  _pass "D#2498: extract's stderr contains the resolved 40-char sha, equal to git rev-parse"
+else
+  _fail "D#2498: extract's stderr does not contain the resolved sha $RESOLVED_SHA_D2498_2: $(cat "$TEST_SCRATCH/d2498-2.err")"
+fi
+rm -rf "$DIR_D2498_2" "$FX_D2498_2"
+
+# ── D#2498 Case: the moving-ref sequence, end to end (item 3, binding) ───────
+# extract at commit A; the ref advances to commit B, moving the exact path
+# the caller is about to write, out from under them. Two sub-cases share this
+# fixture:
+#   3a. the historical failure mode — omitting --base-ref in this exact
+#       scenario. Pre-fix this silently defaults base_ref=target_ref (B),
+#       the divergence check never runs, and the caller's edit lands on top
+#       of B's change as if nothing happened: exit 0, a commit is built, and
+#       it carries neither A's nor B's content faithfully at that path —
+#       exactly the "hash values matching neither old nor current content"
+#       damage PR #103 shipped. Post-fix it's the required-flag usage error.
+#   3b. the literal moving-ref call — the caller does the right thing and
+#       passes the correct --base-ref (A, captured from extract's own
+#       stderr) against the now-moved target (B). This must be caught.
+echo ""
+echo "=== D#2498 Case: moving-ref sequence end to end (item 3) ==="
+FX_D2498_3="$(_fixture_repo)"
+BLOB_D2498_3A="$(printf 'shared content at commit A\n' | git -C "$FX_D2498_3" hash-object -w --stdin)"
+TREE_D2498_3A="$(printf '100644 blob %s\tshared.txt\n' "$BLOB_D2498_3A" | git -C "$FX_D2498_3" mktree)"
+COMMIT_D2498_3A="$(git -C "$FX_D2498_3" commit-tree "$TREE_D2498_3A" -m "d2498 item3 commit A")"
+
+RAW_STDOUT_D2498_3="$TEST_SCRATCH/d2498-3-extract.out"
+(cd "$FX_D2498_3" && code_plane_pr extract --ref "$COMMIT_D2498_3A" >"$RAW_STDOUT_D2498_3" 2>"$TEST_SCRATCH/d2498-3-extract.err")
+DIR_D2498_3A="$(cat "$RAW_STDOUT_D2498_3")"
+BASE_SHA_D2498_3="$(grep -oE '[0-9a-f]{40}' "$TEST_SCRATCH/d2498-3-extract.err" | tail -1)"
+
+# the ref advances to commit B while the caller is still editing — shared.txt
+# moves out from under them, independently of anything the caller does.
+BLOB_D2498_3B="$(printf 'shared content at commit B — moved on the code plane\n' | git -C "$FX_D2498_3" hash-object -w --stdin)"
+TREE_D2498_3B="$(printf '100644 blob %s\tshared.txt\n' "$BLOB_D2498_3B" | git -C "$FX_D2498_3" mktree)"
+COMMIT_D2498_3B="$(git -C "$FX_D2498_3" commit-tree "$TREE_D2498_3B" -p "$COMMIT_D2498_3A" -m "d2498 item3 commit B")"
+
+LOCAL_EDIT_D2498_3="$TEST_SCRATCH/d2498-3-local-edit.txt"
+printf "the caller's own edit, drafted against commit A, unaware of B\n" > "$LOCAL_EDIT_D2498_3"
+
+# 3a
+OUT_D2498_3A="$(cd "$FX_D2498_3" && code_plane_pr build --target-ref "$COMMIT_D2498_3B" \
+  --branch test-branch --message "moving ref, omitted base-ref" \
+  "shared.txt=$LOCAL_EDIT_D2498_3" 2>"$TEST_SCRATCH/d2498-3a.err")"
+RC_D2498_3A=$?
+if [[ "$RC_D2498_3A" -eq 2 ]]; then
+  _pass "D#2498: build refuses (exit 2) a moving-ref call that omits --base-ref"
+else
+  _fail "D#2498: expected exit 2 omitting --base-ref in the moving-ref case, got $RC_D2498_3A (stdout='$OUT_D2498_3A')"
+fi
+
+# 3b — the literal item-3 call
+if [[ "$BASE_SHA_D2498_3" =~ ^[0-9a-f]{40}$ ]]; then
+  _pass "D#2498: captured a 40-char base sha from extract's stderr to feed into build"
+else
+  _fail "D#2498: could not capture a base sha from extract's stderr: $(cat "$TEST_SCRATCH/d2498-3-extract.err")"
+fi
+OUT_D2498_3B="$(cd "$FX_D2498_3" && code_plane_pr build --target-ref "$COMMIT_D2498_3B" --base-ref "$BASE_SHA_D2498_3" \
+  --branch test-branch --message "moving ref, explicit base-ref" \
+  "shared.txt=$LOCAL_EDIT_D2498_3" 2>"$TEST_SCRATCH/d2498-3b.err")"
+RC_D2498_3B=$?
+if [[ "$RC_D2498_3B" -eq 3 ]]; then
+  _pass "D#2498: build refuses (exit 3) when the target moved past the caller's base-ref"
+else
+  _fail "D#2498: expected exit 3 on the moving-ref divergence, got $RC_D2498_3B (stdout='$OUT_D2498_3B')"
+fi
+if [[ -z "$OUT_D2498_3B" ]]; then
+  _pass "D#2498: build prints no commit sha on the moving-ref divergence"
+else
+  _fail "D#2498: expected empty stdout on moving-ref divergence, got '$OUT_D2498_3B'"
+fi
+if grep -q "shared.txt" "$TEST_SCRATCH/d2498-3b.err"; then
+  _pass "D#2498: build's stderr names the diverged path in the moving-ref case"
+else
+  _fail "D#2498: build's stderr does not name the diverged path: $(cat "$TEST_SCRATCH/d2498-3b.err")"
+fi
+rm -rf "$DIR_D2498_3A" "$FX_D2498_3"
+
+# ── D#2498 Case: regressions (item 9) ─────────────────────────────────────────
+# An invocation that passes --base-ref equal to --target-ref — the genuine
+# no-gap case — must stay able to say so explicitly and succeed.
+echo ""
+echo "=== D#2498 Case: --base-ref equal to --target-ref still succeeds (item 9) ==="
+FX_D2498_9="$(_fixture_repo)"
+BLOB_D2498_9="$(printf 'no-gap case content\n' | git -C "$FX_D2498_9" hash-object -w --stdin)"
+TREE_D2498_9="$(printf '100644 blob %s\tfile.txt\n' "$BLOB_D2498_9" | git -C "$FX_D2498_9" mktree)"
+COMMIT_D2498_9="$(git -C "$FX_D2498_9" commit-tree "$TREE_D2498_9" -m "d2498 item9 target")"
+LOCAL_D2498_9="$TEST_SCRATCH/d2498-9-edit.txt"
+printf 'edited with no gap\n' > "$LOCAL_D2498_9"
+
+OUT_D2498_9="$(cd "$FX_D2498_9" && code_plane_pr build --target-ref "$COMMIT_D2498_9" --base-ref "$COMMIT_D2498_9" \
+  --branch test-branch --message "no-gap case" "file.txt=$LOCAL_D2498_9" 2>"$TEST_SCRATCH/d2498-9.err")"
+RC_D2498_9=$?
+if [[ "$RC_D2498_9" -eq 0 && "$OUT_D2498_9" =~ ^[0-9a-f]{40}$ ]]; then
+  _pass "D#2498: --base-ref equal to --target-ref still succeeds"
+else
+  _fail "D#2498: --base-ref equal to --target-ref failed, got rc=$RC_D2498_9 (stdout='$OUT_D2498_9'): $(cat "$TEST_SCRATCH/d2498-9.err")"
+fi
+rm -rf "$FX_D2498_9"
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 rm -rf "$FX4" "$FX6" "$FX8"
