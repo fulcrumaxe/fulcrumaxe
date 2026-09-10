@@ -79,7 +79,7 @@ convenience.**
 
 | Surface | Plane | Resolve it with | Which is |
 |---|---|---|---|
-| Code, branches, PRs, PR reviews, PR comments, PR labels, CI runs | **code plane** | `_resolve_code_repo` (sh) / `backend._repo.CODE_REPO` (py) | `autonomous-agent-7/fulcrumaxe` today; `fulcrumaxe/fulcrumaxe` after the cutover |
+| Code, branches, PRs, PR reviews, PR comments, PR labels, CI runs | **code plane** | `_resolve_code_repo` (sh) / `backend._repo.CODE_REPO` (py) | `fulcrumaxe/fulcrumaxe` — public, since the cutover |
 | Discussions, Issues, the team log, external intake | **Discussion plane** | literal `autonomous-agent-7/fulcrumaxe` | private, permanently |
 
 **One enumerated exception, and only one:** the sync-back PR that
@@ -90,11 +90,30 @@ in that row moves; this is a named carve-out, not a loosening of "PRs go to
 the code plane."
 
 **Name the plane, never the slug.** The code plane's value is config, not a
-constant: it moves to `fulcrumaxe/fulcrumaxe` when `code_repo` is set in
-`.autonomous-team/config.json`, and it is the private repo until then. Anything
-that hardcodes `fulcrumaxe/fulcrumaxe` is wrong today; anything that hardcodes
-the private slug for a PR surface is wrong after the cutover. Resolving is right
-on both sides.
+constant: it is whatever `code_repo` says, and it was the private repo before
+the cutover set it. Anything that hardcodes either slug for a code surface is
+wrong on one side of that change; resolving is right on both.
+
+**The cutover lives in two files, and so does the revert.** `code_repo` has to
+be set — or cleared — in **both** `.autonomous-team/config.json` and
+`.autonomous-team/project.json`: `scripts/lib/repo-resolve.sh` (bash) and
+`ts-backend/src/config/repo.ts` (TypeScript) read the first; `backend/_repo.py`
+(Python, via `backend/_repo_planes.py`) reads the second — the state-dir copy
+(`<AUTONOMOUS_TEAM_STATE_DIR>/project.json`) first, then the repo-root
+`.autonomous-team/project.json`. Touching one file moves two thirds of the
+system and leaves the rest behind, silently: no error, no empty value, just
+PRs and Discussions resolving against different repos than the operator
+thinks. The state-dir copy is a third way to half-flip on its own: editing
+only the repo-root file while a stale state-dir copy survives leaves Python
+on the old plane too.
+
+**The revert is one key per file, not one line per file — do not reach for
+`sed`.** `sed -i '/"code_repo"/d' .autonomous-team/project.json` leaves invalid
+JSON: the key before it keeps a trailing comma that only existed because
+`code_repo` followed it, and nothing is left to follow it. `config.json`
+survives the identical command purely because of where its `code_repo` key
+sits relative to its neighbours — the two files behave differently under the
+same command. Edit the key out with something JSON-aware instead.
 
 **Resolve it in the same command that uses it, and make empty fail loudly.**
 `gh --repo ""` is not an error — it exits 0 after silently resolving from the
@@ -267,7 +286,18 @@ same review pass:
   motivator, not a gate.
 - Always state scope and host alongside a raw test count. "379/463" and
   "37 vs 90" were both correct numbers that misled readers because neither
-  said what suite or machine they came from.
+  said what suite or machine they came from. The same correction carries a
+  second half: compare **sets**, not counts. Neither a count nor a node-id
+  set can detect a shadowed redefinition — a node id is `file::name`, and
+  Python binds one module attribute per name, so pytest collects exactly one
+  item per name whether or not a duplicate `def` exists later in the file.
+  Adding a duplicate changes which code actually runs while leaving the id
+  set, and the count, completely unchanged. To prove which definition is
+  bound, check the binding itself — `__code__.co_firstlineno`, or the AST's
+  last top-level `def` for that name. PR #2416 is the worked example: three
+  test functions were re-added verbatim later in the same file, shadowing
+  the originals; the count and id set never moved, but the bound line
+  numbers did — `312/337/352` before, `213/238/253` after.
 
 ---
 

@@ -22,8 +22,11 @@ uses it**, in one statement, and make an unresolved plane fail loudly:
 Not two lines and not two tool calls: shell state does NOT survive between tool
 calls, and `gh --repo ""` exits 0 after silently using the checkout's remote, so
 an empty pin is the bare call it replaced. `${CODE_REPO:?...}` aborts before
-`gh` runs. The plane is `autonomous-agent-7/fulcrumaxe` today and becomes the
-public repo once `code_repo` is set in `.autonomous-team/config.json`.
+`gh` runs. The plane's value is config, not a constant — resolve it, never
+restate it. `code_repo` has to be set — or cleared — in **both**
+`.autonomous-team/config.json` (bash/TypeScript) and
+`.autonomous-team/project.json` (Python); setting only one silently splits
+the system.
 
 Before every GitHub API call:
 - Confirm the target matches the surface
