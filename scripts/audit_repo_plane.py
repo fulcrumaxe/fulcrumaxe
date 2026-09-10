@@ -959,7 +959,6 @@ def scan_typescript(path: Path, source: str, root: Path | None = None) -> list[F
     for bracket in sorted(brackets):
         elements = _ts_array_elements(source, bracket)
         literals = [v for kind, v in elements if kind == "lit"]
-        idents = [v for kind, v in elements if kind == "ident"]
         if not literals:
             continue
         # Do not double the program name when "gh" is the array's first element.

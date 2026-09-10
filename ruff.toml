@@ -1,0 +1,17 @@
+# ruff config for scripts/ci/ruff-ratchet.py (D#2411).
+#
+# There is no pyproject.toml in this repo and adding one just to hold a
+# `[tool.ruff]` table would pull in packaging semantics nobody asked for, so
+# this lives in its own ruff.toml instead.
+#
+# `select` pins the exact rule groups ruff selects by default today
+# (E4, E7, E9, F — verified with `ruff check --show-settings` on ruff
+# 0.15.22). Pinning them explicitly means a future ruff version bump that
+# changes its defaults cannot silently change what this file's baseline
+# means — the alternative is every ruff upgrade turning into an unreviewed
+# mass re-baseline. This does not change what ruff currently reports; it
+# freezes today's default so it stays today's default on purpose.
+target-version = "py312"
+
+[lint]
+select = ["E4", "E7", "E9", "F"]

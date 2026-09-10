@@ -1,0 +1,882 @@
+# RUFF-RATCHET-V1
+#
+# Known Python-lint findings, keyed by (path, rule, message) rather
+# than by line number so an unrelated edit elsewhere in a file does
+# not produce a spurious failure. `count` covers the (rare) case of
+# the same rule+message repeating in one file, most often E402.
+#
+# Enforced by scripts/ci/ruff-ratchet.py. A finding here that stops
+# reproducing must be removed in the same commit as the fix, or the
+# guard fails in the opposite direction (over-allowance) — see D#2411
+# item 4. A finding NOT here fails the build the first time it's
+# introduced.
+#
+# ruff-version: 0.15.22
+# scope: backend/ tests/ scripts/ (must match Makefile's `lint` target)
+# select: pinned in ruff.toml (today's ruff defaults, made explicit)
+#
+# Regenerate with: python3 scripts/ci/ruff-ratchet.py --write-baseline
+# then diff it by hand before committing — this writer does not
+# judge whether a change is a fix or a regression, only count.
+#
+# Format: <path>\t<rule>\t<count>\t<message>
+backend/a2a_broker.py	F401	1	`http.server` imported but unused
+backend/agent_memory.py	E741	3	Ambiguous variable name: `l`
+backend/agent_profiler.py	E741	4	Ambiguous variable name: `l`
+backend/agent_retry.py	F401	1	`dataclasses.field` imported but unused
+backend/agent_run.py	F401	1	`datetime.timezone` imported but unused
+backend/agent_run_tracker.py	F401	1	`warnings` imported but unused
+backend/analyst_bug_filer.py	E402	1	Module level import not at top of file
+backend/analyst_bug_filer.py	F541	1	f-string without any placeholders
+backend/analytics_engineer.py	F541	4	f-string without any placeholders
+backend/api.py	E402	3	Module level import not at top of file
+backend/api.py	F401	1	`backend.api_version.unversioned_info` imported but unused
+backend/api.py	F401	1	`backend.claude_spawn_tracker.SpawnBlocked` imported but unused; consider using `importlib.util.find_spec` to test for availability
+backend/api.py	F401	1	`backend.event_bus.Event` imported but unused
+backend/api.py	F401	1	`re` imported but unused
+backend/api.py	F541	2	f-string without any placeholders
+backend/asgi_app.py	F401	1	`backend.deps.auth.PUBLIC_ROUTES` imported but unused
+backend/benchmarks.py	F401	1	`datetime.datetime` imported but unused
+backend/benchmarks.py	F401	1	`datetime.timezone` imported but unused
+backend/benchmarks.py	F401	1	`math` imported but unused
+backend/benchmarks.py	F401	1	`urllib.parse.urlencode` imported but unused
+backend/blackboard.py	E741	1	Ambiguous variable name: `l`
+backend/browser_tour_filer.py	F401	1	`os` imported but unused
+backend/cli.py	F401	1	`importlib` imported but unused
+backend/consensus_panel.py	F401	1	`pathlib.Path` imported but unused
+backend/corpus_drift/claims/three_section_spec_used.py	F401	1	`backend._repo.REPO` imported but unused
+backend/corpus_drift/report.py	F401	1	`datetime.timezone` imported but unused
+backend/corpus_drift/report.py	F401	1	`os` imported but unused
+backend/corpus_drift/types.py	F401	1	`typing.Optional` imported but unused
+backend/cost_formatter.py	F401	1	`typing.Union` imported but unused
+backend/cost_per_outcome.py	F401	1	`typing.Any` imported but unused
+backend/dep_graph.py	F841	1	Local variable `POSTVISIT` is assigned to but never used
+backend/deps/rbac.py	F401	1	`fastapi.Depends` imported but unused
+backend/dial_cli.py	F401	1	`json` imported but unused
+backend/dial_registry.py	E741	1	Ambiguous variable name: `l`
+backend/discussion_cache.py	F401	1	`backend._repo.REPO` imported but unused
+backend/fleet/discovery.py	F401	1	`sys` imported but unused
+backend/fleet/port_claim.py	F401	1	`fcntl` imported but unused
+backend/fleet/port_claim.py	F541	1	f-string without any placeholders
+backend/graphql_api.py	F401	1	`time` imported but unused
+backend/health_monitor.py	E401	1	Multiple imports on one line
+backend/health_report.py	E402	2	Module level import not at top of file
+backend/health_report.py	F401	1	`os` imported but unused
+backend/hooks/wrong_premise_guard.py	F401	1	`os` imported but unused
+backend/human_verification.py	F401	1	`os` imported but unused
+backend/human_verification.py	F541	5	f-string without any placeholders
+backend/human_verification.py	F841	1	Local variable `cmd` is assigned to but never used
+backend/kpi_engine.py	E741	1	Ambiguous variable name: `l`
+backend/lessons.py	F401	1	`datetime.timedelta` imported but unused
+backend/loop_runs.py	E741	1	Ambiguous variable name: `l`
+backend/middleware/legacy_envelope.py	F401	1	`fastapi.responses.JSONResponse` imported but unused
+backend/middleware/legacy_envelope.py	F401	1	`starlette.responses.StreamingResponse` imported but unused
+backend/middleware/legacy_envelope.py	F401	1	`traceback` imported but unused
+backend/module_health.py	F541	1	f-string without any placeholders
+backend/notifier.py	F541	1	f-string without any placeholders
+backend/orchestrator/agent_sdk_runner.py	E402	4	Module level import not at top of file
+backend/orchestrator/agent_sdk_runner.py	F401	1	`backend.orchestrator.redact.redact` imported but unused
+backend/orchestrator/agent_sdk_runner.py	F401	1	`typing.Any` imported but unused
+backend/orchestrator/agent_sdk_runner.py	F841	1	Local variable `start_wall` is assigned to but never used
+backend/orchestrator/hook_runner.py	F401	1	`backend.orchestrator.sdk_runner.RunResult` imported but unused
+backend/orchestrator/hook_runner.py	F821	1	Undefined name `RunResult`
+backend/orchestrator/mcp_tools.py	E402	1	Module level import not at top of file
+backend/orchestrator/mcp_tools.py	F401	1	`backend.orchestrator.tool_proxy.UnknownToolError` imported but unused
+backend/orchestrator/parity_experiment.py	E402	5	Module level import not at top of file
+backend/orchestrator/parity_experiment.py	F841	1	Local variable `start_wall` is assigned to but never used
+backend/orchestrator/parity_harness.py	F401	1	`asyncio` imported but unused
+backend/orchestrator/parity_harness.py	F821	1	Undefined name `RunResult`
+backend/orchestrator/sdk_runner.py	E402	2	Module level import not at top of file
+backend/orchestrator/sdk_runner.py	F401	1	`asyncio` imported but unused
+backend/orchestrator/sdk_runner.py	F401	1	`sys` imported but unused
+backend/orchestrator/sdk_runner.py	F841	1	Local variable `start_wall` is assigned to but never used
+backend/plugin_loader.py	F401	1	`dataclasses.field` imported but unused
+backend/prompt_builder.py	F401	1	`typing.Optional` imported but unused
+backend/prompt_drift.py	E402	2	Module level import not at top of file
+backend/quality_scorer.py	E401	1	Multiple imports on one line
+backend/registry.py	E401	1	Multiple imports on one line
+backend/registry.py	F401	1	`backend._repo.REPO` imported but unused
+backend/replay.py	F401	1	`os` imported but unused
+backend/routers/api_innovate.py	F401	1	`os` imported but unused
+backend/routers/api_loop.py	F401	1	`backend.api._load_projects_raw` imported but unused
+backend/routers/api_projects.py	F401	1	`backend.api._project_sub_endpoint` imported but unused
+backend/routers/api_projects.py	F401	1	`typing.Optional` imported but unused
+backend/routers/obs_deps.py	F401	1	`fastapi.responses.Response` imported but unused
+backend/routers/rpc_sse.py	F401	1	`anyio.to_thread` imported but unused
+backend/routers/rpc_sse.py	F401	1	`backend.routers.streams._file_tail_gen` imported but unused
+backend/routers/rpc_sse.py	F401	1	`pathlib.Path` imported but unused
+backend/routers/sessions_get.py	F401	1	`urllib.parse.parse_qs` imported but unused
+backend/rpc/a2a_active.py	F401	1	`pathlib.Path` imported but unused
+backend/rpc/a2a_tail.py	F401	1	`pathlib.Path` imported but unused
+backend/rpc/sdk_status.py	F401	1	`pathlib.Path` imported but unused
+backend/run_analyst.py	E401	1	Multiple imports on one line
+backend/run_analyst.py	E741	2	Ambiguous variable name: `l`
+backend/run_analyst.py	F401	1	`os` imported but unused
+backend/run_analyst.py	F401	1	`transcript_reader.agent_id_from_path` imported but unused; consider using `importlib.util.find_spec` to test for availability
+backend/run_analyst.py	F401	1	`transcript_reader.iter_turns` imported but unused; consider using `importlib.util.find_spec` to test for availability
+backend/run_analyst.py	F401	1	`typing.Any` imported but unused
+backend/run_analyst.py	F821	28	Undefined name `TranscriptTurn`
+backend/run_analyst.py	F841	1	Local variable `event_type` is assigned to but never used
+backend/run_analyst.py	F841	1	Local variable `line_start` is assigned to but never used
+backend/scheduled_jobs_status.py	F401	1	`os` imported but unused
+backend/server.py	E401	1	Multiple imports on one line
+backend/server.py	E402	6	Module level import not at top of file
+backend/server.py	E741	1	Ambiguous variable name: `l`
+backend/server.py	F541	1	f-string without any placeholders
+backend/server.py	F811	1	Redefinition of unused `_re` from line 980: `_re` redefined here
+backend/spawn_guard.py	F401	1	`dataclasses.field` imported but unused
+backend/spec_external_docs.py	F401	1	`os` imported but unused
+backend/spec_external_docs.py	F841	1	Local variable `err` is assigned to but never used
+backend/stats/anomaly_detector.py	F401	1	`datetime.datetime` imported but unused
+backend/stats/anomaly_detector.py	F401	1	`datetime.timezone` imported but unused
+backend/stats/discussion_cache.py	F401	1	`os` imported but unused
+backend/stats/duckdb_writers.py	F401	1	`datetime.datetime` imported but unused
+backend/stats/duckdb_writers.py	F401	1	`datetime.timezone` imported but unused
+backend/stats/duckdb_writers.py	F401	1	`time` imported but unused
+backend/stats/scheduled_jobs.py	F401	1	`datetime.datetime` imported but unused
+backend/stats/scheduled_jobs.py	F401	1	`datetime.timezone` imported but unused
+backend/stats/scheduled_jobs.py	F401	1	`typing.Any` imported but unused
+backend/stats_writer.py	F401	1	`time` imported but unused
+backend/status_page.py	E402	1	Module level import not at top of file
+backend/status_page.py	F541	4	f-string without any placeholders
+backend/subscription_usage.py	F401	1	`os` imported but unused
+backend/subscription_usage.py	F401	1	`sys` imported but unused
+backend/team_status.py	F401	1	`datetime.timezone` imported but unused
+backend/team_status.py	F401	1	`loop_snapshot.SnapshotStale` imported but unused
+backend/team_status.py	F541	3	f-string without any placeholders
+backend/team_status.py	F841	1	Local variable `exc` is assigned to but never used
+backend/team_status.py	F841	1	Local variable `has_needs_fix` is assigned to but never used
+backend/test_api.py	F401	1	`backend.spawn_guard.AcquireResult` imported but unused
+backend/test_api.py	F401	1	`backend.spawn_guard.AcquireStatus` imported but unused
+backend/test_api.py	F401	1	`http.server.HTTPServer` imported but unused
+backend/test_api.py	F401	1	`time` imported but unused
+backend/test_api.py	F401	1	`unittest.mock.PropertyMock` imported but unused
+backend/test_api.py	F401	1	`urllib.error` imported but unused
+backend/test_api.py	F841	1	Local variable `ok_count` is assigned to but never used
+backend/test_claude_spawn_tracker.py	F401	1	`json` imported but unused
+backend/test_claude_spawn_tracker.py	F401	1	`time` imported but unused
+backend/test_claude_spawn_tracker.py	F841	1	Local variable `real_bb_path` is assigned to but never used
+backend/test_cost_tracker.py	F401	1	`backend.cost_tracker._DEFAULT_PRICING` imported but unused
+backend/test_cost_tracker.py	F401	1	`unittest.mock.patch` imported but unused
+backend/test_cost_tracker.py	F841	1	Local variable `expected_cost` is assigned to but never used
+backend/test_cross_session_memory.py	F401	1	`unittest.mock.MagicMock` imported but unused
+backend/test_cross_session_memory.py	F401	1	`unittest.mock.patch` imported but unused
+backend/test_gate_streak.py	F401	1	`os` imported but unused
+backend/test_gate_streak.py	F401	1	`pytest` imported but unused
+backend/test_loop_snapshot_status.py	E402	1	Module level import not at top of file
+backend/test_loop_snapshot_status.py	F401	1	`pytest` imported but unused
+backend/test_loop_snapshot_status.py	F401	1	`sys` imported but unused
+backend/test_module_health.py	F401	1	`importlib` imported but unused
+backend/test_module_health.py	F401	1	`unittest.mock.MagicMock` imported but unused
+backend/test_quality_scorer.py	F401	1	`backend.quality_scorer._count_diff_lines` imported but unused
+backend/test_quality_scorer.py	F401	1	`json` imported but unused
+backend/test_quality_scorer.py	F401	1	`tempfile` imported but unused
+backend/test_quality_scorer.py	F401	1	`unittest.mock.MagicMock` imported but unused
+backend/test_rbac.py	F401	1	`tempfile` imported but unused
+backend/test_replay.py	F401	1	`backend.replay.ReplayEngine` imported but unused
+backend/test_replay.py	F401	1	`backend.replay.get_active_replay` imported but unused
+backend/test_replay.py	F401	1	`backend.replay` imported but unused
+backend/test_replay.py	F811	1	Redefinition of unused `replay_mod` from line 18: `replay_mod` redefined here
+backend/test_role_efficiency.py	F401	1	`backend.cost_tracker` imported but unused
+backend/test_role_efficiency.py	F841	1	Local variable `data` is assigned to but never used
+backend/test_session_manager.py	F401	1	`json` imported but unused
+backend/test_session_manager.py	F401	1	`tempfile` imported but unused
+backend/test_spawn_guard.py	F401	1	`http.server.BaseHTTPRequestHandler` imported but unused
+backend/test_spawn_guard.py	F401	1	`time` imported but unused
+backend/test_status_page.py	E402	1	Module level import not at top of file
+backend/test_status_page.py	F401	1	`pytest` imported but unused
+backend/test_websocket.py	F401	1	`base64` imported but unused
+backend/test_websocket.py	F401	1	`hashlib` imported but unused
+backend/test_websocket.py	F401	1	`io.BytesIO` imported but unused
+backend/test_websocket.py	F401	1	`threading` imported but unused
+backend/test_websocket.py	F401	1	`time` imported but unused
+backend/test_websocket.py	F841	1	Local variable `original_put` is assigned to but never used
+backend/tests/test_a2a_broker.py	F401	1	`http.client` imported but unused
+backend/tests/test_agent_retry.py	E402	2	Module level import not at top of file
+backend/tests/test_agent_retry.py	F401	1	`time` imported but unused
+backend/tests/test_agent_retry.py	F401	1	`unittest.mock.MagicMock` imported but unused
+backend/tests/test_agent_run.py	E402	2	Module level import not at top of file
+backend/tests/test_agent_run.py	F401	1	`pytest` imported but unused
+backend/tests/test_agent_run_tracker.py	E402	2	Module level import not at top of file
+backend/tests/test_agent_sdk_runner.py	F401	1	`asyncio` imported but unused
+backend/tests/test_agent_sdk_runner.py	F401	1	`os` imported but unused
+backend/tests/test_agent_sdk_runner.py	F401	1	`typing.AsyncIterator` imported but unused
+backend/tests/test_agent_sdk_runner.py	F401	1	`unittest.mock.AsyncMock` imported but unused
+backend/tests/test_agent_sdk_runner.py	F401	1	`unittest.mock.MagicMock` imported but unused
+backend/tests/test_agent_sdk_runner.py	F841	1	Local variable `result` is assigned to but never used
+backend/tests/test_agent_sdk_runner_smoke.py	F541	2	f-string without any placeholders
+backend/tests/test_analyst_findings_rpc.py	F401	1	`pytest` imported but unused
+backend/tests/test_analytics_engineer.py	E401	1	Multiple imports on one line
+backend/tests/test_analytics_engineer.py	F401	1	`os` imported but unused
+backend/tests/test_anomaly_detector.py	F401	1	`math` imported but unused
+backend/tests/test_anomaly_detector.py	F841	1	Local variable `count2` is assigned to but never used
+backend/tests/test_api_budget.py	F401	1	`importlib` imported but unused
+backend/tests/test_api_budget.py	F401	1	`sys` imported but unused
+backend/tests/test_api_budget.py	F401	1	`types.ModuleType` imported but unused
+backend/tests/test_api_budget.py	F401	1	`unittest.mock.call` imported but unused
+backend/tests/test_asgi_app.py	F401	1	`os` imported but unused
+backend/tests/test_audit_trail.py	E741	2	Ambiguous variable name: `l`
+backend/tests/test_audit_trail.py	F401	1	`pytest` imported but unused
+backend/tests/test_audit_trail.py	F401	1	`tempfile` imported but unused
+backend/tests/test_audit_trail.py	F401	1	`time` imported but unused
+backend/tests/test_auth_retry_counter.py	F401	1	`backend.rpc.auth_retry_counter.handle_record` imported but unused
+backend/tests/test_auth_retry_counter.py	F401	1	`unittest.mock.MagicMock` imported but unused
+backend/tests/test_auto_route.py	F401	1	`pytest` imported but unused
+backend/tests/test_benchmarks.py	F401	1	`backend.benchmarks.BenchmarkSample` imported but unused
+backend/tests/test_benchmarks.py	F401	1	`backend.benchmarks.BenchmarkStats` imported but unused
+backend/tests/test_benchmarks.py	F811	1	Redefinition of unused `BenchmarkSample` from line 17: `BenchmarkSample` redefined here
+backend/tests/test_blackboard.py	E402	2	Module level import not at top of file
+backend/tests/test_blackboard.py	F401	1	`backend.blackboard.LockTimeout` imported but unused
+backend/tests/test_browser_tour_findings.py	F401	1	`json` imported but unused
+backend/tests/test_browser_tour_findings.py	F401	1	`unittest.mock.MagicMock` imported but unused
+backend/tests/test_browser_tour_findings.py	F841	1	Local variable `result` is assigned to but never used
+backend/tests/test_changelog.py	F401	1	`pytest` imported but unused
+backend/tests/test_circuit_breaker.py	E402	2	Module level import not at top of file
+backend/tests/test_circuit_breaker.py	F401	2	`backend.health_report` imported but unused
+backend/tests/test_config_watcher.py	F401	1	`pytest` imported but unused
+backend/tests/test_consensus_panel.py	E402	1	Module level import not at top of file
+backend/tests/test_context_manager.py	E402	2	Module level import not at top of file
+backend/tests/test_context_manager.py	F401	1	`backend.context_manager.LockTimeout` imported but unused
+backend/tests/test_context_manager_skeleton.py	F401	1	`pytest` imported but unused
+backend/tests/test_control_plane_extended.py	F401	1	`os` imported but unused
+backend/tests/test_cost_formatter.py	F401	1	`pytest` imported but unused
+backend/tests/test_cost_per_outcome.py	F401	1	`pytest` imported but unused
+backend/tests/test_cost_pricing.py	E402	1	Module level import not at top of file
+backend/tests/test_cost_verification.py	F841	1	Local variable `actual` is assigned to but never used
+backend/tests/test_credential_detector.py	F401	1	`pytest` imported but unused
+backend/tests/test_credential_detector.py	F401	1	`unittest.mock.patch` imported but unused
+backend/tests/test_dep_graph.py	E402	1	Module level import not at top of file
+backend/tests/test_dep_graph.py	F401	1	`pytest` imported but unused
+backend/tests/test_deps_auth.py	F401	1	`backend.deps.auth.PUBLIC_ROUTES` imported but unused
+backend/tests/test_deps_auth.py	F401	1	`hmac` imported but unused
+backend/tests/test_deps_auth.py	F401	1	`pytest` imported but unused
+backend/tests/test_deps_auth.py	F821	1	Undefined name `Request`
+backend/tests/test_deps_auth.py	F841	1	Local variable `env_patch` is assigned to but never used
+backend/tests/test_dial_control_rpc.py	E741	7	Ambiguous variable name: `l`
+backend/tests/test_dial_registry.py	E741	7	Ambiguous variable name: `l`
+backend/tests/test_dial_registry.py	F401	1	`time` imported but unused
+backend/tests/test_dial_registry.py	F541	1	f-string without any placeholders
+backend/tests/test_discussions_rpc.py	F401	1	`importlib` imported but unused
+backend/tests/test_discussions_rpc.py	F401	1	`json` imported but unused
+backend/tests/test_discussions_rpc.py	F401	1	`types.ModuleType` imported but unused
+backend/tests/test_discussions_rpc.py	F401	1	`typing.Any` imported but unused
+backend/tests/test_discussions_rpc.py	F401	1	`unittest.mock.MagicMock` imported but unused
+backend/tests/test_dispatch_backend_select.py	F401	1	`pytest` imported but unused
+backend/tests/test_dispatch_backend_select.py	F401	1	`unittest.mock.AsyncMock` imported but unused
+backend/tests/test_dispatch_offload.py	F401	1	`unittest.mock.AsyncMock` imported but unused
+backend/tests/test_duckdb_writers.py	E402	1	Module level import not at top of file
+backend/tests/test_duckdb_writers.py	F401	1	`pytest` imported but unused
+backend/tests/test_duckdb_writers.py	F401	1	`unittest.mock.mock_open` imported but unused
+backend/tests/test_event_bus.py	E741	3	Ambiguous variable name: `l`
+backend/tests/test_event_bus.py	F401	1	`dataclasses.dataclass` imported but unused
+backend/tests/test_event_bus.py	F401	1	`dataclasses.field` imported but unused
+backend/tests/test_event_bus.py	F401	1	`pytest` imported but unused
+backend/tests/test_event_bus.py	F401	1	`time` imported but unused
+backend/tests/test_flaky_sentinel.py	E741	1	Ambiguous variable name: `l`
+backend/tests/test_flaky_sentinel.py	F401	1	`os` imported but unused
+backend/tests/test_flaky_sentinel.py	F401	1	`pathlib.Path` imported but unused
+backend/tests/test_flaky_sentinel.py	F401	1	`tempfile` imported but unused
+backend/tests/test_flaky_sentinel.py	F401	1	`time` imported but unused
+backend/tests/test_fleet_concurrency.py	F401	1	`importlib` imported but unused
+backend/tests/test_fleet_concurrency.py	F401	1	`sqlite3` imported but unused
+backend/tests/test_generate_initial_plan.py	E401	1	Multiple imports on one line
+backend/tests/test_generate_initial_plan.py	E741	1	Ambiguous variable name: `l`
+backend/tests/test_generate_initial_plan.py	F401	1	`sys` imported but unused
+backend/tests/test_github_app_auth.py	F401	1	`time` imported but unused
+backend/tests/test_graphql.py	F401	1	`unittest.mock.MagicMock` imported but unused
+backend/tests/test_graphql.py	F401	1	`unittest.mock.patch` imported but unused
+backend/tests/test_health_monitor.py	E402	2	Module level import not at top of file
+backend/tests/test_health_monitor.py	F401	1	`backend.health_monitor._STALE_WARNING_MINUTES` imported but unused
+backend/tests/test_health_orphan_worktrees.py	F401	1	`pytest` imported but unused
+backend/tests/test_health_orphan_worktrees.py	F401	2	`subprocess` imported but unused
+backend/tests/test_health_orphan_worktrees.py	F841	8	Local variable `orphan` is assigned to but never used
+backend/tests/test_health_report.py	E402	2	Module level import not at top of file
+backend/tests/test_health_report.py	E731	8	Do not assign a `lambda` expression, use a `def`
+backend/tests/test_health_report.py	F401	1	`backend.health_report._CHECKS` imported but unused
+backend/tests/test_health_report.py	F401	1	`backend.health_report._classify_orphan` imported but unused
+backend/tests/test_health_report.py	F401	1	`backend.health_report._is_disposable_path` imported but unused
+backend/tests/test_hook_runner.py	F401	1	`unittest.mock.call` imported but unused
+backend/tests/test_human_verification.py	F401	1	`pytest` imported but unused
+backend/tests/test_human_verification.py	F401	1	`time` imported but unused
+backend/tests/test_human_verification.py	F841	1	Local variable `init_run_id` is assigned to but never used
+backend/tests/test_ideas_api.py	F401	1	`pathlib.Path` imported but unused
+backend/tests/test_ideas_api.py	F401	1	`pytest` imported but unused
+backend/tests/test_import_epic_tasks.py	E402	1	Module level import not at top of file
+backend/tests/test_import_epic_tasks.py	F401	1	`unittest.mock.MagicMock` imported but unused
+backend/tests/test_import_epic_tasks.py	F841	1	Local variable `mock_label` is assigned to but never used
+backend/tests/test_innovate_persist.py	F401	1	`pathlib.Path` imported but unused
+backend/tests/test_jsonl_rotator.py	F401	1	`backend.jsonl_rotator._count_lines` imported but unused
+backend/tests/test_jsonl_rotator.py	F401	1	`backend.jsonl_rotator._file_age_days` imported but unused
+backend/tests/test_jsonl_rotator.py	F401	1	`backend.jsonl_rotator._file_size_mb` imported but unused
+backend/tests/test_kpi_days_window.py	F401	1	`unittest.mock.MagicMock` imported but unused
+backend/tests/test_legacy_envelope.py	F401	1	`os` imported but unused
+backend/tests/test_legacy_route_coverage.py	F401	1	`typing.Any` imported but unused
+backend/tests/test_legacy_route_coverage.py	F541	1	f-string without any placeholders
+backend/tests/test_lessons.py	F401	1	`backend.lessons.LessonEntry` imported but unused
+backend/tests/test_loop_controller_budget.py	E402	2	Module level import not at top of file
+backend/tests/test_loop_controller_budget.py	F401	1	`unittest.mock.MagicMock` imported but unused
+backend/tests/test_loop_health_mtime.py	F401	1	`pytest` imported but unused
+backend/tests/test_loop_log_references.py	F401	1	`pytest` imported but unused
+backend/tests/test_loop_metrics_counters.py	F401	1	`types` imported but unused
+backend/tests/test_loop_runs.py	E741	5	Ambiguous variable name: `l`
+backend/tests/test_loop_runs.py	F401	1	`os` imported but unused
+backend/tests/test_loop_runs.py	F401	1	`sys` imported but unused
+backend/tests/test_loop_runs.py	F401	1	`time` imported but unused
+backend/tests/test_loop_runs.py	F401	1	`typing.Generator` imported but unused
+backend/tests/test_loop_runs.py	F401	1	`unittest.mock.patch` imported but unused
+backend/tests/test_loop_runs.py	F841	1	Local variable `start_rc` is assigned to but never used
+backend/tests/test_loop_start_gate.py	F401	1	`backend.server` imported but unused
+backend/tests/test_loop_timeline_rpc.py	F401	2	`backend.server` imported but unused
+backend/tests/test_loop_timeline_rpc.py	F401	1	`os` imported but unused
+backend/tests/test_mcp_tools.py	F401	1	`asyncio` imported but unused
+backend/tests/test_mcp_tools.py	F401	1	`re` imported but unused
+backend/tests/test_mcp_tools.py	F401	1	`unittest.mock.AsyncMock` imported but unused
+backend/tests/test_mcp_tools.py	F401	1	`unittest.mock.MagicMock` imported but unused
+backend/tests/test_migrate_orphan_worktree_rate_unit.py	F841	1	Local variable `base_ts` is assigned to but never used
+backend/tests/test_next_work.py	F401	1	`pytest` imported but unused
+backend/tests/test_notifier.py	E741	2	Ambiguous variable name: `l`
+backend/tests/test_notifier.py	F401	1	`backend.event_bus.AgentOutputEvent` imported but unused
+backend/tests/test_notifier.py	F401	1	`backend.event_bus.EventBus` imported but unused
+backend/tests/test_notifier.py	F401	1	`backend.event_bus.GateChangeEvent` imported but unused
+backend/tests/test_notifier.py	F401	1	`threading` imported but unused
+backend/tests/test_notifier.py	F401	1	`time` imported but unused
+backend/tests/test_notifier.py	F401	1	`typing.Any` imported but unused
+backend/tests/test_notifier.py	F401	1	`unittest.mock.call` imported but unused
+backend/tests/test_parity_experiment.py	F401	1	`unittest.mock.call` imported but unused
+backend/tests/test_parity_experiment.py	F821	1	Undefined name `SpawnSpec`
+backend/tests/test_parity_history_and_trend.py	F401	1	`backend.orchestrator.sdk_runner.SpawnSpec` imported but unused
+backend/tests/test_parity_history_and_trend.py	F401	1	`pytest` imported but unused
+backend/tests/test_parity_history_and_trend.py	F821	1	Undefined name `SpawnSpec`
+backend/tests/test_perf_gate.py	F401	1	`asyncio` imported but unused
+backend/tests/test_perf_gate.py	F401	1	`statistics.median` imported but unused
+backend/tests/test_permission_policy.py	F401	1	`pytest` imported but unused
+backend/tests/test_phase_a3_classifiers.py	E402	3	Module level import not at top of file
+backend/tests/test_phase_a3_classifiers.py	F401	1	`pytest` imported but unused
+backend/tests/test_phase_a3_classifiers.py	F401	1	`run_analyst.Finding` imported but unused
+backend/tests/test_phase_a3_signal_present.py	F401	1	`glob` imported but unused
+backend/tests/test_phase_a4_classifiers.py	E402	3	Module level import not at top of file
+backend/tests/test_phase_a4_classifiers.py	F401	1	`pytest` imported but unused
+backend/tests/test_phase_a4_classifiers.py	F401	1	`run_analyst.Finding` imported but unused
+backend/tests/test_phase_a5_classifiers.py	E402	3	Module level import not at top of file
+backend/tests/test_phase_a5_classifiers.py	F401	1	`pytest` imported but unused
+backend/tests/test_phase_a5_classifiers.py	F401	1	`run_analyst.Finding` imported but unused
+backend/tests/test_pr_list_rpc.py	F401	1	`os` imported but unused
+backend/tests/test_pr_list_rpc.py	F401	1	`subprocess` imported but unused
+backend/tests/test_pr_state.py	E402	2	Module level import not at top of file
+backend/tests/test_pr_state.py	F401	1	`backend.blackboard.Blackboard` imported but unused
+backend/tests/test_pr_state.py	F401	1	`backend.pr_state.main` imported but unused
+backend/tests/test_pr_state.py	F541	1	f-string without any placeholders
+backend/tests/test_project_config.py	F401	1	`backend.project_config.ProjectConfig` imported but unused
+backend/tests/test_prompt_builder.py	E741	1	Ambiguous variable name: `l`
+backend/tests/test_prompt_builder.py	F401	1	`io` imported but unused
+backend/tests/test_prompt_drift.py	E402	7	Module level import not at top of file
+backend/tests/test_prompt_drift.py	E741	2	Ambiguous variable name: `l`
+backend/tests/test_prompt_drift.py	F401	1	`backend.prompt_drift` imported but unused
+backend/tests/test_prompt_drift.py	F401	1	`backend.spawn_templates` imported but unused
+backend/tests/test_prompt_drift.py	F401	1	`io` imported but unused
+backend/tests/test_prompt_drift.py	F401	1	`sys` imported but unused
+backend/tests/test_quality_scorer.py	F401	1	`pytest` imported but unused
+backend/tests/test_quality_scorer.py	F541	1	f-string without any placeholders
+backend/tests/test_red_main_check.py	F401	1	`unittest.mock.MagicMock` imported but unused
+backend/tests/test_redaction.py	F401	1	`importlib` imported but unused
+backend/tests/test_redaction.py	F401	1	`pytest` imported but unused
+backend/tests/test_registry.py	F401	1	`backend.registry._now_iso` imported but unused
+backend/tests/test_registry.py	F401	1	`datetime.datetime` imported but unused
+backend/tests/test_registry.py	F401	1	`datetime.timezone` imported but unused
+backend/tests/test_registry.py	F401	1	`unittest.mock.MagicMock` imported but unused
+backend/tests/test_registry_hardening.py	F401	1	`pytest` imported but unused
+backend/tests/test_registry_hardening.py	F401	1	`unittest.mock.MagicMock` imported but unused
+backend/tests/test_registry_hardening.py	F841	1	Local variable `result` is assigned to but never used
+backend/tests/test_replay.py	E741	3	Ambiguous variable name: `l`
+backend/tests/test_replay.py	F401	1	`backend.replay.get_recorder` imported but unused
+backend/tests/test_replay.py	F401	1	`threading` imported but unused
+backend/tests/test_replay.py	F401	1	`time` imported but unused
+backend/tests/test_replay.py	F841	1	Local variable `base_ts` is assigned to but never used
+backend/tests/test_repo_helper.py	F401	1	`backend._repo._load_repo` imported but unused
+backend/tests/test_repo_helper.py	F401	2	`backend._repo` imported but unused
+backend/tests/test_repo_helper.py	F401	1	`importlib` imported but unused
+backend/tests/test_repo_helper.py	F401	1	`pytest` imported but unused
+backend/tests/test_repo_helper.py	F841	1	Local variable `fake_module_path` is assigned to but never used
+backend/tests/test_repo_helper.py	F841	1	Local variable `original_func` is assigned to but never used
+backend/tests/test_routers_api_p3.py	F401	1	`backend.deps.rbac.make_require_rbac` imported but unused
+backend/tests/test_routers_api_p3.py	F401	1	`backend.tests._envelope.API_VERSION` imported but unused
+backend/tests/test_routers_api_p3.py	F401	1	`backend.tests._envelope.envelope_error` imported but unused
+backend/tests/test_routers_api_p3.py	F401	1	`os` imported but unused
+backend/tests/test_routers_api_p3.py	F401	1	`typing.Any` imported but unused
+backend/tests/test_routers_api_p3.py	F401	1	`unittest.mock.MagicMock` imported but unused
+backend/tests/test_routers_api_post_p5b.py	F401	1	`backend.tests._envelope.API_VERSION` imported but unused
+backend/tests/test_routers_api_post_p5b.py	F401	1	`backend.tests._envelope.envelope_error` imported but unused
+backend/tests/test_routers_api_post_p5b.py	F401	1	`os` imported but unused
+backend/tests/test_routers_api_post_p5b.py	F401	1	`typing.Any` imported but unused
+backend/tests/test_routers_graphql.py	F401	1	`backend.tests._envelope.API_VERSION` imported but unused
+backend/tests/test_routers_graphql.py	F401	1	`os` imported but unused
+backend/tests/test_routers_graphql.py	F401	1	`typing.Any` imported but unused
+backend/tests/test_routers_health.py	F541	2	f-string without any placeholders
+backend/tests/test_routers_info_p5e.py	F401	1	`backend.tests._envelope.envelope_error` imported but unused
+backend/tests/test_routers_info_p5e.py	F401	1	`os` imported but unused
+backend/tests/test_routers_info_p5e.py	F401	1	`typing.Any` imported but unused
+backend/tests/test_routers_misc_get.py	F401	1	`pytest` imported but unused
+backend/tests/test_routers_obs_p5d.py	F401	1	`typing.Any` imported but unused
+backend/tests/test_routers_ops_p5c.py	F401	1	`typing.Any` imported but unused
+backend/tests/test_routers_ops_p5c.py	F841	1	Local variable `mock_del` is assigned to but never used
+backend/tests/test_routers_replays_get.py	F401	1	`pytest` imported but unused
+backend/tests/test_routers_replays_get.py	F841	1	Local variable `mock_status` is assigned to but never used
+backend/tests/test_routers_rpc.py	F401	1	`json` imported but unused
+backend/tests/test_routers_rpc.py	F401	1	`typing.Any` imported but unused
+backend/tests/test_routers_rpc.py	F401	1	`unittest.mock.MagicMock` imported but unused
+backend/tests/test_routers_sessions_get.py	F401	1	`pytest` imported but unused
+backend/tests/test_routers_sessions_get.py	F401	1	`typing.Any` imported but unused
+backend/tests/test_routers_spawn_queue_get.py	F401	1	`os` imported but unused
+backend/tests/test_routers_streams.py	F401	1	`asyncio` imported but unused
+backend/tests/test_routers_streams.py	F401	1	`pathlib.Path` imported but unused
+backend/tests/test_routers_streams.py	F401	1	`pathlib` imported but unused
+backend/tests/test_routers_streams.py	F401	1	`tempfile` imported but unused
+backend/tests/test_routers_streams.py	F401	1	`unittest.mock.patch` imported but unused
+backend/tests/test_routers_ws.py	F401	1	`backend.event_bus.AgentOutputEvent` imported but unused
+backend/tests/test_routers_ws.py	F401	1	`backend.event_bus.BudgetSpendEvent` imported but unused
+backend/tests/test_routers_ws.py	F401	1	`backend.event_bus.get_bus` imported but unused
+backend/tests/test_routers_ws.py	F401	1	`json` imported but unused
+backend/tests/test_routers_ws.py	F401	1	`unittest.mock.MagicMock` imported but unused
+backend/tests/test_rpc_sse_aliases.py	F401	2	`backend.routers.rpc_sse` imported but unused
+backend/tests/test_rpc_sse_aliases.py	F401	1	`socket` imported but unused
+backend/tests/test_rpc_sse_aliases.py	F401	1	`threading` imported but unused
+backend/tests/test_rpc_sse_aliases.py	F401	1	`time` imported but unused
+backend/tests/test_rpc_sse_aliases.py	F401	1	`typing.Optional` imported but unused
+backend/tests/test_rpc_sse_aliases.py	F401	1	`unittest.mock.patch` imported but unused
+backend/tests/test_rpc_sse_aliases.py	F541	4	f-string without any placeholders
+backend/tests/test_run_analyst.py	F401	1	`os` imported but unused
+backend/tests/test_run_analyst.py	F401	1	`run_analyst._tag` imported but unused
+backend/tests/test_run_analyst.py	F541	1	f-string without any placeholders
+backend/tests/test_run_analyst_transcripts.py	E402	3	Module level import not at top of file
+backend/tests/test_run_analyst_transcripts.py	F401	1	`json` imported but unused
+backend/tests/test_run_analyst_transcripts.py	F401	1	`run_analyst._scan_transcripts` imported but unused
+backend/tests/test_sandbox_server.py	E741	1	Ambiguous variable name: `l`
+backend/tests/test_sandbox_server.py	F401	1	`sandbox_server._Response` imported but unused
+backend/tests/test_scheduled_jobs_status.py	E402	1	Module level import not at top of file
+backend/tests/test_scheduled_jobs_status.py	F401	1	`datetime.timedelta` imported but unused
+backend/tests/test_scheduled_jobs_status.py	F401	1	`pytest` imported but unused
+backend/tests/test_schema_validator.py	F401	1	`backend.schema_validator.CONFIG_SCHEMA` imported but unused
+backend/tests/test_sdk.py	F401	1	`backend.sdk.AuditStats` imported but unused
+backend/tests/test_sdk.py	F811	1	Redefinition of unused `ActiveAgent` from line 20: `ActiveAgent` redefined here
+backend/tests/test_sdk.py	F811	1	Redefinition of unused `Notification` from line 33: `Notification` redefined here
+backend/tests/test_sdk.py	F811	1	Redefinition of unused `ReplayMeta` from line 36: `ReplayMeta` redefined here
+backend/tests/test_sdk.py	F811	1	Redefinition of unused `ReplaySummary` from line 37: `ReplaySummary` redefined here
+backend/tests/test_sdk.py	F811	1	Redefinition of unused `SpawnRequest` from line 39: `SpawnRequest` redefined here
+backend/tests/test_sdk_lane_rpc.py	F401	1	`os` imported but unused
+backend/tests/test_sdk_lane_rpc.py	F401	1	`pathlib.Path` imported but unused
+backend/tests/test_sdk_lane_rpc.py	F401	1	`pytest` imported but unused
+backend/tests/test_sdk_lane_sandbox_boundary.py	F401	1	`json` imported but unused
+backend/tests/test_sdk_lane_sandbox_boundary.py	F401	1	`os` imported but unused
+backend/tests/test_sdk_status.py	F401	1	`io.StringIO` imported but unused
+backend/tests/test_sdk_status_login_credential.py	F401	1	`pytest` imported but unused
+backend/tests/test_server.py	F841	1	Local variable `captured` is assigned to but never used
+backend/tests/test_session_manager.py	F401	1	`unittest.mock.MagicMock` imported but unused
+backend/tests/test_spawn_guard.py	F401	1	`backend.spawn_guard.AcquireResult` imported but unused
+backend/tests/test_spawn_guard.py	F401	1	`json` imported but unused
+backend/tests/test_spawn_guard.py	F401	1	`os` imported but unused
+backend/tests/test_spawn_guard.py	F401	1	`tempfile` imported but unused
+backend/tests/test_spawn_guard.py	F401	1	`time` imported but unused
+backend/tests/test_spawn_origin_gate.py	F401	1	`io.BytesIO` imported but unused
+backend/tests/test_spawn_origin_gate.py	F401	1	`pytest` imported but unused
+backend/tests/test_spawn_queue.py	F401	1	`backend.spawn_queue.get_spawn_queue` imported but unused
+backend/tests/test_spawn_queue.py	F401	1	`os` imported but unused
+backend/tests/test_spawn_queue.py	F401	1	`tempfile` imported but unused
+backend/tests/test_spawn_queue.py	F401	1	`time` imported but unused
+backend/tests/test_spawn_queue.py	F841	1	Local variable `active` is assigned to but never used
+backend/tests/test_spawn_queue.py	F841	2	Local variable `id1` is assigned to but never used
+backend/tests/test_spawn_queue.py	F841	2	Local variable `id2` is assigned to but never used
+backend/tests/test_spawn_queue.py	F841	1	Local variable `req_id` is assigned to but never used
+backend/tests/test_spawn_queue.py	F841	1	Local variable `rid` is assigned to but never used
+backend/tests/test_spawn_templates.py	F401	1	`importlib` imported but unused
+backend/tests/test_spawn_templates.py	F401	1	`types` imported but unused
+backend/tests/test_spawn_templates.py	F401	1	`unittest.mock.patch` imported but unused
+backend/tests/test_spec_external_docs.py	F401	1	`backend.spec_external_docs._validate_external_docs_content` imported but unused
+backend/tests/test_spec_external_docs.py	F401	1	`unittest.mock.patch` imported but unused
+backend/tests/test_state_dir_resolvers.py	E741	2	Ambiguous variable name: `l`
+backend/tests/test_stats.py	F811	1	Redefinition of unused `importlib` from line 42: `importlib` redefined here
+backend/tests/test_stats_connection.py	F401	1	`duckdb` imported but unused; consider using `importlib.util.find_spec` to test for availability
+backend/tests/test_stats_connection.py	F541	2	f-string without any placeholders
+backend/tests/test_stats_cosmetic_and_order.py	F401	1	`pytest` imported but unused
+backend/tests/test_stats_cosmetic_and_order.py	F841	1	Local variable `in_order` is assigned to but never used
+backend/tests/test_stats_writer.py	E402	1	Module level import not at top of file
+backend/tests/test_stats_writer.py	F401	1	`tempfile` imported but unused
+backend/tests/test_status_page.py	F401	1	`pytest` imported but unused
+backend/tests/test_stream_cap.py	F401	1	`pytest` imported but unused
+backend/tests/test_stuck_runs_filter.py	E402	2	Module level import not at top of file
+backend/tests/test_stuck_runs_filter.py	F401	1	`os` imported but unused
+backend/tests/test_stuck_runs_filter.py	F401	1	`pytest` imported but unused
+backend/tests/test_stuck_runs_filter.py	F401	1	`tempfile` imported but unused
+backend/tests/test_subscription_usage_5h_reset.py	F401	1	`pytest` imported but unused
+backend/tests/test_subscription_usage_5h_reset.py	F401	1	`tempfile` imported but unused
+backend/tests/test_subscription_usage_limits.py	F401	1	`unittest.mock.patch` imported but unused
+backend/tests/test_telemetry_repair.py	F401	1	`backend.agent_run_tracker._db_path` imported but unused
+backend/tests/test_telemetry_repair.py	F401	1	`json` imported but unused
+backend/tests/test_threadpool_sizing.py	F401	1	`pytest` imported but unused
+backend/tests/test_tool_proxy_sandbox.py	E402	4	Module level import not at top of file
+backend/tests/test_tool_proxy_sandbox.py	F841	2	Local variable `result` is assigned to but never used
+backend/tests/test_trace_export.py	F401	1	`backend.tracing.get_collector` imported but unused
+backend/tests/test_trace_export.py	F401	1	`json` imported but unused
+backend/tests/test_tracing.py	F401	1	`pytest` imported but unused
+backend/tests/test_transcript_reader.py	E402	3	Module level import not at top of file
+backend/tests/test_transcript_reader.py	F401	1	`backend.transcript_reader.TranscriptTurn` imported but unused
+backend/tests/test_transcript_reader.py	F401	1	`pytest` imported but unused
+backend/tests/test_ux_designer_template.py	F401	1	`pytest` imported but unused
+backend/tests/test_verdict_overturn.py	F401	2	`subprocess` imported but unused
+backend/tests/test_verdict_overturn.py	F841	1	Local variable `current_verdict` is assigned to but never used
+backend/tests/test_websocket.py	F401	1	`backend.websocket._OP_PONG` imported but unused
+backend/tests/test_websocket.py	F401	1	`pytest` imported but unused
+backend/tests/test_websocket.py	F401	1	`queue` imported but unused
+backend/tests/test_websocket.py	F401	1	`unittest.mock.call` imported but unused
+backend/tests/test_workflow_patterns.py	F401	1	`backend.workflow_runner.MissingInputError` imported but unused
+backend/tests/test_workflow_patterns.py	F401	1	`backend.workflow_runner.ValidationError` imported but unused
+backend/tests/test_workflow_patterns.py	F401	1	`backend.workflow_runner.WorkflowNotFoundError` imported but unused
+backend/tests/test_wrong_premise_guard.py	F401	1	`importlib` imported but unused
+backend/tests/test_wrong_premise_guard.py	F401	1	`json` imported but unused
+backend/tests/test_wrong_premise_guard.py	F401	1	`os` imported but unused
+backend/trace_export.py	F401	1	`os` imported but unused
+backend/transcript_reader.py	E402	1	Module level import not at top of file
+backend/transcript_tailer.py	F401	1	`sys` imported but unused
+backend/trigger.py	E401	1	Multiple imports on one line
+backend/trigger.py	E741	1	Ambiguous variable name: `l`
+backend/tui_tester_kpi_registry.py	F841	1	Local variable `source_text` is assigned to but never used
+backend/worktree_state_watcher.py	F541	1	f-string without any placeholders
+scripts/audit-dashboard-tiles.py	F401	1	`os` imported but unused
+scripts/audit-dashboard-tiles.py	F541	3	f-string without any placeholders
+scripts/audit-dashboard-tiles.py	F841	1	Local variable `all_pass` is assigned to but never used
+scripts/audit-dashboard-tiles.py	F841	1	Local variable `exc` is assigned to but never used
+scripts/backfill-accuracy.py	F841	1	Local variable `since` is assigned to but never used
+scripts/backfill-budget-spent.py	F401	1	`json` imported but unused
+scripts/backfill-cost-tracker.py	F401	1	`backend.cost_tracker._DEFAULT_PRICING` imported but unused
+scripts/backfill-cost-tracker.py	F401	1	`json` imported but unused
+scripts/backfill-cost-tracker.py	F541	1	f-string without any placeholders
+scripts/ci/coldstart-state-dir-guard.py	F401	1	`sys` imported but unused
+scripts/ci/project-liveness-guard.py	F401	1	`shutil` imported but unused
+scripts/ci/project-liveness-guard.py	F401	1	`time` imported but unused
+scripts/ci/rpc-scope-cache-guard.py	F401	1	`subprocess` imported but unused
+scripts/codebase-index.py	E401	1	Multiple imports on one line
+scripts/codebase-index.py	E701	9	Multiple statements on one line (colon)
+scripts/codebase-index.py	E702	1	Multiple statements on one line (semicolon)
+scripts/coldstart-interview/generate.py	F401	1	`os` imported but unused
+scripts/coldstart-interview/tests/test_generate.py	F401	1	`os` imported but unused
+scripts/coldstart-interview/tests/test_generate.py	F401	1	`tempfile` imported but unused
+scripts/coldstart-interview/tests/test_seed_backlog.py	F401	1	`tempfile` imported but unused
+scripts/corpus-drift-audit.py	E402	4	Module level import not at top of file
+scripts/corpus-drift-audit.py	F841	1	Local variable `rendered` is assigned to but never used
+scripts/engine-sync/tests/test_apply.py	E741	1	Ambiguous variable name: `l`
+scripts/engine-sync/tests/test_inbound_changeset.py	F841	1	Local variable `seed` is assigned to but never used
+scripts/engine-sync/tests/test_resolver.py	E741	2	Ambiguous variable name: `l`
+scripts/import-epic-tasks.py	F541	1	f-string without any placeholders
+scripts/lib/cross-file-detector.py	F401	1	`pathlib.Path` imported but unused
+scripts/lib/external_intake_gate.py	E741	2	Ambiguous variable name: `l`
+scripts/lib/route_discussion_wiring.py	F401	1	`datetime.datetime` imported but unused
+scripts/lib/route_discussion_wiring.py	F401	1	`datetime.timezone` imported but unused
+scripts/load-test.py	F401	1	`statistics` imported but unused
+scripts/loop-subsystem-snapshot.py	E741	4	Ambiguous variable name: `l`
+scripts/schedule/parse_jobs.py	F401	1	`typing.Any` imported but unused
+scripts/spec-context-oracle.py	F541	1	f-string without any placeholders
+tests/backend/test_api_project_scoping.py	F401	1	`backend.api` imported but unused
+tests/backend/test_api_project_scoping.py	F401	1	`backend.state_paths.for_project` imported but unused
+tests/backend/test_coldstart_duckdb_init.py	F401	1	`shutil` imported but unused
+tests/backend/test_coldstart_duckdb_init.py	F401	1	`sys` imported but unused
+tests/backend/test_coldstart_duckdb_init.py	F401	1	`tempfile` imported but unused
+tests/backend/test_coldstart_duckdb_init.py	F811	1	Redefinition of unused `sys` from line 11: `sys` redefined here
+tests/backend/test_coldstart_port_allocation.py	F401	1	`threading` imported but unused
+tests/backend/test_coldstart_port_allocation.py	F401	1	`time` imported but unused
+tests/backend/test_coldstart_port_allocation.py	F401	1	`unittest.mock.MagicMock` imported but unused
+tests/backend/test_cors_dynamic.py	F401	1	`pytest` imported but unused
+tests/backend/test_cors_dynamic.py	F401	1	`time` imported but unused
+tests/backend/test_fleet_concurrency.py	F401	1	`sqlite3` imported but unused
+tests/backend/test_fleet_concurrency_sqlite.py	F401	1	`os` imported but unused
+tests/backend/test_fleet_concurrency_sqlite.py	F401	1	`pathlib.Path` imported but unused
+tests/backend/test_fleet_concurrency_sqlite.py	F401	1	`sys` imported but unused
+tests/backend/test_fleet_cost.py	F401	1	`pytest` imported but unused
+tests/backend/test_fleet_discovery.py	F841	1	Local variable `first` is assigned to but never used
+tests/backend/test_fleet_projects.py	F401	1	`pytest` imported but unused
+tests/backend/test_fleet_projects.py	F401	1	`socket` imported but unused
+tests/backend/test_loop_metrics_producer.py	F401	1	`pytest` imported but unused
+tests/backend/test_loop_runs.py	E741	4	Ambiguous variable name: `l`
+tests/backend/test_loop_runs.py	F401	1	`pytest` imported but unused
+tests/backend/test_loop_runs.py	F841	1	Local variable `ts` is assigned to but never used
+tests/backend/test_pre_spawn_fleet_cap.py	F401	1	`textwrap` imported but unused
+tests/backend/test_project_scoping.py	F401	1	`importlib` imported but unused
+tests/backend/test_project_scoping.py	F401	1	`tempfile` imported but unused
+tests/backend/test_spawn_queue_reap.py	F401	1	`pytest` imported but unused
+tests/backend/test_spawn_queue_reap.py	F401	1	`subprocess` imported but unused
+tests/backend/test_spawn_queue_reap.py	F401	1	`tempfile` imported but unused
+tests/backend/test_spawn_queue_reap.py	F841	1	Local variable `ids` is assigned to but never used
+tests/backend/test_spawn_queue_reap.py	F841	2	Local variable `mock_run` is assigned to but never used
+tests/conftest.py	F401	1	`backend.agent_cards.AgentCards` imported but unused
+tests/conftest.py	F401	1	`backend.budget.BudgetTracker` imported but unused
+tests/conftest.py	F401	1	`backend.workflow_runner.WorkflowRunner` imported but unused
+tests/corpus_drift/conftest.py	F401	1	`os` imported but unused
+tests/corpus_drift/conftest.py	F401	1	`tempfile` imported but unused
+tests/corpus_drift/test_archive_protocol.py	F401	1	`pathlib.Path` imported but unused
+tests/corpus_drift/test_archive_protocol.py	F401	1	`pytest` imported but unused
+tests/corpus_drift/test_corpus_drift_audit.py	F401	1	`re` imported but unused
+tests/corpus_drift/test_corpus_drift_audit.py	F401	1	`unittest.mock.MagicMock` imported but unused
+tests/corpus_drift/test_corpus_drift_audit.py	F401	1	`unittest.mock.patch` imported but unused
+tests/corpus_drift/test_dial_directive_emission.py	F401	1	`pytest` imported but unused
+tests/corpus_drift/test_scrubber_bypass_absent.py	F401	1	`pathlib.Path` imported but unused
+tests/corpus_drift/test_self_observe_claim.py	F401	1	`backend.corpus_drift.claims.self_observe` imported but unused
+tests/integration/test_full_stack.py	F401	1	`signal` imported but unused
+tests/integration/test_tui_screenshot_infra.py	E741	2	Ambiguous variable name: `l`
+tests/integration/test_tui_screenshot_infra.py	F401	1	`tempfile` imported but unused
+tests/orchestrator/test_credit_tracker.py	F401	1	`pathlib.Path` imported but unused
+tests/orchestrator/test_credit_tracker.py	F401	1	`time` imported but unused
+tests/orchestrator/test_dispatch.py	F401	1	`json` imported but unused
+tests/orchestrator/test_dispatch.py	F401	1	`os` imported but unused
+tests/orchestrator/test_dispatch.py	F401	1	`pathlib.Path` imported but unused
+tests/orchestrator/test_dispatch.py	F401	1	`unittest.mock.call` imported but unused
+tests/orchestrator/test_dispatch_auto_route.py	F401	1	`backend.orchestrator.dispatch._should_use_sdk` imported but unused
+tests/orchestrator/test_dispatch_auto_route.py	F401	1	`unittest.mock.AsyncMock` imported but unused
+tests/orchestrator/test_dispatch_gate.py	F401	1	`backend.orchestrator.sdk_runner.SpawnSpec` imported but unused
+tests/orchestrator/test_dispatch_gate.py	F401	1	`pytest` imported but unused
+tests/orchestrator/test_dispatch_offload.py	F401	1	`pytest` imported but unused
+tests/orchestrator/test_dispatch_offload.py	F401	1	`unittest.mock.AsyncMock` imported but unused
+tests/orchestrator/test_login_credential_routing.py	F401	1	`pytest` imported but unused
+tests/orchestrator/test_parity_harness.py	F401	1	`backend.orchestrator.parity_harness.ParityReport` imported but unused
+tests/orchestrator/test_parity_harness.py	F401	1	`backend.orchestrator.sdk_runner.SpawnSpec` imported but unused
+tests/orchestrator/test_parity_harness.py	F401	1	`pathlib.Path` imported but unused
+tests/orchestrator/test_redact.py	F401	1	`backend.orchestrator.redact.OrchestratorMatch` imported but unused
+tests/orchestrator/test_redact.py	F401	1	`pytest` imported but unused
+tests/orchestrator/test_sdk_runner.py	F401	1	`asyncio` imported but unused
+tests/orchestrator/test_sdk_runner.py	F401	1	`backend.orchestrator.tool_proxy.UnknownToolError` imported but unused
+tests/orchestrator/test_sdk_runner.py	F401	1	`json` imported but unused
+tests/orchestrator/test_sdk_runner.py	F401	1	`pathlib.Path` imported but unused
+tests/orchestrator/test_sdk_runner.py	F401	1	`unittest.mock.PropertyMock` imported but unused
+tests/orchestrator/test_tool_proxy.py	F401	1	`os` imported but unused
+tests/orchestrator/test_tool_proxy.py	F401	1	`pathlib.Path` imported but unused
+tests/test_a2a_broker.py	F401	1	`time` imported but unused
+tests/test_agent_cards.py	F401	1	`backend.workflow_runner.WorkflowNotFoundError` imported but unused
+tests/test_agent_feed.py	F401	1	`os` imported but unused
+tests/test_agent_feed.py	F401	1	`pathlib.Path` imported but unused
+tests/test_agent_feed.py	F401	1	`tempfile` imported but unused
+tests/test_agent_feed.py	F401	1	`unittest.mock` imported but unused
+tests/test_agent_log.py	F401	1	`pytest` imported but unused
+tests/test_agent_memory.py	E741	2	Ambiguous variable name: `l`
+tests/test_agent_run_telemetry_e2e.py	E402	1	Module level import not at top of file
+tests/test_agent_run_telemetry_e2e.py	F541	1	f-string without any placeholders
+tests/test_agent_run_tracker.py	F401	1	`datetime.timedelta` imported but unused
+tests/test_agent_run_tracker.py	F401	1	`duckdb` imported but unused
+tests/test_analyst_bug_filer.py	F401	1	`analyst_bug_filer._search_existing_discussions` imported but unused
+tests/test_analyst_bug_filer.py	F401	1	`analyst_bug_filer` imported but unused
+tests/test_analyst_bug_filer.py	F401	1	`pytest` imported but unused
+tests/test_analyst_bug_filer.py	F401	1	`unittest.mock.MagicMock` imported but unused
+tests/test_analyst_bug_filer.py	F541	2	f-string without any placeholders
+tests/test_analyst_bug_filer.py	F841	1	Local variable `marker2` is assigned to but never used
+tests/test_analyst_bug_filer.py	F841	1	Local variable `marker` is assigned to but never used
+tests/test_analyst_bug_filer.py	F841	2	Local variable `results` is assigned to but never used
+tests/test_api_enrich_project.py	F401	1	`pytest` imported but unused
+tests/test_audit_dashboard_tiles.py	E402	2	Module level import not at top of file
+tests/test_audit_dashboard_tiles.py	F401	1	`os` imported but unused
+tests/test_audit_dashboard_tiles.py	F401	1	`tempfile` imported but unused
+tests/test_audit_dashboard_tiles.py	F401	1	`types` imported but unused
+tests/test_audit_dashboard_tiles.py	F401	1	`unittest.mock.patch` imported but unused
+tests/test_audit_dashboard_tiles.py	F841	1	Local variable `src` is assigned to but never used
+tests/test_audit_replay.py	F401	1	`pytest` imported but unused
+tests/test_audit_repo_plane.py	F401	1	`re` imported but unused
+tests/test_backend_repo_py.py	F401	1	`os` imported but unused
+tests/test_backend_verification_gate.py	F841	1	Local variable `content` is assigned to but never used
+tests/test_backfill_accuracy.py	F401	1	`json` imported but unused
+tests/test_backfill_accuracy.py	F401	1	`pytest` imported but unused
+tests/test_backfill_accuracy.py	F401	1	`sys` imported but unused
+tests/test_backfill_accuracy.py	F401	1	`types` imported but unused
+tests/test_backfill_accuracy.py	F401	1	`unittest.mock.MagicMock` imported but unused
+tests/test_backfill_accuracy.py	F541	1	f-string without any placeholders
+tests/test_background_rules.py	E402	1	Module level import not at top of file
+tests/test_bash_retry_warn.py	E402	3	Module level import not at top of file
+tests/test_bash_retry_warn.py	F401	1	`hooks.bash_retry_warn._agent_id_from_cwd` imported but unused
+tests/test_bash_retry_warn.py	F401	1	`os` imported but unused
+tests/test_bash_retry_warn.py	F401	1	`pytest` imported but unused
+tests/test_bash_retry_warn.py	F841	1	Local variable `t` is assigned to but never used
+tests/test_blackboard.py	F401	1	`backend.blackboard.Blackboard` imported but unused
+tests/test_budget.py	F401	1	`pytest` imported but unused
+tests/test_changelog.py	F401	1	`pytest` imported but unused
+tests/test_classifier_counts.py	F401	1	`pytest` imported but unused
+tests/test_classify_cwd.py	E402	2	Module level import not at top of file
+tests/test_classify_cwd.py	F401	1	`pytest` imported but unused
+tests/test_classify_sleep_retry_loop.py	F401	1	`pytest` imported but unused
+tests/test_classify_sleep_retry_loop.py	F401	1	`typing.Iterator` imported but unused
+tests/test_classify_stale_rebase_warning.py	F401	1	`pytest` imported but unused
+tests/test_classify_wrote_outside_worktree.py	F401	1	`pytest` imported but unused
+tests/test_completion_block.py	E402	2	Module level import not at top of file
+tests/test_completion_block.py	F401	1	`os` imported but unused
+tests/test_completion_block.py	F401	1	`subprocess` imported but unused
+tests/test_completion_block.py	F401	1	`tempfile` imported but unused
+tests/test_completion_block.py	F401	1	`textwrap` imported but unused
+tests/test_context_manager.py	F401	1	`pytest` imported but unused
+tests/test_control_plane.py	F541	1	f-string without any placeholders
+tests/test_control_plane_gates.py	F401	1	`pytest` imported but unused
+tests/test_control_plane_modes.py	F401	1	`backend.control_plane._MODE_PRESETS` imported but unused
+tests/test_cosmetic_retry_breaker.py	E402	3	Module level import not at top of file
+tests/test_cosmetic_retry_breaker.py	F841	1	Local variable `agent_id` is assigned to but never used
+tests/test_cost_spike_detection.py	F401	1	`json` imported but unused
+tests/test_cost_spike_detection.py	F401	1	`os` imported but unused
+tests/test_cost_spike_detection.py	F401	1	`tempfile` imported but unused
+tests/test_cost_spike_detection.py	F401	1	`unittest.mock.MagicMock` imported but unused
+tests/test_cost_tracker.py	F401	1	`pytest` imported but unused
+tests/test_cross_file_detector.py	F401	1	`os` imported but unused
+tests/test_cross_file_detector.py	F401	1	`sys` imported but unused
+tests/test_cross_file_detector.py	F401	1	`tempfile` imported but unused
+tests/test_cross_file_detector.py	F401	1	`unittest.mock.MagicMock` imported but unused
+tests/test_cross_file_detector.py	F541	1	f-string without any placeholders
+tests/test_data_layer_duckdb_readers.py	F401	1	`os` imported but unused
+tests/test_db.py	F401	1	`json` imported but unused
+tests/test_db.py	F401	1	`time` imported but unused
+tests/test_dial_cli_no_stale_view.py	E741	1	Ambiguous variable name: `l`
+tests/test_dial_cli_reflects_registry.py	F401	1	`io.StringIO` imported but unused
+tests/test_dial_registry_migration.py	F841	1	Local variable `audit_rows_after_first` is assigned to but never used
+tests/test_dial_sandbox_integration.py	E402	2	Module level import not at top of file
+tests/test_dial_sandbox_integration.py	F401	1	`hooks.sandbox_rules.Decision` imported but unused
+tests/test_discussion_cache.py	F401	1	`sqlite3` imported but unused
+tests/test_docs_writer.py	F401	1	`pytest` imported but unused
+tests/test_event_bus.py	F401	1	`pytest` imported but unused
+tests/test_event_bus.py	F401	1	`time` imported but unused
+tests/test_fix_rounds_metric.py	F401	1	`tempfile` imported but unused
+tests/test_frontmatter.py	F401	1	`pytest` imported but unused
+tests/test_hooks_repo_root.py	E402	1	Module level import not at top of file
+tests/test_import_epic_tasks.py	F401	1	`sys` imported but unused
+tests/test_import_epic_tasks.py	F401	1	`unittest.mock.call` imported but unused
+tests/test_import_epic_tasks.py	F541	1	f-string without any placeholders
+tests/test_live_analyst_daemon.py	E741	2	Ambiguous variable name: `l`
+tests/test_live_analyst_daemon.py	F401	1	`pytest` imported but unused
+tests/test_live_analyst_daemon.py	F401	1	`stat` imported but unused
+tests/test_live_analyst_daemon.py	F401	1	`tempfile` imported but unused
+tests/test_live_analyst_daemon_cwd.py	F401	1	`pytest` imported but unused
+tests/test_log.py	E741	2	Ambiguous variable name: `l`
+tests/test_log.py	F811	1	Redefinition of unused `sys` from line 7: `sys` redefined here
+tests/test_loop_health_watchdog.py	F401	1	`json` imported but unused
+tests/test_loop_health_watchdog.py	F401	1	`pytest` imported but unused
+tests/test_loop_snapshot.py	F401	1	`time` imported but unused
+tests/test_no_dead_role_refs.py	E402	1	Module level import not at top of file
+tests/test_no_dead_team_lead_address.py	E402	1	Module level import not at top of file
+tests/test_no_duplicate_test_basenames.py	F401	1	`os` imported but unused
+tests/test_no_hardcoded_repo_refs.py	F401	1	`sys` imported but unused
+tests/test_no_sleep_policy_in_templates.py	F401	1	`sys` imported but unused
+tests/test_orphan_worktree_rate.py	F401	1	`datetime.timedelta` imported but unused
+tests/test_orphan_worktree_rate.py	F401	1	`datetime.timezone` imported but unused
+tests/test_orphan_worktree_rate.py	F401	1	`duckdb` imported but unused; consider using `importlib.util.find_spec` to test for availability
+tests/test_orphan_worktree_rate.py	F401	1	`tempfile` imported but unused
+tests/test_orphan_worktree_rate.py	F401	1	`time` imported but unused
+tests/test_pm_spec_frontmatter.py	F401	1	`pytest` imported but unused
+tests/test_post_merge_hook.py	E741	2	Ambiguous variable name: `l`
+tests/test_post_merge_hook.py	F401	1	`pytest` imported but unused
+tests/test_post_merge_hook_quality_score.py	F401	1	`backend.quality_scorer.QualityScorer` imported but unused
+tests/test_post_merge_hook_quality_score.py	F401	1	`json` imported but unused
+tests/test_post_merge_hook_quality_score.py	F401	1	`os` imported but unused
+tests/test_post_merge_hook_quality_score.py	F401	1	`pytest` imported but unused
+tests/test_post_merge_hook_quality_score.py	F401	1	`subprocess` imported but unused
+tests/test_post_merge_hook_quality_score.py	F401	1	`unittest.mock.MagicMock` imported but unused
+tests/test_pr_artifacts.py	E741	2	Ambiguous variable name: `l`
+tests/test_pr_artifacts.py	F401	1	`tempfile` imported but unused
+tests/test_pr_artifacts.py	F541	2	f-string without any placeholders
+tests/test_pr_state.py	F401	1	`backend.pr_state.TERMINAL_PHASES` imported but unused
+tests/test_pr_state.py	F401	1	`backend.pr_state.VALID_PHASES` imported but unused
+tests/test_pr_state.py	F401	1	`backend.pr_state._STALE_THRESHOLD_SECONDS` imported but unused
+tests/test_pr_state.py	F401	1	`backend.pr_state.set_fields` imported but unused
+tests/test_pr_state.py	F401	1	`unittest.mock.patch` imported but unused
+tests/test_process_watchdog_patterns.py	E402	1	Module level import not at top of file
+tests/test_quality_scorer.py	F401	1	`pytest` imported but unused
+tests/test_quality_scorer.py	F401	1	`unittest.mock.MagicMock` imported but unused
+tests/test_quality_scorer_gate.py	F401	1	`json` imported but unused
+tests/test_release_backfill.py	F841	1	Local variable `after` is assigned to but never used
+tests/test_release_backfill.py	F841	1	Local variable `result` is assigned to but never used
+tests/test_release_manager.py	F401	1	`pytest` imported but unused
+tests/test_repo_divergence.py	F401	1	`tempfile` imported but unused
+tests/test_repo_resolve.py	F401	1	`pytest` imported but unused
+tests/test_repo_resolve.py	F841	1	Local variable `original_load_repo` is assigned to but never used
+tests/test_retry_aware_spawn.py	F401	1	`importlib` imported but unused
+tests/test_retry_aware_spawn.py	F401	1	`unittest.mock.MagicMock` imported but unused
+tests/test_role_surface_parity.py	E402	1	Module level import not at top of file
+tests/test_route_discussion.py	E401	4	Multiple imports on one line
+tests/test_route_discussion.py	E402	2	Module level import not at top of file
+tests/test_route_discussion.py	F401	5	`importlib` imported but unused
+tests/test_route_discussion.py	F401	1	`inspect` imported but unused
+tests/test_route_discussion.py	F401	1	`statistics` imported but unused
+tests/test_route_discussion.py	F401	1	`unittest.mock.MagicMock` imported but unused
+tests/test_route_discussion.py	F841	1	Local variable `tree` is assigned to but never used
+tests/test_run_analyst_live.py	F401	1	`pytest` imported but unused
+tests/test_sandbox_agent_block.py	E402	2	Module level import not at top of file
+tests/test_sandbox_agent_block.py	F401	1	`hooks.sandbox_rules.classify_cwd` imported but unused
+tests/test_sandbox_agent_block.py	F401	1	`pytest` imported but unused
+tests/test_sandbox_rules.py	E402	3	Module level import not at top of file
+tests/test_sandbox_rules.py	F401	1	`hooks.sandbox_rules._extract_all_gh_query_values` imported but unused
+tests/test_sandbox_rules.py	F401	1	`hooks.sandbox_rules._strip_graphql_comments` imported but unused
+tests/test_sandbox_rules.py	F401	1	`hooks.sandbox_rules._worktree_root_from_cwd` imported but unused
+tests/test_sandbox_rules.py	F541	6	f-string without any placeholders
+tests/test_sandbox_rules.py	F811	1	Redefinition of unused `_worktree_root_from_cwd` from line 47: `_worktree_root_from_cwd` redefined here
+tests/test_sandbox_rules.py	F841	1	Local variable `d` is assigned to but never used
+tests/test_scan_to_spawn_ratio.py	F401	1	`importlib` imported but unused
+tests/test_scan_to_spawn_ratio.py	F401	1	`tempfile` imported but unused
+tests/test_spawn_fragment_loader.py	F401	1	`json` imported but unused
+tests/test_spawn_fragment_loader.py	F401	1	`re` imported but unused
+tests/test_spawn_fragment_loader.py	F841	1	Local variable `frag_content` is assigned to but never used
+tests/test_spawn_templates_repo_var.py	E402	1	Module level import not at top of file
+tests/test_spec_context_oracle.py	F401	1	`unittest.mock.call` imported but unused
+tests/test_spec_external_docs_first_party.py	F401	1	`pytest` imported but unused
+tests/test_spec_file_list.py	E402	1	Module level import not at top of file
+tests/test_spec_file_list.py	F401	1	`backend.spec_file_list._parse_code_blocks` imported but unused
+tests/test_spec_file_list.py	F401	1	`backend.spec_file_list._parse_frontmatter` imported but unused
+tests/test_spec_frontmatter_placement.py	E402	2	Module level import not at top of file
+tests/test_sqlite_blackboard.py	F841	1	Local variable `entry` is assigned to but never used
+tests/test_stats_connection_short_lived.py	F401	1	`os` imported but unused
+tests/test_stats_debater.py	F401	1	`backend.stats.debater.maybe_disable_gate` imported but unused
+tests/test_stats_debater.py	F401	1	`tempfile` imported but unused
+tests/test_stats_freshness_watchdog.py	E402	2	Module level import not at top of file
+tests/test_stats_freshness_watchdog.py	F401	1	`pytest` imported but unused
+tests/test_stats_freshness_watchdog.py	F401	1	`unittest.mock.MagicMock` imported but unused
+tests/test_stats_reader_tag_whitelist.py	F401	1	`os` imported but unused
+tests/test_stats_rpc_modules.py	F401	1	`types` imported but unused
+tests/test_stats_screen_workers.py	F401	1	`inspect` imported but unused
+tests/test_stats_screen_workers.py	F401	1	`unittest.mock.call` imported but unused
+tests/test_stats_screen_workers.py	F401	1	`unittest.mock.patch` imported but unused
+tests/test_status_page.py	F401	1	`pytest` imported but unused
+tests/test_subscription_usage.py	F401	1	`pytest` imported but unused
+tests/test_subscription_usage.py	F401	1	`tempfile` imported but unused
+tests/test_subscription_usage_weekly.py	F401	1	`pytest` imported but unused
+tests/test_subscription_usage_weekly.py	F401	1	`tempfile` imported but unused
+tests/test_substrate_reaper_and_inflight.py	F401	1	`time` imported but unused
+tests/test_sweep_premature_closes.py	F401	1	`pytest` imported but unused
+tests/test_team_lead_iter_metric.py	F401	1	`os` imported but unused
+tests/test_team_lead_iter_metric.py	F401	1	`tempfile` imported but unused
+tests/test_team_status.py	F401	1	`pytest` imported but unused
+tests/test_team_status.py	F841	1	Local variable `missing` is assigned to but never used
+tests/test_transcript_tailer.py	E402	2	Module level import not at top of file
+tests/test_transcript_tailer.py	E741	1	Ambiguous variable name: `l`
+tests/test_transcript_tailer.py	F401	1	`importlib` imported but unused
+tests/test_transcript_tailer.py	F401	1	`pytest` imported but unused
+tests/test_transcript_tailer.py	F401	1	`tempfile` imported but unused
+tests/test_transcript_tailer.py	F401	1	`unittest.mock.patch` imported but unused
+tests/test_transcript_tailer.py	F841	1	Local variable `elapsed` is assigned to but never used
+tests/test_tui_tester_anti_patterns.py	F401	1	`pytest` imported but unused
+tests/test_tui_tester_anti_patterns.py	F401	1	`unittest.mock.MagicMock` imported but unused
+tests/test_tui_tester_consistency.py	F401	1	`backend.tui_tester_consistency.INVARIANTS` imported but unused
+tests/test_tui_tester_consistency.py	F401	1	`backend.tui_tester_consistency.Invariant` imported but unused
+tests/test_tui_tester_consistency.py	F401	1	`backend.tui_tester_consistency.Violation` imported but unused
+tests/test_tui_tester_consistency.py	F401	1	`backend.tui_tester_consistency._budget_roughly_agrees` imported but unused
+tests/test_tui_tester_consistency.py	F401	1	`backend.tui_tester_consistency._counts_agree` imported but unused
+tests/test_tui_tester_consistency.py	F401	1	`backend.tui_tester_consistency._staleness_agrees` imported but unused
+tests/test_tui_tester_consistency.py	F401	1	`backend.tui_tester_consistency._timestamps_agree` imported but unused
+tests/test_tui_tester_consistency.py	F401	1	`os` imported but unused
+tests/test_tui_tester_consistency.py	F401	1	`pytest` imported but unused
+tests/test_tui_tester_helpers.py	E741	3	Ambiguous variable name: `l`
+tests/test_tui_tester_helpers.py	F401	1	`pathlib.Path` imported but unused
+tests/test_tui_tester_helpers.py	F401	1	`textual.widgets.DataTable` imported but unused; consider using `importlib.util.find_spec` to test for availability
+tests/test_tui_tester_helpers.py	F401	1	`unittest.mock.patch` imported but unused
+tests/test_tui_tester_helpers.py	F841	1	Local variable `original_verify` is assigned to but never used
+tests/test_tui_tester_kpi_registry.py	F401	1	`inspect` imported but unused
+tests/test_tui_tester_kpi_registry.py	F401	1	`typing.Iterator` imported but unused
+tests/test_tui_tester_v2_checks.py	F401	1	`backend.tui_tester_helpers._snapshot_labels` imported but unused
+tests/test_tui_tester_v2_checks.py	F401	5	`textual.widgets.DataTable` imported but unused; consider using `importlib.util.find_spec` to test for availability
+tests/test_weekly_velocity.py	F401	1	`pytest` imported but unused
+tests/test_weekly_velocity.py	F401	1	`unittest.mock.MagicMock` imported but unused
+tests/test_weekly_velocity.py	F401	1	`unittest.mock.call` imported but unused
+tests/test_weekly_velocity.py	F841	1	Local variable `now` is assigned to but never used
+tests/test_workflow_runner.py	F401	1	`backend.workflow_runner.ValidationError` imported but unused
+tests/test_worktree_state_watcher.py	F401	1	`os` imported but unused
+tests/test_worktree_state_watcher.py	F401	1	`sys` imported but unused
+tests/test_worktree_state_watcher.py	F401	1	`time` imported but unused
+tests/test_worktree_state_watcher.py	F401	1	`typing.Any` imported but unused
+tests/test_worktree_state_watcher.py	F401	1	`unittest.mock.MagicMock` imported but unused
+tests/test_worktree_state_watcher.py	F401	1	`unittest.mock.call` imported but unused
+tests/test_worktree_state_watcher.py	F401	1	`unittest.mock.patch` imported but unused

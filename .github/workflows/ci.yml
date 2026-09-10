@@ -484,9 +484,17 @@ jobs:
         if: ${{ !cancelled() }}
         run: bash tests/test_ci_status_check.sh
 
-      # No ruff/flake8 config exists in the repo today (checked
-      # pyproject.toml / setup.cfg) — Python lint is intentionally omitted
-      # rather than adding new lint config as part of this Spec.
+      # Python lint is ratcheted, not omitted (D#2411). ruff.toml pins the
+      # rule set; scripts/ci/ruff-ratchet.py runs `ruff check backend/
+      # tests/ scripts/` (the same scope as Makefile:lint) against the
+      # baseline in scripts/ruff-known-findings.txt — a new finding fails
+      # the build, a pre-existing baselined one does not, and a baselined
+      # finding that stops reproducing fails too (over-allowance). It is
+      # discovered and run by the "Behavioral guards" step above with no
+      # YAML wiring of its own. Python outside that scope — hooks/,
+      # dashboard/, testsupport/, root conftest.py, loop-bootstrap/, and
+      # ts-backend/'s Python test generators — is not covered by this
+      # ratchet and remains unmonitored.
 
   # Runs the always-on preflight gates in CI itself (D#2271/D#2289 PR-b).
   # Before this job existed, no CI job invoked preflight at all — an
