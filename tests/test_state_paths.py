@@ -591,3 +591,125 @@ class TestForProjectServedStateDir:
         paths = sp.for_project("gatekeep")
 
         assert paths.state_dir == served_dir
+
+
+class TestForProjectServedStateDirRepoNameMatch:
+    """D#2435: a served dir also belongs to *name* when its declared repo's
+    name half matches, even under a different project_name — this is how a
+    project with two identities (here: "autonomous-forever" vs "fulcrumaxe")
+    gets served from the one directory that actually holds its data, without
+    migrating anything."""
+
+    def test_served_dir_matches_by_project_repo_name_half(self, monkeypatch, tmp_path):
+        """The exact live shape: project_name is the old identity, but
+        project_repo's name half is the new one the dashboard now asks for."""
+        empty_home = tmp_path / "empty-home"
+        empty_home.mkdir()
+        served_dir = tmp_path / "elsewhere" / ".autonomous-forever-state"
+        served_dir.mkdir(parents=True)
+        (served_dir / "dashboard-runtime.json").write_text(
+            json.dumps(
+                {
+                    "project_name": "autonomous-forever",
+                    "project_repo": "autonomous-agent-7/fulcrumaxe",
+                    "state_dir": str(served_dir),
+                }
+            )
+        )
+        monkeypatch.setattr(Path, "home", lambda: empty_home)
+        monkeypatch.setenv("AUTONOMOUS_TEAM_STATE_DIR", str(served_dir))
+
+        paths = sp.for_project("fulcrumaxe")
+
+        assert paths.state_dir == served_dir
+        assert paths.stats_db == served_dir / "stats.duckdb"
+        assert paths.repo == "autonomous-agent-7/fulcrumaxe"
+
+        # And the incumbent name must still resolve to the same directory.
+        paths_incumbent = sp.for_project("autonomous-forever")
+        assert paths_incumbent.state_dir == served_dir
+
+    def test_served_dir_matches_by_repo_field_name_half(self, monkeypatch, tmp_path):
+        """Same rule, via the plain `repo` key instead of `project_repo`."""
+        empty_home = tmp_path / "empty-home"
+        empty_home.mkdir()
+        served_dir = tmp_path / "elsewhere" / ".other-name-state"
+        served_dir.mkdir(parents=True)
+        (served_dir / "dashboard-runtime.json").write_text(
+            json.dumps(
+                {
+                    "project_name": "other-name",
+                    "repo": "someowner/target-project",
+                    "state_dir": str(served_dir),
+                }
+            )
+        )
+        monkeypatch.setattr(Path, "home", lambda: empty_home)
+        monkeypatch.setenv("AUTONOMOUS_TEAM_STATE_DIR", str(served_dir))
+
+        paths = sp.for_project("target-project")
+
+        assert paths.state_dir == served_dir
+
+    def test_unrelated_project_still_declines(self, monkeypatch, tmp_path):
+        """A name that matches neither project_name, basename, nor the repo's
+        name half must still fall through to the home-anchored convention —
+        the new rule must not turn the resolver into a catch-all."""
+        home = tmp_path / "home"
+        home.mkdir()
+        served_dir = tmp_path / "elsewhere" / ".autonomous-forever-state"
+        served_dir.mkdir(parents=True)
+        (served_dir / "dashboard-runtime.json").write_text(
+            json.dumps(
+                {
+                    "project_name": "autonomous-forever",
+                    "project_repo": "autonomous-agent-7/fulcrumaxe",
+                    "state_dir": str(served_dir),
+                }
+            )
+        )
+        monkeypatch.setattr(Path, "home", lambda: home)
+        monkeypatch.setenv("AUTONOMOUS_TEAM_STATE_DIR", str(served_dir))
+
+        paths = sp.for_project("some-other-project")
+
+        assert paths.state_dir == home / ".some-other-project-state"
+
+    def test_empty_repo_field_does_not_match_empty_name_segment(self, monkeypatch, tmp_path):
+        """A malformed slug (empty, or ending in "/") must not match through
+        an empty name-half comparison — the guard has to be total, not rely
+        on for_project()'s own name validation."""
+        home = tmp_path / "home"
+        home.mkdir()
+        served_dir = tmp_path / "elsewhere" / ".weird-state"
+        served_dir.mkdir(parents=True)
+        (served_dir / "dashboard-runtime.json").write_text(
+            json.dumps(
+                {
+                    "project_name": "weird",
+                    "project_repo": "someowner/",
+                    "state_dir": str(served_dir),
+                }
+            )
+        )
+        monkeypatch.setattr(Path, "home", lambda: home)
+        monkeypatch.setenv("AUTONOMOUS_TEAM_STATE_DIR", str(served_dir))
+
+        paths = sp.for_project("anything-else")
+
+        assert paths.state_dir == home / ".anything-else-state"
+
+    def test_served_dir_empty_repo_field_never_matches_empty_name(self, monkeypatch, tmp_path):
+        """The guard must be total on its own terms: an empty repo-derived
+        name-half must not match an empty *name*, even though for_project()
+        already rejects an empty name via _PROJECT_NAME_RE before this
+        function ever runs. Calls the private resolver directly so the guard
+        is exercised without relying on that caller-side validation."""
+        served_dir = tmp_path / ".blank-state"
+        served_dir.mkdir(parents=True)
+        (served_dir / "dashboard-runtime.json").write_text(
+            json.dumps({"project_name": "blank", "project_repo": "", "state_dir": str(served_dir)})
+        )
+        monkeypatch.setenv("AUTONOMOUS_TEAM_STATE_DIR", str(served_dir))
+
+        assert sp._served_state_dir("") is None

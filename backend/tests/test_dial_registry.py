@@ -242,6 +242,77 @@ class TestRevertExpired:
 
 
 # ---------------------------------------------------------------------------
+# D#2435: revert_expired() must not write when it prunes nothing.
+#
+# list_directives() is advertised as a read — but it unconditionally called
+# revert_expired(), which unconditionally called _save_registry() at the end
+# regardless of whether anything changed. Under project-scoped dispatch that
+# turned a read-only RPC into a writer of the (possibly wrong) state dir on
+# every call. The fix: only save when a class's directive list was actually
+# pruned or its level changed.
+# ---------------------------------------------------------------------------
+
+class TestRevertExpiredDoesNotWriteOnNoop:
+    def test_list_directives_second_call_does_not_touch_registry_file(self, state_dir):
+        """Calling list_directives() twice with nothing left to expire must
+        leave the registry file's mtime and inode untouched by the second
+        call. Against the unfixed code (unconditional _save_registry() at
+        the end of revert_expired()) this test fails: both calls rewrite the
+        file via tmp.rename(), which always produces a fresh inode."""
+        dr = _registry(state_dir)
+        registry_path = state_dir / "dial-registry.json"
+
+        # First call establishes the file (via _load_registry's _init_defaults,
+        # or a real prune below) — nothing to expire, so revert_expired()
+        # itself must not be the writer here either.
+        dr.list_directives()
+        assert registry_path.exists()
+
+        stat_before = registry_path.stat()
+        dr.list_directives()
+        stat_after = registry_path.stat()
+
+        assert stat_after.st_mtime_ns == stat_before.st_mtime_ns
+        assert stat_after.st_ino == stat_before.st_ino
+
+    def test_list_directives_settles_then_stops_writing(self, state_dir):
+        """A real prune (expired directive) does write once — then the
+        following call, once the registry has settled, must not write
+        again."""
+        dr = _registry(state_dir)
+        src = _allowlisted_source(state_dir, "noop-write-test")
+        past = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+        dr.set_dial("agent.spawn", 5, ttl=past, source=src)
+
+        registry_path = state_dir / "dial-registry.json"
+
+        # This call prunes the expired directive — a real write is expected.
+        dr.list_directives()
+        stat_after_prune = registry_path.stat()
+
+        # Now nothing is left to expire; the second call must be a true no-op.
+        dr.list_directives()
+        stat_after_noop = registry_path.stat()
+
+        assert stat_after_noop.st_mtime_ns == stat_after_prune.st_mtime_ns
+        assert stat_after_noop.st_ino == stat_after_prune.st_ino
+
+    def test_revert_expired_return_value_unaffected_by_write_suppression(self, state_dir):
+        """The write-suppression must not change what revert_expired() has
+        always reported: a class only counts as reverted when its *level*
+        changed, not merely when a directive was pruned."""
+        dr = _registry(state_dir)
+        src = _allowlisted_source(state_dir, "count-test")
+        past = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+        dr.set_dial("agent.spawn", 5, ttl=past, source=src)
+
+        assert dr.revert_expired() == 1
+        # Nothing left to expire — no classes reverted, and (per the tests
+        # above) no write either.
+        assert dr.revert_expired() == 0
+
+
+# ---------------------------------------------------------------------------
 # Audit hash chain
 # ---------------------------------------------------------------------------
 

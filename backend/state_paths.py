@@ -352,9 +352,14 @@ def _served_state_dir(name: str) -> tuple[Path, dict] | None:
     A served dir belongs to *name* when its ``dashboard-runtime.json``
     declares ``project_name == name`` (current ``start-dashboard.sh``
     writers), or, for older runtime files predating that field, when the
-    directory's own basename is ``.{name}-state``. Without a match
-    requirement, a single-project server would answer every project's
-    question with its own directory instead of declining (D#2259 AC-4).
+    directory's own basename is ``.{name}-state``, or when the name half of
+    its declared ``repo``/``project_repo`` slug equals *name* — i.e. this
+    dir already holds the data for the repo *name* is registered against,
+    even under a different ``project_name`` (D#2435; this is how a project
+    with two identities gets served from the one directory that actually
+    holds its state). Without a match requirement, a single-project server
+    would answer every project's question with its own directory instead of
+    declining (D#2259 AC-4).
 
     Resolving ``STATE_DIR`` can raise (``UnsandboxedStatePathError`` under
     pytest with the env var unset, ``RelativeStateDirError`` on a relative
@@ -372,6 +377,16 @@ def _served_state_dir(name: str) -> tuple[Path, dict] | None:
             return served, data
         if declared is None and served.name == f".{name}-state":
             return served, data
+        # A served dir also belongs to *name* when its declared repo's name
+        # half matches — i.e. this dir already holds the data for the repo
+        # *name* is registered against, even under a different project_name
+        # (D#2435). Guarded so an empty/malformed slug can never match an
+        # empty name.
+        declared_repo = data.get("repo") or data.get("project_repo")
+        if isinstance(declared_repo, str):
+            repo_name = declared_repo.rsplit("/", 1)[-1]
+            if repo_name and repo_name == name:
+                return served, data
         return None
     except Exception as exc:  # noqa: BLE001 — a misconfigured/foreign state dir must not 500 the server
         logger.debug("for_project(%r): served-state-dir source unavailable: %s", name, exc)
