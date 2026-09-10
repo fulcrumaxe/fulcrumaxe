@@ -15,6 +15,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 REAL_PYTHON3="$(command -v python3)"
 
+# shellcheck source=tests/lib/stub-write.sh
+source "$SCRIPT_DIR/lib/stub-write.sh"
+
 PASS=0
 FAIL=0
 ERRORS=()
@@ -737,11 +740,11 @@ test_empty_reason_with_blocked_false_survives_field_parse() {
   setup
 
   # setup() symlinks pr_intake_gate.py to the real checkout's copy (so its
-  # own imports resolve); `rm -f` first so this stub lands in a plain file
-  # at that path instead of writing through the symlink into the real
-  # checkout — cat > on a symlink follows it to the target.
-  rm -f "$TEST_DIR/scripts/lib/pr_intake_gate.py"
-  cat > "$TEST_DIR/scripts/lib/pr_intake_gate.py" <<'PY'
+  # own imports resolve); stub_write (tests/lib/stub-write.sh) removes that
+  # symlink before writing so this stub lands in a plain file at that path
+  # instead of writing through the symlink into the real checkout — a bare
+  # `cat >` on a symlink follows it to the target (D#2499).
+  stub_write "$TEST_DIR/scripts/lib/pr_intake_gate.py" <<'PY'
 #!/usr/bin/env python3
 import json
 import sys
