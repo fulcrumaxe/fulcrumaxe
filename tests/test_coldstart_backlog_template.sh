@@ -28,13 +28,22 @@ IMPORTER="$REPO_ROOT/scripts/import-epic-tasks.py"
 
 PASS=0
 FAIL=0
-FIXTURES=()
+
+# Every call site invokes mkfixture through command substitution, which runs
+# it in a subshell -- a subshell can't mutate a variable back in this shell,
+# so appending to an array here would never survive. Appending to
+# FIXTURE_LIST, a plain file, works instead: writes to a file are visible
+# outside the subshell that made them.
+FIXTURE_LIST="$(mktemp)"
 
 cleanup() {
   local d
-  for d in "${FIXTURES[@]:-}"; do
-    [[ -n "$d" && -d "$d" ]] && rm -rf -- "$d"
-  done
+  if [[ -f "$FIXTURE_LIST" ]]; then
+    while IFS= read -r d; do
+      [[ -n "$d" && -d "$d" ]] && rm -rf -- "$d"
+    done < "$FIXTURE_LIST"
+  fi
+  rm -f -- "$FIXTURE_LIST"
 }
 trap cleanup EXIT
 
@@ -57,7 +66,7 @@ assert_no_file() {
   if [[ ! -e "$2" ]]; then ok "$1"; else bad "$1" "should not exist: $2"; fi
 }
 
-mkfixture() { local d; d="$(mktemp -d)"; FIXTURES+=("$d"); echo "$d"; }
+mkfixture() { local d; d="$(mktemp -d)"; echo "$d" >> "$FIXTURE_LIST"; echo "$d"; }
 
 # shellcheck source=scripts/lib/coldstart-backlog.sh
 source "$BACKLOG_LIB"
