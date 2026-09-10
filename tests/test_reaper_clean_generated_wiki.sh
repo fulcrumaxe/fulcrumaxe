@@ -3,10 +3,15 @@
 #
 # Tests all five acceptance criteria:
 #   AC-6 (happy path)     — only the 2 named wiki files modified → cleaned + reaped
-#   AC-4 (other tracked)  — 2 wiki files + any OTHER modified tracked file → preserved
-#   AC-3 (untracked)      — 2 wiki files + an untracked file → preserved
-#   AC-5 (unpushed)       — 2 wiki files but unpushed commit → preserved
-#   AC-2 (flag absent)    — flag OFF → no rescue, default behavior unchanged
+#   AC-4 (other tracked)  — 2 wiki files + any OTHER modified tracked file → rescue
+#                           refused, dir archived-then-pruned (dirty, not preserved)
+#   AC-3 (untracked)      — 2 wiki files + an untracked file → preserved (untracked
+#                           content can't be captured in a patch, so this is the
+#                           one path the reaper actually preserves the dir on)
+#   AC-5 (unpushed)       — 2 wiki files but unpushed commit → rescue refused, dir
+#                           archived-then-pruned (unpushed commit captured in patch)
+#   AC-2 (flag absent)    — flag OFF → no rescue, default archive-then-prune path
+#                           runs unchanged (flag only gates the wiki-rescue checkout)
 #
 # Also confirms the strict predicate: only "M "/" M" status codes allowed,
 # no ??  entries, no third paths.
@@ -33,6 +38,31 @@ _assert_contains()      { echo "$1" | grep -qF "$2" && _pass "$3" || _fail "$3 (
 _assert_not_contains()  { ! echo "$1" | grep -qF "$2" && _pass "$3" || _fail "$3 (unexpected: '$2' in output)"; }
 _assert_dir_exists()    { [[ -d "$1" ]] && _pass "$2" || _fail "$2 (missing dir: $1)"; }
 _assert_dir_missing()   { [[ ! -d "$1" ]] && _pass "$2" || _fail "$2 (should not exist: $1)"; }
+
+# _assert_patch_captured <dir_id> <needle> <label>
+# Verifies the reaper's archive-then-prune contract for a dirty/unpushed dir:
+# a patch file matching <dir_id> exists under $ARCHIVE_DIR, is non-empty, and
+# contains <needle> — a string proving the actual diff/commit content was
+# captured, not just the patch's header comments (which alone would make a
+# bare `-s` check pass vacuously).
+_assert_patch_captured() {
+  local dir_id="$1" needle="$2" label="$3"
+  local patch
+  patch=$(find "${ARCHIVE_DIR}" -maxdepth 1 -name "${dir_id}-*.patch" 2>/dev/null | head -n1)
+  if [[ -z "$patch" ]]; then
+    _fail "$label (no patch file for ${dir_id} under ${ARCHIVE_DIR})"
+    return
+  fi
+  if [[ ! -s "$patch" ]]; then
+    _fail "$label (patch file empty: $patch)"
+    return
+  fi
+  if grep -qF -- "$needle" "$patch"; then
+    _pass "$label"
+  else
+    _fail "$label (needle '$needle' not found in $patch)"
+  fi
+}
 
 # ---------------------------------------------------------------------------
 # Setup: shared temp directory, fake origin, and main repo
@@ -158,7 +188,7 @@ rm -rf "$DRYRUN_DIR"
 # AC-4 (other tracked guard): 2 wiki files + another modified tracked file → preserved
 # ---------------------------------------------------------------------------
 echo ""
-echo "=== AC-4: 2 wiki files + another tracked file → preserved (not rescued) ==="
+echo "=== AC-4: 2 wiki files + another tracked file → rescue refused, archived-then-pruned ==="
 
 OTHER_ID="wiki-other-t3-$$"
 OTHER_DIR="${WORKTREES_DIR}/${OTHER_ID}"
@@ -177,8 +207,14 @@ RC=$?
 
 _assert_exit0 $RC "AC-4: reaper exits 0"
 _assert_not_contains "$OUT" "cleaned-generated-wiki: ${OTHER_ID}" "AC-4: rescue NOT applied"
-_assert_contains "$OUT" "skipped-unsafe" "AC-4: dir logged as skipped-unsafe"
-_assert_dir_exists "$OTHER_DIR" "AC-4: dir with third file was PRESERVED"
+# Not a "skipped-unsafe" path: a third modified tracked file blocks the wiki
+# rescue, but the dir is still dirty/pushed, so it falls into the general
+# archive-then-prune branch (scripts/lib/worktree-registry.sh:1196), not the
+# untracked-file preserve branch (skipped-unsafe is only for AC-3-shaped ??
+# entries or a failed archive write).
+_assert_contains "$OUT" "patch-archived (no-registry+dirty): ${OTHER_ID}" "AC-4: dir logged as patch-archived"
+_assert_dir_missing "$OTHER_DIR" "AC-4: dir with third file was pruned after archiving"
+_assert_patch_captured "$OTHER_ID" "also dirty" "AC-4: archived patch captures the third file's modification"
 
 # ---------------------------------------------------------------------------
 # AC-3 (untracked guard): 2 wiki files + an untracked file → preserved
@@ -209,7 +245,7 @@ _assert_dir_exists "$UNTRACKED_DIR" "AC-3: dir with untracked file was PRESERVED
 # AC-5 (unpushed guard): 2 wiki files but an unpushed commit → preserved
 # ---------------------------------------------------------------------------
 echo ""
-echo "=== AC-5: 2 wiki files but unpushed commit → preserved (not rescued) ==="
+echo "=== AC-5: 2 wiki files but unpushed commit → rescue refused, archived-then-pruned ==="
 
 UNPUSHED_ID="wiki-unpushed-t5-$$"
 UNPUSHED_DIR="${WORKTREES_DIR}/${UNPUSHED_ID}"
@@ -232,13 +268,17 @@ RC=$?
 
 _assert_exit0 $RC "AC-5: reaper exits 0"
 _assert_not_contains "$OUT" "cleaned-generated-wiki: ${UNPUSHED_ID}" "AC-5: rescue NOT applied"
-_assert_dir_exists "$UNPUSHED_DIR" "AC-5: dir with unpushed commit was PRESERVED"
+# archive-then-prune, not preserve: the unpushed commit is captured in the
+# archived patch (git log -p HEAD --not --remotes), then the dir is pruned.
+_assert_contains "$OUT" "patch-archived (no-registry+dirty+unpushed): ${UNPUSHED_ID}" "AC-5: dir logged as patch-archived"
+_assert_dir_missing "$UNPUSHED_DIR" "AC-5: dir with unpushed commit was pruned after archiving"
+_assert_patch_captured "$UNPUSHED_ID" "new real work" "AC-5: archived patch captures the unpushed commit's diff content"
 
 # ---------------------------------------------------------------------------
 # AC-2 (default unchanged): flag OFF → 2 wiki files dirty → preserved+skipped
 # ---------------------------------------------------------------------------
 echo ""
-echo "=== AC-2: flag absent → wiki-dirty dir is preserved (default behavior) ==="
+echo "=== AC-2: flag absent → wiki-dirty dir still archived-then-pruned (default behavior) ==="
 
 DEFAULT_ID="wiki-default-t6-$$"
 DEFAULT_DIR="${WORKTREES_DIR}/${DEFAULT_ID}"
@@ -254,8 +294,12 @@ RC=$?
 
 _assert_exit0 $RC "AC-2: reaper exits 0 without flag"
 _assert_not_contains "$OUT" "cleaned-generated-wiki" "AC-2: no rescue log (flag absent)"
-_assert_contains "$OUT" "skipped-unsafe" "AC-2: dir logged as skipped-unsafe"
-_assert_dir_exists "$DEFAULT_DIR" "AC-2: wiki-dirty dir PRESERVED when flag absent"
+# Absence of --clean-generated-wiki only disables the wiki-rescue checkout —
+# it does not change whether dirty work is archived before pruning. Same
+# archive-then-prune contract as AC-4/AC-5, just reached without the flag.
+_assert_contains "$OUT" "patch-archived (no-registry+dirty): ${DEFAULT_ID}" "AC-2: dir logged as patch-archived"
+_assert_dir_missing "$DEFAULT_DIR" "AC-2: wiki-dirty dir pruned after archiving when flag absent"
+_assert_patch_captured "$DEFAULT_ID" "updated status" "AC-2: archived patch captures the wiki-dirty content when flag absent"
 
 # ---------------------------------------------------------------------------
 # Summary
