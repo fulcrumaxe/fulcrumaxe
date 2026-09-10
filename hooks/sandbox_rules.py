@@ -96,6 +96,25 @@ _GIT_ALWAYS_BLOCKED_VERBS: frozenset[str] = frozenset(
     ]
 )
 
+# D#2012 item 3: the reason string for an always-blocked-verb Decision must
+# not claim "outside worktree" — this rule blocks unconditionally, regardless
+# of cwd or effective CWD (see the comment above the loop that raises this,
+# in classify_bash). The old shared literal ("git write-verb outside
+# worktree") was untrue here: it correctly describes the SEPARATE
+# CWD-escape check for _GIT_WRITE_VERBS (commit/push/merge/etc., a few lines
+# below) but was also being raised, unmodified, by this always-blocked path,
+# which never inspects any CWD at all. `git checkout -b foo` run from inside
+# the agent's own worktree was refused with a reason claiming the write was
+# "outside" it — investigated by test (TestD2012AlwaysBlockedReasonIsTrue in
+# tests/test_sandbox_rules.py): the block itself is correct (checkout/
+# switch/reset/clean/restore have no read-only spelling and can corrupt the
+# parent repo's branch state even from inside the worktree), only the
+# message was wrong.
+_GIT_ALWAYS_BLOCKED_VERB_REASON = (
+    "git {verb}: always blocked for sub-agents regardless of cwd — not a "
+    "worktree-escape check (see _GIT_ALWAYS_BLOCKED_VERBS)"
+)
+
 # `git branch` flags that only read/list branch state — no ref is created,
 # deleted, moved, or retargeted by any of these (D#2058). Deliberately an
 # allowlist, not a denylist of known-write flags: an unrecognised flag must
@@ -3362,8 +3381,13 @@ def _all_path_operands(command: str) -> list[str]:
 
 def _is_gh_merge(command: str) -> bool:
     """Return True if the command attempts to merge a PR via gh."""
-    # gh pr merge ...
-    if re.search(r"\bgh\s+pr\s+merge\b", command):
+    # gh pr merge ... — command-position aware (D#2012 item 5): a real
+    # invocation, not merely a mention of the phrase inside a quoted
+    # argument (e.g. a grep pattern searching for "gh pr merge"). Checked
+    # via _gh_pr_merge_in_command_position, defined below alongside the
+    # other _find_real_command_segments-based helpers it shares its
+    # implementation with.
+    if _gh_pr_merge_in_command_position(command):
         return True
     # gh api graphql ... mergePullRequest
     if re.search(r"\bgh\s+api\b", command) and _GRAPHQL_MERGE_PATTERN.search(command):
@@ -3528,6 +3552,27 @@ def _gh_api_command_segments(command: str) -> list[tuple[list[str], int, int]]:
     return segments
 
 
+def _gh_pr_merge_in_command_position(command: str) -> bool:
+    """Return True if a REAL `gh pr merge` invocation exists at a command
+    position (D#2012 item 5) — not merely a mention of the phrase inside a
+    quoted argument (a grep pattern, a --body string, a case label). Mirrors
+    `_gh_api_command_segments` above: both walk
+    `_find_real_command_segments(command, _is_gh_token)`, so this gets the
+    same bypass-shape coverage for free — subshells, `$()`/backtick
+    substitution, the `command` builtin, a brace group, an alternate shell's
+    `-c` payload, and every `;`/`&&`/`||`/`|`/`&` chain position.
+
+    Before this fix, `_is_gh_merge` matched `gh pr merge` as a bare substring
+    anywhere in the raw command string, so `grep -rn 'gh pr merge' scripts/`
+    (searching FOR the phrase, not running it) was refused with "sub-agents
+    may not merge" — the exact live over-block this function exists to close.
+    """
+    for tokens, pos, end in _find_real_command_segments(command, _is_gh_token):
+        if pos + 2 < end and tokens[pos + 1] == "pr" and tokens[pos + 2] == "merge":
+            return True
+    return False
+
+
 def _segment_has_mutating_method_flag(tokens: list[str], start: int, end: int) -> bool:
     """Return True if the `-X`/`--method` flag inside tokens[start:end] names
     a mutating HTTP verb (POST/PATCH/PUT/DELETE).
@@ -3571,17 +3616,44 @@ _GH_API_GRAPHQL_MUTATION = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
-# Common gh CLI mutation aliases that don't go through `gh api`.
-_GH_MUTATION_ALIASES = re.compile(
-    r"\bgh\s+(?:"
-    r"pr\s+merge"
-    r"|issue\s+close"
-    r"|issue\s+delete"
-    r"|pr\s+close"
-    r"|pr\s+review\s+.*--request-changes"
-    r")\b",
-    re.IGNORECASE | re.DOTALL,
+# Common gh CLI mutation aliases that don't go through `gh api` — verb pairs
+# checked at a REAL command position (D#2012 item 5), not as a bare substring
+# search over the whole command string via _gh_mutation_alias_in_command_position
+# below. The old substring regex here matched `gh pr merge` even inside a
+# quoted argument that never runs it — e.g. `grep -rn 'gh pr merge' scripts/`
+# (searching FOR the phrase) or a `gh pr comment --body '...never run gh pr
+# merge...'` warning string — and refused the command with
+# "sandbox_block_gh_api_mutation" even though nothing was mutated. (`gh pr
+# merge` is ALSO checked, independently, by `_is_gh_merge` earlier in
+# classify_bash's step order — this set duplicates that one verb pair
+# deliberately, belt-and-suspenders, the same way `_is_gh_merge` itself
+# duplicates its REST-endpoint check against a raw curl PUT.)
+_GH_MUTATION_ALIAS_VERB_PAIRS: frozenset[tuple[str, str]] = frozenset(
+    [
+        ("pr", "merge"),
+        ("issue", "close"),
+        ("issue", "delete"),
+        ("pr", "close"),
+    ]
 )
+
+
+def _gh_mutation_alias_in_command_position(command: str) -> bool:
+    """Return True if a REAL `gh pr merge` / `gh issue close` / `gh issue
+    delete` / `gh pr close` / `gh pr review ... --request-changes` invocation
+    exists at a command position — see `_find_real_command_segments` for the
+    full list of shapes covered (subshells, `$()`/backtick substitution, the
+    `command` builtin, a brace group, an alternate shell's `-c` payload, and
+    every `;`/`&&`/`||`/`|`/`&` chain position).
+    """
+    for tokens, pos, end in _find_real_command_segments(command, _is_gh_token):
+        if pos + 2 < end:
+            pair = (tokens[pos + 1], tokens[pos + 2])
+            if pair in _GH_MUTATION_ALIAS_VERB_PAIRS:
+                return True
+            if pair == ("pr", "review") and "--request-changes" in tokens[pos + 2 : end]:
+                return True
+    return False
 
 # Matches ALL -f/-F/--field/--raw-field query=<value> parameters in a gh api graphql call.
 # Used to extract every query body so we can check each one — not just the first.
@@ -3886,7 +3958,7 @@ def _is_gh_api_mutation(command: str) -> bool:
         # All query values passed — none contained a non-allowlisted mutation.
         return False
 
-    if _GH_MUTATION_ALIASES.search(command):
+    if _gh_mutation_alias_in_command_position(command):
         return True
     return False
 
@@ -4077,7 +4149,10 @@ def classify_bash(command: str, cwd: str) -> Decision:
         # "every invocation is examined, not just the first" property below).
         for verb, _invocation_cwd, args in git_invocations:
             if verb in _GIT_ALWAYS_BLOCKED_VERBS and not _is_git_readonly_invocation(verb, args):
-                return Decision(allow=False, reason="git write-verb outside worktree")
+                return Decision(
+                    allow=False,
+                    reason=_GIT_ALWAYS_BLOCKED_VERB_REASON.format(verb=verb),
+                )
         # CWD-dependent write verbs (commit, push, merge, etc.): allowed only when
         # THAT invocation's own effective CWD stays within the worktree.
         worktree_root = _worktree_root_from_cwd(cwd)
