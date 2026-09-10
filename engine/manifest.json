@@ -235,7 +235,7 @@
     "scripts/pre-spawn-check.sh": "152791f33185ac6337a488e6ae23c68ade38dda516957c66735aacde835e7075",
     "scripts/preflight-fast.sh": "b73ed86f046df3ec970185c276bca573b8b15f5f8b1930ea02d4c1309036ea41",
     "scripts/preflight-full.sh": "7a1b1614fd58f6e6ddd918f32f434d150525c0aeca40b47c074ec6720bd9855a",
-    "scripts/process-watchdog.sh": "f72bea6b0664d7507735f6f231c3277f76c07e8b7cd52a0de7863dab60f404e8",
+    "scripts/process-watchdog.sh": "08a56163cb20057f86a1ef3538f6807f98a5c364bb07c6be53531597df1de48e",
     "scripts/provision-dial-allowlist.sh": "786b1b55a1b24c081e1f45df3fb147ce3ed2f40987af7cd372f33803ac55b6c8",
     "scripts/reap-worktrees.sh": "5ed2cbb89f0b4a861543dcfb14903621340f7ae1992f4e164fee644f206acd56",
     "scripts/reap-zombie-chromes.sh": "6c87b5cdbbd9a27f723fe9ce5ffe24910a20b1fee9d3e11111418731f467f60f",

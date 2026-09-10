@@ -509,6 +509,95 @@ def _spawn_orphaned(argv_tail: list[str], inner: str = "sleep 300; true") -> tup
     raise AssertionError(f"failed to spawn+orphan a process tagged {marker!r}")
 
 
+def _spawn_orphaned_wrapper_and_child(
+    argv_tail: list[str], inner: str = 'trap "" TERM; sleep 300; true'
+) -> tuple[int, int, str]:
+    """Spawn a genuine two-level orphaned tree: a real `timeout`-wrapped
+    bash process (the 'wrapper', matching the D#2006 incident's own
+    evidence) with a live child underneath it that traps and discards
+    SIGTERM the same way the real incident processes did. Both processes
+    get reparented to init (ppid == 1 for the wrapper) once the spawning
+    shell backgrounds and exits.
+
+    Neither process ever execs python or pytest -- `python3 -m pytest ...`
+    appears only as inert positional arguments to `bash -c` (assigned to
+    $0/$1/... inside the script, never invoked), which is enough to tag
+    both the wrapper's and the child's argv for detection without ever
+    running a real test suite.
+
+    Returns (wrapper_pid, child_pid, marker).
+    """
+    marker = f"WD-TEST-{os.getpid()}-{time.time_ns()}"
+    full_tail = [*argv_tail, marker]
+    quoted = " ".join(shlex.quote(a) for a in full_tail)
+    subprocess.run(
+        ["bash", "-c", f'(setsid timeout 300 bash -c {shlex.quote(inner)} {quoted} &)'],
+        check=True,
+    )
+
+    wrapper_pid = None
+    deadline = time.time() + 3
+    while time.time() < deadline and wrapper_pid is None:
+        result = subprocess.run(["pgrep", "-f", marker], capture_output=True, text=True)
+        for token in result.stdout.split():
+            cand = int(token)
+            if _read_ppid(cand) != 1:
+                continue
+            try:
+                comm = Path(f"/proc/{cand}/comm").read_text().strip()
+            except (FileNotFoundError, ProcessLookupError):
+                continue
+            if comm == "timeout":
+                wrapper_pid = cand
+                break
+        if wrapper_pid is None:
+            time.sleep(0.1)
+    if wrapper_pid is None:
+        raise AssertionError(f"failed to spawn+orphan a wrapper tagged {marker!r}")
+
+    child_pid = None
+    deadline = time.time() + 3
+    while time.time() < deadline and child_pid is None:
+        result = subprocess.run(["pgrep", "-f", marker], capture_output=True, text=True)
+        for token in result.stdout.split():
+            cand = int(token)
+            if cand != wrapper_pid and _read_ppid(cand) == wrapper_pid:
+                child_pid = cand
+                break
+        if child_pid is None:
+            time.sleep(0.1)
+    if child_pid is None:
+        raise AssertionError(f"wrapper {wrapper_pid} has no live child tagged {marker!r}")
+
+    return wrapper_pid, child_pid, marker
+
+
+def _spawn_orphaned_argv0_pytest(inner_body: str = "sleep 300; true") -> tuple[int, str]:
+    """Spawn an orphaned process whose own argv[0] is literally 'pytest'
+    (via bash's `exec -a`), without ever executing the real pytest binary
+    -- it's bash itself running `inner_body`, with its displayed argv[0]
+    overridden. Exercises the bare-executable invocation shape
+    (argv[0] basename == "pytest"), distinct from the "-m pytest" module
+    shape the other synthetic helpers cover.
+    """
+    marker = f"WD-TEST-{os.getpid()}-{time.time_ns()}"
+    tagged = f": {marker}; {inner_body}"
+    launcher = f"exec -a pytest bash -c {shlex.quote(tagged)}"
+    subprocess.run(
+        ["bash", "-c", f'(setsid bash -c {shlex.quote(launcher)} &)'],
+        check=True,
+    )
+    deadline = time.time() + 3
+    while time.time() < deadline:
+        result = subprocess.run(["pgrep", "-f", marker], capture_output=True, text=True)
+        for token in result.stdout.split():
+            cand = int(token)
+            if _read_ppid(cand) == 1:
+                return cand, marker
+        time.sleep(0.1)
+    raise AssertionError(f"failed to spawn+orphan an argv0=pytest process tagged {marker!r}")
+
+
 def _spawn_direct_child(argv_tail: list[str], inner: str = "sleep 300; true") -> subprocess.Popen:
     """Spawn a process with argv (after 'bash -c inner') exactly argv_tail,
     whose parent is this test process itself — i.e. NOT reparented, so
@@ -534,6 +623,27 @@ def _kill_orphan_quietly(pid: int) -> None:
         os.kill(pid, signal.SIGKILL)
     except Exception:
         pass
+
+
+def _kill_orphan_tree_quietly(*pids: int | None) -> None:
+    """Best-effort cleanup for pids from _spawn_orphaned_wrapper_and_child.
+
+    `timeout` (without --foreground, the default) puts its monitored child
+    in a *separate* process group from its own, so the wrapper and child
+    are not necessarily reachable via a single killpg -- kill each pid and
+    its own process group explicitly.
+    """
+    for pid in pids:
+        if pid is None:
+            continue
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except Exception:
+            pass
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except Exception:
+            pass
 
 
 def test_orphaned_pytest_all_conditions_true_is_detected_and_named():
@@ -649,4 +759,89 @@ def test_orphaned_pytest_protected_pid_not_signalled():
         assert _read_ppid(pid) == 1, "a protected PID must not be signalled"
     finally:
         pidfile.unlink(missing_ok=True)
+        _kill_orphan_quietly(pid)
+
+
+def test_orphaned_pytest_kill_escalates_two_level_tree_reaps_child():
+    """D#2006 code-review finding 1 (binding item): the documented incident
+    shape is a two-level tree, not a single flat process -- a real
+    `timeout`-wrapped process (the one this watchdog actually detects,
+    since its own argv carries the "-m pytest" tokens) with the real work
+    running underneath it as a separate, live child PID. `kill -KILL`
+    against a single PID never cascades to children, so SIGKILL-ing only
+    the detected wrapper leaves the child alive and re-orphaned a second
+    time while the watchdog still reports a successful kill -- the exact
+    false-success failure mode this Discussion is about. Proves
+    escalate_kill reaps BOTH the wrapper and its child, not just the
+    detected PID.
+    """
+    wrapper_pid, child_pid, marker = _spawn_orphaned_wrapper_and_child(
+        ["python3", "-m", "pytest", "tests/", "-q"],
+    )
+    try:
+        assert _read_ppid(wrapper_pid) == 1, "test setup broken: wrapper was not orphaned"
+        assert _read_ppid(child_pid) == wrapper_pid, "test setup broken: child not parented to wrapper"
+
+        result = _run_watchdog(["--kill"], env_extra={"PROCESS_WATCHDOG_MAX_AGE_SEC": "0"})
+        assert result.returncode == 0
+        line = _candidate_line(result.stdout, wrapper_pid)
+        assert line is not None, f"expected a verdict line for wrapper PID {wrapper_pid}:\n{result.stdout}"
+        assert "KILLED: SIGKILL" in line, (
+            f"expected escalation to SIGKILL against a SIGTERM-ignoring wrapper, got:\n{line}"
+        )
+
+        deadline = time.time() + 5
+        while (
+            (_read_ppid(wrapper_pid) is not None or _read_ppid(child_pid) is not None)
+            and time.time() < deadline
+        ):
+            time.sleep(0.1)
+        assert _read_ppid(wrapper_pid) is None, f"wrapper PID {wrapper_pid} survived --kill escalation"
+        assert _read_ppid(child_pid) is None, (
+            f"child PID {child_pid} survived --kill escalation -- the wrapper was reaped but the "
+            "real work kept running, re-orphaned, while the watchdog reported KILLED: SIGKILL"
+        )
+    finally:
+        _kill_orphan_tree_quietly(wrapper_pid, child_pid)
+
+
+def test_orphaned_grep_pytest_argument_not_matched():
+    """D#2006 code-review finding 2: "pytest" as a bare argument to an
+    unrelated command must not be treated as a pytest invocation, even when
+    it is an exact standalone argv element, orphaned, and old enough. A
+    command like `grep pytest somefile.txt` (a plausible real command --
+    an agent grepping a log for the word "pytest") has "pytest" as an
+    exact argv element too, but it is not a pytest invocation.
+    """
+    pid, marker = _spawn_orphaned(["grep", "pytest", "somefile.txt"], inner="sleep 300; true")
+    try:
+        assert _read_ppid(pid) == 1, "test setup broken: spawned process was not orphaned"
+        result = _run_watchdog(env_extra={"PROCESS_WATCHDOG_MAX_AGE_SEC": "0"})
+        line = _candidate_line(result.stdout, pid)
+        assert line is None or "orphaned pytest" not in line, (
+            f"a 'grep pytest ...' process was matched as a pytest invocation:\n{result.stdout}"
+        )
+    finally:
+        _kill_orphan_quietly(pid)
+
+
+def test_orphaned_pytest_argv0_bare_executable_is_detected():
+    """D#2006 code-review finding 2, other direction: the fix must still
+    catch the bare `pytest` executable invocation shape (argv[0]'s basename
+    is exactly "pytest"), not just the "-m pytest" module shape covered by
+    the other synthetic tests -- both are real invocation forms named in
+    the acceptance criteria.
+    """
+    pid, marker = _spawn_orphaned_argv0_pytest()
+    try:
+        assert _read_ppid(pid) == 1, "test setup broken: spawned process was not orphaned"
+        argv0 = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")[0].decode()
+        assert argv0 == "pytest", f"test setup broken: argv[0] was {argv0!r}, not 'pytest'"
+
+        result = _run_watchdog(env_extra={"PROCESS_WATCHDOG_MAX_AGE_SEC": "0"})
+        line = _candidate_line(result.stdout, pid)
+        assert line is not None and "orphaned pytest" in line, (
+            f"a bare 'pytest' executable invocation was not detected:\n{result.stdout}"
+        )
+    finally:
         _kill_orphan_quietly(pid)
