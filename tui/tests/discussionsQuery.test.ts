@@ -76,3 +76,66 @@ describe('readQueueCountsAsync — the real query path (BINDING, Spec item 1 and
     expect(command).not.toContain('autonomous-forever');
   });
 });
+
+describe('readQueueCountsAsync never composes an empty --repo / owner: / name: (D#2380 code review)', () => {
+  it('GH_REPO="" falls through instead of composing an empty --repo', async () => {
+    const root = makeRoot();
+    process.env['AF_REPO_ROOT'] = root;
+    process.env['GH_REPO'] = '';
+
+    await readQueueCountsAsync();
+
+    expect(execMock).toHaveBeenCalledTimes(1);
+    const command = execMock.mock.calls[0]?.[0] as string;
+    expect(command).not.toContain('--repo  '); // empty slug leaves a double space before -f
+    expect(command).not.toContain('owner:""');
+    expect(command).not.toContain('name:""');
+    expect(command).toContain('--repo autonomous-agent-7/fulcrumaxe');
+  });
+
+  it('_REPO="" falls through instead of composing an empty --repo', async () => {
+    const root = makeRoot();
+    process.env['AF_REPO_ROOT'] = root;
+    process.env['_REPO'] = '';
+
+    await readQueueCountsAsync();
+
+    expect(execMock).toHaveBeenCalledTimes(1);
+    const command = execMock.mock.calls[0]?.[0] as string;
+    expect(command).not.toContain('owner:""');
+    expect(command).not.toContain('name:""');
+    expect(command).toContain('--repo autonomous-agent-7/fulcrumaxe');
+  });
+
+  it('a whitespace-only GH_REPO falls through instead of composing a blank slug', async () => {
+    const root = makeRoot();
+    process.env['AF_REPO_ROOT'] = root;
+    process.env['GH_REPO'] = '   ';
+
+    await readQueueCountsAsync();
+
+    expect(execMock).toHaveBeenCalledTimes(1);
+    const command = execMock.mock.calls[0]?.[0] as string;
+    expect(command).not.toContain('owner:""');
+    expect(command).not.toContain('name:""');
+    expect(command).toContain('--repo autonomous-agent-7/fulcrumaxe');
+  });
+
+  it('all-sources-empty terminal case: config, GH_REPO, and _REPO all empty strings, no origin remote — still composes DEFAULT_REPO, never an empty slug', async () => {
+    const root = makeRoot();
+    mkdirSync(join(root, '.autonomous-team'), { recursive: true });
+    writeFileSync(join(root, '.autonomous-team', 'config.json'), JSON.stringify({ repo: '' }));
+    process.env['AF_REPO_ROOT'] = root;
+    process.env['GH_REPO'] = '';
+    process.env['_REPO'] = '';
+
+    await readQueueCountsAsync();
+
+    expect(execMock).toHaveBeenCalledTimes(1);
+    const command = execMock.mock.calls[0]?.[0] as string;
+    expect(command).not.toContain('--repo  ');
+    expect(command).not.toContain('owner:""');
+    expect(command).not.toContain('name:""');
+    expect(command).toContain('--repo autonomous-agent-7/fulcrumaxe');
+  });
+});

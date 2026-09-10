@@ -51,13 +51,25 @@ function repoRoot(): string {
   );
 }
 
+/**
+ * Treat unset, empty, and whitespace-only values as absent — the same
+ * "no answer" outcome as `null`/`undefined`. A precedence step's `??` only
+ * short-circuits on nullish values, so a defined-but-empty string (e.g.
+ * `GH_REPO=""`) would otherwise win the step and compose into an empty
+ * `--repo` / `owner:` / `name:` downstream (D#2380 code review).
+ */
+function nonEmpty(value: string | null | undefined): string | null {
+  if (typeof value !== 'string') return null;
+  return value.trim() ? value : null;
+}
+
 function configJsonField(key: string): string | null {
   const configPath = join(repoRoot(), '.autonomous-team', 'config.json');
   if (!existsSync(configPath)) return null;
   try {
     const data = JSON.parse(readFileSync(configPath, 'utf8')) as Record<string, unknown>;
     const value = data[key];
-    return typeof value === 'string' && value ? value : null;
+    return typeof value === 'string' ? nonEmpty(value) : null;
   } catch {
     return null;
   }
@@ -141,15 +153,33 @@ function repoSlugFromGitConfig(root: string): string | null {
  * Resolve the repo slug ("owner/name") using the precedence order documented
  * above. Safe to call repeatedly — re-reads env/config/git each call so
  * tests can override state between cases.
+ *
+ * Every step is normalized through `nonEmpty()` so a defined-but-empty or
+ * whitespace-only value (e.g. `GH_REPO=""`) falls through to the next
+ * source instead of winning the step — see `nonEmpty()`'s docstring.
+ *
+ * DEFAULT_REPO is a non-empty hardcoded literal, so in practice this chain
+ * always resolves. The explicit throw below is a guard on that invariant,
+ * not reachable code today: it exists so a future edit that weakens
+ * DEFAULT_REPO (or the chain) fails loudly at the resolution site instead
+ * of silently handing an empty slug to a `gh --repo` call, which exits 0
+ * and quietly falls back to the git remote — exactly the failure mode this
+ * resolver exists to prevent (D#2380).
  */
 export function resolveRepo(): string {
-  return (
+  const repo =
     configJsonRepo() ??
-    process.env['GH_REPO'] ??
-    process.env['_REPO'] ??
+    nonEmpty(process.env['GH_REPO']) ??
+    nonEmpty(process.env['_REPO']) ??
     repoSlugFromGitConfig(repoRoot()) ??
-    DEFAULT_REPO
-  );
+    nonEmpty(DEFAULT_REPO);
+  if (!repo) {
+    throw new Error(
+      'resolveRepo(): no non-empty repo slug from .autonomous-team/config.json, GH_REPO, _REPO, ' +
+        'the .git/config origin remote, or DEFAULT_REPO — refusing to return an empty slug'
+    );
+  }
+  return repo;
 }
 
 /** Split helper: the "owner" half of a resolved (or supplied) repo slug. */

@@ -79,6 +79,65 @@ describe('resolveRepo precedence', () => {
   });
 });
 
+describe('resolveRepo treats empty-but-defined values as absent (D#2380 code review)', () => {
+  it('GH_REPO="" falls through to _REPO, not an empty string', () => {
+    const root = makeRoot();
+    process.env['AF_REPO_ROOT'] = root;
+    process.env['GH_REPO'] = '';
+    process.env['_REPO'] = 'underscore/target';
+    expect(resolveRepo()).toBe('underscore/target');
+  });
+
+  it('GH_REPO="" and _REPO="" both fall through to the origin remote', () => {
+    const root = makeRoot();
+    mkdirSync(join(root, '.git'), { recursive: true });
+    writeFileSync(join(root, '.git', 'config'), '[remote "origin"]\n\turl = https://github.com/forker/theirfork.git\n');
+    process.env['AF_REPO_ROOT'] = root;
+    process.env['GH_REPO'] = '';
+    process.env['_REPO'] = '';
+    expect(resolveRepo()).toBe('forker/theirfork');
+  });
+
+  it('a whitespace-only GH_REPO is treated the same as an empty one', () => {
+    const root = makeRoot();
+    process.env['AF_REPO_ROOT'] = root;
+    process.env['GH_REPO'] = '   ';
+    process.env['_REPO'] = 'underscore/target';
+    expect(resolveRepo()).toBe('underscore/target');
+  });
+
+  it('a whitespace-only config.json "repo" field falls through to GH_REPO', () => {
+    const root = makeRoot();
+    mkdirSync(join(root, '.autonomous-team'), { recursive: true });
+    writeFileSync(join(root, '.autonomous-team', 'config.json'), JSON.stringify({ repo: '   ' }));
+    process.env['AF_REPO_ROOT'] = root;
+    process.env['GH_REPO'] = 'ghrepo/target';
+    expect(resolveRepo()).toBe('ghrepo/target');
+  });
+
+  it('an origin remote that parses to an empty owner or name does not count as resolved', () => {
+    const root = makeRoot();
+    mkdirSync(join(root, '.git'), { recursive: true });
+    // "https://github.com//repo.git" parses to owner="" name="repo" via slugFromUrl —
+    // must not be treated as a resolved slug.
+    writeFileSync(join(root, '.git', 'config'), '[remote "origin"]\n\turl = https://github.com//repo.git\n');
+    process.env['AF_REPO_ROOT'] = root;
+    expect(resolveRepo()).toBe(DEFAULT_REPO);
+  });
+
+  it('the all-sources-empty terminal case: config, GH_REPO, _REPO all empty strings and no origin remote resolves to DEFAULT_REPO, never ""', () => {
+    const root = makeRoot();
+    mkdirSync(join(root, '.autonomous-team'), { recursive: true });
+    writeFileSync(join(root, '.autonomous-team', 'config.json'), JSON.stringify({ repo: '' }));
+    process.env['AF_REPO_ROOT'] = root;
+    process.env['GH_REPO'] = '';
+    process.env['_REPO'] = '';
+    const repo = resolveRepo();
+    expect(repo).not.toBe('');
+    expect(repo).toBe(DEFAULT_REPO);
+  });
+});
+
 describe('repoOwner / repoName', () => {
   it('splits a slug into owner and name', () => {
     expect(repoOwner('acme/widgets')).toBe('acme');
