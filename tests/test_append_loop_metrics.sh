@@ -105,8 +105,11 @@ else
 
   ROW=$(tail -1 "$TEST_METRICS")
 
-  # Check all required fields
-  REQUIRED_FIELDS=(ts duration_s open_prs needs_review needs_merge needs_fix
+  # Check all required fields. "timestamp" is what both writers of this file
+  # emit; "ts" is a legacy spelling readers still tolerate for old rows (see
+  # backend/loop_metrics_ts.py, the shared resolver) but this suite pins
+  # today's writer format so a future rename breaks the suite.
+  REQUIRED_FIELDS=(timestamp duration_s open_prs needs_review needs_merge needs_fix
     event_count discussion_count queue_depth agents_spawned prs_merged
     budget cost quality)
 
@@ -120,11 +123,11 @@ else
   [[ "$ALL_FIELDS_OK" == "true" ]] && pass "all required fields present"
 
   # Check specific values
-  TS=$(echo "$ROW" | jq -r '.ts' 2>/dev/null)
+  TS=$(echo "$ROW" | jq -r '.timestamp' 2>/dev/null)
   if [[ "$TS" == "2026-05-11T10:05:00Z" ]]; then
-    pass "ts matches iter-end-iso"
+    pass "timestamp matches iter-end-iso"
   else
-    fail "ts mismatch: got $TS"
+    fail "timestamp mismatch: got $TS"
   fi
 
   DUR=$(echo "$ROW" | jq '.duration_s' 2>/dev/null)
@@ -191,10 +194,10 @@ setup
 
 OUTPUT=$(METRICS_FILE="$TEST_METRICS" bash "$APPEND_SCRIPT" --dry-run true 2>/dev/null)
 
-if echo "$OUTPUT" | jq -e '.ts' >/dev/null 2>&1; then
-  pass "no-arg dry-run produces row with .ts"
+if echo "$OUTPUT" | jq -e '.timestamp' >/dev/null 2>&1; then
+  pass "no-arg dry-run produces row with .timestamp"
 else
-  fail "no-arg dry-run failed or missing .ts: ${OUTPUT:-<empty>}"
+  fail "no-arg dry-run failed or missing .timestamp: ${OUTPUT:-<empty>}"
 fi
 
 teardown
