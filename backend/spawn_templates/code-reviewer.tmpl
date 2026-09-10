@@ -144,8 +144,8 @@ Label API: use `gh pr edit --add-label` / `--remove-label` — this is the confi
 spelling from a worktree-isolated context (measured directly on D#2045/D#2139). Re-read the
 label afterwards with an independent `gh pr view --json labels` call — don't trust the exit
 code alone.
-  Apply label:  gh pr edit {pr_number} --repo {{REPO}} --add-label code-review-passed
-  Remove label: gh pr edit {pr_number} --repo {{REPO}} --remove-label code-review-needs-fix
+  Apply label:  gh pr edit {pr_number} --repo {{CODE_REPO}} --add-label code-review-passed
+  Remove label: gh pr edit {pr_number} --repo {{CODE_REPO}} --remove-label code-review-needs-fix
 
 - Apply label 'code-review-passed' only when all tests passed (TEST_EXIT=0) and review passes.
 - Apply label 'code-review-needs-fix' with inline PR comments if tests fail or changes are required.
@@ -188,7 +188,7 @@ sys.path.insert(0, '.')
 from backend.spec_external_docs import check_imports_have_docs
 
 diff = subprocess.check_output(
-    ['gh', 'pr', 'diff', '{{pr_number}}', '--repo', '{{REPO}}'],
+    ['gh', 'pr', 'diff', '{{pr_number}}', '--repo', '{{CODE_REPO}}'],
     text=True
 )
 result = subprocess.run(

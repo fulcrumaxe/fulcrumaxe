@@ -42,8 +42,24 @@ Steps:
        echo "ERROR: PR diff ($DIFF_LINES lines) exceeds pr_size_max_lines ($MAX_LINES). Split the work."
        exit 1
      fi
-5. Open a PR targeting main. Title: "#{{discussion_number}}: {{discussion_title}}"
-   Include the Discussion URL in the PR body: {{discussion_url}}
+5. Open a PR targeting main.
+
+   Title: plain English, describing what the change does. No Discussion number
+   and no Discussion title. No `gh pr merge --squash` in this tree passes
+   `--subject`, so the squash commit message defaults to the PR title — a
+   Discussion title placed there becomes a permanent public commit message, and
+   a commit message cannot be edited after the fact the way a PR body can.
+     Good: "URL detection for Meet, Zoom, and Teams"
+     Bad:  "#N: <the Discussion's title>"
+
+   Body: cite the Discussion as a bare closing reference on its own line —
+     Closes D#{{discussion_number}}
+   That is the whole reference. Do NOT paste the Discussion URL, the Discussion
+   title, or any Spec prose into the PR body: the PR is public and the
+   Discussion is not, so a private URL published there is a 404 that also leaks
+   the private repo's existence and numbering. Describe the change in your own
+   words against the code. `scripts/ci/pr-link-policy.sh` enforces both halves —
+   it requires the bare `D#NNNN` form and rejects a private-repo URL.
 
    Your worktree's branch shares no history with the code plane — check
    `git merge-base HEAD code-plane/main` (empty means unrelated histories,
@@ -72,7 +88,7 @@ Steps:
 
 5b. Link the new PR back to the worktree registry (no-op if not running in a worktree):
      if [[ -n "${WORKTREE_ID:-}" ]]; then
-       PR_NUMBER=$(gh pr view --json number --jq '.number' --repo {{REPO}})
+       PR_NUMBER=$(gh pr view --json number --jq '.number' --repo {{CODE_REPO}})
        bash scripts/lib/worktree-registry.sh set-pr "$WORKTREE_ID" "$PR_NUMBER"
      fi
 6. Report back: "PR #<number> created for Discussion #{{discussion_number}}."
