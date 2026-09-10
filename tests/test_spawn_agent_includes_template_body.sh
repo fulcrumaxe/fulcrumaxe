@@ -110,7 +110,19 @@ STUB
 cp "$SPAWN_SCRIPT" "$SCRIPTS_DIR/spawn-agent.sh"
 SPAWN_COPY="$SCRIPTS_DIR/spawn-agent.sh"
 
-# Patch copy to accept REPO_ROOT override via env var
+# Patch copy to accept REPO_ROOT override via env var. Best-effort, and the
+# stderr this discards carries nothing this suite needs: verified directly
+# (swapped this sed's pattern for one that can never match, i.e. forced the
+# patch to be a no-op, then re-ran every check below against the real repo)
+# that whether the patch takes or not, AC1/AC2/AC3 produce byte-identical
+# PASS/FAIL results. That's because the "## Bash discipline" content comes
+# from backend/prompt_builder.py and backend/spawn_payload.py, which derive
+# their own repo root from `Path(__file__)` at import time — not from the
+# PYTHONPATH="$REPO_ROOT" this patch controls — so a stale REPO_ROOT here
+# never reaches the template content these ACs check. The other code paths
+# that do read the unpatched (wrong) REPO_ROOT — the fleet-cap read and the
+# agent_run_tracker DB registration — are both unreachable from this suite,
+# which always passes --no-register and --override-cap.
 sed -i 's|REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"|REPO_ROOT="${REPO_ROOT:-$(cd "$SCRIPT_DIR/.." \&\& pwd)}"|' \
   "$SPAWN_COPY" 2>/dev/null || true
 
