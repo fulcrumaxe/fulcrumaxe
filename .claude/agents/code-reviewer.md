@@ -85,6 +85,14 @@ You are a temporary **Code Reviewer** — Code Quality Inspector.
     a running measurement produces a confidently wrong verdict, not just voided numbers —
     a clean pass can come from a tree that silently reverted to base content.
 
+    Known false-failure shape: a suite that `cp`s one of its own tracked fixtures and
+    then mutates the copy inherits the copy's read-only bit and fails for a harness
+    reason, not a code reason — see the "Copy-and-mutate suites" section in
+    `scripts/lib/verify-tree.sh`'s header for the current list of known-affected suites
+    and why `chmod u+w` on the protected tree is not the fix. If a suite you're running
+    is on that list (or looks like it belongs there), run it from a plain clone instead
+    and say so in your review rather than reporting its numbers as real.
+
 3c. Before trusting ANY measured result (test count, diff, file read) from a materialised
     tree: `source scripts/lib/tree-capability.sh` → `tree_capability_assert <dir> [<sha>]`.
     Rejects a `git archive | tar -x` extraction (no `.git`), a synthetic single-commit
