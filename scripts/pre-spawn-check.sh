@@ -1116,6 +1116,17 @@ if [[ -f "$SCRIPT_DIR/lib/working-principles.sh" ]]; then
   WORKING_PRINCIPLES=$(working_principles_block 2>/dev/null || true)
 fi
 
+# ── Agent Scratchpad convention injection ──────────────────────────────────────
+# Source agent-scratchpad.sh and capture the ## Scratchpad Convention block.
+# Role-agnostic, same point and mechanism as Working Principles above (D#2360):
+# every spawned agent gets it, with no per-role prompt authoring required.
+AGENT_SCRATCHPAD=""
+if [[ -f "$SCRIPT_DIR/lib/agent-scratchpad.sh" ]]; then
+  # shellcheck source=scripts/lib/agent-scratchpad.sh
+  source "$SCRIPT_DIR/lib/agent-scratchpad.sh"
+  AGENT_SCRATCHPAD=$(agent_scratchpad_block 2>/dev/null || true)
+fi
+
 # ── Self-Observe Gate injection ────────────────────────────────────────────────
 # Inject the self-observe gate block for executor roles.
 # Gate defaults to false (shadow mode). When true, non-corrected findings flip verdict.
@@ -1157,6 +1168,7 @@ persona_voice = sys.argv[11]
 working_principles = sys.argv[12]
 self_observe_gate = sys.argv[13]
 dial_fired_raw = sys.argv[14]
+agent_scratchpad = sys.argv[15]
 
 try:
     gate_context = json.loads(gate_context_raw)
@@ -1192,6 +1204,7 @@ out = {
     'persona_voice': persona_voice,
     'working_principles': working_principles,
     'self_observe_gate': self_observe_gate,
+    'agent_scratchpad': agent_scratchpad,
 }
 if discussion:
     out['discussion'] = int(discussion)
@@ -1216,7 +1229,8 @@ print(json.dumps(out, indent=2))
   "$PERSONA_VOICE" \
   "$WORKING_PRINCIPLES" \
   "$SELF_OBSERVE_GATE" \
-  "$_DIAL_FIRED_JSON"
+  "$_DIAL_FIRED_JSON" \
+  "$AGENT_SCRATCHPAD"
 
 if [[ "$DRY_RUN" != "1" ]]; then
   hook_event_finish
