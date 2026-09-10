@@ -646,6 +646,74 @@ def _kill_orphan_tree_quietly(*pids: int | None) -> None:
             pass
 
 
+def _spawn_orphaned_wrapper_and_child_with_child_comm(
+    argv_tail: list[str], comm: str, inner: str = 'trap "" TERM; sleep 300; true'
+) -> tuple[int, int, str]:
+    """Same shape as _spawn_orphaned_wrapper_and_child, but the CHILD process
+    renames its own /proc/self/comm to `comm` before parking -- a plain
+    write any process can do to itself (prctl(PR_SET_NAME) under the hood),
+    truncated by the kernel to 15 bytes. Regression guard for the
+    /proc/<pid>/stat field-shift bug (D#2006 security review,
+    scripts/process-watchdog.sh _pid_children): _pid_children reads a
+    CANDIDATE process's own stat line to learn its ppid, and stat's field 2
+    is comm -- unescaped, and comm may contain a space (a real, unprivileged
+    example on this host: `npm exec chrome`). A naive `awk '{print $4}'`
+    silently lands on the wrong column for any candidate whose own comm has
+    a space, hiding it -- and its whole subtree -- from the descendant BFS.
+    """
+    renamed_inner = f"printf %s {shlex.quote(comm)} > /proc/self/comm 2>/dev/null; {inner}"
+    return _spawn_orphaned_wrapper_and_child(argv_tail, inner=renamed_inner)
+
+
+def test_orphaned_pytest_kill_escalates_two_level_tree_space_comm_child_reaps_child():
+    """D#2006 security review, blocking finding: _pid_children parsed a
+    candidate's own ppid positionally off /proc/<pid>/stat
+    (`awk '{print $4}'`). stat's comm field is unescaped and space-capable,
+    so a child whose own comm contains a space was invisible to
+    _pid_children -- and therefore to _collect_descendants -- leaving it
+    unreaped while escalate_kill still reported KILLED: SIGKILL for the
+    wrapper. Same two-level tree as
+    test_orphaned_pytest_kill_escalates_two_level_tree_reaps_child, with one
+    difference: the child renames its own comm to "my proc" (a space,
+    matching the security review's own worked example) before parking.
+    That difference is exactly why the existing test passed even with the
+    bug present -- its child's comm ("bash") has no space to shift on, so
+    it could not catch this.
+    """
+    wrapper_pid, child_pid, marker = _spawn_orphaned_wrapper_and_child_with_child_comm(
+        ["python3", "-m", "pytest", "tests/", "-q"], comm="my proc",
+    )
+    try:
+        assert _read_ppid(wrapper_pid) == 1, "test setup broken: wrapper was not orphaned"
+        assert _read_ppid(child_pid) == wrapper_pid, "test setup broken: child not parented to wrapper"
+        child_comm = Path(f"/proc/{child_pid}/comm").read_text().strip()
+        assert child_comm == "my proc", f"test setup broken: child comm was {child_comm!r}, not 'my proc'"
+
+        result = _run_watchdog(["--kill"], env_extra={"PROCESS_WATCHDOG_MAX_AGE_SEC": "0"})
+        assert result.returncode == 0
+        line = _candidate_line(result.stdout, wrapper_pid)
+        assert line is not None, f"expected a verdict line for wrapper PID {wrapper_pid}:\n{result.stdout}"
+        assert "KILLED: SIGKILL" in line, (
+            f"expected escalation to SIGKILL against a SIGTERM-ignoring wrapper, got:\n{line}"
+        )
+
+        deadline = time.time() + 5
+        while (
+            (_read_ppid(wrapper_pid) is not None or _read_ppid(child_pid) is not None)
+            and time.time() < deadline
+        ):
+            time.sleep(0.1)
+        assert _read_ppid(wrapper_pid) is None, f"wrapper PID {wrapper_pid} survived --kill escalation"
+        assert _read_ppid(child_pid) is None, (
+            f"child PID {child_pid} (comm 'my proc', containing a space) survived --kill escalation -- "
+            "the /proc/<pid>/stat field-shift bug hid it from the descendant walk, so the wrapper was "
+            "reaped but the real work (misparented under it, invisible to _pid_children) kept running, "
+            "re-orphaned, while the watchdog reported KILLED: SIGKILL"
+        )
+    finally:
+        _kill_orphan_tree_quietly(wrapper_pid, child_pid)
+
+
 def test_orphaned_pytest_all_conditions_true_is_detected_and_named():
     """Positive case (D#2006 acceptance item 7, non-vacuity): a synthetic
     orphaned pytest process — ppid==1, old enough, "pytest" an exact argv

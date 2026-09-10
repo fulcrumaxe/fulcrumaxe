@@ -29,6 +29,19 @@ else
   echo "process-watchdog: mode=DRY-RUN (pass --kill to actually signal)"
 fi
 
+# Helper: read a process's parent PID from /proc/<pid>/status, not
+# /proc/<pid>/stat. stat's ppid is positional field 4, but field 2 (comm) is
+# the process's own name wrapped in unescaped parentheses, and comm may
+# contain spaces (up to 15 chars, settable via prctl(PR_SET_NAME) or a write
+# to /proc/self/comm) or even ')' — either shifts every later field, so a
+# naive `awk '{print $4}'` silently lands on the wrong column. Not
+# theoretical: `npm exec chrome` is a real comm on this host. status's
+# `PPid:` line has no such trap. Prints nothing if the process is gone or
+# unreadable, same as the parse this replaces.
+_read_ppid() {
+  awk '/^PPid:/ { print $2 }' "/proc/$1/status" 2>/dev/null
+}
+
 # --------------------------------------------------------------------------
 # Build protected PID set: live pidfiles under .autonomous-team/, plus own
 # ancestors.
@@ -62,11 +75,12 @@ for pidfile in "${PIDFILES[@]}"; do
   fi
 done
 
-# Walk own ancestor chain via /proc/$PID/stat ppid field
+# Walk own ancestor chain via /proc/$PID/status PPid field (see _read_ppid)
 WALK_PID=$$
 while [ "$WALK_PID" -gt 1 ] 2>/dev/null; do
   PROTECTED_PIDS+=("$WALK_PID")
-  WALK_PID=$(awk '{print $4}' /proc/"$WALK_PID"/stat 2>/dev/null || echo 0)
+  WALK_PID=$(_read_ppid "$WALK_PID" || echo 0)
+  [ -n "$WALK_PID" ] || WALK_PID=0
 done
 
 echo "process-watchdog: protected PIDs: ${PROTECTED_PIDS[*]:-<none>}"
@@ -144,11 +158,13 @@ argv_is_pytest_invocation() {
 
 # Helper: print the immediate (live) children of $1, reading /proc fresh.
 _pid_children() {
-  local parent="$1" p ppid_val
+  local parent="$1" p pid ppid_val
   for p in /proc/[0-9]*; do
-    [ -r "$p/stat" ] || continue
-    ppid_val=$(awk '{print $4}' "$p/stat" 2>/dev/null) || continue
-    [ "$ppid_val" = "$parent" ] && printf '%s\n' "${p#/proc/}"
+    pid="${p#/proc/}"
+    [ -r "$p/status" ] || continue
+    ppid_val=$(_read_ppid "$pid") || continue
+    [ -n "$ppid_val" ] || continue
+    [ "$ppid_val" = "$parent" ] && printf '%s\n' "$pid"
   done
 }
 
