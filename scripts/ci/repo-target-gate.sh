@@ -272,12 +272,23 @@ PATTERNS=(
 ALLOWLIST_ENTRIES=(
   "backend/fleet/runtime.py:#     \"repo\":Illustrative comment inside the module docstring's Usage-block example showing discover_running_projects()'s return shape — not live code, not a resolver default."
   "ts-backend/src/config/repo.ts:export const DEFAULT_REPO:DEFAULT_REPO is the last-resort fallback of a four-step precedence chain (config.json, then GH_REPO, then _REPO, then this literal), so an adopter who configures any earlier step never reaches it. D#2348 removed the FROZEN RULE that used to justify this entry — that rule reserved edits of the literal to export.sh's substitution pass, and D#2348 retires that pass — but the literal is still a hard-coded repo-target default of exactly the shape this check exists to name. Fixing it for real means giving ts-backend an origin-remote resolver like backend/_repo.py's, which is its own phase of D#2348, not a one-line patch."
-  "tui/src/backend.ts:GH_REPO:GH_REPO passed to a subprocess env; same defect class as backend/_repo.py but the TUI has no equivalent resolver module yet — needs one built, not a one-line patch. Deferred to a focused TUI-config follow-up."
-  "tui/src/index.tsx:gh api graphql --repo:Embedded gh command template hard-codes --repo and the GraphQL owner/name context; same TUI-config gap as backend.ts above, same follow-up."
+  "tui/src/config/repo.ts:export const DEFAULT_REPO:Same shape and same reasoning as the ts-backend/src/config/repo.ts entry above — D#2380's tui resolver, which this literal ends. It is the last-resort fallback of a five-step chain (config.json, then GH_REPO, then _REPO, then the .git/config origin remote, then this literal), one step later than ts-backend's because D#2380 added the origin-remote step ts-backend still lacks — so an adopter who configures any earlier step, or simply clones normally with an origin remote set, never reaches it. Removing the literal outright would leave resolveRepo() with no floor for the one case nothing else covers (no config, no env vars, no .git at all), which is worse than an allowlisted last-resort default."
   "loop-bootstrap/bootstrap.sh:SOURCE_REPO=\"\${LOOP_BOOTSTRAP_SOURCE_REPO:SOURCE_REPO is a sed SEARCH KEY (the literal string do_install's rewrite looks for in the copied corpus), not a repo-target default — the actual target an adopter's bootstrap run acts on comes from the mandatory --repo flag a few lines below, which has no default and hard-errors if omitted. This is the exact D#1870 blind-spot shape (shape is a proxy for meaning, not meaning itself) — re-allowlisted now that loop-bootstrap/ ships again (see the removal note this replaces, right below) with the same reasoning D#1872's original entry used."
   "loop-bootstrap/bootstrap.sh:ENGINE_CANONICAL_REPO=\"\${LOOP_BOOTSTRAP_ENGINE_REPO:This literal (D#2335 /update PR 1) is the ENGINE's own upstream identity, written into an adopter's engine-install.json baseline stamp as the default source_repo scripts/update-check.sh compares against — it is not a resolver for the adopter's OWN project identity, which the mandatory --repo flag above already owns. export.sh's identifier rewrite turns this literal into the exporting fork's own slug exactly like the SOURCE_REPO entry directly above, so a forked engine's export correctly points an adopter's /update at that fork's own upstream instead of this repo — precisely the behavior the Spec's Implementation Notes ask for ('an adopter pointed at a fork is compared against their own upstream')."
   "scripts/update-check.sh:DEFAULT_ENGINE_REPO=\"\${LOOP_BOOTSTRAP_ENGINE_REPO:Same literal, same reasoning, same D#2335 /update PR 1 — this is update-check.sh's own fallback (used by --record-baseline and read as a default when a stamp omits source_repo), not a resolver for the adopter's own project identity. See the loop-bootstrap/bootstrap.sh ENGINE_CANONICAL_REPO entry above for the full reasoning; duplicated here because it is a separate literal in a separate shipped file, not a second reference to the same line."
 )
+# NOTE (D#2380): tui/src/backend.ts:GH_REPO and tui/src/index.tsx:gh api
+# graphql --repo were allowlisted here as cover for the fact that tui/ had no
+# repo resolver — both entries said so and deferred to "a focused TUI-config
+# follow-up" that nobody had filed. D#2380 is that follow-up: tui/ now has
+# tui/src/config/repo.ts (mirroring ts-backend/src/config/repo.ts's
+# precedence chain plus an origin-remote fallback step), both call sites
+# route through it, and neither line matches any forbidden shape any more.
+# The new resolver's own DEFAULT_REPO constant gets a fresh allowlist entry
+# above (same shape and reasoning as ts-backend's), so removing these two
+# does not just move the cover, it retires it.
+# Removed rather than reworded, same as the D#2348 phase 1 and PR-a entries
+# below.
 # NOTE (D#2348 phase 1): dashboard_tui/readers/pr_detail.py:_REPO was
 # allowlisted here as cover for a known live resolver default. dashboard_tui/
 # has moved to the private internal repo, so the path is no longer in the

@@ -19,6 +19,7 @@ import { ChatInput } from './ChatInput.js';
 import { StatusBar } from './StatusBar.js';
 import { BackendEvent, AgentSpawnEvent, AgentEventEnvelope, AgentExitEvent, AgentFeedFileEvent } from './types.js';
 import { startFeedWatcher, FeedEvent } from './feedWatcher.js';
+import { readQueueCountsAsync } from './discussionsQuery.js';
 
 const execAsync = promisify(exec);
 
@@ -64,31 +65,6 @@ function readLoopAgo(): string | null {
       ? ` (${data.duration_seconds}s)`
       : '';
     return `${agoLabel}${durationLabel}`;
-  } catch {
-    return null;
-  }
-}
-
-async function readQueueCountsAsync(): Promise<{ active: number; ready: number } | null> {
-  try {
-    const { stdout } = await execAsync(
-      `gh api graphql --repo autonomous-agent-7/autonomous-forever -f query='query { repository(owner:"autonomous-agent-7", name:"autonomous-forever") { discussions(first:50, states:[OPEN]) { nodes { body } } } }'`,
-      { timeout: 15000 }
-    );
-    const result = JSON.parse(stdout) as {
-      data?: { repository?: { discussions?: { nodes?: Array<{ body: string }> } } };
-    };
-    const nodes = result.data?.repository?.discussions?.nodes ?? [];
-    let active = 0;
-    let ready = 0;
-    for (const node of nodes) {
-      if (/STATUS:SPEC_READY/.test(node.body)) {
-        ready++;
-      } else if (/STATUS:(DISCUSSING|IMPLEMENTING|REVIEWING)/.test(node.body)) {
-        active++;
-      }
-    }
-    return { active, ready };
   } catch {
     return null;
   }
