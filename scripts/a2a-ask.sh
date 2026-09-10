@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # a2a-ask.sh — post a question via A2A broker and poll inbox for an answer.
 #
-# Usage: bash scripts/a2a-ask.sh "<question>" [--timeout 60] [--to agent_id]
+# Usage: bash scripts/a2a-ask.sh "<question>" [--timeout SECONDS] [--to agent_id]
+#        (--timeout default: 60s)
 #
 # Reads $CLAUDE_AGENT_EVENT_ID (sender agent_id) and $A2A_TOKEN (Bearer token).
 # Exits 0 on answer received, 1 on timeout — always exits 0 when broker is down.

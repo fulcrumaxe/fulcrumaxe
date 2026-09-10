@@ -17,7 +17,8 @@ Shape of findings.json:
     "elapsed_s": 12.3 }
 
 Usage:
-  python3 scripts/tui-tester/pilot-sweep.py [--state-dir /path] [--timeout 15]
+  python3 scripts/tui-tester/pilot-sweep.py [--state-dir /path] [--timeout SECONDS]
+  (--timeout default: 15s)
 
 Exits 0 if verdict==pass, 1 if needs-fix, 2 if fail.
 

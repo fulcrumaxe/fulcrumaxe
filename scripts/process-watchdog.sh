@@ -103,6 +103,31 @@ argv_has_exact_element() {
   return 1
 }
 
+# Helper: send SIGTERM, wait up to 5s, escalate to SIGKILL if still alive.
+# Shared by every detection pass so there is exactly one place that
+# implements "TERM then KILL" (D#2006: the whole point of this script is
+# that bare `timeout` never escalates — this must actually escalate).
+# Echoes the signal that ultimately reaped the process ("SIGTERM" or
+# "SIGKILL") on stdout; callers capture it via command substitution.
+escalate_kill() {
+  local pid="$1"
+  local signal="SIGTERM"
+
+  kill -TERM "$pid" 2>/dev/null || true
+
+  for _i in 1 2 3 4 5; do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 1
+  done
+
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -KILL "$pid" 2>/dev/null || true
+    signal="SIGKILL"
+  fi
+
+  printf '%s\n' "$signal"
+}
+
 # --------------------------------------------------------------------------
 # Resolve team-log issue number (only needed when actually killing)
 # --------------------------------------------------------------------------
@@ -179,21 +204,7 @@ for pattern in "${PATTERNS[@]}"; do
       continue
     fi
 
-    # Attempt graceful SIGTERM first
-    kill -TERM "$pid" 2>/dev/null || true
-    signal="SIGTERM"
-
-    # Wait up to 5 seconds for process to exit
-    for _i in 1 2 3 4 5; do
-      kill -0 "$pid" 2>/dev/null || break
-      sleep 1
-    done
-
-    # Escalate to SIGKILL if still alive
-    if kill -0 "$pid" 2>/dev/null; then
-      kill -KILL "$pid" 2>/dev/null || true
-      signal="SIGKILL"
-    fi
+    signal=$(escalate_kill "$pid")
 
     echo "process-watchdog: PID $pid ($cmd, running ${elapsed_min}m, ${rss_mb}MB RSS) — KILLED: $signal"
 
@@ -207,5 +218,81 @@ for pattern in "${PATTERNS[@]}"; do
 
   done < <(pgrep -f "$escaped_pattern" 2>/dev/null || true)
 done
+
+# --------------------------------------------------------------------------
+# Second pass: orphaned pytest processes (D#2006).
+#
+# Three orphaned full-suite `timeout N python3 -m pytest ...` runs were
+# found reparented to systemd, running 4.6-5.6 hours past their own
+# `timeout` bound, because bare `timeout N` (no --kill-after) sends SIGTERM
+# once and then waits forever for a child that does not take the hint.
+# Unlike PATTERNS above, this is not restricted to $REPO_DIR — a pytest run
+# can be launched from any worktree or scratch checkout, and the signal
+# that identifies it isn't a path, it's that its own parent has already
+# exited while it is still running, old, and unambiguously a pytest
+# invocation.
+#
+# All three conditions below are required, and each is independently
+# load-bearing:
+#   1. ppid == 1        — genuinely orphaned (reparented to init), not a
+#                          live child of a still-running shell or `timeout`.
+#   2. age >= MAX_AGE_SEC — a young process may still be legitimately
+#                          mid-run; only age proves it is stuck.
+#   3. "pytest" is an exact argv element (argv_has_exact_element, the same
+#      helper the PATTERNS pass uses) — not a substring match, so a
+#      process that merely *mentions* pytest in some longer argument (a
+#      log path, a grep) is never swept up. This also correctly matches
+#      the real-world shape from the Discussion: a `timeout N python3 -m
+#      pytest ...` wrapper's own argv contains "pytest" as an exact token
+#      (the -m module name), even though the wrapper's argv[0] is
+#      "timeout", not "pytest".
+# --------------------------------------------------------------------------
+while IFS= read -r line; do
+  pid=$(printf '%s' "$line" | awk '{print $1}')
+  ppid_val=$(printf '%s' "$line" | awk '{print $2}')
+  elapsed=$(printf '%s' "$line" | awk '{print $3}')
+  [ -z "$pid" ] && continue
+  [ "$ppid_val" = "1" ] || continue
+
+  cmd=$(ps -o args= -p "$pid" 2>/dev/null | head -c 80 | tr -d '\n' || true)
+  [ -z "$cmd" ] && continue  # already gone
+
+  if ! argv_has_exact_element "$pid" "pytest"; then
+    continue  # ppid==1 but not a pytest invocation — not this pass's concern
+  fi
+
+  if is_protected "$pid"; then
+    echo "process-watchdog: PID $pid ($cmd) — SKIP: protected"
+    continue
+  fi
+
+  if [ -z "$elapsed" ]; then
+    continue  # process already gone
+  fi
+  if [ "$elapsed" -lt "$MAX_AGE_SEC" ]; then
+    echo "process-watchdog: PID $pid ($cmd) — SKIP: only ${elapsed}s old (< ${MAX_AGE_SEC}s), orphaned pytest"
+    continue
+  fi
+
+  rss_kb=$(ps -o rss= -p "$pid" 2>/dev/null | tr -d ' ' || echo 0)
+  rss_mb=$(( ${rss_kb:-0} / 1024 ))
+  elapsed_min=$(( elapsed / 60 ))
+
+  if [ "$KILL_MODE" != true ]; then
+    echo "process-watchdog: PID $pid ($cmd, running ${elapsed_min}m, ${rss_mb}MB RSS, orphaned pytest) — DRY-RUN: would signal (pass --kill to act)"
+    continue
+  fi
+
+  signal=$(escalate_kill "$pid")
+
+  echo "process-watchdog: PID $pid ($cmd, running ${elapsed_min}m, ${rss_mb}MB RSS, orphaned pytest) — KILLED: $signal"
+
+  resolve_log_issue
+  if [ -n "$LOG_ISSUE" ]; then
+    bash "$REPO_DIR/scripts/rotate-team-log.sh" comment \
+      "[$(date +%H:%M)] watchdog: killed orphaned pytest PID $pid ($cmd, running ${elapsed_min}m, ${rss_mb}MB RSS) — $signal" \
+      2>/dev/null || true
+  fi
+done < <(ps -eo pid=,ppid=,etimes= 2>/dev/null || true)
 
 exit 0

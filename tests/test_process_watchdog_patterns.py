@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -448,3 +449,204 @@ def test_shellcheck_clean():
         pytest.skip("shellcheck not on PATH")
     result = subprocess.run([shellcheck, str(WATCHDOG)], capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+# ---------------------------------------------------------------------------
+# D#2006: orphaned pytest detection.
+#
+# Three orphaned full-suite `timeout N python3 -m pytest ...` runs were
+# found reparented to systemd, running 4.6-5.6 hours past their own bound,
+# because bare `timeout N` (no --kill-after) sends SIGTERM once and then
+# waits forever for a child that never takes the hint. The watchdog's
+# second pass detects any process where all three of these hold:
+#   1. ppid == 1 (genuinely orphaned)
+#   2. age >= MAX_AGE_SEC
+#   3. "pytest" is an exact argv element
+#
+# Every helper here spawns a *fake* process — a bash instance that never
+# actually runs pytest — and tags it with a unique marker, so these tests
+# can find and clean up exactly the process they created even while other
+# agents' real pytest suites are running concurrently on the same host
+# (this is precisely the contention D#2006 documents; these tests must
+# never select or touch anyone else's process).
+# ---------------------------------------------------------------------------
+
+
+def _read_ppid(pid: int) -> int | None:
+    """Read a process's PPid from /proc/<pid>/status. None if the process is gone."""
+    try:
+        text = Path(f"/proc/{pid}/status").read_text()
+    except (FileNotFoundError, ProcessLookupError):
+        return None
+    for line in text.splitlines():
+        if line.startswith("PPid:"):
+            return int(line.split(":", 1)[1].strip())
+    return None
+
+
+def _spawn_orphaned(argv_tail: list[str], inner: str = "sleep 300; true") -> tuple[int, str]:
+    """Spawn a process whose own argv (after 'bash -c inner') is exactly
+    argv_tail plus a unique marker, and whose immediate parent exits right
+    away so it is reparented to init (ppid == 1) — the same shape as the
+    Discussion's own evidence: a `timeout N python3 -m pytest ...` wrapper
+    left running when its own parent shell exits. Returns (pid, marker).
+    """
+    marker = f"WD-TEST-{os.getpid()}-{time.time_ns()}"
+    full_tail = [*argv_tail, marker]
+    quoted = " ".join(shlex.quote(a) for a in full_tail)
+    subprocess.run(
+        ["bash", "-c", f'(setsid bash -c {shlex.quote(inner)} {quoted} &)'],
+        check=True,
+    )
+    deadline = time.time() + 3
+    while time.time() < deadline:
+        result = subprocess.run(["pgrep", "-f", marker], capture_output=True, text=True)
+        for token in result.stdout.split():
+            cand = int(token)
+            if _read_ppid(cand) == 1:
+                return cand, marker
+        time.sleep(0.1)
+    raise AssertionError(f"failed to spawn+orphan a process tagged {marker!r}")
+
+
+def _spawn_direct_child(argv_tail: list[str], inner: str = "sleep 300; true") -> subprocess.Popen:
+    """Spawn a process with argv (after 'bash -c inner') exactly argv_tail,
+    whose parent is this test process itself — i.e. NOT reparented, so
+    ppid != 1. Used to prove the ppid==1 condition is load-bearing.
+    """
+    marker = f"WD-TEST-{os.getpid()}-{time.time_ns()}"
+    proc = subprocess.Popen(
+        ["bash", "-c", inner, *argv_tail, marker],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    time.sleep(0.3)
+    return proc
+
+
+def _kill_orphan_quietly(pid: int) -> None:
+    """Best-effort cleanup for a pid returned by _spawn_orphaned (its own session/pgid leader)."""
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except Exception:
+        pass
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except Exception:
+        pass
+
+
+def test_orphaned_pytest_all_conditions_true_is_detected_and_named():
+    """Positive case (D#2006 acceptance item 7, non-vacuity): a synthetic
+    orphaned pytest process — ppid==1, old enough, "pytest" an exact argv
+    element — is found and named in dry-run output, and is left alive
+    (dry-run sends no signal; acceptance item 3)."""
+    pid, marker = _spawn_orphaned(["python3", "-m", "pytest", "tests/", "backend/tests/", "-q"])
+    try:
+        assert _read_ppid(pid) == 1, "test setup broken: spawned process was not orphaned"
+        result = _run_watchdog(env_extra={"PROCESS_WATCHDOG_MAX_AGE_SEC": "0"})
+        assert result.returncode == 0
+        line = _candidate_line(result.stdout, pid)
+        assert line is not None, f"expected orphaned pytest PID {pid} to be named:\n{result.stdout}"
+        assert "orphaned pytest" in line, line
+        assert "DRY-RUN: would signal" in line, line
+        assert os.kill(pid, 0) is None, "dry-run must not have signalled the process"
+    finally:
+        _kill_orphan_quietly(pid)
+
+
+def test_orphaned_pytest_condition_ppid_is_load_bearing():
+    """D#2006 acceptance item 2: dropping ppid==1 (a live, non-orphaned
+    child with the same argv and age override) must stop detection."""
+    proc = _spawn_direct_child(["python3", "-m", "pytest", "tests/", "-q"])
+    try:
+        assert _read_ppid(proc.pid) != 1, "test setup broken: process is unexpectedly orphaned"
+        result = _run_watchdog(env_extra={"PROCESS_WATCHDOG_MAX_AGE_SEC": "0"})
+        line = _candidate_line(result.stdout, proc.pid)
+        assert line is None or "orphaned pytest" not in line, (
+            f"a non-orphaned pytest-argv process was selected:\n{result.stdout}"
+        )
+    finally:
+        _kill_quietly(proc)
+
+
+def test_orphaned_pytest_condition_age_is_load_bearing():
+    """D#2006 acceptance item 2: dropping the age threshold (a fresh orphan,
+    no MAX_AGE_SEC override — the production 1800s default applies) must
+    stop detection, even though ppid==1 and the argv match both hold."""
+    pid, marker = _spawn_orphaned(["python3", "-m", "pytest", "tests/", "-q"])
+    try:
+        assert _read_ppid(pid) == 1, "test setup broken: spawned process was not orphaned"
+        result = _run_watchdog()  # no age override — process is seconds old
+        line = _candidate_line(result.stdout, pid)
+        assert line is None or (
+            "DRY-RUN: would signal" not in line and "KILLED" not in line
+        ), f"a too-young orphaned pytest process was selected as a candidate:\n{result.stdout}"
+    finally:
+        _kill_orphan_quietly(pid)
+
+
+def test_orphaned_pytest_condition_argv_element_is_load_bearing():
+    """D#2006 acceptance item 2: dropping the exact-argv-element match (an
+    orphaned, old-enough process whose argv does not contain "pytest")
+    must stop detection, even though ppid==1 and age both hold."""
+    pid, marker = _spawn_orphaned(["python3", "-m", "unittest", "tests/", "-q"])
+    try:
+        assert _read_ppid(pid) == 1, "test setup broken: spawned process was not orphaned"
+        result = _run_watchdog(env_extra={"PROCESS_WATCHDOG_MAX_AGE_SEC": "0"})
+        line = _candidate_line(result.stdout, pid)
+        assert line is None or "orphaned pytest" not in line, (
+            f"an orphan without 'pytest' as an argv element was selected:\n{result.stdout}"
+        )
+    finally:
+        _kill_orphan_quietly(pid)
+
+
+def test_orphaned_pytest_kill_escalates_sigterm_ignoring_process_to_sigkill():
+    """D#2006 acceptance item 4: the Discussion's own evidence is that these
+    processes ignore SIGTERM — all three real orphans needed -KILL. Proves
+    the escalation actually happens (SIGKILL), not merely attempted once,
+    against a process that traps and discards SIGTERM."""
+    pid, marker = _spawn_orphaned(
+        ["python3", "-m", "pytest", "tests/", "-q"],
+        # trailing `true` prevents bash's tail-call exec optimization from
+        # replacing this process's argv with plain "sleep 300" (discarding
+        # both the trap and the tagged argv) once sleep would otherwise be
+        # the last simple command — see _spawn_sleeper's docstring above.
+        inner='trap "" TERM; sleep 300; true',
+    )
+    try:
+        assert _read_ppid(pid) == 1, "test setup broken: spawned process was not orphaned"
+        result = _run_watchdog(["--kill"], env_extra={"PROCESS_WATCHDOG_MAX_AGE_SEC": "0"})
+        assert result.returncode == 0
+        line = _candidate_line(result.stdout, pid)
+        assert line is not None, f"expected a verdict line for PID {pid}:\n{result.stdout}"
+        assert "KILLED: SIGKILL" in line, (
+            f"expected escalation to SIGKILL against a SIGTERM-ignoring process, got:\n{line}"
+        )
+        deadline = time.time() + 5
+        while _read_ppid(pid) is not None and time.time() < deadline:
+            time.sleep(0.1)
+        assert _read_ppid(pid) is None, f"PID {pid} survived --kill escalation"
+    finally:
+        _kill_orphan_quietly(pid)
+
+
+def test_orphaned_pytest_protected_pid_not_signalled():
+    """D#2006 acceptance item 5: protected PIDs are never signalled, using
+    the SAME protected-set construction (pidfile glob under
+    .autonomous-team/*.pid) the PATTERNS pass already relies on — not a
+    second mechanism."""
+    pid, marker = _spawn_orphaned(["python3", "-m", "pytest", "tests/", "-q"])
+    pidfile = PIDDIR / f"test-watchdog-pytest-{pid}.pid"
+    try:
+        assert _read_ppid(pid) == 1, "test setup broken: spawned process was not orphaned"
+        pidfile.write_text(str(pid))
+        result = _run_watchdog(["--kill"], env_extra={"PROCESS_WATCHDOG_MAX_AGE_SEC": "0"})
+        line = _candidate_line(result.stdout, pid)
+        assert line is not None, f"expected protected PID {pid} to still be logged:\n{result.stdout}"
+        assert "SKIP: protected" in line, f"expected protected orphan to be skipped:\n{line}"
+        assert _read_ppid(pid) == 1, "a protected PID must not be signalled"
+    finally:
+        pidfile.unlink(missing_ok=True)
+        _kill_orphan_quietly(pid)
