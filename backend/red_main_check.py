@@ -2,7 +2,7 @@
 
 After a PR is merged, checks whether the merge left main in a red state by:
   1. Mapping changed files to their bounded test files.
-  2. Running only those tests (timeout 120s).
+  2. Running only those tests, bounded (120s cap).
   3. If any test fails, querying agent_run for all passing roles on that PR and
      recording a red_main verdict-overturn for each.
 

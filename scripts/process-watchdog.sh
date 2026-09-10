@@ -29,6 +29,19 @@ else
   echo "process-watchdog: mode=DRY-RUN (pass --kill to actually signal)"
 fi
 
+# Helper: read a process's parent PID from /proc/<pid>/status, not
+# /proc/<pid>/stat. stat's ppid is positional field 4, but field 2 (comm) is
+# the process's own name wrapped in unescaped parentheses, and comm may
+# contain spaces (up to 15 chars, settable via prctl(PR_SET_NAME) or a write
+# to /proc/self/comm) or even ')' — either shifts every later field, so a
+# naive `awk '{print $4}'` silently lands on the wrong column. Not
+# theoretical: `npm exec chrome` is a real comm on this host. status's
+# `PPid:` line has no such trap. Prints nothing if the process is gone or
+# unreadable, same as the parse this replaces.
+_read_ppid() {
+  awk '/^PPid:/ { print $2 }' "/proc/$1/status" 2>/dev/null
+}
+
 # --------------------------------------------------------------------------
 # Build protected PID set: live pidfiles under .autonomous-team/, plus own
 # ancestors.
@@ -62,11 +75,12 @@ for pidfile in "${PIDFILES[@]}"; do
   fi
 done
 
-# Walk own ancestor chain via /proc/$PID/stat ppid field
+# Walk own ancestor chain via /proc/$PID/status PPid field (see _read_ppid)
 WALK_PID=$$
 while [ "$WALK_PID" -gt 1 ] 2>/dev/null; do
   PROTECTED_PIDS+=("$WALK_PID")
-  WALK_PID=$(awk '{print $4}' /proc/"$WALK_PID"/stat 2>/dev/null || echo 0)
+  WALK_PID=$(_read_ppid "$WALK_PID" || echo 0)
+  [ -n "$WALK_PID" ] || WALK_PID=0
 done
 
 echo "process-watchdog: protected PIDs: ${PROTECTED_PIDS[*]:-<none>}"
@@ -101,6 +115,119 @@ argv_has_exact_element() {
     [ "$arg" = "$pattern" ] && return 0
   done < "$cmdline_file"
   return 1
+}
+
+# Helper: does `pid` actually *invoke* pytest, as opposed to merely
+# mentioning the string "pytest" somewhere in its argument list?
+# `argv_has_exact_element pid "pytest"` matches ANY argv element that is
+# literally "pytest" — including the search pattern of `grep pytest
+# somefile.txt`, a plausible real command (an agent grepping a log) that has
+# nothing to do with a pytest process. That is a false-positive vector for a
+# function whose whole job is deciding what to SIGKILL.
+#
+# A real invocation is narrower than that: either the program itself is
+# pytest (argv[0]'s basename is exactly "pytest" — the bare-executable
+# form), or it is invoked as a module (an argv element "-m" is immediately
+# followed by the argv element "pytest" — the `python3 -m pytest ...` form,
+# which is also what a `timeout N python3 -m pytest ...` wrapper's own argv
+# looks like, even though the wrapper's argv[0] is "timeout").
+argv_is_pytest_invocation() {
+  local pid="$1"
+  local cmdline_file="/proc/$pid/cmdline"
+  [ -r "$cmdline_file" ] || return 1
+  local -a argv=()
+  local arg
+  while IFS= read -r -d '' arg; do
+    argv+=("$arg")
+  done < "$cmdline_file"
+  [ "${#argv[@]}" -eq 0 ] && return 1
+
+  if [ "$(basename -- "${argv[0]}")" = "pytest" ]; then
+    return 0
+  fi
+
+  local i
+  for (( i = 0; i + 1 < ${#argv[@]}; i++ )); do
+    if [ "${argv[$i]}" = "-m" ] && [ "${argv[$((i + 1))]}" = "pytest" ]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+# Helper: print the immediate (live) children of $1, reading /proc fresh.
+_pid_children() {
+  local parent="$1" p pid ppid_val
+  for p in /proc/[0-9]*; do
+    pid="${p#/proc/}"
+    [ -r "$p/status" ] || continue
+    ppid_val=$(_read_ppid "$pid") || continue
+    [ -n "$ppid_val" ] || continue
+    [ "$ppid_val" = "$parent" ] && printf '%s\n' "$pid"
+  done
+}
+
+# Helper: print every live descendant of $1 (not including $1 itself), via
+# a BFS over /proc built fresh at call time — so a process that reparented
+# between detection and this call is still found, and this does not depend
+# on the target ever having set up its own session or process group.
+_collect_descendants() {
+  local -a queue=("$1")
+  local i=0 cur child
+  while [ "$i" -lt "${#queue[@]}" ]; do
+    cur="${queue[$i]}"
+    i=$((i + 1))
+    while IFS= read -r child; do
+      [ -z "$child" ] && continue
+      printf '%s\n' "$child"
+      queue+=("$child")
+    done < <(_pid_children "$cur")
+  done
+}
+
+# Helper: send SIGTERM, wait up to 5s, escalate to SIGKILL if still alive.
+# Shared by every detection pass so there is exactly one place that
+# implements "TERM then KILL" (D#2006: the whole point of this script is
+# that bare `timeout` never escalates — this must actually escalate).
+# Echoes the signal that ultimately reaped the process ("SIGTERM" or
+# "SIGKILL") on stdout; callers capture it via command substitution.
+#
+# The documented incident shape is a two-level tree: `timeout N python3 -m
+# pytest ...` is a wrapper process with the real work running underneath it
+# as a separate child PID. `timeout` forwards a SIGTERM it receives to its
+# child (which is why sending TERM to just the wrapper still has a chance
+# of working), but SIGKILL cannot be caught or forwarded by anything — it
+# only ever terminates the single PID it is sent to. So if the wrapper is
+# still alive after the TERM grace period (its child ignored the forwarded
+# TERM, same as the real incident processes), SIGKILL-ing the wrapper alone
+# kills the wrapper and leaves the child running, re-orphaned a second
+# time, while this function still reports "KILLED: SIGKILL" — a false
+# success, worse than not reaping at all. Collect the live descendant tree
+# fresh right before the KILL step (not at original detection time, so a
+# process that reparented in between is still caught) and kill every member
+# of it, skipping anything separately marked protected.
+escalate_kill() {
+  local pid="$1"
+  local signal="SIGTERM"
+
+  kill -TERM "$pid" 2>/dev/null || true
+
+  for _i in 1 2 3 4 5; do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 1
+  done
+
+  if kill -0 "$pid" 2>/dev/null; then
+    local target
+    for target in "$pid" $(_collect_descendants "$pid"); do
+      is_protected "$target" && continue
+      kill -KILL "$target" 2>/dev/null || true
+    done
+    signal="SIGKILL"
+  fi
+
+  printf '%s\n' "$signal"
 }
 
 # --------------------------------------------------------------------------
@@ -179,21 +306,7 @@ for pattern in "${PATTERNS[@]}"; do
       continue
     fi
 
-    # Attempt graceful SIGTERM first
-    kill -TERM "$pid" 2>/dev/null || true
-    signal="SIGTERM"
-
-    # Wait up to 5 seconds for process to exit
-    for _i in 1 2 3 4 5; do
-      kill -0 "$pid" 2>/dev/null || break
-      sleep 1
-    done
-
-    # Escalate to SIGKILL if still alive
-    if kill -0 "$pid" 2>/dev/null; then
-      kill -KILL "$pid" 2>/dev/null || true
-      signal="SIGKILL"
-    fi
+    signal=$(escalate_kill "$pid")
 
     echo "process-watchdog: PID $pid ($cmd, running ${elapsed_min}m, ${rss_mb}MB RSS) — KILLED: $signal"
 
@@ -207,5 +320,84 @@ for pattern in "${PATTERNS[@]}"; do
 
   done < <(pgrep -f "$escaped_pattern" 2>/dev/null || true)
 done
+
+# --------------------------------------------------------------------------
+# Second pass: orphaned pytest processes (D#2006).
+#
+# Three orphaned full-suite `timeout N python3 -m pytest ...` runs were
+# found reparented to systemd, running 4.6-5.6 hours past their own
+# `timeout` bound, because bare `timeout N` (no --kill-after) sends SIGTERM
+# once and then waits forever for a child that does not take the hint.
+# Unlike PATTERNS above, this is not restricted to $REPO_DIR — a pytest run
+# can be launched from any worktree or scratch checkout, and the signal
+# that identifies it isn't a path, it's that its own parent has already
+# exited while it is still running, old, and unambiguously a pytest
+# invocation.
+#
+# All three conditions below are required, and each is independently
+# load-bearing:
+#   1. ppid == 1        — genuinely orphaned (reparented to init), not a
+#                          live child of a still-running shell or `timeout`.
+#   2. age >= MAX_AGE_SEC — a young process may still be legitimately
+#                          mid-run; only age proves it is stuck.
+#   3. the command actually *invokes* pytest (argv_is_pytest_invocation) —
+#      either argv[0]'s basename is "pytest", or an argv element "-m" is
+#      immediately followed by "pytest". This is narrower than "pytest is
+#      an exact argv element anywhere": a process like `grep pytest
+#      somefile.txt` has "pytest" as an exact standalone argv element too
+#      (it's the grep pattern, not a program), but is not a pytest
+#      invocation and must not match. This still correctly matches the
+#      real-world shape from the Discussion: a `timeout N python3 -m
+#      pytest ...` wrapper's own argv carries "-m" immediately followed by
+#      "pytest" (the module name), even though the wrapper's argv[0] is
+#      "timeout", not "pytest".
+# --------------------------------------------------------------------------
+while IFS= read -r line; do
+  pid=$(printf '%s' "$line" | awk '{print $1}')
+  ppid_val=$(printf '%s' "$line" | awk '{print $2}')
+  elapsed=$(printf '%s' "$line" | awk '{print $3}')
+  [ -z "$pid" ] && continue
+  [ "$ppid_val" = "1" ] || continue
+
+  cmd=$(ps -o args= -p "$pid" 2>/dev/null | head -c 80 | tr -d '\n' || true)
+  [ -z "$cmd" ] && continue  # already gone
+
+  if ! argv_is_pytest_invocation "$pid"; then
+    continue  # ppid==1 but not a pytest invocation — not this pass's concern
+  fi
+
+  if is_protected "$pid"; then
+    echo "process-watchdog: PID $pid ($cmd) — SKIP: protected"
+    continue
+  fi
+
+  if [ -z "$elapsed" ]; then
+    continue  # process already gone
+  fi
+  if [ "$elapsed" -lt "$MAX_AGE_SEC" ]; then
+    echo "process-watchdog: PID $pid ($cmd) — SKIP: only ${elapsed}s old (< ${MAX_AGE_SEC}s), orphaned pytest"
+    continue
+  fi
+
+  rss_kb=$(ps -o rss= -p "$pid" 2>/dev/null | tr -d ' ' || echo 0)
+  rss_mb=$(( ${rss_kb:-0} / 1024 ))
+  elapsed_min=$(( elapsed / 60 ))
+
+  if [ "$KILL_MODE" != true ]; then
+    echo "process-watchdog: PID $pid ($cmd, running ${elapsed_min}m, ${rss_mb}MB RSS, orphaned pytest) — DRY-RUN: would signal (pass --kill to act)"
+    continue
+  fi
+
+  signal=$(escalate_kill "$pid")
+
+  echo "process-watchdog: PID $pid ($cmd, running ${elapsed_min}m, ${rss_mb}MB RSS, orphaned pytest) — KILLED: $signal"
+
+  resolve_log_issue
+  if [ -n "$LOG_ISSUE" ]; then
+    bash "$REPO_DIR/scripts/rotate-team-log.sh" comment \
+      "[$(date +%H:%M)] watchdog: killed orphaned pytest PID $pid ($cmd, running ${elapsed_min}m, ${rss_mb}MB RSS) — $signal" \
+      2>/dev/null || true
+  fi
+done < <(ps -eo pid=,ppid=,etimes= 2>/dev/null || true)
 
 exit 0

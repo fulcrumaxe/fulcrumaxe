@@ -493,6 +493,28 @@ else
   SELFHEAL_WARNS+=("stale-worktree sweep failed")
 fi
 
+# 9c. Report orphaned pytest processes (D#2006). A bare `timeout N` (missing
+# --kill-after) can leave a pytest run alive for hours after the agent that
+# started it has exited — three such orphans ran 4.6-5.6 hours before
+# anyone noticed, burning host contention that other agents correctly
+# attributed to "the host is busy" without ever finding the cause. Dry-run
+# only, same convention as 9b: this reports, it never signals — reaping is
+# a deliberate `--kill` invocation.
+ORPHAN_PYTEST_OUT=$(bash "$REPO_ROOT/scripts/process-watchdog.sh" 2>&1) && ORPHAN_PYTEST_OK=true || ORPHAN_PYTEST_OK=false
+if [[ "$ORPHAN_PYTEST_OK" == "true" ]]; then
+  ORPHAN_PYTEST_COUNT=$(echo "$ORPHAN_PYTEST_OUT" | grep -c "orphaned pytest) —" || true)
+  ORPHAN_PYTEST_COUNT="${ORPHAN_PYTEST_COUNT:-0}"
+  if [ "$ORPHAN_PYTEST_COUNT" -eq 0 ]; then
+    echo "  [OK] No orphaned pytest processes"
+  else
+    echo "  [WARN] ${ORPHAN_PYTEST_COUNT} orphaned pytest process(es) found — run 'bash scripts/process-watchdog.sh --kill' to reap"
+    SELFHEAL_WARNS+=("${ORPHAN_PYTEST_COUNT} orphaned pytest process(es) found")
+  fi
+else
+  echo "  [WARN] orphaned-pytest sweep failed (non-fatal)"
+  SELFHEAL_WARNS+=("orphaned-pytest sweep failed")
+fi
+
 # 10. Summary: green / yellow / red
 echo ""
 if [ "${#SELFHEAL_WARNS[@]}" -eq 0 ]; then
