@@ -220,20 +220,64 @@ def _strip_python_line_comment(line: str) -> str:
     return line
 
 
-def _extract_python_externals(text: str) -> list[str]:
-    """Return non-stdlib top-level Python module names found in *text*."""
+def _is_diff_text(text: str) -> bool:
+    """Return True when *text* has a recognizable unified-diff file header.
+
+    Reuses `_split_diff_by_path`'s own header detection (D#2007) so "is this
+    a diff" is decided the same way everywhere it's decided: a non-empty
+    section list means real diff markers (`+`/`-`/context prefixes) are
+    meaningful in *text*; an empty list means headerless source text (e.g.
+    Spec prose passed by the Stage 1 PM path).
+
+    Callers that already know the answer -- `_auto_externals`, which computes
+    this once per section via `_split_diff_by_path` itself -- pass `is_diff`
+    to `_extract_python_externals`/`_extract_ts_externals` directly instead
+    of making them call this. It exists as a named, testable predicate for
+    `check_imports_have_docs`'s explicit `language="python"`/`"typescript"`
+    dispatch (see there), which has no pre-split sections to reuse.
+
+    Deliberately NOT called from inside the extractors themselves: they are
+    also exercised directly (no diff argument at all) by the grammar/live-tree
+    test suites, scanning arbitrary real `.py`/`.ts` source files whole. Real
+    source can legitimately *contain* a `diff --git`/`+++ b/<path>` line as a
+    string literal (this module's own test fixtures do) without being a diff
+    -- self-detecting from raw text content would misclassify that file and
+    silently drop every genuine import in it that isn't literally prefixed
+    with `+`. Threading `is_diff` as an explicit parameter (default `False`,
+    matching prior behavior) means a direct call is never guessed at.
+    """
+    return bool(_split_diff_by_path(text))
+
+
+def _extract_python_externals(text: str, is_diff: bool = False) -> list[str]:
+    """Return non-stdlib top-level Python module names found in *text*.
+
+    *is_diff* must be passed explicitly by a caller that has already
+    confirmed *text* is unified-diff content (see `_is_diff_text` above for
+    why this function does not detect it itself). Defaults to False, which
+    is the pre-D#2007 behavior: every line is scanned as-is.
+    """
     stdlib = _STDLIB_NAMES
     allowlist = _load_allowlist()
     first_party = _FIRST_PARTY_NAMES
     seen: list[str] = []
     seen_set: set[str] = set()
     for raw_line in text.split("\n"):
-        # A leading diff '+' marks an added line; strip it before looking at
-        # the code. A '-' (removed) or unprefixed context line is left as-is,
-        # same as before: unprefixed text is scanned directly (the Stage 1
-        # PM path passes Spec prose, not a diff), and a '-' line simply won't
-        # match the import grammar at column 0.
-        line = raw_line[1:] if raw_line.startswith("+") else raw_line
+        if is_diff:
+            # D#2007: in diff mode only an added ('+') line is real content.
+            # Context (unprefixed) and removed ('-') lines are excluded BY
+            # RULE now, not by the old accidental parse-failure property a
+            # '-' line happened to have. The diff's own per-file header line
+            # ("+++ b/path") also starts with '+' but is not content, so it
+            # is excluded explicitly too -- it can never reach the extractor.
+            if not raw_line.startswith("+") or raw_line.startswith("+++"):
+                continue
+            line = raw_line[1:]
+        else:
+            # Headerless path (Stage 1 PM Spec prose has no diff markers, and
+            # neither does plain source text passed with an explicit
+            # language=): unchanged from before D#2007.
+            line = raw_line[1:] if raw_line.startswith("+") else raw_line
         code = _strip_python_line_comment(line).strip()
         if not code:
             continue
@@ -266,12 +310,33 @@ def _extract_python_externals(text: str) -> list[str]:
     return seen
 
 
-def _extract_ts_externals(text: str) -> list[str]:
-    """Return non-builtin TypeScript/JS module names found in *text*."""
+def _extract_ts_externals(text: str, is_diff: bool = False) -> list[str]:
+    """Return non-builtin TypeScript/JS module names found in *text*.
+
+    *is_diff* must be passed explicitly by a caller that has already
+    confirmed *text* is unified-diff content -- see `_is_diff_text` and
+    `_extract_python_externals` above for why this function does not detect
+    it itself. Defaults to False, the pre-D#2007 behavior: the whole text is
+    scanned as-is.
+    """
     allowlist = _load_allowlist()
     seen: list[str] = []
     seen_set: set[str] = set()
-    for m in _TS_IMPORT_FROM_RE.finditer(text):
+    if is_diff:
+        # D#2007: same rule as the Python extractor -- in diff mode, scan
+        # only added ('+') lines, excluding the diff's own per-file header
+        # line ("+++ b/path") which also starts with '+' but is not content.
+        # Context and removed lines never reach the regex below.
+        added_lines = [
+            raw_line[1:]
+            for raw_line in text.split("\n")
+            if raw_line.startswith("+") and not raw_line.startswith("+++")
+        ]
+        scan_text = "\n".join(added_lines)
+    else:
+        # Headerless path: unchanged from before D#2007 -- scan as-is.
+        scan_text = text
+    for m in _TS_IMPORT_FROM_RE.finditer(scan_text):
         specifier = m.group(1)
         # Relative imports and node: built-ins are not external docs candidates.
         if specifier.startswith(("./", "../", "node:")):
@@ -377,12 +442,16 @@ def _auto_externals(text: str) -> list[str]:
 
     sections = _split_diff_by_path(text)
     if sections:
+        # Every section here came from _split_diff_by_path itself, so it is
+        # confirmed diff content (D#2007) -- pass is_diff=True explicitly
+        # rather than having each extractor re-detect it from raw text (see
+        # _is_diff_text's docstring for why self-detection is unsafe).
         for path, section_text in sections:
             suffix = Path(path).suffix.lower()
             if suffix in _PY_SUFFIXES:
-                _add_all(_extract_python_externals(section_text))
+                _add_all(_extract_python_externals(section_text, is_diff=True))
             elif suffix in _TS_SUFFIXES:
-                _add_all(_extract_ts_externals(section_text))
+                _add_all(_extract_ts_externals(section_text, is_diff=True))
             # else: unrecognized suffix — skip this section
     else:
         _add_all(_extract_python_externals(text))
@@ -499,9 +568,17 @@ def check_imports_have_docs(
     if language == "auto":
         externals = _auto_externals(diff)
     elif language == "python":
-        externals = _extract_python_externals(diff)
+        # D#2007: an explicit language= bypasses _auto_externals's per-file
+        # dispatch entirely, so it needs its own diff-vs-headerless check
+        # rather than inheriting _auto_externals's. _is_diff_text is safe
+        # here specifically because this is the whole raw `diff` argument a
+        # caller is explicitly telling us to treat as one language -- unlike
+        # the private extractors, which are also called directly on
+        # arbitrary live source files by the grammar test suite and must not
+        # self-detect (see _is_diff_text's docstring).
+        externals = _extract_python_externals(diff, is_diff=_is_diff_text(diff))
     elif language in ("typescript", "javascript"):
-        externals = _extract_ts_externals(diff)
+        externals = _extract_ts_externals(diff, is_diff=_is_diff_text(diff))
     else:
         raise ValueError(f"Unsupported language: {language!r}. Use 'auto', 'python' or 'typescript'.")
 

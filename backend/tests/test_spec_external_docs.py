@@ -383,3 +383,112 @@ class TestBlockExtraction:
         # If match found, URL must be present.
         if block is not None:
             assert "bar.example.com" in block
+
+
+# ---------------------------------------------------------------------------
+# D#2007 — context diff lines must not be extracted as added imports
+# ---------------------------------------------------------------------------
+
+
+class TestD2007ContextLineFiltering:
+    """`check_imports_have_docs` must only extract added ('+') import lines
+    out of a real unified diff. Before this fix, unmodified context lines
+    (and the diff's own `+++ b/<path>` header) fell through to the
+    extractor unfiltered, hard-failing PRs on imports they never wrote
+    (PR #1999, PR #2002). Every fixture below carries at least one
+    unchanged `import` line that must NOT be extracted -- a fixture with no
+    context lines passes identically before and after this change and
+    proves nothing (D#1984).
+    """
+
+    _PY_DIFF_WITH_CONTEXT = """\
+diff --git a/foo.py b/foo.py
+index 1111111..2222222 100644
+--- a/foo.py
++++ b/foo.py
+@@ -1,2 +1,3 @@
+ import os
+ import requests
++import brand_new_pkg
+ x = 1
+"""
+
+    _TS_DIFF_WITH_CONTEXT = """\
+diff --git a/foo.ts b/foo.ts
+index 1111111..2222222 100644
+--- a/foo.ts
++++ b/foo.ts
+@@ -1,2 +1,3 @@
+ import ink from 'ink';
++import chalkx from 'chalkx';
+ const x = 1;
+"""
+
+    def test_python_context_import_not_extracted(self):
+        # AC1: only the added `brand_new_pkg` import comes back; the
+        # unchanged `import requests` context line must be absent.
+        result = check_imports_have_docs(self._PY_DIFF_WITH_CONTEXT, _SPEC_WITHOUT_DOCS)
+        assert result == ["brand_new_pkg"]
+
+    def test_python_context_import_not_extracted_explicit_language(self):
+        # Same fixture through the explicit language="python" call path,
+        # which bypasses _auto_externals's per-file dispatch entirely and
+        # must be independently verified (Implementation Notes: a filter
+        # placed only in _auto_externals would miss this call site).
+        result = check_imports_have_docs(
+            self._PY_DIFF_WITH_CONTEXT, _SPEC_WITHOUT_DOCS, language="python"
+        )
+        assert result == ["brand_new_pkg"]
+
+    def test_typescript_context_import_not_extracted(self):
+        # AC2
+        result = check_imports_have_docs(self._TS_DIFF_WITH_CONTEXT, _SPEC_WITHOUT_DOCS)
+        assert result == ["chalkx"]
+
+    def test_typescript_context_import_not_extracted_explicit_language(self):
+        result = check_imports_have_docs(
+            self._TS_DIFF_WITH_CONTEXT, _SPEC_WITHOUT_DOCS, language="typescript"
+        )
+        assert result == ["chalkx"]
+
+    def test_added_only_import_still_extracted(self):
+        # AC3, the under-flagging direction: a diff whose only import is a
+        # `+` line must still be returned. Without this, AC1 would be
+        # satisfiable by an extractor that returns [] for everything.
+        diff = """\
+diff --git a/foo.py b/foo.py
+index 1111111..2222222 100644
+--- a/foo.py
++++ b/foo.py
+@@ -0,0 +1 @@
++import brand_new_pkg
+"""
+        result = check_imports_have_docs(diff, _SPEC_WITHOUT_DOCS)
+        assert result == ["brand_new_pkg"]
+
+    def test_headerless_prose_import_line_unchanged(self):
+        # AC4: the Stage 1 PM path passes Spec prose, not a diff, so there
+        # is no file header to detect and every import line is still
+        # scanned as-is. TestPythonMissingExternal.test_single_missing_external
+        # above already covers this same headerless shape (a bare
+        # "import requests\n" with no diff markers at all); this test pins
+        # the exact-list result explicitly for D#2007.
+        prose = "Some spec prose.\nimport requests\nWe use it to fetch things.\n"
+        result = check_imports_have_docs(prose, _SPEC_WITHOUT_DOCS)
+        assert result == ["requests"]
+
+    def test_removed_import_line_excluded_by_rule(self):
+        # AC5: a removed ('-') import line must never be extracted, now by
+        # explicit rule rather than by the accidental fact that
+        # "-import requests" happens to fail the import grammar.
+        diff = """\
+diff --git a/foo.py b/foo.py
+index 1111111..2222222 100644
+--- a/foo.py
++++ b/foo.py
+@@ -1,2 +1,1 @@
+-import requests
+ x = 1
+"""
+        result = check_imports_have_docs(diff, _SPEC_WITHOUT_DOCS)
+        assert result == []
