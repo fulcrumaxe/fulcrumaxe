@@ -195,7 +195,11 @@ if [ "$DISC_TOTAL" -gt 0 ]; then
     GATE_REASON=$(echo "$GATE_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('reason',''))" 2>/dev/null || echo "gate_check_failed")
 
     if [ "$GATE_BLOCKED" = "true" ]; then
-      log "    -> gated: awaiting intake-approved ($GATE_REASON) — skipping automation for D#$num"
+      # D#2376 follow-up: this used to hardcode "awaiting intake-approved"
+      # regardless of which reason fired — wrong for discussion_unreachable,
+      # where applying that label does nothing. Report the actual reason
+      # rather than asserting a specific remedy.
+      log "    -> gated ($GATE_REASON) — skipping automation for D#$num"
       continue
     fi
 

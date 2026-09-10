@@ -526,6 +526,16 @@ def should_block_spawn(
     allowlist: set,
     *,
     baseline_verdict: Optional[str] = None,
+    # Fail-open by construction: any future call site that omits this
+    # keyword silently gets discussion_present=True, i.e. "trust the labels
+    # I was handed even though I never confirmed a real Discussion was
+    # fetched." That is exactly the shape of bug D#2376 fixed — a failure
+    # to fetch collapsing into the same path as a genuine fetch. Today's
+    # three call sites (check_discussion, classify_and_label,
+    # pr_intake_gate.py) are all safe — the third already fails closed
+    # earlier on its own fetch failure before reaching this function — but
+    # any new caller MUST thread the real fetch outcome through explicitly
+    # rather than relying on this default.
     discussion_present: bool = True,
 ) -> tuple[bool, str]:
     """Decide whether automation may act on a Discussion.
