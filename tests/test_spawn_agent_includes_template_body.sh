@@ -10,6 +10,22 @@
 #   AC3. A role with no .tmpl file produces no spurious "## Bash discipline"
 #        (quality-sweep and feedback-scanner have no .tmpl — use one of those)
 #
+# D#1985: this suite spawns real spawn-agent.sh processes. On a busy host the
+# spawn is refused by the fleet concurrency cap (scripts/spawn-agent.sh:245) —
+# unrelated to anything this file is supposed to test — and every check below
+# used to swallow that refusal's stderr and report it as a missing-string
+# content failure, indistinguishable from a real regression. Two fixes:
+#   1. Pass --override-cap on every spawn (below) — this suite never
+#      registers a fleet slot (--no-register) and never spawns a real agent,
+#      so it has nothing to bypass but the read-only pre-check itself.
+#   2. Capture stderr instead of discarding it, and check the exit code
+#      before asserting on prompt content — a refusal now reports as a
+#      refusal, with the reason, not as a missing string. This also closes a
+#      second bug AC3 had on its own: an absence check ("Bash discipline" is
+#      NOT present) passes vacuously when a spawn is refused and produces no
+#      output at all, so AC3 needs the same exit-code check as AC1/AC2 even
+#      though its content assertion runs the opposite direction.
+#
 # Usage:
 #   bash tests/test_spawn_agent_includes_template_body.sh
 #
@@ -94,11 +110,55 @@ STUB
 cp "$SPAWN_SCRIPT" "$SCRIPTS_DIR/spawn-agent.sh"
 SPAWN_COPY="$SCRIPTS_DIR/spawn-agent.sh"
 
-# Patch copy to accept REPO_ROOT override via env var
+# Patch copy to accept REPO_ROOT override via env var. Best-effort, and the
+# stderr this discards carries nothing this suite needs: verified directly
+# (swapped this sed's pattern for one that can never match, i.e. forced the
+# patch to be a no-op, then re-ran every check below against the real repo)
+# that whether the patch takes or not, AC1/AC2/AC3 produce byte-identical
+# PASS/FAIL results. That's because the "## Bash discipline" content comes
+# from backend/prompt_builder.py and backend/spawn_payload.py, which derive
+# their own repo root from `Path(__file__)` at import time — not from the
+# PYTHONPATH="$REPO_ROOT" this patch controls — so a stale REPO_ROOT here
+# never reaches the template content these ACs check. The other code paths
+# that do read the unpatched (wrong) REPO_ROOT — the fleet-cap read and the
+# agent_run_tracker DB registration — are both unreachable from this suite,
+# which always passes --no-register and --override-cap.
 sed -i 's|REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"|REPO_ROOT="${REPO_ROOT:-$(cd "$SCRIPT_DIR/.." \&\& pwd)}"|' \
   "$SPAWN_COPY" 2>/dev/null || true
 
-# Helper: run spawn-agent.sh for a given role, capture stdout.
+# Helper: run spawn-agent.sh for a given role, capturing stdout and stderr
+# separately, plus the exit code. Sets LAST_STDOUT / LAST_STDERR / LAST_RC —
+# never discards stderr, so a refusal (concurrency cap, pre-spawn-check,
+# anything else spawn-agent.sh can fail on) is diagnosable instead of
+# silently indistinguishable from "the template lost its content".
+#
+# --override-cap: this suite is a pure prompt-rendering smoke test — it
+# passes --no-register (below) so it never registers a fleet slot and never
+# spawns a real agent — so the concurrency cap has nothing of this suite's
+# to protect against, and bypassing it here does not touch the live gate
+# other callers rely on (scripts/spawn-agent.sh:245 is unchanged).
+run_spawn() {
+  local role="$1"; shift
+  local err_file
+  err_file=$(mktemp)
+  LAST_STDOUT=$(
+    REPO_ROOT="$REPO_ROOT" \
+    PATH="$TEST_DIR:$PATH" \
+    SPAWN_AGENT_ALLOW_NO_SPEC=1 \
+      bash "$SPAWN_COPY" \
+        --role "$role" \
+        --discussion 999 \
+        --task-prompt "test" \
+        --no-register \
+        --override-cap \
+        "$@" \
+        2>"$err_file"
+  )
+  LAST_RC=$?
+  LAST_STDERR=$(cat "$err_file")
+  rm -f "$err_file"
+}
+
 # D#1788: always pass --pr — 5 of the 9 BASH_ROLES below (code-reviewer,
 # security-reviewer, docs-writer, runbook-writer, release-manager) reference
 # {{pr_number}} and now hard-fail without one. Harmless for the other 4
@@ -106,16 +166,27 @@ sed -i 's|REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"|REPO_ROOT="${REPO_ROOT:-$(cd
 # templates never reference it.
 spawn_role() {
   local role="$1"
-  REPO_ROOT="$REPO_ROOT" \
-  PATH="$TEST_DIR:$PATH" \
-  SPAWN_AGENT_ALLOW_NO_SPEC=1 \
-    bash "$SPAWN_COPY" \
-      --role "$role" \
-      --discussion 999 \
-      --pr 999 \
-      --task-prompt "test" \
-      --no-register \
-      2>/dev/null
+  run_spawn "$role" --pr 999
+}
+
+# Assert the spawn actually ran before asserting anything about its output.
+# A refused spawn (exit != 0, or exit 0 with empty stdout) is reported as
+# exactly that — with the captured stderr — rather than being fed into a
+# content check that can only produce a misleading "expected X — not found".
+# Returns 1 (and records a FAIL) when the spawn did not produce usable
+# output; callers must skip their content assertion in that case.
+assert_spawned_ok() {
+  local label="$1"
+  if [[ "$LAST_RC" -ne 0 ]]; then
+    local reason="${LAST_STDERR:-(no stderr captured)}"
+    fail "$label spawn" "spawn-agent.sh exited $LAST_RC (refused — not a content regression). stderr: $reason"
+    return 1
+  fi
+  if [[ -z "$LAST_STDOUT" ]]; then
+    fail "$label spawn" "spawn-agent.sh exited 0 but produced no stdout — cannot assert on prompt content"
+    return 1
+  fi
+  return 0
 }
 
 # ── AC1: executor prompt contains "## Bash discipline" ───────────────────────
@@ -123,15 +194,14 @@ spawn_role() {
 echo ""
 echo "AC1: executor prompt contains '## Bash discipline'"
 
-PROMPT=$(spawn_role executor)
-RC=$?
+spawn_role executor
 
-if [[ $RC -ne 0 ]]; then
-  fail "executor spawn exit code" "expected 0, got $RC"
-elif echo "$PROMPT" | grep -qF "## Bash discipline"; then
-  pass "executor prompt contains '## Bash discipline'"
-else
-  fail "executor prompt" "expected '## Bash discipline' — not found"
+if assert_spawned_ok "executor"; then
+  if echo "$LAST_STDOUT" | grep -qF "## Bash discipline"; then
+    pass "executor prompt contains '## Bash discipline'"
+  else
+    fail "executor prompt" "expected '## Bash discipline' — not found"
+  fi
 fi
 
 # ── AC2: all 11 Bash-using roles ─────────────────────────────────────────────
@@ -155,11 +225,13 @@ BASH_ROLES=(
 )
 
 for role in "${BASH_ROLES[@]}"; do
-  PROMPT=$(spawn_role "$role" 2>/dev/null || true)
-  if echo "$PROMPT" | grep -qF "## Bash discipline"; then
-    pass "$role prompt contains '## Bash discipline'"
-  else
-    fail "$role prompt" "expected '## Bash discipline' — not found"
+  spawn_role "$role"
+  if assert_spawned_ok "$role"; then
+    if echo "$LAST_STDOUT" | grep -qF "## Bash discipline"; then
+      pass "$role prompt contains '## Bash discipline'"
+    else
+      fail "$role prompt" "expected '## Bash discipline' — not found"
+    fi
   fi
 done
 
@@ -178,18 +250,18 @@ echo "AC3: role with no .tmpl file does not inject '## Bash discipline'"
 NO_TMPL_ROLE="quality-sweep"
 
 # Override the pm-gate check for non-impl roles (quality-sweep is not in the executor|impl-coordinator case)
-PROMPT=$(SPAWN_AGENT_ALLOW_NO_SPEC=1 REPO_ROOT="$REPO_ROOT" PATH="$TEST_DIR:$PATH" \
-  bash "$SPAWN_COPY" \
-    --role "$NO_TMPL_ROLE" \
-    --discussion 999 \
-    --task-prompt "test" \
-    --no-register \
-    2>/dev/null || true)
+run_spawn "$NO_TMPL_ROLE"
 
-if echo "$PROMPT" | grep -qF "## Bash discipline"; then
-  fail "$NO_TMPL_ROLE prompt" "expected NO '## Bash discipline' — found spurious injection"
-else
-  pass "$NO_TMPL_ROLE prompt has no spurious '## Bash discipline'"
+# This spawn must still succeed — "no .tmpl file" is not "refused". If we
+# skipped this check, a refused spawn (empty stdout) would make the absence
+# assertion below pass vacuously and hide the exact same false-regression
+# failure mode AC1/AC2 have, just inverted.
+if assert_spawned_ok "$NO_TMPL_ROLE"; then
+  if echo "$LAST_STDOUT" | grep -qF "## Bash discipline"; then
+    fail "$NO_TMPL_ROLE prompt" "expected NO '## Bash discipline' — found spurious injection"
+  else
+    pass "$NO_TMPL_ROLE prompt has no spurious '## Bash discipline'"
+  fi
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────
