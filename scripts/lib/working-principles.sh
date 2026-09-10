@@ -124,6 +124,12 @@ background", "once the monitor reports", or any variant. Stop and pick 1, 2, or 
 The no-sleep rule under **Bash discipline** targets rate-limit retry loops. It does not
 license parking — parking is worse than either alternative above.
 
+**Capture background output somewhere you control.** A background task's own output file
+holds the *tail* of the stream, not the stream — the cut is not marked. A failure-set diff
+from that file is silently wrong: missing IDs read as fixed, so truncation always makes a
+run look *better* than it was, never worse. Redirect (`cmd > out.log 2>&1`) and diff the
+file you own instead.
+
 ### 9. Address Another Tree with `git -C`, Never a Bare `cd`
 
 A `cd` into a path that is gone fails and the shell carries on where it already was, so
