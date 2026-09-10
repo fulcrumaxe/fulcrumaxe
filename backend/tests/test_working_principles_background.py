@@ -81,6 +81,34 @@ def test_marker_present_in_rendered_prompt(rendered_prompts, role, marker):
     )
 
 
+# D#2000: the "background task output files are truncated to their tail" rule,
+# appended to the end of §8 (Never Wait on a Background Run) rather than added
+# as a new numbered principle — see scripts/lib/working-principles.sh. Same
+# reachability pattern as _MARKERS above: each marker is checked independently
+# against each of the three rendered role prompts.
+#
+#   M1 — the truncation word itself (Spec acceptance item 1).
+#   M2 — the failure direction: truncation makes a run look *better*, not worse
+#        (Spec acceptance item 2 — a bare prohibition without this is a FAIL).
+#   M3 — the positive instruction: redirect to a file you control and diff that
+#        (Spec acceptance item 3).
+_D2000_MARKERS = (
+    "truncat",
+    "look *better* than it was, never worse",
+    "Redirect (`cmd > out.log 2>&1`) and diff the",
+)
+
+
+@pytest.mark.parametrize("marker", _D2000_MARKERS)
+@pytest.mark.parametrize("role", _ROLES)
+def test_d2000_truncation_marker_present_in_rendered_prompt(rendered_prompts, role, marker):
+    """D#2000: the truncated-background-output-file rule must reach each rendered role prompt."""
+    assert marker in rendered_prompts[role], (
+        f"D#2000 marker {marker!r} missing from rendered {role!r} prompt "
+        f"(rendered via backend.spawn_templates.render, not the template source)"
+    )
+
+
 def test_working_principles_block_size_bounded():
     """The shared block itself must stay under the CI-enforced limit (D#2253).
 
