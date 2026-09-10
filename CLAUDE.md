@@ -219,6 +219,61 @@ gh api graphql -f query='query {
 bash scripts/rotate-team-log.sh comment "..."
 ```
 
+### Why the split is permanent
+
+`git merge-base origin/main code-plane/main` exits 1 with empty output — verified
+2026-09-10 against `origin/main@7331593c` (1219 commits) and `code-plane/main@7807faa9`
+(120 commits). The histories share no common ancestor. This is intended and permanent,
+not a defect to graft away. Three reasons, any one sufficient:
+
+- The Discussion plane carries exactly what the public export exists to withhold —
+  `.autonomous-team/`, 422 files under `archive/` (0 on the code plane), Spec and
+  Discussion prose. Grafting the histories would publish all of it, irreversibly —
+  git history is public forever once pushed.
+- This file documents a supported revert that points `code_repo` back at the private
+  slug (above). A shared history makes that revert incoherent.
+- The code plane is a **curated export, not a fork**. Its 120 commits were seeded by an
+  export process; the unrelated roots are that mechanism working, not damage to repair.
+
+**This is one git repository with two unrelated roots, not two repositories.** Both
+remotes live in one local object store — `git show code-plane/main:<path>`, `git diff
+origin/main code-plane/main -- <path>`, and `git archive code-plane/main | tar -x` all
+work today, from any worktree, with zero fetches and no cross-repo tooling. The seam
+needs correct ref selection, not new plumbing.
+
+### The one defect class behind every incident here
+
+> A plane-sensitive input resolved from an implicit default that is correct on one
+> plane and silently wrong on the other.
+
+| Instance | Implicit default | Consequence |
+|---|---|---|
+| `code_plane_pr build --base-ref` | defaults to `--target-ref` | the divergence check becomes a no-op |
+| manual-merge script invocation | resolved from `$PWD` | four merge gates (label, freshness, browser-test, mergeability) silently absent |
+| code-plane repo-slug resolution in a worktree | a fallback chain that doesn't follow a `gitdir:` file | test collection fails, or resolves the wrong plane's slug |
+| Archive Protocol | "the repo," unscoped | a protocol-compliant PR could not go green |
+| `scripts/preflight-fast.sh` pr-size check (line ~52, **still open**) | diffs against local `HEAD` | undercounted a cross-plane PR by ~4,357 lines |
+
+The rule that closes the class, not just the five rows above: **a plane-sensitive
+input must be explicit and fail loudly when unresolved — never defaulted.**
+
+### Verification standard for this seam
+
+A defect here is not "confirmed reproducing" until it is reproduced on the plane it
+was filed against. Wrong-plane confirmation is this seam's signature failure mode —
+three findings in one session were confirmed against the wrong plane before the
+third was caught inside its own review thread. Every finding in this area states
+the plane and the SHA it was measured against; a bare test count or "it reproduces"
+is not evidence without both.
+
+### Two loose ends
+
+- Code-plane label provisioning already works:
+  `bash scripts/bootstrap-github-labels.sh --repo fulcrumaxe/fulcrumaxe`.
+- `scripts/preflight-fast.sh`'s pr-size check (table above) is unfixed — it still
+  diffs against local `HEAD` instead of the plane's actual base. Open, unassigned.
+
+
 ---
 
 ## Archive Protocol
