@@ -1059,8 +1059,10 @@ PYEOF
   # the full writeup). Deregistered in backend/stats_writer.py so the 336
   # pre-existing rows don't trip the freshness watchdog.
 
-  # Emit metrics via a single record_many() call (Phase 2: batched). One of
-  # cost_per_merged_pr_usd / cost_attribution_unresolved_count is appended
+  # Emit metrics via a single record_many() call. record_many() opens one
+  # connection and wraps every row in one transaction, so this batch commits
+  # atomically — all rows or none, never a partial prefix (D#2524 PR-a). One
+  # of cost_per_merged_pr_usd / cost_attribution_unresolved_count is appended
   # below depending on resolver provenance (D#2282).
   python3 - <<PYEOF
 import sys, os

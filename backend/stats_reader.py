@@ -40,6 +40,44 @@ def _open_conn():
         return get_read_connection()
     except RuntimeError as exc:
         raise SystemExit(str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        # Narrow, deliberate: only a genuine DuckDB lock conflict (after
+        # get_read_connection()'s own bounded retry gave up) is folded into
+        # the same "no data available" SystemExit path as a missing DB.
+        # Anything else re-raises unchanged — a blanket catch here would make
+        # a genuinely missing table render as an empty dashboard, which is
+        # the exact defect class D#2524 F3 documents (a read failure that
+        # looks identical to "no data"). We only ever want to widen for the
+        # lock case, never for everything.
+        #
+        # `isinstance(exc, duckdb.IOException)` alone is NOT narrow enough:
+        # duckdb 1.5.5 raises the same duckdb.IOException for a lock
+        # conflict, a corrupted database file, and a permission-denied file
+        # — there is no distinct subclass to tell them apart (confirmed
+        # empirically against this exact duckdb version; see PR #150 review).
+        # So we discriminate on the exception *message*, matching the lock
+        # conflict text duckdb actually emits:
+        #   "IO Error: Could not set lock on file \"...\": Conflicting lock
+        #    is held in ..."
+        # vs. e.g.:
+        #   "IO Error: The file \"...\" exists, but it is not a valid
+        #    DuckDB database file!"          (corrupt file)
+        #   "IO Error: Cannot open file \"...\": Permission denied"
+        #                                     (permission denied)
+        #
+        # Fails CLOSED by design: only a message containing "could not set
+        # lock" (case-insensitive) is folded into "no data". Everything else
+        # — including a corrupt file, a permissions problem, or a future
+        # duckdb release that rewords the lock message entirely — re-raises
+        # unchanged and propagates loudly. A reworded lock message would
+        # regress to over-strict (a real lock conflict starts raising
+        # instead of degrading), never to over-loose (a non-lock IOException
+        # would never start being silently swallowed) — the failure mode we
+        # cannot tolerate here is the widening one, and this can't produce it.
+        import duckdb  # noqa: PLC0415
+        if isinstance(exc, duckdb.IOException) and "could not set lock" in str(exc).lower():
+            raise SystemExit(f"stats_reader: lock conflict on {db}: {exc}") from exc
+        raise
 
 
 def _parse_since(since: str | None) -> datetime | None:
