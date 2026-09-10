@@ -570,6 +570,7 @@ class TestBuildFromPsc:
         return {
             "persona_voice": "## Voice\n\nYou are Sam.",
             "working_principles": "## Working Principles\n\n1. Think",
+            "agent_scratchpad": "## Scratchpad Convention\n\nuse a subdirectory",
             "self_observe_gate": "## Self-Observe\n\nGate active.",
             "gate_context": {
                 "gates": {
@@ -593,6 +594,15 @@ class TestBuildFromPsc:
         sp = build_from_psc("executor", psc, discussion=42, task_prompt="do it", hook_event_id="ev-1")
         result = sp.render()
         assert "You are Sam." in result
+
+    def test_agent_scratchpad_injected(self):
+        # D#2360 review round 1: pre-spawn-check.sh --dry-run carried this
+        # field but build_from_psc() never read it, so no spawned agent ever
+        # saw the block. Mirrors test_persona_voice_injected above.
+        psc = self._sample_psc()
+        sp = build_from_psc("executor", psc, discussion=42, task_prompt="do it", hook_event_id="ev-1")
+        result = sp.render()
+        assert "## Scratchpad Convention" in result
 
     def test_gate_line_from_gates(self):
         psc = self._sample_psc()
@@ -736,6 +746,29 @@ class TestCLI:
         captured = capsys.readouterr()
         assert rc == 1
         assert "JSONDecodeError" in captured.err
+
+    def test_agent_scratchpad_round_trips_through_cli(self, capsys):
+        # D#2360 review round 1: the field reached pre-spawn-check.sh's
+        # --dry-run JSON but _main_render() never read it out of SPAWN_PROMPT_JSON,
+        # so it never reached the assembled prompt the CLI actually writes
+        # (the same path scripts/spawn-agent.sh invokes for a real spawn).
+        import unittest.mock as mock
+
+        input_data = json.dumps({
+            "role": "executor",
+            "discussion": 42,
+            "task_prompt": "cli test prompt",
+            "hook_event_id": "executor-42-cli",
+            "agent_scratchpad": "## Scratchpad Convention\n\nuse a subdirectory",
+        })
+
+        with mock.patch.dict(__import__("os").environ, {"SPAWN_PROMPT_JSON": input_data}):
+            from backend.prompt_builder import main
+            rc = main(["render"])
+
+        captured = capsys.readouterr()
+        assert rc == 0
+        assert "## Scratchpad Convention" in captured.out
 
     def test_worktree_unprovisioned_round_trips_through_cli(self, capsys):
         import unittest.mock as mock
