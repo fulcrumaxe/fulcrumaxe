@@ -199,10 +199,19 @@ class TestCodePlanePins:
         )
 
     def test_no_literal_code_plane_slug(self, path: Path):
-        """D#2348 Spec item 3 — the code plane is config, never a literal.
+        """D#2348 Spec item 3 — the code plane is config, never a literal call
+        target.
 
-        CLAUDE.md is exempt: it documents where the plane points on each side of
-        the cutover, which is prose about the value rather than a call target.
+        CLAUDE.md is exempt from this specific check, and only this check: it
+        legitimately names the plane's resolved value in prose (D#2424) —
+        that is exposition about the value, not a hardcoded call target, and
+        the two are different things. This exemption is narrower than it
+        looks: it does not exempt CLAUDE.md from every prose rule about the
+        plane. It may not tie that value to a dated cutover clause ("today",
+        "after the cutover", "until then") — that half is enforced
+        separately, and for every card plus CLAUDE.md, by
+        tests/test_plane_prose_ratchet.py.
+
         A plain return (not `pytest.skip`) keeps this exemption from counting
         as a skip — D#2391 wants zero skips from this suite, since a skip on
         an empty subject is exactly the failure mode under repair here.
