@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # tests/test_pre_spawn_check_block_events.sh
 # Verifies that pre-spawn-check.sh emits spawn_blocked events to agent-feed.jsonl
-# for each hard-block path (budget_exceeded, circuit_breaker_open, subscription_throttled,
-# worktree_cap_reached) and that --dry-run never writes to the feed.
+# for each hard-block path (budget_exceeded, circuit_breaker_open, subscription_throttled)
+# and that --dry-run never writes to the feed. The worktree-cap hard-block path this
+# file used to cover (AC4) was removed by D#2097 -- it never actually blocked a spawn,
+# see tests/test_worktree_cap_guard.sh for the disk-based warning that replaced it.
 #
 # HARD RULE: UNDER NO CIRCUMSTANCES may this test invoke `claude`, `claude -p`,
 # `_start_loop_run`, or trigger /loop. Block conditions are simulated via
@@ -349,63 +351,41 @@ fi
 echo ""
 
 # ─────────────────────────────────────────────────────────────────────────────
-# AC4: worktree_cap_reached → spawn_blocked with reason=worktree_cap_reached
-# Real worktree dirs on disk, real cap comparison -- exercises the disk-based
-# counter this Discussion added (scripts/lib/worktree-registry.sh count-disk),
-# not a hand-written --details blob.
-#
-# Per the D#2059 Spec amendment: enforcement is deferred (no `exit 1`) until
-# D#2001 (a working reaper) and D#2097 (the threshold itself) land, so this
-# now expects exit 0 -- the guard still emits the row and logs the warning,
-# it just doesn't block. See tests/test_worktree_cap_alarm.sh for the full
-# over-cap/under-cap/mutation coverage of this behavior.
+# AC4: the worktree-cap path is gone -- a worktree-isolated spawn over the old
+# on-disk directory count must NOT produce a worktree_cap_reached spawn_blocked
+# row or a spawn_blocked event of any kind. D#2097 replaced the cap check with
+# a free-disk warning (scripts/lib/worktree-disk-guard.sh) that never emits a
+# block event at all; see tests/test_worktree_cap_guard.sh for coverage of
+# that guard's own branching (ok/warn/unknown/boundary).
 # ─────────────────────────────────────────────────────────────────────────────
-echo "--- AC4: worktree_cap_reached ---"
+echo "--- AC4: worktree cap path removed, no spawn_blocked on high disk-count ---"
 ws4=$(make_workspace)
 install_sandbox "$ws4"
 mkdir -p "$ws4/.claude/worktrees/agent-1" "$ws4/.claude/worktrees/agent-2" "$ws4/.claude/worktrees/agent-3"
 
 FEED4="$ws4/.autonomous-team/agent-feed.jsonl"
 
-WORKTREE_CAP=2 run_psc_sandboxed "$ws4" --role executor --discussion 999 --isolation worktree
+run_psc_sandboxed "$ws4" --role executor --discussion 999 --isolation worktree
 EXIT4=$(psc_exit "$ws4")
 
 if [[ "$EXIT4" -eq 0 ]]; then
-  ok "AC4a: pre-spawn-check exits 0 when worktree cap reached (enforcement deferred, D#2059 amendment)"
+  ok "AC4a: pre-spawn-check exits 0 for a worktree-isolated spawn"
 else
-  fail "AC4a: expected exit 0 (enforcement is deferred), got $EXIT4. stderr: $(psc_stderr "$ws4")"
+  fail "AC4a: expected exit 0, got $EXIT4. stderr: $(psc_stderr "$ws4")"
 fi
 
 AFTER4=$(count_blocked "$FEED4" "worktree_cap_reached")
-if [[ "$AFTER4" -ge 1 ]]; then
-  ok "AC4: spawn_blocked with reason=worktree_cap_reached appended"
-  LAST4=$(last_blocked "$FEED4")
-  CAP=$(python3 -c "import json; d=json.loads('$LAST4'); print(d.get('details',{}).get('cap',''))" 2>/dev/null || echo "")
-  ACTIVE=$(python3 -c "import json; d=json.loads('$LAST4'); print(d.get('details',{}).get('active_worktrees',''))" 2>/dev/null || echo "")
-  if [[ "$CAP" == "2" ]]; then
-    ok "AC4-details: details.cap==2"
-  else
-    fail "AC4-details: details.cap expected 2, got '$CAP'"
-  fi
-  if [[ "$ACTIVE" == "3" ]]; then
-    ok "AC4-details: details.active_worktrees==3 (disk count, not the empty registry)"
-  else
-    fail "AC4-details: details.active_worktrees expected 3, got '$ACTIVE'"
-  fi
+if [[ "$AFTER4" -eq 0 ]]; then
+  ok "AC4: no spawn_blocked row with reason=worktree_cap_reached (the reason no longer exists)"
 else
-  fail "AC4: spawn_blocked with reason=worktree_cap_reached not appended"
+  fail "AC4: found $AFTER4 spawn_blocked row(s) with reason=worktree_cap_reached -- the removed path is still firing"
 fi
 
 LOG4=$(psc_log "$ws4")
-if echo "$LOG4" | grep -q "worktree cap (2) reached" && echo "$LOG4" | grep -q "deferring spawn for"; then
-  ok "AC4-log: rotate-team-log received the human-readable warning text"
+if echo "$LOG4" | grep -q "worktree cap"; then
+  fail "AC4-log: rotate-team-log still received old worktree-cap text: $LOG4"
 else
-  fail "AC4-log: rotate-team-log did not receive the expected warning text: $LOG4"
-fi
-if echo "$LOG4" | grep -q "emit_spawn_block"; then
-  fail "AC4-log: rotate-team-log capture contains the literal string 'emit_spawn_block'"
-else
-  ok "AC4-log: rotate-team-log capture does not contain the literal string 'emit_spawn_block'"
+  ok "AC4-log: rotate-team-log did not receive worktree-cap text"
 fi
 
 echo ""

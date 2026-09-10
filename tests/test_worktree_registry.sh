@@ -135,36 +135,18 @@ else
   _fail "concurrency: expected 2 entries, got $FINAL_COUNT (possible corruption)"
 fi
 
-# ── Cap enforcement ───────────────────────────────────────────────────────────
-echo ""
-echo "=== Cap enforcement ==="
-
-# Reset registry with 8 entries at cap
-printf '[\n]\n' > "$TEST_DIR/.autonomous-team/worktrees.json"
-export WORKTREE_CAP=3  # Use 3 for test speed
-
-for i in 1 2 3; do
-  WID="agent-cap00${i}"
-  mkdir -p "$TEST_DIR/.claude/worktrees/$WID"
-  worktree_registry register --id "$WID" --role executor --path ".claude/worktrees/$WID" --pid "$$"
-done
-
-# Next register should fail with cap error
-WID_EXTRA="agent-capextra"
-mkdir -p "$TEST_DIR/.claude/worktrees/$WID_EXTRA"
-if worktree_registry register --id "$WID_EXTRA" --role executor \
-    --path ".claude/worktrees/$WID_EXTRA" --pid "$$" 2>/dev/null; then
-  _fail "cap enforcement: register succeeded when cap=$WORKTREE_CAP was reached"
-else
-  _pass "cap enforcement: register blocked at cap=$WORKTREE_CAP"
-fi
+# Cap enforcement on register() was removed by D#2097 -- the WORKTREE_CAP
+# constant it read was the fleet concurrency cap misapplied to a disk metric,
+# and register() has no production caller anyway (worktrees.json stays [], 4
+# bytes). See scripts/lib/worktree-disk-guard.sh and
+# tests/test_worktree_cap_guard.sh for the spawn-path disk check that
+# replaced it.
 
 # ── AC #4: 11-orphan replay ───────────────────────────────────────────────────
 echo ""
 echo "=== AC #4: 11-orphan replay ==="
 
 # Reset
-export WORKTREE_CAP=8
 printf '[\n]\n' > "$TEST_DIR/.autonomous-team/worktrees.json"
 
 # Create 11 fake on-disk worktrees with no registry entries
@@ -209,7 +191,6 @@ echo "=== Test A: count-active broadened (active+committed+pushed) ==="
 
 # Reset
 printf '[\n]\n' > "$TEST_DIR/.autonomous-team/worktrees.json"
-export WORKTREE_CAP=8
 
 WT_CA="agent-countA1"
 WT_CC="agent-countC2"

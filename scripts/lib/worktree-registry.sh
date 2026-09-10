@@ -86,8 +86,13 @@ _WTR_AUDIT_FILE="${_WTR_AUDIT_DIR}/audit.jsonl"
 # shellcheck source=scripts/lib/repo-resolve.sh
 source "${_WTR_REPO_ROOT}/scripts/lib/repo-resolve.sh" 2>/dev/null || true
 
-# Hard cap: configurable via WORKTREE_CAP env var
-WORKTREE_CAP="${WORKTREE_CAP:-8}"
+# D#2097: the register()-time cap check that used to live here (gated by
+# WORKTREE_CAP) was removed -- nothing in production calls `worktree_registry
+# register` (worktrees.json stays [], 4 bytes; see the count-disk comment
+# below), so the branch it guarded was dead code, and the number itself was
+# the fleet concurrency cap misapplied to a disk metric. See
+# scripts/lib/worktree-disk-guard.sh for what replaced the spawn-path check
+# that used this same constant.
 # TTL default: configurable via WORKTREE_TTL_MIN env var
 WORKTREE_TTL_MIN="${WORKTREE_TTL_MIN:-60}"
 
@@ -458,20 +463,6 @@ _cmd_register() {
 
   local current
   current="$(_wtr_read_registry)"
-
-  # Check cap BEFORE adding
-  local active_count
-  active_count=$(echo "$current" | python3 -c "
-import json,sys
-data=json.load(sys.stdin)
-print(sum(1 for e in data if e.get('status') == 'active'))
-" 2>/dev/null || echo "0")
-
-  if [[ "$active_count" -ge "$WORKTREE_CAP" ]]; then
-    _wtr_unlock
-    echo "ERROR: worktree cap ($WORKTREE_CAP) reached — cannot register $id" >&2
-    return 2
-  fi
 
   # Idempotent: if already registered, just update heartbeat
   local new_registry
