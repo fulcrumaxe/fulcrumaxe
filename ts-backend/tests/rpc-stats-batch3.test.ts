@@ -6,18 +6,20 @@
  * Coverage:
  *  1. stats.freshness_list   — DB absent → {rows:[], warn_age_seconds, bug_age_seconds}
  *  2. stats.weekly_velocity  — gh absent/error → applicable:false empty response
- *  3. stats.sdk_vs_cc        — DB absent → {rows:[], has_routed_via:false, ...}
- *  4. stats_duckdb_writers   — DB absent → {writers:[], checked_at, warning:null}
- *  5. stats.dial_usage       — no registry file → {current_dials:[], last_24h:{...}}
- *  6. stats.dial_rejections  — no files → empty counters + null last_rejection
- *  7. stats.analyst_findings — no reports dir → empty with correct shape
- *  8. stats.verdict_overturns — DB absent → {rows:[]}
- *  9. Dispatch: all 8 methods reach native handlers (not proxy) — HTTP 200, no error
- * 10. dial_usage: reads dial-registry.json correctly (list + dict formats)
- * 11. dial_usage: audit.jsonl scan produces correct 24h counters
- * 12. dial_rejections: blocks-*.jsonl scan produces correct sandbox_blocks
- * 13. analyst_findings: reads latest report JSON, groups by severity
- * 14. Dispatch: stats.sdk_lane and stats.cost_per_outcome still proxy (not native)
+ *  3. stats_duckdb_writers   — DB absent → {writers:[], checked_at, warning:null}
+ *  4. stats.dial_usage       — no registry file → {current_dials:[], last_24h:{...}}
+ *  5. stats.dial_rejections  — no files → empty counters + null last_rejection
+ *  6. stats.analyst_findings — no reports dir → empty with correct shape
+ *  7. stats.verdict_overturns — DB absent → {rows:[]}
+ *  8. Dispatch: all 7 methods reach native handlers (not proxy) — HTTP 200, no error
+ *  9. dial_usage: reads dial-registry.json correctly (list + dict formats)
+ * 10. dial_usage: audit.jsonl scan produces correct 24h counters
+ * 11. dial_rejections: blocks-*.jsonl scan produces correct sandbox_blocks
+ * 12. analyst_findings: reads latest report JSON, groups by severity
+ * 13. Dispatch: stats.sdk_lane and stats.cost_per_outcome still proxy (not native)
+ *
+ * stats.sdk_vs_cc coverage removed (D#2352) — the method and its Python
+ * source were retired, not merely un-proxied.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
@@ -30,7 +32,6 @@ import { rpcDispatchHandler } from "../src/routes/rpc.js";
 import {
   handleFreshnessList,
   handleWeeklyVelocity,
-  handleSdkVsCc,
   handleDuckdbWriters,
   handleDialUsage,
   handleDialRejections,
@@ -101,53 +102,9 @@ describe("stats.* batch3 handlers — DB absent graceful empty", () => {
     expect(result["bug_age_seconds"]).toBe(86400);
   });
 
-  it("handleSdkVsCc: DB absent → {rows:[], has_routed_via:false, error:null}", async () => {
-    const result = await handleSdkVsCc({}) as Record<string, unknown>;
-    expect(Array.isArray(result["rows"])).toBe(true);
-    expect((result["rows"] as unknown[]).length).toBe(0);
-    expect(result["has_routed_via"]).toBe(false);
-    // DB absent gets "cannot open stats.duckdb" error, not null — the Python impl
-    // also returns error when cannot open. Accept either null or a non-null string.
-    // (Python returns error:null only for no-db-path case; TS openReadConn throws
-    //  which maps to an error string.)
-    const err = result["error"];
-    expect(err === null || typeof err === "string").toBe(true);
-    expect(typeof result["generated_at"]).toBe("string");
-  });
-
   it("handleVerdictOverturns: DB absent → {rows:[]}", async () => {
     const result = await handleVerdictOverturns({}) as Record<string, unknown>;
     expect(result).toEqual({ rows: [] });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// §1b — Median truncation parity (Python int() vs Math.round)
-// ---------------------------------------------------------------------------
-
-describe("sdk_vs_cc toInt — Python int() truncation parity", () => {
-  // Python's int() truncates toward zero; Math.round() rounds to nearest.
-  // For a half-integer median like 388.5: int(388.5)=388, Math.round(388.5)=389.
-  // Verify the fix: Math.trunc matches int() for all cases.
-
-  it("Math.trunc(388.5) === 388 (matches Python int(388.5))", () => {
-    expect(Math.trunc(388.5)).toBe(388);
-  });
-
-  it("Math.trunc(389.4) === 389 (same as Python int(389.4))", () => {
-    expect(Math.trunc(389.4)).toBe(389);
-  });
-
-  it("Math.trunc(-388.9) === -388 (truncates toward zero, same as Python)", () => {
-    // Python int(-388.9) = -388 (truncation, NOT floor)
-    expect(Math.trunc(-388.9)).toBe(-388);
-  });
-
-  it("Math.trunc is different from Math.round for .5 cases", () => {
-    // This verifies the original bug would have been observable
-    expect(Math.round(388.5)).toBe(389); // old behavior
-    expect(Math.trunc(388.5)).toBe(388); // new behavior = Python parity
-    expect(Math.trunc(388.5)).not.toBe(Math.round(388.5));
   });
 });
 
@@ -537,16 +494,6 @@ describe("POST /rpc — stats.* batch 3 dispatch (no Python backend needed)", ()
     expect("total" in result).toBe(true);
     expect(Array.isArray(result["by_day"])).toBe(true);
     expect("trend_pct" in result).toBe(true);
-  });
-
-  it("stats.sdk_vs_cc → HTTP 200, result has rows/has_routed_via/generated_at", async () => {
-    const { status, body } = await rpc(app, "stats.sdk_vs_cc", {}, TOKEN);
-    expect(status).toBe(200);
-    expect(body["error"]).toBeUndefined();
-    const result = body["result"] as Record<string, unknown>;
-    expect(Array.isArray(result["rows"])).toBe(true);
-    expect(typeof result["has_routed_via"]).toBe("boolean");
-    expect(typeof result["generated_at"]).toBe("string");
   });
 
   it("stats_duckdb_writers → HTTP 200, result has writers/checked_at/warning", async () => {

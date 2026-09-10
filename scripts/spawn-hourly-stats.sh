@@ -132,7 +132,13 @@ with open(feed_path) as f:
         ts = e.get('ts', '')
         if ts < cutoff:
             continue
-        if e.get('role') == 'executor' and e.get('event_type') in ('agent_end', 'merge'):
+        # 'merge' events are always logged with role='merge' (see
+        # post-merge-hook.sh), never role='executor' — a merge is a Team
+        # Lead action on a PR, not an executor run, and counting it here
+        # would double-count a run already captured by its own agent_end
+        # event. So the denominator is executor agent_end events only
+        # (D#2501: the old 'merge' arm in this AND could never match).
+        if e.get('role') == 'executor' and e.get('event_type') == 'agent_end':
             impl_runs += 1
 
 skipped = 0

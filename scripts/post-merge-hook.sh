@@ -1046,54 +1046,18 @@ PYEOF
     --jq '[.[] | select(.event == "labeled" and .label.name == "code-review-passed")] | first | .created_at' \
     2>/dev/null || echo "")
 
-  # acceptance_criteria_pass_rate: parse AC from Discussion spec, check PR body coverage
-  AC_PASS_RATE="-1"
-  if [[ -n "$DISCUSSION" && -n "${DISC_BODY:-}" ]]; then
-    AC_PASS_RATE=$(_PMH_DISC_BODY="$DISC_BODY" _PMH_PR="$PR" _PMH_REPO="$_CODE_REPO" python3 - <<'PYEOF'
-import os, re, subprocess, json
-
-disc_body = os.environ.get("_PMH_DISC_BODY", "")
-pr = os.environ.get("_PMH_PR", "")
-repo = os.environ.get("_PMH_REPO", "")
-
-# Extract numbered AC lines from the Acceptance Criteria section
-ac_section = re.search(r'### Acceptance Criteria\s*([\s\S]*?)(?=\n###|\Z)', disc_body)
-if not ac_section:
-    print("-1.0")
-    exit()
-
-ac_text = ac_section.group(1)
-ac_lines = re.findall(r'^\s*(?:\d+\.|[-*])\s+(.+)', ac_text, re.MULTILINE)
-if not ac_lines:
-    print("-1.0")
-    exit()
-
-# Get PR body + comments as evidence corpus
-try:
-    r = subprocess.run(
-        ["gh", "pr", "view", pr, "--repo", repo,
-         "--json", "body,comments"],
-        capture_output=True, text=True, check=True,
-    )
-    pr_data = json.loads(r.stdout)
-    evidence_text = (pr_data.get("body") or "") + " ".join(
-        c.get("body", "") for c in pr_data.get("comments", [])
-    )
-except Exception:
-    evidence_text = ""
-
-# Check what fraction of AC items are keyword-referenced in the evidence
-referenced = 0
-for ac in ac_lines:
-    words = [w.lower() for w in re.findall(r'\w+', ac) if len(w) > 3][:6]
-    if any(w in evidence_text.lower() for w in words):
-        referenced += 1
-
-rate = referenced / len(ac_lines)
-print(f"{rate:.4f}")
-PYEOF
-    )
-  fi
+  # acceptance_criteria_pass_rate was retired here (D#2476): the extraction
+  # regex (`### Acceptance Criteria`) matched 0 of 51 real Spec bodies, and
+  # the scorer it fed — "any word >3 chars from a criterion appears anywhere
+  # in the PR body" — is a lexical-overlap check between two documents the
+  # same executor wrote from the same Spec, not an acceptance measurement.
+  # Fixing only the heading would have converted 336 honest "-1" sentinels
+  # into a stream of values pinned near 1.0: a metric that looks alive and
+  # is not measuring anything. A denominator that could distinguish a real
+  # pass from a real fail exists only in the acceptance-tester's own verdict,
+  # which this hook does not have access to at merge time (see D#2476 for
+  # the full writeup). Deregistered in backend/stats_writer.py so the 336
+  # pre-existing rows don't trip the freshness watchdog.
 
   # Emit metrics via a single record_many() call (Phase 2: batched). One of
   # cost_per_merged_pr_usd / cost_attribution_unresolved_count is appended
@@ -1113,7 +1077,6 @@ conflict_str = "$CONFLICT_SCORE"
 pr_created = "$PR_CREATED_AT"
 spec_ready_ts_str = "$SPEC_READY_TS"
 reviewer_accept_ts_str = "$REVIEWER_ACCEPT_TS"
-ac_rate_str = "$AC_PASS_RATE"
 
 fix_cycles = int(fix_cycles_str) if fix_cycles_str.strip().lstrip('-').isdigit() else -1
 cost_usd = float(cost_usd_str) if cost_usd_str.strip().replace('.','',1).isdigit() else 0.0
@@ -1153,12 +1116,6 @@ elapsed = max(0.0, (now_dt - created_dt).total_seconds()) if created_dt else 0.0
 spec_dt = _parse_iso(spec_ready_ts_str)
 spec_latency = max(0.0, (created_dt - spec_dt).total_seconds()) if (spec_dt and created_dt) else -1.0
 
-# Phase 2 metric: acceptance_criteria_pass_rate
-try:
-    ac_rate = float(ac_rate_str)
-except Exception:
-    ac_rate = -1.0
-
 # Phase 2 metric: reviewer_acceptance_latency_seconds
 reviewer_dt = _parse_iso(reviewer_accept_ts_str)
 reviewer_latency = max(0.0, (reviewer_dt - created_dt).total_seconds()) if (reviewer_dt and created_dt) else -1.0
@@ -1169,7 +1126,6 @@ rows = [
     {"metric": "fix_cycle_count",                    "value": float(fix_cycles), "unit": "count",   "tags": tags, "source": "post-merge-hook"},
     {"metric": "pr_file_conflict_score",             "value": float(conflict_score), "unit": "count","tags": tags, "source": "post-merge-hook"},
     {"metric": "spec_to_first_pr_latency_seconds",   "value": spec_latency,      "unit": "seconds", "tags": tags, "source": "post-merge-hook"},
-    {"metric": "acceptance_criteria_pass_rate",      "value": ac_rate,           "unit": "ratio",   "tags": tags, "source": "post-merge-hook"},
     {"metric": "reviewer_acceptance_latency_seconds","value": reviewer_latency,  "unit": "seconds", "tags": tags, "source": "post-merge-hook"},
     # Phase 3 metric: fix_rounds_per_pr — raw per-PR round count for avg_fix_rounds_24h aggregation
     {"metric": "fix_rounds_per_pr",                  "value": float(fix_cycles), "unit": "count",   "tags": tags, "source": "post-merge-hook"},
@@ -1194,7 +1150,7 @@ else:
 record_many(rows)
 
 print(f"[post-merge-hook] stats: time_to_merge={elapsed:.0f}s fix_cycles={fix_cycles} cost={cost_usd:.4f} resolver={cost_source_str} conflict={conflict_score}")
-print(f"[post-merge-hook] stats: spec_latency={spec_latency:.0f}s ac_rate={ac_rate:.4f} reviewer_latency={reviewer_latency:.0f}s")
+print(f"[post-merge-hook] stats: spec_latency={spec_latency:.0f}s reviewer_latency={reviewer_latency:.0f}s")
 print(f"[post-merge-hook] stats: fix_rounds_per_pr={fix_cycles}")
 PYEOF
   STATS_METRICS_RC=$?

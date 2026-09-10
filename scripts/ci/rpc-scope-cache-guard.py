@@ -148,12 +148,6 @@ NON_DISCRIMINABLE: dict[str, str] = {
         "volatile-field class this guard normalizes out of every "
         "comparison (see _normalize()) to avoid clock-jitter flakiness"
     ),
-    "stats.sdk_vs_cc": (
-        "backend.rpc.stats_sdk_vs_cc reads per-role SDK-vs-CC comparison "
-        "rows from agent_run's routed_via column; this harness's seeded "
-        "rows leave routed_via unset, so both fixtures answer with the "
-        "same empty comparison"
-    ),
     "stats.dial_usage": (
         "backend.stats.dial_usage.read_dial_usage() reads live dial-level "
         "config and 24h activity counters this harness does not seed; "

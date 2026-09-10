@@ -1215,8 +1215,15 @@ function stepBrowserTourQueue(pr: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// Step 6: stats_metrics — emit 8 post-merge metrics to stats.duckdb
+// Step 6: stats_metrics — emit 7 post-merge metrics to stats.duckdb
 // This is the primary parity-tested step.
+//
+// acceptance_criteria_pass_rate was retired here (D#2476), not repaired: its
+// heading extraction matched 0 of 51 real Spec bodies, and the scorer behind
+// it — "any word >3 chars from a criterion appears anywhere in the PR body"
+// — was a lexical-overlap check between two documents the same executor
+// wrote from the same Spec, not an acceptance measurement. See
+// scripts/post-merge-hook.sh for the full writeup.
 // ---------------------------------------------------------------------------
 
 export interface StatsMetricsInput {
@@ -1228,7 +1235,6 @@ export interface StatsMetricsInput {
   prCreatedAt: string;
   specReadyTs: string;
   reviewerAcceptTs: string;
-  acPassRate: number;
 }
 
 export async function stepStatsMetrics(
@@ -1244,7 +1250,6 @@ export async function stepStatsMetrics(
     prCreatedAt,
     specReadyTs,
     reviewerAcceptTs,
-    acPassRate,
   } = input;
 
   const nowDt = new Date();
@@ -1254,8 +1259,6 @@ export async function stepStatsMetrics(
   const specDt = parseIso(specReadyTs);
   const specLatency =
     specDt && createdDt ? Math.max(0, (createdDt.getTime() - specDt.getTime()) / 1000) : -1;
-
-  const acRate = isNaN(acPassRate) ? -1 : acPassRate;
 
   const reviewerDt = parseIso(reviewerAcceptTs);
   const reviewerLatency =
@@ -1271,7 +1274,6 @@ export async function stepStatsMetrics(
     { metric: "cost_per_merged_pr_usd",              value: costUsd,       unit: "usd",     tags, source: "post-merge-hook" },
     { metric: "pr_file_conflict_score",              value: conflictScore, unit: "count",   tags, source: "post-merge-hook" },
     { metric: "spec_to_first_pr_latency_seconds",    value: specLatency,   unit: "seconds", tags, source: "post-merge-hook" },
-    { metric: "acceptance_criteria_pass_rate",       value: acRate,        unit: "ratio",   tags, source: "post-merge-hook" },
     { metric: "reviewer_acceptance_latency_seconds", value: reviewerLatency, unit: "seconds", tags, source: "post-merge-hook" },
     { metric: "fix_rounds_per_pr",                   value: fixCycleCount, unit: "count",   tags, source: "post-merge-hook" },
   ];
@@ -1282,7 +1284,7 @@ export async function stepStatsMetrics(
     `[post-merge-hook] stats: time_to_merge=${elapsed.toFixed(0)}s fix_cycles=${fixCycleCount} cost=${costUsd.toFixed(4)} conflict=${conflictScore}\n`
   );
   process.stdout.write(
-    `[post-merge-hook] stats: spec_latency=${specLatency.toFixed(0)}s ac_rate=${acRate.toFixed(4)} reviewer_latency=${reviewerLatency.toFixed(0)}s\n`
+    `[post-merge-hook] stats: spec_latency=${specLatency.toFixed(0)}s reviewer_latency=${reviewerLatency.toFixed(0)}s\n`
   );
   process.stdout.write(
     `[post-merge-hook] stats: fix_rounds_per_pr=${fixCycleCount}\n`
@@ -1454,54 +1456,8 @@ function gatherStatsInputs(pr: string, discussion: string | null): StatsMetricsI
   );
   const reviewerAcceptTs = reviewerResult.stdout.trim();
 
-  // Acceptance criteria pass rate
-  let acPassRate = -1;
-  if (discussion && discBody) {
-    const pyAc =
-      // No subprocess import: the gh call this used to make now happens in
-      // TypeScript above, and its JSON arrives as argv[3]. The regex and
-      // formatting semantics below are Python's and stay Python's.
-      "import re, json, sys\n" +
-      "disc_body = sys.argv[1]\n" +
-      "pr = sys.argv[2]\n" +
-      "pr_json = sys.argv[3]\n" +
-      "ac_section = re.search(r'### Acceptance Criteria\\s*([\\s\\S]*?)(?=\\n###|\\Z)', disc_body)\n" +
-      "if not ac_section:\n" +
-      "    print('-1.0'); exit()\n" +
-      "ac_text = ac_section.group(1)\n" +
-      "ac_lines = re.findall(r'^\\s*(?:\\d+\\.|[-*])\\s+(.+)', ac_text, re.MULTILINE)\n" +
-      "if not ac_lines:\n" +
-      "    print('-1.0'); exit()\n" +
-      "try:\n" +
-      "    pr_data = json.loads(pr_json)\n" +
-      "    evidence_text = (pr_data.get('body') or '') + ' '.join(\n" +
-      "        c.get('body', '') for c in pr_data.get('comments', [])\n" +
-      "    )\n" +
-      "except Exception:\n" +
-      "    evidence_text = ''\n" +
-      "referenced = 0\n" +
-      "for ac in ac_lines:\n" +
-      "    words = [w.lower() for w in re.findall(r'\\w+', ac) if len(w) > 3][:6]\n" +
-      "    if any(w in evidence_text.lower() for w in words):\n" +
-      "        referenced += 1\n" +
-      "rate = referenced / len(ac_lines)\n" +
-      "print(f'{rate:.4f}')\n";
-
-    // The gh call the Python used to make, hoisted so its plane is readable
-    // from this file. An empty string on failure reproduces the old
-    // behaviour exactly: the Python's own `except` set evidence_text to "".
-    const acEvidence = runShellNonFatal(
-      ["gh", "pr", "view", pr, "--repo", codeRepo, "--json", "body,comments"],
-      "stats acPassRate evidence"
-    );
-    const acResult = runShellNonFatal(
-      ["python3", "-c", pyAc, discBody, pr, acEvidence.stdout.trim() || "{}"],
-      "stats acPassRate"
-    );
-    const acStr = acResult.stdout.trim();
-    acPassRate = parseFloat(acStr || "-1");
-    if (isNaN(acPassRate)) acPassRate = -1;
-  }
+  // acceptance_criteria_pass_rate gathering was retired here (D#2476) along
+  // with the writer in stepStatsMetrics — see the comment there for why.
 
   return {
     pr,
@@ -1512,7 +1468,6 @@ function gatherStatsInputs(pr: string, discussion: string | null): StatsMetricsI
     prCreatedAt,
     specReadyTs,
     reviewerAcceptTs,
-    acPassRate,
   };
 }
 

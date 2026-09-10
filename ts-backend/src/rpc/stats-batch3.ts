@@ -4,7 +4,6 @@
  * Mirrors the following Python RPC handlers exactly (1:1 parity):
  *   - stats.freshness_list   → handleFreshnessList()
  *   - stats.weekly_velocity  → handleWeeklyVelocity()
- *   - stats.sdk_vs_cc        → handleSdkVsCc()
  *   - stats_duckdb_writers   → handleDuckdbWriters()
  *   - stats.dial_usage       → handleDialUsage()
  *   - stats.dial_rejections  → handleDialRejections()
@@ -15,7 +14,6 @@
  * Data sources per method:
  *   freshness_list    — DuckDB metric_event: SELECT metric, MAX(ts)
  *   weekly_velocity   — gh pr list subprocess (same as Python's backend/stats/weekly_velocity.py)
- *   sdk_vs_cc         — DuckDB agent_run + inline cost_pricing (RATE_CARD inline)
  *   stats_duckdb_writers — lsof subprocess (same as Python's backend/stats/duckdb_writers.py)
  *   dial_usage        — <STATE_DIR>/dial-registry.json + <STATE_DIR>/audit.jsonl
  *   dial_rejections   — <STATE_DIR>/audit.jsonl + <REPO>/.autonomous-team/hook-events/blocks-*.jsonl
@@ -31,7 +29,6 @@
  * Design notes:
  *   - weekly_velocity uses execa/child_process for `gh pr list` (same as Python).
  *     No GH_TOKEN injection — relies on gh CLI credentials from the environment.
- *   - sdk_vs_cc inlines the cost_pricing RATE_CARD (exact same values as Python).
  *   - dial_usage reads dial-registry.json directly — mirrors Python's _load_registry().
  *   - dial_rejections path resolution mirrors Python exactly:
  *     _REPO_ROOT = __file__.parent.parent.parent → .autonomous-team/hook-events
@@ -317,188 +314,6 @@ export function handleWeeklyVelocity(
     prev_total: prevTotal,
     trend_pct: trendPct,
   };
-}
-
-// ---------------------------------------------------------------------------
-// stats.sdk_vs_cc
-// ---------------------------------------------------------------------------
-
-/**
- * Return per-role SDK vs CC comparison from agent_run.
- *
- * Response: {
- *   "rows": [{"role", "route", "run_count", "median_input_tok",
- *              "median_output_tok", "pass_rate", "cost_per_success_usd"}, ...],
- *   "has_routed_via": bool,
- *   "generated_at": "ISO",
- *   "error": str|null
- * }
- *
- * Mirrors: backend/stats/sdk_vs_cc.sdk_vs_cc_by_role()
- *          backend/rpc/stats_sdk_vs_cc.handle()
- *
- * Cost pricing (mirrors backend/cost_pricing.py RATE_CARD):
- *   claude-sonnet-4-6: input=$3/1M, output=$15/1M,
- *                      cache_write=$3.75/1M, cache_read=$0.30/1M
- *   _default: same rates (fallback for unknown/null model)
- */
-
-// Mirrors Python RATE_CARD exactly
-const RATE_CARD: Record<string, Record<string, number>> = {
-  "claude-sonnet-4-6": { input: 3.00, output: 15.00, cache_write: 3.75, cache_read: 0.30 },
-  "_default":          { input: 3.00, output: 15.00, cache_write: 3.75, cache_read: 0.30 },
-};
-
-function costUsd(
-  inputTok: number,
-  outputTok: number,
-  cacheRead: number,
-  cacheWrite: number,
-  model: string | null
-): number {
-  const key = (model && RATE_CARD[model]) ? model : "_default";
-  const rates = RATE_CARD[key];
-  const _1m = 1_000_000.0;
-  const cost =
-    inputTok  * rates.input        / _1m +
-    outputTok * rates.output       / _1m +
-    cacheRead * rates.cache_read   / _1m +
-    cacheWrite * rates.cache_write / _1m;
-  // Python: round(cost, 8)
-  return Math.round(cost * 1e8) / 1e8;
-}
-
-export async function handleSdkVsCc(
-  _params: Record<string, unknown>
-): Promise<unknown> {
-  const generatedAt = new Date().toISOString().replace(/\.\d+Z$/, "Z");
-  const emptyResult = {
-    rows: [],
-    has_routed_via: false,
-    generated_at: generatedAt,
-    error: null as string | null,
-  };
-
-  let h;
-  try {
-    h = await openReadConn();
-  } catch (err) {
-    return { ...emptyResult, error: `cannot open stats.duckdb: ${err}` };
-  }
-
-  try {
-    // Check if routed_via column exists
-    const colRows = await queryDicts(
-      h,
-      `SELECT column_name FROM information_schema.columns
-       WHERE table_name='agent_run'`
-    );
-    const colNames = new Set(colRows.map(r => r["column_name"] as string));
-    const hasRoutedVia = colNames.has("routed_via");
-
-    if (!hasRoutedVia) {
-      return emptyResult;
-    }
-
-    // Adaptive expressions for optional columns
-    const cacheReadExpr  = colNames.has("cache_read")  ? "COALESCE(cache_read,  0)" : "0";
-    const cacheWriteExpr = colNames.has("cache_write") ? "COALESCE(cache_write, 0)" : "0";
-    const modelExpr      = colNames.has("model")       ? "FIRST(model)"              : "NULL";
-
-    const rows = await queryDicts(
-      h,
-      `
-      SELECT
-          role,
-          routed_via,
-          COUNT(*)                                          AS run_count,
-          MEDIAN(input_tok)                                 AS median_input_tok,
-          MEDIAN(output_tok)                                AS median_output_tok,
-          AVG(CASE WHEN verdict IN ('done', 'pass') THEN 1.0 ELSE 0.0 END)
-                                                            AS pass_rate,
-          SUM(CASE WHEN verdict IN ('done', 'pass')
-                   THEN COALESCE(input_tok,  0) ELSE 0 END) AS pass_input_tok,
-          SUM(CASE WHEN verdict IN ('done', 'pass')
-                   THEN COALESCE(output_tok, 0) ELSE 0 END) AS pass_output_tok,
-          SUM(CASE WHEN verdict IN ('done', 'pass')
-                   THEN ${cacheReadExpr}          ELSE 0 END) AS pass_cache_read,
-          SUM(CASE WHEN verdict IN ('done', 'pass')
-                   THEN ${cacheWriteExpr}         ELSE 0 END) AS pass_cache_write,
-          SUM(CASE WHEN verdict IN ('done', 'pass') THEN 1 ELSE 0 END)
-                                                            AS pass_count,
-          ${modelExpr}                                      AS model_sample
-      FROM agent_run
-      WHERE routed_via IS NOT NULL
-        AND role IS NOT NULL
-      GROUP BY role, routed_via
-      ORDER BY role, routed_via
-      `
-    );
-
-    const toInt = (v: unknown): number => {
-      if (v === null || v === undefined) return 0;
-      if (typeof v === "bigint") return Number(v);
-      // Python's int() truncates toward zero (not rounds). For count columns this
-      // makes no difference, but for MEDIAN values (e.g. 388.5) Python returns 388
-      // while Math.round() would return 389. Use Math.trunc() to match Python exactly.
-      return Math.trunc(Number(v));
-    };
-    const toFloat = (v: unknown): number | null => {
-      if (v === null || v === undefined) return null;
-      const n = typeof v === "number" ? v : Number(v);
-      return isFinite(n) ? n : null;
-    };
-
-    const resultRows = rows.map(row => {
-      const passCount  = toInt(row["pass_count"]);
-      const runCount   = toInt(row["run_count"]);
-      const passInTok  = toInt(row["pass_input_tok"]);
-      const passOutTok = toInt(row["pass_output_tok"]);
-      const passCacheR = toInt(row["pass_cache_read"]);
-      const passCacheW = toInt(row["pass_cache_write"]);
-      const modelSample = (row["model_sample"] as string | null) ?? null;
-
-      let costPerSuccess: number | null = null;
-      if (passCount > 0) {
-        const totalCost = costUsd(passInTok, passOutTok, passCacheR, passCacheW, modelSample);
-        // Python: round(total_pass_cost / pass_count, 8)
-        costPerSuccess = Math.round((totalCost / passCount) * 1e8) / 1e8;
-      }
-
-      const passRate = toFloat(row["pass_rate"]);
-
-      return {
-        role: (row["role"] as string | null) ?? "unknown",
-        route: (row["routed_via"] as string | null) ?? "unknown",
-        run_count: runCount,
-        median_input_tok: row["median_input_tok"] !== null
-          ? toInt(row["median_input_tok"])
-          : null,
-        median_output_tok: row["median_output_tok"] !== null
-          ? toInt(row["median_output_tok"])
-          : null,
-        // Python: round(float(pass_rate), 4) if pass_rate is not None else None
-        pass_rate: passRate !== null ? Math.round(passRate * 1e4) / 1e4 : null,
-        cost_per_success_usd: costPerSuccess,
-      };
-    });
-
-    return {
-      rows: resultRows,
-      has_routed_via: true,
-      generated_at: generatedAt,
-      error: null,
-    };
-  } catch (err) {
-    return {
-      rows: [],
-      has_routed_via: false,
-      generated_at: generatedAt,
-      error: String(err),
-    };
-  } finally {
-    closeConn(h);
-  }
 }
 
 // ---------------------------------------------------------------------------

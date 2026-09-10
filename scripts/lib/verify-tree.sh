@@ -50,6 +50,57 @@
 # entries sit outside both, so a swapped symlink goes unnoticed — sha256sum
 # follows a link and would describe the target. Neither mode exists at HEAD.
 #
+# Copy-and-mutate suites — a known false-failure shape (D#2514)
+# ---------------------------------------------------------------
+# A suite that `cp`s one of ITS OWN tracked fixtures into a fresh location and
+# then mutates the copy inherits the copy's read-only mode bit — `cp` preserves
+# source permissions, restricted only by umask, which strips bits but never
+# adds them back. The copy then fails to open for writing, and the suite
+# reports that as a test failure, not as a harness artifact. As the reporting
+# reviewer put it: "the docstring's case is the tree silently reverting to base
+# before a run, mine was the tree being destroyed during one. Both are 'the
+# thing I measured is not the thing I think I measured'."
+#
+# The remedy for a suite in this shape is to run it from a plain clone, NOT to
+# `chmod u+w` the affected file or directory inside a `verify_tree_build` tree.
+# `chmod u+w` re-opens the exact hole this protection exists to close — it
+# makes the tree mutable again, silently, for whoever forgets to undo it. If a
+# suite's own fixture-copy step needs to be writable, that chmod belongs in the
+# suite's OWN setup code, on ITS OWN scratch copy, never on the protected tree.
+#
+# Known affected suites (verified 2026-09-10, code-plane/main @ 1e805b42, host
+# nixos — re-verify before trusting a stale entry, and update this list rather
+# than letting it drift):
+#   - tests/test_hook_caller_failure_surfacing.sh — 8 passed / 5 failed in a
+#     `verify_tree_build` tree vs 10 passed / 3 failed in a plain clone, same
+#     commit. Two of its site-2 mutation cases `cp` a script into a mktemp dir
+#     and then rewrite it in place; the copy inherits the read-only bit and the
+#     rewrite raises PermissionError, so the mutation is never applied and the
+#     assertion that depends on it goes red for the wrong reason.
+#   - tests/test_no_hardcoded_checkout_paths_guard.sh — 32 passed / 10 failed
+#     protected vs 42 passed / 0 failed plain clone, same commit. Its
+#     `new_fixture()` helper `cp`s the guard script into a mktemp dir; every
+#     mutation case that rewrites the copy hits the same PermissionError. A
+#     fix to this suite's own fixture helper is in flight separately (adds
+#     `chmod u+w` to ITS OWN mktemp copy, not to the protected tree) — once
+#     that lands this suite drops off this list; if you read this after it has
+#     and the suite still fails protected, the entry is stale, re-measure.
+#
+# Checked and NOT on this list: tests/test_identifier_rewrite_project_name.sh.
+# An earlier report carried forward 17 passed/9 failed protected vs 22/4 plain
+# for it; re-measured 2026-09-10 at the same commit as above, it is 11 passed /
+# 15 failed in BOTH tree shapes — no differential. Its failures come from a
+# missing fixture file (open-source/IDENTIFIER-RULES.txt), unrelated to write
+# protection. Listed here so nobody re-adds it on the strength of the old
+# numbers alone.
+#
+# This is a plain list, not a checked ledger — cheap to read, and cheap to
+# re-verify by hand (build one protected tree, one plain clone, diff the pass
+# counts). A suite that stops copy-and-mutating, or a suite that starts, will
+# only be caught by whoever next re-measures by hand; that tradeoff was made
+# deliberately here because the list is short (2 entries) and low-churn, not
+# because a check would be hard to write.
+#
 # Manifests live outside every tree under STATE_DIR/tree-manifests/. STATE_DIR
 # comes from backend/state_paths.py and honours AUTONOMOUS_TEAM_STATE_DIR, so
 # build and assert must agree on it; if they do not, assert exits 3 naming the

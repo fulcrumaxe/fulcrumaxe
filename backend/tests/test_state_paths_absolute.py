@@ -160,7 +160,6 @@ def test_fresh_scratch_dir_beats_legacy_audit_path(tmp_path, monkeypatch):
     ("backend.stats_writer", "_db_path"),
     ("backend.stats_freshness_watchdog", "_db_path"),
     ("backend.stats.anomaly_detector", "_db_path"),
-    ("backend.stats.sdk_vs_cc", "_db_path"),
     ("backend.stats.scheduled_jobs", "_db_path"),
     ("backend.rpc.stats_pre_write_burn", "_db_path"),
 ])

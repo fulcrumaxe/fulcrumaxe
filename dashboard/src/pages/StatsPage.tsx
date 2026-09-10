@@ -25,7 +25,8 @@ const METRIC_ORDER = [
   'fix_cycle_count',
   'spec_to_first_pr_latency_seconds',
   'reviewer_acceptance_latency_seconds',
-  'acceptance_criteria_pass_rate',
+  // 'acceptance_criteria_pass_rate' intentionally removed (D#2476): its
+  // writer was retired, not repaired — see backend/stats/metric_order.py.
   'cost_per_merged_pr_usd',
   'cost_attribution_unresolved_count',
   'pr_file_conflict_score',

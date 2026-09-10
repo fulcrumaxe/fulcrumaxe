@@ -4,8 +4,9 @@
 #
 # TWO RULES, ONE REASON
 #
-#   1. The body must carry a machine-readable closing reference in the
-#      `D#NNNN` form.
+#   1. The body must carry a machine-readable Discussion reference in the
+#      `D#NNNN` form — either a closing one (Closes/Resolves/Fixes) or an
+#      advancing one (Refs/Part of/Towards).
 #   2. The body must not contain a `github.com/` URL naming any owner other
 #      than the code plane's own.
 #
@@ -14,6 +15,29 @@
 # a 404 that also leaks shape — that a private twin exists, roughly how much
 # work is in it, and how it is numbered. A bare `Closes D#2348` is honest
 # about provenance and publishes neither a dead link nor a hostname.
+#
+# RULE 1 IS ABOUT PROVENANCE, NOT CLOSURE (D#2401)
+#
+# The reasoning above — provenance, no dead link, no leaked hostname — is
+# satisfied exactly as well by `Refs D#2401` as by `Closes D#2401`. Nothing in
+# it requires the reference to be a *closing* one, so rule 1 originally
+# conflated two different requirements: "every PR names its Discussion" (the
+# actual reason this gate exists) and "every PR closes a Discussion" (never
+# the reason, and a PR that only advances a multi-PR Discussion could not say
+# so honestly). D#2401 split them apart: rule 1 now accepts either verb class.
+#
+# This gives up nothing on premature closes. That protection was never this
+# gate's job — it lives in `planned_prs` plus
+# `scripts/lib/discussion-close-guard.sh::discussion_close_decision`, which
+# holds on unknown and is unchanged by this. Whether a Discussion closes is
+# decided there, after merge, from the Discussion body — never from which verb
+# a PR body happened to use.
+#
+# The advancing verbs are accepted ONLY in the `D#` form, never bare `#N`.
+# `Refs #123` is an ordinary cross-reference to a PR or Issue on the code
+# plane, and reading it as Discussion 123 would silently resolve to the wrong
+# thing. The closing verbs keep their existing `(D#|#)` behaviour — unchanged,
+# relied on elsewhere (an Issue closed via `Closes #N`).
 #
 # WHY PRE-MERGE IS ENOUGH HERE, AND ONLY HERE
 #
@@ -111,7 +135,7 @@
 # $PR_BODY is still honoured when $PR_BODY_FILE is unset, for local runs and
 # for the test suite. Neither set is a wiring error (exit 2). An EMPTY body is
 # a real PR with an empty body and fails rule 1 like any other body with no
-# closing reference.
+# Discussion reference.
 #
 # Usage:
 #   PR_BODY_FILE=/path/to/body.txt bash scripts/ci/pr-link-policy.sh
@@ -158,13 +182,21 @@ if [[ -z "$OWNER" ]]; then
   exit 1
 fi
 
-# Rule 1's pattern. Deliberately the same three verbs, with the same
+# Rule 1's closing pattern. Deliberately the same three verbs, with the same
 # case-insensitive first letter, that scripts/lib/resolve-pr-discussion.sh
 # already matches — two mechanisms reading the same PR body for the same
 # reference must agree on what counts, or one of them is silently wrong on
 # some real PR. Narrowed to the `D#` form: that resolver also accepts a bare
 # `#N`, which is an Issue reference and is not what this rule is about.
 CLOSES_RE='([Cc]loses|[Rr]esolves|[Ff]ixes) D#[0-9]+'
+
+# Rule 1's advancing pattern (D#2401) — a PR that names its Discussion without
+# closing it. Kept as a SEPARATE pattern from CLOSES_RE rather than merged
+# into one alternation: that makes the `D#`-only restriction structural. The
+# advancing class simply has no `#`-only alternative to accidentally get
+# right — there is nothing to narrow, because it was never given the option.
+# `resolve-pr-discussion.sh:144` extends the same way, same restriction.
+ADVANCES_RE='([Rr]efs|[Pp]art of|[Tt]owards) D#[0-9]+'
 
 # Rule 2's pattern is scheme-agnostic on purpose: D#2438's own motivating
 # example ("Context: github.com/some-private-org/enginerepo/discussions/2438")
@@ -191,6 +223,7 @@ CLOSES_RE='([Cc]loses|[Rr]esolves|[Ff]ixes) D#[0-9]+'
 GITHUB_HOST_TOKEN_RE='[A-Za-z0-9.-]*github\.com[A-Za-z0-9.-]*(/[^]/[:space:])>"]*)?'
 
 has_closes_ref() { printf '%s' "$1" | grep -Eq "$CLOSES_RE"; }
+has_advances_ref() { printf '%s' "$1" | grep -Eq "$ADVANCES_RE"; }
 
 # Extracts every hostname-token(/owner-segment)? candidate touching
 # "github.com" and, for each one whose FULL token is exactly "github.com" or
@@ -229,8 +262,8 @@ has_foreign_owner_url() {
 self_test() {
   local bad=0
 
-  # Rule 1 must accept each accepted verb, and reject a body with no
-  # reference and a body whose only reference is a bare Issue `#N`.
+  # Rule 1 (closing form) must accept each accepted verb, and reject a body
+  # with no reference and a body whose only reference is a bare Issue `#N`.
   local good
   for good in "Closes D#2348" "resolves D#7 in the body" "Fixes D#1"; do
     has_closes_ref "$good" || { echo "SELF-TEST FAIL: closing-reference rule rejected '$good'" >&2; bad=1; }
@@ -239,6 +272,25 @@ self_test() {
   for bad_body in "" "No reference at all." "Closes #2348" "Closes D#" "closes d#2348"; do
     has_closes_ref "$bad_body" && { echo "SELF-TEST FAIL: closing-reference rule accepted '$bad_body'" >&2; bad=1; }
   done
+
+  # Rule 1 (advancing form, D#2401) must accept each accepted verb in the D#
+  # form, upper- and lower-case, and must NOT accept the bare `#N` form — that
+  # is an ordinary PR/Issue cross-reference, not a Discussion reference, and
+  # reading it as one would silently resolve to the wrong thing.
+  for good in "Refs D#2401" "refs D#2401" "Part of D#2401" "part of D#2401" \
+    "Towards D#2401" "towards D#2401"; do
+    has_advances_ref "$good" || { echo "SELF-TEST FAIL: advancing-reference rule rejected '$good'" >&2; bad=1; }
+  done
+  for bad_body in "" "No reference at all." "Refs #2401" "refs #2401" \
+    "Part of #2401" "Towards #2401" "Refs D#" "refs d#2401"; do
+    has_advances_ref "$bad_body" && { echo "SELF-TEST FAIL: advancing-reference rule accepted '$bad_body'" >&2; bad=1; }
+  done
+  # An advancing reference alone (no closing reference) must satisfy rule 1 as
+  # a whole, and a bare `Refs #N` (no D) must not.
+  { has_closes_ref "Refs D#2401" || has_advances_ref "Refs D#2401"; } \
+    || { echo "SELF-TEST FAIL: rule 1 rejected an advancing-only body 'Refs D#2401'" >&2; bad=1; }
+  { has_closes_ref "Refs #2401" || has_advances_ref "Refs #2401"; } \
+    && { echo "SELF-TEST FAIL: rule 1 accepted bare 'Refs #2401' as a Discussion reference" >&2; bad=1; }
 
   # Rule 2 (allowlist) must catch a github.com URL naming any owner other than
   # the resolved code-plane owner, case-insensitively on both the host and
@@ -314,12 +366,15 @@ echo "pr-link-policy: owner '$OWNER' resolved from $OWNER_SOURCE, body from $BOD
 
 VIOLATIONS=0
 
-if ! has_closes_ref "$PR_BODY"; then
-  echo "FAIL: the PR body carries no closing reference in the D#NNNN form."
-  echo "      Add a line reading: Closes D#<number>"
-  echo "      (Resolves/Fixes are accepted too. A bare 'Closes #N' is an Issue"
-  echo "      reference and does not satisfy this rule — a PR that closes an"
-  echo "      Issue needs both lines.)"
+if ! has_closes_ref "$PR_BODY" && ! has_advances_ref "$PR_BODY"; then
+  echo "FAIL: the PR body carries no Discussion reference in the D#NNNN form."
+  echo "      Add a line reading: Closes D#<number> — if this PR finishes the"
+  echo "      Discussion (Resolves/Fixes are accepted too) — or:"
+  echo "      Refs D#<number> — if it only advances one (Part of/Towards are"
+  echo "      accepted too)."
+  echo "      A bare '#N' (no D) never satisfies this rule for either verb"
+  echo "      class — that is a PR/Issue reference, not a Discussion one. A PR"
+  echo "      that closes an Issue needs its own 'Closes #N' line in addition."
   VIOLATIONS=$((VIOLATIONS + 1))
 fi
 
@@ -327,8 +382,8 @@ if has_foreign_owner_url "$PR_BODY"; then
   echo "FAIL: the PR body contains a github.com URL whose owner is not '$OWNER'."
   echo "      A public PR body linking a repo we don't own can publish a dead"
   echo "      link or leak the existence, shape and numbering of a private"
-  echo "      twin. Cite the Discussion as a bare 'Closes D#<number>' instead"
-  echo "      — no URL. Offending line(s):"
+  echo "      twin. Cite the Discussion as a bare 'Closes D#<number>' or"
+  echo "      'Refs D#<number>' instead — no URL. Offending line(s):"
   while IFS= read -r offending_line; do
     has_foreign_owner_url "$offending_line" && printf '        %s\n' "$offending_line"
   done <<<"$PR_BODY"
@@ -343,5 +398,5 @@ if [[ $VIOLATIONS -gt 0 ]]; then
   exit 1
 fi
 
-echo "PASS: the PR body carries a bare D# closing reference and no foreign-owner github.com URL."
+echo "PASS: the PR body carries a bare D# Discussion reference and no foreign-owner github.com URL."
 exit 0

@@ -1007,7 +1007,46 @@ _load_context() {
     # undiagnosable since the operator sees a cap error while the cap is
     # fine. spawn-agent.sh already calls this script without cd-ing to the
     # repo root, so this was reachable on the real path, not theoretical.
-    if ! PYTHONPATH="$REPO_ROOT" python3 -m backend.fleet.concurrency register "$_PROJECT_NAME" "$_AGENT_ID" "$ROLE" "$$" 2>/dev/null; then
+    #
+    # D#2473: the pid recorded here used to be "$$" — THIS script's own
+    # subshell pid, not any process that outlives it. pre-spawn-check.sh
+    # exits (printing its JSON) within moments of this call returning,
+    # whether it was invoked directly or through scripts/spawn-agent.sh's
+    # command substitution — there is no call depth at which "$$" names a
+    # process that is still alive by the time anything checks. Every row
+    # registered this way was therefore already dead by
+    # backend/fleet/concurrency.py's reap_stale() pid-liveness definition
+    # (60s grace, then reap-if-/proc/<pid>-absent), so the very next
+    # register() call on the host — from any project, any role — reaped it,
+    # regardless of whether the agent it described was still running.
+    # Measured on the host D#2473 filed against: the one row fleet.db held
+    # (agent_id executor-2162-..., pid 272967) matched none of the 7 live
+    # `claude` processes at read time — exactly this bug.
+    #
+    # Fix: register under $CLAUDE_PID instead. scripts/spawn-agent.sh's own
+    # env-scrub allowlist already documents CLAUDE_PID as "harness process
+    # identity" — it is set once by the harness and inherited by every
+    # Bash-tool subprocess regardless of how many script layers are between
+    # here and the top-level session (unlike "$$", which is scoped to
+    # exactly one process). It is the same anchor
+    # hooks/fleet_register.py's os.getppid() already resolves to for the
+    # Agent()-tool lane (that hook is a direct PreToolUse child of the
+    # harness process, so its immediate parent PID equals $CLAUDE_PID) — see
+    # that file's docstring. $CLAUDE_PID stays alive for the life of the
+    # calling session, so a row registered under it is correctly read as
+    # "alive" by backend/fleet/concurrency.py's active_agents() for as long
+    # as the session that spawned it is running, and is only ever reaped
+    # once that session actually ends.
+    #
+    # Falls back to 0 (the pre-D#2314 legacy sentinel) only when CLAUDE_PID
+    # is genuinely unset — e.g. a manual invocation outside the harness.
+    # pid=0 rows are governed by reap_stale()'s age-based 2h backstop
+    # instead of pid-liveness (see that function), and are correctly
+    # reported as NOT alive by active_agents() (which treats pid<=0 as dead
+    # by design) until this script's caller supplies a real pid — the same
+    # honest "no live pid available" posture the legacy rows always had,
+    # rather than a fabricated pid that merely looks more plausible.
+    if ! PYTHONPATH="$REPO_ROOT" python3 -m backend.fleet.concurrency register "$_PROJECT_NAME" "$_AGENT_ID" "$ROLE" "${CLAUDE_PID:-0}" 2>/dev/null; then
       echo "ERROR: blocked_reason=fleet_cap_exceeded — fleet agent cap reached, spawn of $ROLE blocked." >&2
       exit 1
     fi
