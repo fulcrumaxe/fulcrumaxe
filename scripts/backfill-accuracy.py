@@ -36,7 +36,7 @@ import json as _json
 
 
 def _load_repo() -> str:
-    """Resolve repo from config.json → env → fail loudly.
+    """Resolve repo from config.json → env → origin remote → fail loudly.
 
     Matches the precedence in scripts/lib/repo-resolve.sh and
     ts-backend/src/config/repo.ts's resolveRepo(): config.json's "repo"
@@ -44,12 +44,22 @@ def _load_repo() -> str:
     .autonomous-team/project.json is also present (see D#1635 Wave 1
     review — project.json used to shadow config.json here).
 
+    D#2443: this was a fourth, unpatched copy of the resolution order —
+    backend/_repo.py, backend/spawn_templates.py and
+    backend/fleet/project_name.py all gained a third "read origin from
+    .git/config" fallback step under D#2340 (so a clone of the open-source
+    export, which ships no .autonomous-team/, still resolves a slug); this
+    script never did, despite its own docstring claiming to match
+    repo-resolve.sh's precedence. Rather than growing a fifth copy of the
+    same ~15 lines, this calls the shared implementation directly.
+
     No hard-coded slug fallback: .autonomous-team/ never ships in the
-    open-source export, so a forked adopter with neither config.json nor
-    the env var set gets an actionable error instead of silently
-    inheriting this project's own repo slug (D#1870).
+    open-source export, so a forked adopter with none of config.json, the
+    env var, or a usable origin remote gets an actionable error instead of
+    silently inheriting this project's own repo slug (D#1870).
     """
-    cj = Path(__file__).resolve().parent.parent / ".autonomous-team" / "config.json"
+    repo_root = Path(__file__).resolve().parent.parent
+    cj = repo_root / ".autonomous-team" / "config.json"
     try:
         data = _json.load(cj.open())
         r = data.get("repo")
@@ -60,6 +70,17 @@ def _load_repo() -> str:
     env_repo = os.environ.get("AUTONOMOUS_TEAM_REPO")
     if env_repo:
         return env_repo
+
+    # The origin remote — the only step that works in an agent worktree or a
+    # plain `git clone` of the open-source export, neither of which ships
+    # .autonomous-team/. Never raises and never shells out.
+    sys.path.insert(0, str(repo_root))
+    from backend._repo_remote import repo_slug_from_git_config  # noqa: PLC0415
+
+    repo = repo_slug_from_git_config(repo_root)
+    if repo:
+        return repo
+
     raise RuntimeError(
         "backfill-accuracy.py: could not resolve a repo slug. Set "
         "AUTONOMOUS_TEAM_REPO or add a \"repo\" field to "

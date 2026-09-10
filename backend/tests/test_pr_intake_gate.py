@@ -19,12 +19,21 @@ Coverage:
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+
+# D#2443: pr_intake_gate.py imports external_intake_gate, which resolves
+# BOT_ACCOUNT at *import* time and raises when neither
+# AUTONOMOUS_TEAM_BOT_ACCOUNT nor .autonomous-team/config.json's
+# "bot_account" field is set — true of every code-plane tree, which ships
+# neither. setdefault() only supplies a value when nothing already
+# configured one, so a real operator's env var or config.json still wins.
+os.environ.setdefault("AUTONOMOUS_TEAM_BOT_ACCOUNT", "ci-test-bot")
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_REPO_ROOT))

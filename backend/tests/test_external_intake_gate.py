@@ -16,12 +16,25 @@ Acceptance criteria coverage (see Discussion #1588 Spec):
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import time
 from pathlib import Path
 
 import pytest
+
+# D#2443: external_intake_gate.py resolves BOT_ACCOUNT at *import* time and
+# raises when neither AUTONOMOUS_TEAM_BOT_ACCOUNT nor .autonomous-team/
+# config.json's "bot_account" field is set — true of every code-plane tree,
+# which ships neither. Unlike the other env vars this suite exercises via
+# monkeypatch, that raise happens before any fixture runs, so it can't be
+# fixed per-test — it has to be set before the import below. setdefault()
+# only supplies a value when nothing already configured one, so a real
+# operator's env var or config.json still wins; the module's own resolver
+# (exercised directly by TestBotAccountResolution below) is unchanged and
+# still fails loudly for an unconfigured real caller.
+os.environ.setdefault("AUTONOMOUS_TEAM_BOT_ACCOUNT", "ci-test-bot")
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_REPO_ROOT))
