@@ -26,11 +26,16 @@ Five rules:
   Rule 4 (test_applied_labels_are_all_known) — every label literal a role
           `.md` or spawn `.tmpl` applies via `gh ... --add-label` or the
           `apply_label` helper (`scripts/lib/gh-label.sh`) is a label
-          something downstream (the gate, the NACK list, or the sweep
-          script) actually reads. D#2389: the extractor originally matched
-          the `gh api ... -f labels[]="<x>"` syntax; the cards moved to
+          something downstream (the gate, the NACK list, the sweep script,
+          or APPLIED_LABEL_ALLOWLIST with a stated reason) actually reads.
+          D#2389: the extractor originally matched the
+          `gh api ... -f labels[]="<x>"` syntax; the cards moved to
           `--add-label` / `apply_label` and the extractor was never updated,
           so it silently matched nothing — see _extract_applied_labels.
+          D#2015: needs-boss is applied to Issues, not PRs, so it is never
+          read by the (PR-only) merge gate — APPLIED_LABEL_ALLOWLIST states
+          that explicitly rather than relying on it merely being present,
+          incidentally, in the sweep script's known-label list.
   Rule 5 (test_gate_labels_are_all_created_by_bootstrap) — D#1910: every
           label the loop reads at a `_has_label` call site must also be
           created by `scripts/bootstrap-github-labels.sh`. Rules 1-4 all
@@ -82,6 +87,16 @@ EXPECTED_CALL_SITE_LABELS = {
     "code-review-passed",
     "debater-confirmed",
     "security-review-passed",
+}
+
+# Rule 4 allowlist: applied labels that reach an Issue rather than a PR, and
+# are therefore never read by the (PR-only) merge gate. needs-boss already
+# passes test_applied_labels_are_all_known via the sweep script's
+# _KNOWN_LABELS, so this entry is not load-bearing for that check — it
+# exists so the reason is stated explicitly and findable by grep, same
+# discipline as CALL_SITE_ALLOWLIST above (D#2015).
+APPLIED_LABEL_ALLOWLIST = {
+    "needs-boss": "applied to an Issue, not a PR — never read by the merge gate",
 }
 
 # D#2389: re-derived from the tree — no role .md or spawn .tmpl file used the
@@ -339,11 +354,22 @@ def test_applied_labels_are_all_known():
     known = _known_label_union(
         LOOP_SCRIPT.read_text(), SWEEP_SCRIPT.read_text(), NACK_LABELS_LIB.read_text()
     )
-    unknown = applied - known
+    unknown = applied - known - set(APPLIED_LABEL_ALLOWLIST)
     assert not unknown, (
         f"applied label literal(s) {unknown} are applied by a role .md or "
-        f"spawn .tmpl but are not read by the loop gate, its NACK list, or "
-        f"the sweep script's known-label list — this is the D#1958 defect shape"
+        f"spawn .tmpl but are not read by the loop gate, its NACK list, the "
+        f"sweep script's known-label list, or APPLIED_LABEL_ALLOWLIST with a "
+        f"stated reason — this is the D#1958 defect shape"
+    )
+
+
+def test_needs_boss_allowlist_has_stated_reason():
+    """AC 7 (D#2015): needs-boss is present in the applier set and is
+    explicitly allowlisted with a stated reason, not just tolerated because
+    it happens to already be in the sweep script's known-label list."""
+    assert "needs-boss" in _all_applied_labels()
+    assert APPLIED_LABEL_ALLOWLIST.get("needs-boss") == (
+        "applied to an Issue, not a PR — never read by the merge gate"
     )
 
 
