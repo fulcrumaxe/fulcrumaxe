@@ -88,7 +88,10 @@ AUDIT_AC1="$(mktemp)"
   export CI_STATUS_TEST_MODE=1
   export CI_STATUS_TEST_AUDIT_FILE="$AUDIT_AC1"
   export CI_KILL_SWITCH_OVERRIDE=HTTP_404
-  export CI_STATUS_OVERRIDE_60001='[{"name":"tui","status":"completed","conclusion":"success","app":{"slug":"github-actions"}},{"name":"dashboard","status":"completed","conclusion":"success","app":{"slug":"github-actions"}},{"name":"ts-backend","status":"completed","conclusion":"success","app":{"slug":"github-actions"}},{"name":"backend (import-smoke)","status":"completed","conclusion":"success","app":{"slug":"github-actions"}},{"name":"open-source export audit","status":"completed","conclusion":"success","app":{"slug":"github-actions"}}]'
+  # D#2318 grew CI_REQUIRED_CHECKS to eight names; all eight have to read
+  # green here or the four new ones show up as missing and this "real green
+  # fixture" stops being one.
+  export CI_STATUS_OVERRIDE_60001='[{"name":"tui","status":"completed","conclusion":"success","app":{"slug":"github-actions"}},{"name":"dashboard","status":"completed","conclusion":"success","app":{"slug":"github-actions"}},{"name":"ts-backend","status":"completed","conclusion":"success","app":{"slug":"github-actions"}},{"name":"backend (import-smoke)","status":"completed","conclusion":"success","app":{"slug":"github-actions"}},{"name":"preflight (always-on gates)","status":"completed","conclusion":"success","app":{"slug":"github-actions"}},{"name":"publish denylist","status":"completed","conclusion":"success","app":{"slug":"github-actions"}},{"name":"PR link policy","status":"completed","conclusion":"success","app":{"slug":"github-actions"}},{"name":"PR mutation evidence","status":"completed","conclusion":"success","app":{"slug":"github-actions"}},{"name":"open-source export audit","status":"completed","conclusion":"success","app":{"slug":"github-actions"}}]'
   export CI_STATUS_HEAD_SHA_60001="feedface"
   check_ci_status 60001 owner/repo
 )

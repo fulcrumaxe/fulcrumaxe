@@ -93,7 +93,16 @@ assert_not_contains() {
 
 _gha() { printf '{"name":"%s","status":"completed","conclusion":"%s","app":{"slug":"github-actions"},"html_url":"%s"}' "$1" "$2" "${3:-}"; }
 
-ALL_GREEN='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"','"$(_gha 'backend (import-smoke)' success)"','"$(_gha 'open-source export audit' success)"']'
+# D#2318 added four names to CI_REQUIRED_CHECKS (preflight, publish denylist,
+# PR link policy, PR mutation evidence). `missing` outranks every other bucket
+# in _ci_evaluate, so any fixture meant to exercise a DIFFERENT bucket has to
+# carry a green entry for these four too, or the four newly-required-but-absent
+# names silently take over the test. _D2318_GREEN is that green entry set,
+# spliced into every such fixture below rather than duplicated by hand.
+_D2318_GREEN="$(_gha 'preflight (always-on gates)' success)"','"$(_gha 'publish denylist' success)"','"$(_gha 'PR link policy' success)"','"$(_gha 'PR mutation evidence' success)"
+_D2318_SKIPPED="$(_gha 'preflight (always-on gates)' skipped)"','"$(_gha 'publish denylist' skipped)"','"$(_gha 'PR link policy' skipped)"','"$(_gha 'PR mutation evidence' skipped)"
+
+ALL_GREEN='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"','"$(_gha 'backend (import-smoke)' success)"','"$_D2318_GREEN"','"$(_gha 'open-source export audit' success)"']'
 
 # -----------------------------------------------------------------------
 # CS-1 (AC-1): lib exists, exposes check_ci_status, sourced not inlined
@@ -168,7 +177,7 @@ unset CI_STATUS_OVERRIDE_20001 CI_STATUS_HEAD_SHA_20001
 # -----------------------------------------------------------------------
 echo ""
 echo "=== CS-3: backend (import-smoke) fails -> blocked ==="
-BAD='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"','"$(_gha 'backend (import-smoke)' failure 'https://github.com/x/y/actions/runs/1')"','"$(_gha 'open-source export audit' success)"']'
+BAD='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"','"$(_gha 'backend (import-smoke)' failure 'https://github.com/x/y/actions/runs/1')"','"$_D2318_GREEN"','"$(_gha 'open-source export audit' success)"']'
 export CI_STATUS_OVERRIDE_20002="$BAD"
 export CI_STATUS_HEAD_SHA_20002="deadbeef02"
 OUT=$(_run_status 20002); RC=$?
@@ -182,7 +191,7 @@ unset CI_STATUS_OVERRIDE_20002 CI_STATUS_HEAD_SHA_20002
 # -----------------------------------------------------------------------
 echo ""
 echo "=== CS-4: required check absent (job deleted) -> blocked ==="
-MISSING='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"','"$(_gha 'open-source export audit' success)"']'
+MISSING='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"','"$_D2318_GREEN"','"$(_gha 'open-source export audit' success)"']'
 export CI_STATUS_OVERRIDE_20003="$MISSING"
 export CI_STATUS_HEAD_SHA_20003="deadbeef03"
 OUT=$(_run_status 20003); RC=$?
@@ -198,7 +207,7 @@ echo ""
 echo "=== CS-5: spoofed third-party check-run not honored ==="
 SPOOF_NAME="backend (import-smoke)"
 SPOOFED='{"name":"'"$SPOOF_NAME"'","status":"completed","conclusion":"success","app":{"slug":"some-third-party-app"},"html_url":""}'
-FAKE_GREEN='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"','"$SPOOFED"','"$(_gha 'open-source export audit' success)"']'
+FAKE_GREEN='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"','"$SPOOFED"','"$_D2318_GREEN"','"$(_gha 'open-source export audit' success)"']'
 export CI_STATUS_OVERRIDE_20004="$FAKE_GREEN"
 export CI_STATUS_HEAD_SHA_20004="deadbeef04"
 OUT=$(_run_status 20004); RC=$?
@@ -219,7 +228,7 @@ unset CI_STATUS_OVERRIDE_20005 CI_STATUS_HEAD_SHA_20005
 
 echo ""
 echo "=== CS-6b: a required check still in-progress (status != completed) -> blocked ==="
-PENDING_RUN='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"',{"name":"backend (import-smoke)","status":"in_progress","conclusion":null,"app":{"slug":"github-actions"},"html_url":""},'"$(_gha 'open-source export audit' success)"']'
+PENDING_RUN='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"',{"name":"backend (import-smoke)","status":"in_progress","conclusion":null,"app":{"slug":"github-actions"},"html_url":""},'"$_D2318_GREEN"','"$(_gha 'open-source export audit' success)"']'
 export CI_STATUS_OVERRIDE_20006="$PENDING_RUN"
 export CI_STATUS_HEAD_SHA_20006="deadbeef06"
 OUT=$(_run_status 20006); RC=$?
@@ -356,10 +365,14 @@ rm -f "$AUDIT_TMP2"
 # ═══════════════════════════════════════════════════════════════════════════
 
 # A set missing exactly the three matrix names — the live shape of this bug.
-# The two non-matrix required checks register normally, so both are present.
-MISSING_MATRIX='['"$(_gha 'backend (import-smoke)' success)"','"$(_gha 'open-source export audit' success)"']'
-# All five present and skipped — what "fixing the matrix names" would produce.
-ALL_SKIPPED='['"$(_gha tui skipped)"','"$(_gha dashboard skipped)"','"$(_gha ts-backend skipped)"','"$(_gha 'backend (import-smoke)' skipped)"','"$(_gha 'open-source export audit' skipped)"']'
+# The other non-matrix required checks (D#2318 added four more alongside
+# "backend (import-smoke)") register normally, so all of them are present.
+MISSING_MATRIX='['"$(_gha 'backend (import-smoke)' success)"','"$_D2318_GREEN"','"$(_gha 'open-source export audit' success)"']'
+# All required names present and skipped — what "fixing the matrix names"
+# would produce. D#2318's four additions are included here too: this fixture
+# means "every required check registered but did not run", and after D#2318
+# that is eight names, not four.
+ALL_SKIPPED='['"$(_gha tui skipped)"','"$(_gha dashboard skipped)"','"$(_gha ts-backend skipped)"','"$(_gha 'backend (import-smoke)' skipped)"','"$_D2318_SKIPPED"','"$(_gha 'open-source export audit' skipped)"']'
 
 # -----------------------------------------------------------------------
 # CS-12 (AC-1): `disabled` is a distinct status with its own exit code, and
@@ -580,10 +593,17 @@ unset CI_STATUS_OVERRIDE_20151 CI_STATUS_HEAD_SHA_20151
 # removed, in order. One element, named, nothing else moved. A sixth name fails
 # here on the length comparison; a reordering fails on the positional one; and
 # neither can be absorbed by editing a list to match.
+#
+# D#2318 extends the same difference rather than replacing it: the live array
+# now has to equal (D#1989 baseline minus "open-source export audit") PLUS
+# four NAMED additions, in order. Each addition is listed individually so a
+# later change that widens the count without arguing for a specific name still
+# fails here, the same way a silently-removed name would have.
 # -----------------------------------------------------------------------
 echo ""
-echo "=== CS-17: required set is the D#1989 baseline minus exactly one named element ==="
+echo "=== CS-17: required set is the D#1989 baseline minus one, plus the D#2318 additions ==="
 CS17_REMOVED="open-source export audit"
+CS17_ADDED=("publish denylist" "preflight (always-on gates)" "PR link policy" "PR mutation evidence")
 (
   source "$CI_LIB"
   # The array exactly as D#1989 left it. Do not "update" this to match a new
@@ -594,13 +614,14 @@ CS17_REMOVED="open-source export audit"
   for n in "${baseline[@]}"; do
     if [ "$n" != "$CS17_REMOVED" ]; then expected+=("$n"); fi
   done
+  expected+=("${CS17_ADDED[@]}")
 
-  if [ $(( ${#baseline[@]} - ${#expected[@]} )) -ne 1 ]; then
+  if [ $(( ${#baseline[@]} - 1 + ${#CS17_ADDED[@]} )) -ne "${#expected[@]}" ]; then
     echo "        baseline does not contain '$CS17_REMOVED' exactly once" >&2
     exit 1
   fi
   if [ "${#CI_REQUIRED_CHECKS[@]}" -ne "${#expected[@]}" ]; then
-    echo "        live array has ${#CI_REQUIRED_CHECKS[@]} names; baseline-minus-one has ${#expected[@]}" >&2
+    echo "        live array has ${#CI_REQUIRED_CHECKS[@]} names; baseline-minus-one-plus-additions has ${#expected[@]}" >&2
     exit 1
   fi
   i=0
@@ -614,9 +635,9 @@ CS17_REMOVED="open-source export audit"
   exit 0
 )
 if [ $? -eq 0 ]; then
-  echo "  PASS: CI_REQUIRED_CHECKS is the D#1989 baseline minus '$CS17_REMOVED', in order"; PASS=$((PASS + 1))
+  echo "  PASS: CI_REQUIRED_CHECKS is the D#1989 baseline minus '$CS17_REMOVED', plus the D#2318 additions, in order"; PASS=$((PASS + 1))
 else
-  echo "  FAIL: CI_REQUIRED_CHECKS is not the D#1989 baseline minus exactly that one name"; FAIL=$((FAIL + 1))
+  echo "  FAIL: CI_REQUIRED_CHECKS is not the D#1989 baseline minus that one name plus exactly the D#2318 additions"; FAIL=$((FAIL + 1))
 fi
 (
   source "$CI_LIB"
@@ -629,6 +650,25 @@ if [ $? -eq 0 ]; then
   echo "  PASS: '$CS17_REMOVED' is the element that came out"; PASS=$((PASS + 1))
 else
   echo "  FAIL: '$CS17_REMOVED' is still a required check name"; FAIL=$((FAIL + 1))
+fi
+(
+  source "$CI_LIB"
+  for n in "${CS17_ADDED[@]}"; do
+    found=0
+    for live in "${CI_REQUIRED_CHECKS[@]}"; do
+      if [ "$live" = "$n" ]; then found=1; break; fi
+    done
+    if [ "$found" -ne 1 ]; then
+      echo "        D#2318 addition '$n' is not in the live array" >&2
+      exit 1
+    fi
+  done
+  exit 0
+)
+if [ $? -eq 0 ]; then
+  echo "  PASS: all four D#2318 additions are present in CI_REQUIRED_CHECKS"; PASS=$((PASS + 1))
+else
+  echo "  FAIL: at least one D#2318 addition is missing from CI_REQUIRED_CHECKS"; FAIL=$((FAIL + 1))
 fi
 # D#1987 inverted this assertion. It used to require the accept set to still
 # read `not in ("success", "skipped")` — a deliberate hold saying "the
@@ -686,9 +726,10 @@ assert_not_contains "CS-18a: STATE is never laundered to pass" "STATE:pass" "$OU
 # D#2456 took "open-source export audit" out of the required set, so it is no
 # longer a name this assertion could look for. Asserted per required name
 # instead of against one chosen name — which is what "every skipped name" was
-# claiming anyway, and it now actually checks it.
+# claiming anyway, and it now actually checks it. D#2318's four additions are
+# required names too, so they belong in this loop the same as the original four.
 _FAILING_SKIPPED="$(printf '%s\n' "$OUT_SKIPPED" | grep '^FAILING:' | head -1)"
-for _n in tui dashboard ts-backend 'backend (import-smoke)'; do
+for _n in tui dashboard ts-backend 'backend (import-smoke)' 'preflight (always-on gates)' 'publish denylist' 'PR link policy' 'PR mutation evidence'; do
   assert_contains "CS-18a: skipped name '$_n' is surfaced in FAILING" "$_n" "$_FAILING_SKIPPED"
 done
 unset CI_STATUS_OVERRIDE_20161 CI_STATUS_HEAD_SHA_20161
@@ -697,7 +738,7 @@ unset CI_STATUS_OVERRIDE_20161 CI_STATUS_HEAD_SHA_20161
 # job turned off, not the whole workflow. (D#2456: the skipped name here used
 # to be "open-source export audit"; it is a required name that carries this
 # case, and that one is no longer required.)
-ONE_SKIPPED='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"','"$(_gha 'backend (import-smoke)' skipped)"']'
+ONE_SKIPPED='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"','"$(_gha 'backend (import-smoke)' skipped)"','"$_D2318_GREEN"']'
 export CI_STATUS_OVERRIDE_20162="$ONE_SKIPPED"
 export CI_STATUS_HEAD_SHA_20162="deadbeef62"
 OUT=$(_run_status 20162); RC=$?
@@ -710,8 +751,8 @@ unset CI_STATUS_OVERRIDE_20162 CI_STATUS_HEAD_SHA_20162
 # three hardcoded strings. A literal assertion keeps passing forever if two of
 # these later converge on the same text, which is the exact defect (three
 # causes collapsing into one operator-visible string) one layer up.
-FAILED_SET='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"','"$(_gha 'backend (import-smoke)' failure 'https://x/y/runs/9')"','"$(_gha 'open-source export audit' success)"']'
-ABSENT_SET='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"','"$(_gha 'open-source export audit' success)"']'
+FAILED_SET='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"','"$(_gha 'backend (import-smoke)' failure 'https://x/y/runs/9')"','"$_D2318_GREEN"','"$(_gha 'open-source export audit' success)"']'
+ABSENT_SET='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"','"$_D2318_GREEN"','"$(_gha 'open-source export audit' success)"']'
 
 export CI_STATUS_OVERRIDE_20163="$FAILED_SET"; export CI_STATUS_HEAD_SHA_20163="deadbeef63"
 OUT_FAILED=$(_run_status 20163); RC_FAILED=$?
@@ -748,7 +789,7 @@ assert_exit_1 "CS-18c: the absent set blocks" "$RC_ABSENT"
 # cause would look complete to whoever read it.
 echo ""
 echo "=== CS-18e: a mixed failed+skipped set surfaces both causes ==="
-MIXED_RED_SKIPPED='['"$(_gha tui failure 'https://x/y/runs/7')"','"$(_gha dashboard skipped)"','"$(_gha ts-backend skipped)"','"$(_gha 'backend (import-smoke)' success)"']'
+MIXED_RED_SKIPPED='['"$(_gha tui failure 'https://x/y/runs/7')"','"$(_gha dashboard skipped)"','"$(_gha ts-backend skipped)"','"$(_gha 'backend (import-smoke)' success)"','"$_D2318_GREEN"']'
 export CI_STATUS_OVERRIDE_20165="$MIXED_RED_SKIPPED"
 export CI_STATUS_HEAD_SHA_20165="deadbeef65"
 OUT=$(_run_status 20165); RC=$?
@@ -775,7 +816,8 @@ echo "=== CS-18d: cancelled / timed_out / neutral / stale still fail, and are no
 _pr=20170
 for _c in cancelled timed_out neutral stale; do
   _pr=$((_pr + 1))
-  _SET='['"$(_gha tui "$_c")"','"$(_gha dashboard "$_c")"','"$(_gha ts-backend "$_c")"','"$(_gha 'backend (import-smoke)' "$_c")"','"$(_gha 'open-source export audit' "$_c")"']'
+  _D2318_SAME_C="$(_gha 'preflight (always-on gates)' "$_c")"','"$(_gha 'publish denylist' "$_c")"','"$(_gha 'PR link policy' "$_c")"','"$(_gha 'PR mutation evidence' "$_c")"
+  _SET='['"$(_gha tui "$_c")"','"$(_gha dashboard "$_c")"','"$(_gha ts-backend "$_c")"','"$(_gha 'backend (import-smoke)' "$_c")"','"$_D2318_SAME_C"','"$(_gha 'open-source export audit' "$_c")"']'
   export "CI_STATUS_OVERRIDE_${_pr}=$_SET"
   export "CI_STATUS_HEAD_SHA_${_pr}=deadbeef${_pr}"
   OUT=$(_run_status "$_pr"); RC=$?
@@ -919,10 +961,10 @@ fi
 # What a head here really produces once the job's `if:` is false: the required
 # names green, and the audit check-run registered as `skipped`. Copied from the
 # observed shape of run 34067010184, not imagined.
-SKIPPED_AUDIT_RUN='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"','"$(_gha 'backend (import-smoke)' success)"','"$(_gha 'open-source export audit' skipped)"']'
+SKIPPED_AUDIT_RUN='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"','"$(_gha 'backend (import-smoke)' success)"','"$_D2318_GREEN"','"$(_gha 'open-source export audit' skipped)"']'
 # The shape the change was planned around, and the shape deleting the job would
 # give: no audit check-run at all.
-NO_AUDIT_RUN='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"','"$(_gha 'backend (import-smoke)' success)"']'
+NO_AUDIT_RUN='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"','"$(_gha 'backend (import-smoke)' success)"','"$_D2318_GREEN"']'
 
 # _cs21_required_still_has_audit <pr> — run the gate with the pre-D#2456
 # required set restored. Not a hypothetical: this is the state the repo would
