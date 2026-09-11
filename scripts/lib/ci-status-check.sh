@@ -529,22 +529,82 @@ _BUCKET_RANK = {"failing": 0, "did_not_run": 1, "pending": 2, "success": 3}
 # in a name's duplicate set carries a rank, every entry is a candidate and
 # the result is byte-for-byte the D#2463 behaviour — worst-wins over the
 # whole set. CS-22a-d exercise exactly that path, unchanged.
+#
+# `kind` distinguishes which of the two integer sequences a rank came from.
+# check_suite.id and a bare check-run id are independent GitHub id spaces —
+# comparing a value from one against a value from the other has no meaning,
+# the same way comparing a PR number to a commit's tree-object count would
+# not. Not reachable through the `/commits/{sha}/check-runs` endpoint this
+# lib fetches from (GitHub Actions always posts check_suite on its own
+# check-runs, so a real duplicate set for one required name is always
+# entirely one kind or the other), so this is fixture-only today — but
+# `_surviving_candidates` below refuses to rank across a mixed set rather
+# than leaving the cross-sequence comparison undocumented and silently
+# "working" by accident of tuple ordering.
 def _lineage_rank(r):
     cs = r.get("check_suite")
     if isinstance(cs, dict) and isinstance(cs.get("id"), int):
-        return cs["id"]
+        return ("check_suite", cs["id"])
     rid = r.get("id")
     if isinstance(rid, int):
-        return rid
+        return ("check_run", rid)
     return None
 
-def _surviving_candidates(entries):
+# D#2551: the only independent (non-id) signal this endpoint's check-run
+# objects carry is `started_at`. It is NOT trustworthy as a ranking signal
+# itself — D#2548's own comment above notes a fork's job steps can inflate
+# started_at/completed_at — but that is exactly why it is safe to use here
+# only as a monotonicity GUARD: the guard's one action on firing is to fall
+# back to D#2463 worst-status-wins, which is already the safe baseline, so a
+# fork nudging its own started_at can only ever trigger a spurious-but-safe
+# fallback, never a MORE permissive outcome than worst-wins.
+def _lineage_started_at(r):
+    v = r.get("started_at")
+    return v if isinstance(v, str) and v else None
+
+def _surviving_candidates(entries, name):
     ranked = [(r, _lineage_rank(r)) for r in entries]
     known = [(r, rank) for r, rank in ranked if rank is not None]
     if not known:
         return list(entries)
-    max_rank = max(rank for _, rank in known)
-    candidates = [r for r, rank in known if rank == max_rank]
+
+    kinds = {rank[0] for _, rank in known}
+    if len(kinds) > 1:
+        print(
+            f"WARNING: required check {name!r} has duplicate entries ranked "
+            f"by two different id sequences (check_suite.id and check-run "
+            f"id) — these are not comparable; falling back to "
+            f"worst-status-wins for {name!r} only",
+            file=sys.stderr,
+        )
+        return list(entries)
+
+    max_rank = max(rank[1] for _, rank in known)
+    candidates = [r for r, rank in known if rank[1] == max_rank]
+
+    # The ranking above assumes a later-created check_suite (or check-run)
+    # always gets a higher id. GitHub does not document that as a guarantee
+    # — it is an invariant PR #185 observed, not one it can enforce. Cross
+    # check it here: when every entry in this name's duplicate set carries a
+    # `started_at`, the id-highest entry must also be the chronologically
+    # newest one. If it is not, the assumption has broken for this check
+    # name right now, and trusting the id ranking any further would let a
+    # stale green suite silently outrank a live red one — the one fail-open
+    # direction D#2463's plain worst-wins never had. Fall back to it, per
+    # name, rather than propagate a ranking that can no longer be justified.
+    known_times = [(r, _lineage_started_at(r)) for r, _ in known]
+    if len(known_times) > 1 and all(t is not None for _, t in known_times):
+        newest_by_time = max(known_times, key=lambda rt: rt[1])[0]
+        if not any(newest_by_time is c for c in candidates):
+            print(
+                f"WARNING: required check {name!r} — check_suite.id ranking "
+                f"broke: the id-highest duplicate is not the chronologically "
+                f"newest one (by started_at). Falling back to "
+                f"worst-status-wins for {name!r} only.",
+                file=sys.stderr,
+            )
+            return list(entries)
+
     candidates += [r for r, rank in ranked if rank is None]
     return candidates
 
@@ -554,7 +614,7 @@ for name in required:
     if not entries:
         missing.append(name)
         continue
-    worst = min(_surviving_candidates(entries), key=lambda r: _BUCKET_RANK[_bucket(r)])
+    worst = min(_surviving_candidates(entries, name), key=lambda r: _BUCKET_RANK[_bucket(r)])
     bucket = _bucket(worst)
     if bucket == "success":
         continue

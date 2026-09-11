@@ -175,7 +175,7 @@
     "scripts/lib/auto-pull-recover.sh": "6d2bb3201ead47a9e04c4a8f585393fd25e13c1e166e0e030f653bb52f76aeac",
     "scripts/lib/auto-pull-stash-recover.sh": "f6d07dbe03116faa8cf133af81252817dd9eb38fd32d3645dccd937b6a1971ee",
     "scripts/lib/auto-pull-step.sh": "870fa36a7785827597d9e838414251e3b4a2828c2f0cf8c894d2dba066a7c9f8",
-    "scripts/lib/ci-status-check.sh": "2dee3e0d4da7d98f2dff07fab74d8ff3d1828bc72e76569dfaca971c12025ae2",
+    "scripts/lib/ci-status-check.sh": "fa0f011094ee3bda6d55369be8ab0c52327535f783c11d87c902f9b0b110f915",
     "scripts/lib/code-plane-pr.sh": "bab7f16e75356ffa1b5cb2ed0d0fcfdd372a41468e17859741507325255580d6",
     "scripts/lib/coldstart-backlog.sh": "f93dfe79bb2b0e6cf92c48ab2765d4066f6794ccded56530831ab5e4ac8318c9",
     "scripts/lib/coldstart-halt-flow.sh": "442f441cf7bd990ed8faced3beceaa7f23a6290a73c76071fdf18bd12534de08",
