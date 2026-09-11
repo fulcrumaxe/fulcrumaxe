@@ -36,6 +36,53 @@ fail() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
 SCRATCH="$(mktemp -d)"
 trap 'rm -rf "$SCRATCH"' EXIT
 
+run_rtg() { OUT="$(bash "$RTG" "$1" 2>&1)"; RC=$?; }
+
+# ---------------------------------------------------------------------------
+# repo-target-gate.sh — IDENTITIES-block presence (D#2492 fix round).
+#
+# Deliberately synthetic and self-contained: neither fixture below needs a
+# real owner identity, so both run regardless of whether THIS repo's own
+# open-source/IDENTIFIER-RULES.txt carries an IDENTITIES block — unlike the
+# rest of this file's repo-target-gate.sh section, which needs one (see the
+# precondition below) and is exactly why these two live above it.
+# ---------------------------------------------------------------------------
+echo "repo-target-gate.sh — IDENTITIES block presence (D#2492)"
+
+DIR="$SCRATCH/no-identities"
+mkdir -p "$DIR/open-source" "$DIR/scripts"
+cat > "$DIR/open-source/IDENTIFIER-RULES.txt" <<'EOF'
+=== FORBIDDEN_PATTERNS_START ===
+whate[v]er
+=== FORBIDDEN_PATTERNS_END ===
+EOF
+git -C "$DIR" init -q
+git -C "$DIR" add -A
+run_rtg "$DIR"
+if [[ "$RC" -eq 0 && "$OUT" == *"SKIP"* && "$OUT" == *"IDENTITIES"* ]]; then
+  pass "no IDENTITIES block at all -> ledgered SKIP, not a FAIL"
+else
+  fail "no-IDENTITIES rules file should skip, got rc=$RC: $OUT"
+fi
+
+DIR="$SCRATCH/identities-no-owner"
+mkdir -p "$DIR/open-source" "$DIR/scripts"
+cat > "$DIR/open-source/IDENTIFIER-RULES.txt" <<'EOF'
+=== IDENTITIES_START ===
+=== IDENTITIES_END ===
+=== FORBIDDEN_PATTERNS_START ===
+whate[v]er
+=== FORBIDDEN_PATTERNS_END ===
+EOF
+git -C "$DIR" init -q
+git -C "$DIR" add -A
+run_rtg "$DIR"
+if [[ "$RC" -ne 0 && "$OUT" == *"OLD_OWNER"* ]]; then
+  pass "IDENTITIES block present but OLD_OWNER missing -> still FAILs (rot, not ledgered)"
+else
+  fail "declared-but-broken IDENTITIES block should fail, got rc=$RC: $OUT"
+fi
+
 # The owner identity comes from IDENTIFIER-RULES.txt, the same place the gate
 # reads it, and is deliberately not spelled out anywhere in this file. That
 # name is itself a forbidden identifier, and tests/ joins the published tree
@@ -47,11 +94,21 @@ if [[ ! -f "$RULES_FILE" ]]; then
   echo "SKIP: $RULES_FILE not present (export or adopter tree) — nothing to test"
   exit 0
 fi
+# D#2492: the code plane's own rules file carries no IDENTITIES block by
+# design — see that file's header — so this is the SAME legitimate
+# non-enforcement shape as "file not present" above, not a broken file.
+# scripts/ci/repo-target-gate.sh itself makes this same distinction (a
+# ledgered SKIP on no-IDENTITIES vs a hard FAIL on IDENTITIES-present-but-
+# broken); this precondition mirrors it so the two never drift apart.
+if ! grep -q '^=== IDENTITIES_START ===' "$RULES_FILE"; then
+  echo "SKIP: $RULES_FILE has no IDENTITIES block (code-plane minimal rules file, D#2492) — no owner identity to build fixtures from"
+  exit 0
+fi
 OWNER="$(sed -n 's/^[[:space:]]*OLD_OWNER=\(.*\)$/\1/p' "$RULES_FILE" | head -1)"
 CURRENT="$(sed -n 's/^[[:space:]]*CURRENT_REPO=\(.*\)$/\1/p' "$RULES_FILE" | head -1)"
 PRERENAME="$(sed -n 's/^[[:space:]]*OLD_REPO_PRERENAME=\(.*\)$/\1/p' "$RULES_FILE" | head -1)"
 if [[ -z "$OWNER" || -z "$CURRENT" || -z "$PRERENAME" ]]; then
-  echo "FAIL: could not read OLD_OWNER / CURRENT_REPO / OLD_REPO_PRERENAME from $RULES_FILE"
+  echo "FAIL: IDENTITIES block present but could not read OLD_OWNER / CURRENT_REPO / OLD_REPO_PRERENAME from $RULES_FILE"
   exit 1
 fi
 SLUG="$OWNER/$CURRENT"
@@ -106,8 +163,6 @@ make_repo() {
   git -C "$dir" add -A
   printf '%s' "$dir"
 }
-
-run_rtg() { OUT="$(bash "$RTG" "$1" 2>&1)"; RC=$?; }
 
 echo "repo-target-gate.sh (ported)"
 

@@ -470,6 +470,34 @@ assert_rc "empty rules file -> rc 1" 1 "$RC" "$OUT"
 assert_not_contains "does not report PASS" "PASS (" "$OUT"
 assert_contains "refuses a vacuous PASS by name" "vacuous PASS" "$OUT"
 
+echo "=== E. item 5b: a whitespace-only rules file refuses the same way a 0-byte one does ==="
+# A 0-byte file and a whitespace-only one are different byte shapes but the
+# same degenerate input: zero PARSED patterns. parse_block counts parsed
+# lines, not file bytes, so this should hit the identical "vacuous PASS"
+# refusal above rather than, say, a parse error or a silent pass on the
+# theory that whitespace "isn't really empty". Traced but untested before
+# this PR (D#2493 was exactly this shape of gap going unnoticed elsewhere).
+R="$(make_repo whitespacerules)"
+printf '   \n\t\n   \t  \n' > "$R/open-source/IDENTIFIER-RULES.txt"
+BASE="$(commit_baseline "$R")"
+OUT="$(run_scan "$R" "$BASE")"; RC=$?
+assert_rc "whitespace-only rules file -> rc 1" 1 "$RC" "$OUT"
+assert_not_contains "does not report PASS" "PASS (" "$OUT"
+assert_contains "refuses a vacuous PASS by name" "vacuous PASS" "$OUT"
+
+echo "=== E. item 5c: open-source/ present but the rules file itself missing refuses, not skips ==="
+# Different from the D. case above (no open-source/ DIRECTORY at all, which
+# legitimately self-skips as export/adopter shape) and different from E
+# above (file present but empty). Here the directory exists but the file
+# inside it does not — rot, not shape, and scripts/check-forbidden-identifiers.sh
+# hits its own `[[ ! -f "$RULES_FILE" ]]` check for this, distinct from the
+# "zero forbidden patterns parsed" path E/5b hit.
+R="$(make_repo missingrulesfile)"
+BASE="$(commit_baseline "$R")"
+OUT="$(run_scan "$R" "$BASE")"; RC=$?
+assert_rc "open-source/ present, rules file missing -> rc 2" 2 "$RC" "$OUT"
+assert_contains "names the missing rules file" "rules file not found" "$OUT"
+
 echo "=== F. item 4: positive control on the REAL rules file — clean text stays clean ==="
 R="$(make_repo realrules_negative)"
 cp "$REAL_RULES" "$R/open-source/IDENTIFIER-RULES.txt"

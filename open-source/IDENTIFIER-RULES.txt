@@ -17,21 +17,25 @@
 # D#2492: this file did not exist here before — the guard silently
 # self-skipped on its own absence and reported green.
 #
-# No IDENTITIES block: none of the patterns below need a {TOKEN}. Adding one
-# is not free — scripts/ci/repo-target-gate.sh also treats this file's
-# presence as its own tree-shape signal and reads an OLD_OWNER key from it
-# at runtime if present. That script (and the two tests exercising it,
-# tests/test_repo_target_gate.sh and tests/test_ci_ported_export_checks.sh)
-# has its own pre-existing, unrelated defect independent of this change — a
-# stale ALLOWLIST entry naming a path no longer in the tree — so wiring it
-# live here would surface that defect as a side effect of this PR rather
-# than fixing the guard this Discussion is about. Left named as a follow-up;
-# see the PR description.
+# No IDENTITIES block, and there deliberately never will be one here.
+# scripts/ci/repo-target-gate.sh treats open-source/ existing as its
+# tree-shape signal, then reads an OLD_OWNER key out of this file — but that
+# key IS the private engine owner's name, and writing it into a file this
+# repo publishes would disclose the exact identifier that gate exists to
+# keep off the code plane. A published rules file structurally cannot carry
+# it without defeating its own purpose. repo-target-gate.sh distinguishes
+# this case — no IDENTITIES block at all — from a broken one (block present,
+# OLD_OWNER missing or empty) and treats only the latter as rot; this file's
+# shape is a documented non-enforcement decision, not the pre-D#2492 silent
+# skip. See that script's own comments at the tree-shape check for the
+# up-to-date mechanics. Separately, and unrelated to this file: that script
+# has a pre-existing stale-ALLOWLIST-entry defect, named as a follow-up in
+# the PR description rather than bundled here.
 
 === FORBIDDEN_PATTERNS_START ===
 john[p]roblems
 [Jj][Pp][Oo][Ss]
-clawcode
+claw[c]ode
 === FORBIDDEN_PATTERNS_END ===
 
 === PREPUSH_EXEMPT_START ===
