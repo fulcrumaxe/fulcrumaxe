@@ -246,7 +246,7 @@
     "scripts/rollback-cutover.sh": "1b3c38cf246de3937b15c2d085829c8b0ee918619b302c98b853c8210520cc9d",
     "scripts/rotate-team-log.sh": "4c7229f081c947a947f1ebe84cee64cd6767137181ee014155b121789303b81b",
     "scripts/run-checklist.sh": "00568a78bec6536bd26fe6a2cbdc3ecb744c93ef86ac3939a9e1cdcf332ddd13",
-    "scripts/run-pr-tests.sh": "6b53604e34cef93c3f4562d41c64a1e8882f6ab1f532c2ca8a4a3daa5f940389",
+    "scripts/run-pr-tests.sh": "5e16a668b6d72b2d61355166fd42cda2e67ad0e5d9439d2fca9b6de2922e6efd",
     "scripts/run-scenarios.sh": "74f32b12bbcdec5a25de6c795460561cebc153dfec78e256889724163348505a",
     "scripts/scan-orphan-worktrees.sh": "8f97d550dd237d5dee3ca087acc8f727eb60458b1601dd7f1a903cf92f1659ec",
     "scripts/schedule/dispatcher.sh": "4a7c8f36ad2b39c4ad29694eb5c27b49f4739893ffb794a6af67a062ce60d49b",

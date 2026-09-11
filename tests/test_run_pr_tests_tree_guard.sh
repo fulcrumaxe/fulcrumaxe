@@ -235,8 +235,8 @@ test_item4_refusal_when_head_not_an_ancestor() {
   rc=$?
   stderr_out=$(cat "$TEST_DIR/stderr.log")
 
-  if [ "$rc" -eq 3 ]; then pass "item4: refusal exits 3"
-  else fail "item4: refusal exits 3" "got rc=$rc"; fi
+  if [ "$rc" -eq 6 ]; then pass "item4: refusal exits 6"
+  else fail "item4: refusal exits 6" "got rc=$rc"; fi
 
   if [ -z "$out" ] || ! printf '%s' "$out" | grep -q 'tests_run'; then
     pass "item4: refusal emits no tests_run entries"
@@ -263,8 +263,8 @@ test_item4b_refusal_when_head_unknown_to_tree() {
   out=$(run_script 9005)
   rc=$?
 
-  if [ "$rc" -eq 3 ]; then pass "item4b: refusal exits 3 when the PR head is unknown to this tree's object graph"
-  else fail "item4b: refusal exits 3 when the PR head is unknown to this tree's object graph" "got rc=$rc"; fi
+  if [ "$rc" -eq 6 ]; then pass "item4b: refusal exits 6 when the PR head is unknown to this tree's object graph"
+  else fail "item4b: refusal exits 6 when the PR head is unknown to this tree's object graph" "got rc=$rc"; fi
   teardown
 }
 
@@ -284,17 +284,17 @@ test_item5_mutation_check_guard_removal_changes_outcome() {
   local broken_rc
   STUB_ANCESTOR_ALWAYS_TRUE=1 run_script 9006 >/dev/null
   broken_rc=$?
-  if [ "$broken_rc" -ne 3 ]; then
+  if [ "$broken_rc" -ne 6 ]; then
     pass "item5: with the ancestry check forced to succeed, the script no longer refuses (rc=$broken_rc)"
   else
-    fail "item5: with the ancestry check forced to succeed, the script no longer refuses" "still got rc=3 -- the guard is not what produces the refusal"
+    fail "item5: with the ancestry check forced to succeed, the script no longer refuses" "still got rc=6 -- the guard is not what produces the refusal"
   fi
 
   local restored_rc
   STUB_ANCESTOR_ALWAYS_TRUE=0 run_script 9006 >/dev/null
   restored_rc=$?
-  if [ "$restored_rc" -eq 3 ]; then
-    pass "item5: restoring the real ancestry check, the refusal returns (rc=3)"
+  if [ "$restored_rc" -eq 6 ]; then
+    pass "item5: restoring the real ancestry check, the refusal returns (rc=6)"
   else
     fail "item5: restoring the real ancestry check, the refusal returns" "got rc=$restored_rc"
   fi
