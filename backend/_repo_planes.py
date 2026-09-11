@@ -79,6 +79,23 @@ _PROJECT_JSON = "project.json"
 _DEFAULT_STATE_DIR = ".autonomous-forever-state"
 
 
+def _non_empty(value: object) -> str | None:
+    """Treat unset, empty and whitespace-only values as absent (D#2536).
+
+    A bare truthiness check (`if value:`) lets a whitespace-only string win a
+    precedence step here too — this module has its own two chokepoints
+    (``_read_field`` and the ``env_repo`` check in ``resolve_discussion_repo``)
+    that need the same guard ``backend._repo._non_empty`` applies for the
+    ``repo`` field. Defined locally rather than imported: ``backend/_repo.py``
+    already imports ``resolve_code_repo``/``resolve_discussion_repo`` from this
+    module, so importing back from there would be circular. Matches
+    ``backend._repo._non_empty`` (and ``nonEmpty()`` in
+    ts-backend/src/config/repo.ts) exactly — each resolver reads its own
+    source, per this module's docstring.
+    """
+    return value if isinstance(value, str) and value.strip() else None
+
+
 def _state_dir() -> Path:
     """The runtime state directory, resolved the same way ``_repo`` does.
 
@@ -108,7 +125,7 @@ def _read_field(path: Path, key: str) -> str | None:
     if not isinstance(data, dict):
         return None
     value = data.get(key)
-    return value if isinstance(value, str) and value else None
+    return _non_empty(value)
 
 
 def _project_json_field(
@@ -155,7 +172,7 @@ def resolve_discussion_repo(repo_root: Path, state_dir: Path | None = None) -> s
     plane", and callers must treat it as such rather than as an error.
     """
     env_repo = os.environ.get("AUTONOMOUS_TEAM_REPO")
-    if env_repo:
+    if _non_empty(env_repo):
         return env_repo
 
     configured = _project_json_field("discussion_repo", repo_root, state_dir)

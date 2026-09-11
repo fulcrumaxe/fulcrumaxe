@@ -314,11 +314,56 @@ def test_env_override_collapses_pythons_two_planes(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "value", ["", 42, None, {"nested": "no"}, ["a"]], ids=lambda v: repr(v)[:12]
+    "value",
+    ["", "   ", "\t\n", 42, None, {"nested": "no"}, ["a"]],
+    ids=lambda v: repr(v)[:12],
 )
 def test_unusable_code_repo_value_falls_back(tmp_path, value):
     root = _tree(tmp_path / "repo", {"repo": "owner/r", "code_repo": value})
     assert resolve_code_repo("owner/r", root, _empty_state_dir(tmp_path)) == "owner/r"
+
+
+# --- Whitespace-only is "not configured", not a silent pass-through (D#2536 fix
+# round) ----------------------------------------------------------------------
+#
+# The bug this closes: _read_field and the env_repo check in
+# resolve_discussion_repo both used bare truthiness (`if value:` / `if
+# isinstance(value, str) and value:`), and a whitespace-only string is truthy
+# in Python. That let "   " survive as a "resolved" repo slug instead of
+# falling through to the next precedence step, the same defect class
+# backend/_repo.py's _non_empty already closes for the plain "repo" field.
+# Each test below targets one of the two chokepoints independently, and each
+# fails against the pre-fix _read_field / resolve_discussion_repo (proven by
+# running them against the original bare-truthiness code — see the PR body's
+# mutation-evidence note).
+
+
+@pytest.mark.parametrize(
+    "value", ["   ", "\t\n"], ids=lambda v: repr(v)[:12]
+)
+def test_whitespace_only_discussion_repo_falls_back(tmp_path, value):
+    """Exercises _read_field via the discussion_repo key."""
+    root = _tree(
+        tmp_path / "repo",
+        {"repo": "owner/public", "discussion_repo": value},
+    )
+    assert (
+        resolve_discussion_repo(root, _empty_state_dir(tmp_path)) == "owner/public"
+    )
+
+
+def test_whitespace_only_env_repo_does_not_win_discussion_plane(tmp_path, monkeypatch):
+    """Exercises resolve_discussion_repo's own env_repo truthiness check.
+
+    A whitespace-only AUTONOMOUS_TEAM_REPO used to be returned raw by `if
+    env_repo: return env_repo` — this never goes through _read_field, so it is
+    a distinct chokepoint from the discussion_repo-key case above.
+    """
+    monkeypatch.setenv("AUTONOMOUS_TEAM_REPO", "   ")
+    root = _tree(tmp_path / "repo", {"repo": "owner/public"})
+    assert (
+        resolve_discussion_repo(root, _empty_state_dir(tmp_path)) == "owner/public"
+    )
 
 
 def test_malformed_project_json_falls_back(tmp_path):
