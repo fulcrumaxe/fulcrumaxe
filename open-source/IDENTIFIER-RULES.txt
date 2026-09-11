@@ -1,0 +1,41 @@
+# open-source/IDENTIFIER-RULES.txt — code-plane forbidden-identifier list.
+#
+# Drives scripts/check-forbidden-identifiers.sh, the pre-push scan wired
+# into run_always_gates() (scripts/lib/preflight-common.sh).
+#
+# This file is scoped to the code plane on purpose. It is NOT a copy of the
+# private engine repo's fuller rules file: that file's own prose documents
+# in detail which strings are forbidden and why, which is exactly the kind
+# of thing this repo should not publish about itself. This file carries
+# only the bare patterns the public plane needs to enforce, with no
+# elaboration.
+#
+# Format matches what scripts/check-forbidden-identifiers.sh parses:
+# === SECTION_START === / === SECTION_END === blocks, `#`-comments and
+# blank lines ignored inside a block, {TOKEN} filled from IDENTITIES.
+#
+# D#2492: this file did not exist here before — the guard silently
+# self-skipped on its own absence and reported green.
+#
+# No IDENTITIES block: none of the patterns below need a {TOKEN}. Adding one
+# is not free — scripts/ci/repo-target-gate.sh also treats this file's
+# presence as its own tree-shape signal and reads an OLD_OWNER key from it
+# at runtime if present. That script (and the two tests exercising it,
+# tests/test_repo_target_gate.sh and tests/test_ci_ported_export_checks.sh)
+# has its own pre-existing, unrelated defect independent of this change — a
+# stale ALLOWLIST entry naming a path no longer in the tree — so wiring it
+# live here would surface that defect as a side effect of this PR rather
+# than fixing the guard this Discussion is about. Left named as a follow-up;
+# see the PR description.
+
+=== FORBIDDEN_PATTERNS_START ===
+john[p]roblems
+[Jj][Pp][Oo][Ss]
+clawcode
+=== FORBIDDEN_PATTERNS_END ===
+
+=== PREPUSH_EXEMPT_START ===
+=== PREPUSH_EXEMPT_END ===
+
+=== ALLOWLIST_START ===
+=== ALLOWLIST_END ===

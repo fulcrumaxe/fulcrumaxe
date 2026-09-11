@@ -432,19 +432,24 @@ check_subsystems_index() {
 # open-source/IDENTIFIER-RULES.txt at runtime — the same file export.sh and
 # open-source/checks/identifier-gate.sh read, so they cannot drift (D#1837).
 #
-# Skipped, not failed, when open-source/ is absent: that directory never
-# ships (MANIFEST.md excludes it), so an exported or adopter tree has no
-# rules file to read and there is nothing here to gate. The tree-shape
-# check runs FIRST — only once open-source/ is confirmed present does a
-# missing check script or rules file count as self_skip (rot) rather than
-# legitimate export shape.
+# D#2492: a missing rules file is ALWAYS a self_skip, never a silent pass.
+# This used to skip quietly on the theory that open-source/ never ships, so
+# an exported or adopter tree has nothing here to gate — true while the
+# public repo was an export target, where a rewrite pass had already run
+# before anything shipped. It stopped being true once the public repo
+# became the code plane: code lands there directly, with no rewrite pass
+# ahead of it, and the silent skip meant the guard protecting publication
+# never ran on the one tree it exists to protect. There is no tree shape
+# left where "no rules file" should read as green; if one turns up, retire
+# the gate instead of re-adding a quiet skip (see check_spawn_guard_lint's
+# retirement below for that pattern).
 check_forbidden_identifiers() {
     CURRENT_CHECK="Forbidden Identifiers (pre-push)"
     CURRENT_SLUG="forbidden-identifiers"
     ((CHECKS_RUN++)) || true
 
     if [ ! -d "$REPO_ROOT/open-source" ]; then
-        echo "[SKIP] $CURRENT_CHECK (no open-source/ directory — export or adopter tree, no rules file to read)"
+        self_skip "$CURRENT_CHECK" "no open-source/ directory — no rules file to read"
         return 0
     fi
 
