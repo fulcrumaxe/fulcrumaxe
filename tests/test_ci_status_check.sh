@@ -1179,6 +1179,82 @@ assert_exit_0 "CS-23e: id fallback lets a newer SUCCESS supersede an older FAILU
 unset CI_STATUS_OVERRIDE_20204 CI_STATUS_HEAD_SHA_20204
 
 # -----------------------------------------------------------------------
+# CS-24 (D#2551): guard the check_suite.id monotonicity assumption itself.
+#
+# CS-23's ranking assumes a later-created check_suite always gets a higher
+# id -- an OBSERVED invariant, not a GitHub guarantee. If it ever breaks, a
+# stale green suite could silently outrank a live red one. These fixtures
+# add `started_at` (ISO8601, sorts lexicographically) as the independent
+# creation-time signal the guard cross-checks id ordering against.
+# CS-22/CS-23 above never set started_at at all, so this is a brand-new
+# fixture shape layered on top of theirs -- neither of those suites is
+# touched.
+# -----------------------------------------------------------------------
+_gha_cs_t() {
+  # _gha_cs_t <name> <conclusion> <check_suite_id> <started_at> [<html_url>]
+  printf '{"name":"%s","status":"completed","conclusion":"%s","app":{"slug":"github-actions"},"html_url":"%s","check_suite":{"id":%s},"started_at":"%s"}' "$1" "$2" "${5:-}" "$3" "$4"
+}
+
+echo ""
+echo "=== CS-24a (AC-1): highest id IS the newest by started_at -> ranks as today, no warning ==="
+CS24A='['"$BASE_GREEN_NO_MUTATION"','"$(_gha_cs_t 'PR mutation evidence' failure 100 '2026-09-11T12:00:00Z' 'https://x/old-fail')"','"$(_gha_cs_t 'PR mutation evidence' success 200 '2026-09-11T12:05:00Z' 'https://x/new-pass')"']'
+export CI_STATUS_OVERRIDE_20205="$CS24A"
+export CI_STATUS_HEAD_SHA_20205="deadbeefb1"
+OUT=$(_run_status 20205 2>&1); RC=$?
+assert_exit_0 "CS-24a: well-ordered id+time -> newer SUCCESS supersedes older FAILURE" "$RC"
+assert_not_contains "CS-24a: no monotonicity-broke warning when ordering agrees" "check_suite.id ranking broke" "$OUT"
+unset CI_STATUS_OVERRIDE_20205 CI_STATUS_HEAD_SHA_20205
+
+echo ""
+echo "=== CS-24b (AC-2/AC-4): highest id NOT the newest -> falls back to worst-wins, loud diagnostic ==="
+# id 200 > id 100, but 100 is timestamped LATER -- the monotonicity
+# assumption is broken for this check. The guard must not let id 200's
+# SUCCESS supersede id 100's FAILURE; it must fall back to worst-wins for
+# this name so the red check is never silently discarded (AC-4).
+CS24B='['"$BASE_GREEN_NO_MUTATION"','"$(_gha_cs_t 'PR mutation evidence' failure 100 '2026-09-11T12:10:00Z' 'https://x/newer-clock-fail')"','"$(_gha_cs_t 'PR mutation evidence' success 200 '2026-09-11T12:00:00Z' 'https://x/higher-id-pass')"']'
+export CI_STATUS_OVERRIDE_20206="$CS24B"
+export CI_STATUS_HEAD_SHA_20206="deadbeefb2"
+OUT=$(_run_status 20206 2>&1); RC=$?
+assert_exit_1 "CS-24b: id/time disagreement falls back to worst-wins, the FAILURE still blocks" "$RC"
+assert_contains "CS-24b: FAILING names the duplicated check" "PR mutation evidence" "$OUT"
+assert_contains "CS-24b: loud diagnostic names the check" "PR mutation evidence" "$OUT"
+assert_contains "CS-24b: diagnostic says the id ranking broke" "check_suite.id ranking broke" "$OUT"
+unset CI_STATUS_OVERRIDE_20206 CI_STATUS_HEAD_SHA_20206
+
+echo ""
+echo "=== CS-24c (AC-3): fallback is per-name -- a second, well-ordered name in the same run still supersedes ==="
+# "PR mutation evidence" repeats CS-24b's anomaly. "publish denylist" gets
+# its own well-ordered duplicate pair (id and started_at agree) instead of
+# BASE_GREEN_NO_MUTATION's single green entry, so it actually exercises
+# supersession rather than trivially passing as a lone entry.
+CS24C='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"','"$(_gha 'backend (import-smoke)' success)"','"$(_gha 'preflight (always-on gates)' success)"','"$(_gha 'PR link policy' success)"','"$(_gha_cs_t 'PR mutation evidence' failure 100 '2026-09-11T12:10:00Z' 'https://x/anomalous-fail')"','"$(_gha_cs_t 'PR mutation evidence' success 200 '2026-09-11T12:00:00Z' 'https://x/anomalous-pass')"','"$(_gha_cs_t 'publish denylist' failure 300 '2026-09-11T12:00:00Z' 'https://x/wellordered-old-fail')"','"$(_gha_cs_t 'publish denylist' success 400 '2026-09-11T12:05:00Z' 'https://x/wellordered-new-pass')"']'
+export CI_STATUS_OVERRIDE_20207="$CS24C"
+export CI_STATUS_HEAD_SHA_20207="deadbeefb3"
+OUT=$(_run_status 20207 2>&1); RC=$?
+assert_exit_1 "CS-24c: the anomalous name still blocks overall" "$RC"
+assert_contains "CS-24c: FAILING names the anomalous check" "PR mutation evidence" "$OUT"
+assert_not_contains "CS-24c: the well-ordered name is NOT in FAILING -- its supersession still applies" "publish denylist" "$OUT"
+unset CI_STATUS_OVERRIDE_20207 CI_STATUS_HEAD_SHA_20207
+
+echo ""
+echo "=== CS-24d: mixed lineage-signal shapes (check_suite.id vs check-run id) in one duplicate set -> not comparable, falls back ==="
+# Fixture-only (D#2551 second item): the /check-runs endpoint this lib
+# fetches from never mixes these two id sequences for one required name in
+# practice -- GitHub Actions always posts check_suite alongside its own
+# check-runs -- but _lineage_rank must not silently compare across them if
+# this shape is ever produced. Without this guard, plain int comparison
+# would let check_suite id 999999999999 outrank check-run id 5 by sheer
+# magnitude even though the two numbers come from unrelated sequences.
+CS24D='['"$BASE_GREEN_NO_MUTATION"','"$(_gha_cs 'PR mutation evidence' success 999999999999 'https://x/cs-pass')"','"$(_gha_id 'PR mutation evidence' failure 5 'https://x/run-id-fail')"']'
+export CI_STATUS_OVERRIDE_20208="$CS24D"
+export CI_STATUS_HEAD_SHA_20208="deadbeefb4"
+OUT=$(_run_status 20208 2>&1); RC=$?
+assert_exit_1 "CS-24d: mixed id-sequence shapes fall back to worst-wins, the FAILURE still blocks" "$RC"
+assert_contains "CS-24d: FAILING names the duplicated check" "PR mutation evidence" "$OUT"
+assert_contains "CS-24d: diagnostic explains the two id sequences aren't comparable" "two different id sequences" "$OUT"
+unset CI_STATUS_OVERRIDE_20208 CI_STATUS_HEAD_SHA_20208
+
+# -----------------------------------------------------------------------
 # Summary
 # -----------------------------------------------------------------------
 echo ""
