@@ -3,7 +3,16 @@
 #
 # Detect which test suites a PR touches and run them.
 # Outputs a JSON object to stdout:
-#   { "routing": [{file, suite}, ...], "tests_run": [{command, exit_code, duration_seconds}, ...] }
+#   { "routing": [{file, suite}, ...], "tests_run": [{command, exit_code, duration_seconds}, ...],
+#     "measured_tree": {path, head_sha, pr_head_sha} }
+# Before anything else, the script resolves the PR's head sha (`gh pr view
+# --json headRefOid`) and refuses (exit 3, no suite run) unless this tree's
+# HEAD is that commit or a descendant of it — otherwise a suite result would
+# describe a tree that never contained the PR at all (D#2365: this script
+# used to test "whatever tree it happens to be invoked from" regardless of
+# what the PR actually changed). `measured_tree` names the tree and both shas
+# on every path that can emit a `tests_run` block, so a result is never
+# ambiguous about which tree it measured.
 # `routing` has one entry per changed file naming whichever suite claimed it,
 # or `null` if none did (also named on stderr) — a reader can tell "was my
 # change tested?" from the output alone, instead of trusting a green exit
@@ -18,6 +27,9 @@
 # Exits 0 if all suites pass (or none were detected), non-zero if any fail —
 # but that exit code is not, and is not made to be, an authoritative
 # PR-pass/fail signal (the tree-wide pytest baseline has unrelated failures).
+# Exits 3 if the tree guard above refuses — a code no suite uses, so a
+# refusal can never be misread as a red suite (which would be 1) or as the
+# unrelated-process-exit 127 the four recorded misreads on D#2365 produced.
 #
 # Detection rules (by PR diff files):
 #   backend/** or tests/**/*.py   → python3 -m pytest (whatever test dirs exist),
@@ -68,6 +80,31 @@ source "$SCRIPT_DIR/lib/worktree-ground-check.sh"
 # The PR file list is a code-plane read; an empty slug would silently answer
 # from the checkout's origin remote, so refuse before `gh` runs.
 REPO="$(_require_code_repo "run-pr-tests")" || exit 1
+
+# Tree guard (D#2365): before doing any routing work, confirm this tree
+# actually contains the PR being asked about. Placed before the changed-file
+# fetch so a refusal costs one `gh` call, not a full routing pass.
+PR_HEAD_SHA="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid --jq '.headRefOid' 2>/dev/null || true)"
+if [ -z "$PR_HEAD_SHA" ]; then
+  echo "[run-pr-tests] could not resolve PR #$PR_NUMBER's head sha (gh pr view --repo $REPO --json headRefOid) -- refusing to guess which tree to test" >&2
+  exit 3
+fi
+TREE_HEAD_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)"
+if [ -z "$TREE_HEAD_SHA" ]; then
+  echo "[run-pr-tests] could not resolve this tree's HEAD sha at $REPO_ROOT -- refusing to guess which tree to test" >&2
+  exit 3
+fi
+_TREE_GUARD_RC=0
+git -C "$REPO_ROOT" merge-base --is-ancestor "$PR_HEAD_SHA" "$TREE_HEAD_SHA" 2>/dev/null || _TREE_GUARD_RC=$?
+if [ "$_TREE_GUARD_RC" -ne 0 ]; then
+  if [ "$_TREE_GUARD_RC" -eq 128 ]; then
+    echo "[run-pr-tests] refusing: PR #$PR_NUMBER head $PR_HEAD_SHA is not in this tree's object graph at all (tree HEAD $TREE_HEAD_SHA) -- these are likely two repos with no shared history (D#2437); run this from a tree that actually holds the PR's commits, or from the executor's own worktree" >&2
+  else
+    echo "[run-pr-tests] refusing: this tree's HEAD $TREE_HEAD_SHA does not contain PR #$PR_NUMBER's head $PR_HEAD_SHA -- run this from a worktree at the PR head, or from the executor's own worktree" >&2
+  fi
+  exit 3
+fi
+MEASURED_TREE_JSON="$(python3 -c 'import json,sys; print(json.dumps({"path": sys.argv[1], "head_sha": sys.argv[2], "pr_head_sha": sys.argv[3]}))' "$REPO_ROOT" "$TREE_HEAD_SHA" "$PR_HEAD_SHA")"
 
 # Suites denylisted from the generic tests/*.sh auto-run rule below (D#2132
 # PR-b, triaged by D#2152). A denylisted file still appears in `routing`,
@@ -135,7 +172,7 @@ if [ -z "$CHANGED_FILES" ]; then
 fi
 
 if [ -z "$CHANGED_FILES" ]; then
-  echo '{"routing":[],"tests_run":[]}'
+  echo "{\"routing\":[],\"tests_run\":[],\"measured_tree\":$MEASURED_TREE_JSON}"
   exit 0
 fi
 
@@ -336,7 +373,7 @@ _emit_partial_manifest() {
   if [ ${#RESULTS[@]} -gt 0 ]; then
     _joined=$(IFS=,; echo "${RESULTS[*]}")
   fi
-  printf '{"routing":%s,"tests_run":[%s],"partial":true}\n' "$ROUTING_JSON" "$_joined"
+  printf '{"routing":%s,"tests_run":[%s],"partial":true,"measured_tree":%s}\n' "$ROUTING_JSON" "$_joined" "$MEASURED_TREE_JSON"
   exit 124
 }
 trap _emit_partial_manifest TERM INT
@@ -570,10 +607,10 @@ fi
 trap - TERM INT
 _MANIFEST_EMITTED=true
 if [ ${#RESULTS[@]} -eq 0 ]; then
-  echo "{\"routing\":$ROUTING_JSON,\"tests_run\":[]}"
+  echo "{\"routing\":$ROUTING_JSON,\"tests_run\":[],\"measured_tree\":$MEASURED_TREE_JSON}"
 else
   JOINED=$(IFS=,; echo "${RESULTS[*]}")
-  echo "{\"routing\":$ROUTING_JSON,\"tests_run\":[$JOINED]}"
+  echo "{\"routing\":$ROUTING_JSON,\"tests_run\":[$JOINED],\"measured_tree\":$MEASURED_TREE_JSON}"
 fi
 
 exit $AGGREGATE_EXIT
