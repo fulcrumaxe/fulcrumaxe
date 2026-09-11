@@ -1,6 +1,25 @@
 #!/usr/bin/env bash
-# scripts/ci/subshell-mutation-guard.sh — flag x="$(f)" (or x=`f`) where f is
+# scripts/lib/subshell-mutation-scan.sh — flag x="$(f)" (or x=`f`) where f is
 # a shell function that mutates a variable/array the caller expects to see.
+#
+# Lives in scripts/lib/, not scripts/ci/, on purpose: scripts/ci/run-guards.sh
+# auto-discovers and unconditionally runs every top-level file in scripts/ci/
+# (see that file's own header), which is the right default for a guard with
+# no pre-existing findings but is exactly wrong for a scanner whose first
+# real-tree run found 14 call sites, 13 of them genuine and pre-existing.
+# Wiring a scanner with known findings straight into that unconditional set
+# turns the required check permanently red until every finding is fixed — the
+# over-blocking failure CLAUDE.md warns guardrails against. The fix is the
+# same ratchet shape scripts/ci/ruff-ratchet.py already uses for `ruff`: a
+# thin, baseline-comparing guard (scripts/ci/subshell-mutation-ratchet.py)
+# is what run-guards.sh discovers, and it invokes THIS file as the actual
+# scanner — the same relationship `ruff-ratchet.py` has to the external `ruff`
+# binary, except this scanner is a file in this repo rather than an installed
+# tool, so it has to sit somewhere run-guards.sh's maxdepth-1 directory
+# listing does not reach. This file's own scanning logic, output format, and
+# exit codes (0/1/2, documented below) are unchanged from when this lived at
+# scripts/ci/subshell-mutation-guard.sh — only the path moved (D#2512 fix
+# round). tests/test_subshell_mutation_guard.sh exercises it directly here.
 #
 # Command substitution always forks a subshell to run its right-hand side.
 # Only f's stdout survives back into the caller — any variable or array f
@@ -98,7 +117,7 @@
 #     real statements of the enclosing function. Known, not fixed — see the
 #     PR body for the one instance this surfaced.
 #
-# Usage: bash scripts/ci/subshell-mutation-guard.sh [target-dir]  (default: repo root)
+# Usage: bash scripts/lib/subshell-mutation-scan.sh [target-dir]  (default: repo root)
 #
 # Exit 0 = no call site loses a mutation (scope line reports what was scanned).
 # Exit 1 = one or more findings, each printed as a "FAIL: ..." line naming the

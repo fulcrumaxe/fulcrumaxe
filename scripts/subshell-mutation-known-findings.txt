@@ -1,0 +1,44 @@
+# SUBSHELL-MUTATION-RATCHET-V1
+#
+# Known findings from scripts/lib/subshell-mutation-scan.sh, keyed by
+# (relative path, mutating function, message) rather than by line number so
+# an unrelated edit elsewhere in a file does not produce a spurious failure.
+# `count` covers the (common) case of the same function being captured via
+# $(...) at several call sites in the same file with the same loss shape —
+# most of the entries below are exactly that.
+#
+# Enforced by scripts/ci/subshell-mutation-ratchet.py. A finding here that
+# stops reproducing must be removed (or its count lowered) in the same
+# commit as the fix, or the guard fails in the opposite direction
+# (over-allowance) — same discipline as scripts/ruff-known-findings.txt,
+# see that file's header and D#2411 item 4. A finding NOT here fails the
+# build the first time it's introduced.
+#
+# Baselined on: fulcrumaxe/fulcrumaxe main@5b49dea7 (D#2512 fix round).
+# 14 total call-site findings, 13 genuine + 1 documented false positive
+# (marked below). Per the D#2512 Spec constraint this guard ships without a
+# sweep — fixing any of these is a separate PR — so every one of the 14 is
+# baselined rather than fixed here.
+#
+# Regenerate with: python3 scripts/ci/subshell-mutation-ratchet.py --write-baseline
+# then diff it by hand before committing — the writer does not judge
+# genuine vs. false positive, only count. If regeneration drops the false
+# positive's comment below, restore it by hand; the writer has no way to
+# know which row it is.
+#
+# Format: <path>\t<mutating function>\t<count>\t<message>
+
+tests/test_coldstart_repo_visibility.sh	run_preflight_block	3	run_preflight_block mutates 'FIXTURES' — array append 'FIXTURES+=(...)' without local
+tests/test_pr_pickup_gate_loop.sh	classify_open_prs	5	classify_open_prs mutates 'NEEDS_REVIEW' — bare assignment 'NEEDS_REVIEW=' without local
+tests/test_start_the_day_auth_guard.sh	run_snippet	3	run_snippet mutates 'FIXTURES' — array append 'FIXTURES+=(...)' without local
+tests/test_start_the_day_sync_block.sh	new_fixture_dir	2	new_fixture_dir mutates 'FIXTURES' — array append 'FIXTURES+=(...)' without local
+
+# FALSE POSITIVE — not a genuine mutation loss. Documented in
+# scripts/lib/subshell-mutation-scan.sh's own header: _run_sanitize() embeds
+# a multi-line `bash -c '...'` script inline (not a heredoc), and the
+# scanner's quote-tracking does not span physical lines, so the embedded
+# literal `SCRIPT_DIR=...` inside that quoted string reads as a real bash
+# assignment. Baselined so it does not block CI, but kept out of the
+# "13 genuine" count above and out of any future sweep that fixes those —
+# there is nothing here to fix.
+tests/test_loop_phased_step5.sh	_run_sanitize	1	_run_sanitize mutates 'SCRIPT_DIR' — bare assignment 'SCRIPT_DIR=' without local

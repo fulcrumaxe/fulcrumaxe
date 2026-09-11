@@ -11,7 +11,12 @@
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-GUARD="$REPO_ROOT/scripts/ci/subshell-mutation-guard.sh"
+# Moved from scripts/ci/ to scripts/lib/ in the D#2512 fix round: the raw
+# scanner is now invoked by scripts/ci/subshell-mutation-ratchet.py rather
+# than running standalone, so it has to sit somewhere
+# scripts/ci/run-guards.sh's maxdepth-1 discovery does not reach — see that
+# file's own header comment.
+GUARD="$REPO_ROOT/scripts/lib/subshell-mutation-scan.sh"
 
 if [[ ! -f "$GUARD" ]]; then
   echo "FAIL: $GUARD is missing — the guard this suite tests does not exist"
