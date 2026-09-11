@@ -5,6 +5,7 @@ batching. Items 8-11 (the readers) are exercised by tests/test_spec_ready_gate.s
 and tests/test_loop_phased_step5.sh.
 """
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from backend.blocked_by import (  # noqa: E402
 )
 from backend.discussion_status import (  # noqa: E402
     BLOCKED_BY_UNPARSEABLE,
+    VALID_STATUSES,
     extract_blocked_by,
     extract_linked_pr,
     extract_status,
@@ -27,6 +29,8 @@ from backend.discussion_status import (  # noqa: E402
     is_spec_ready,
     set_status,
 )
+
+_DISCUSSION_STATUS_SCRIPT = Path(__file__).resolve().parents[1] / "discussion_status.py"
 
 
 def status_line(*, blocked=None, status="SPEC_READY", order="blocked-first"):
@@ -512,3 +516,69 @@ def test_set_status_still_drops_pr_ref():
     body = "<!-- STATUS:REVIEWING PR:#321 SINCE:X -->\n\nSpec.\n"
     out = set_status(body, "DONE", now_iso="2026-08-18T00:00:00Z")
     assert extract_linked_pr(out) is None
+
+
+# ---------------------------------------------------------------------------
+# D#2122 — PARKED: deliberately not started, distinct from DONE (finished).
+# ---------------------------------------------------------------------------
+
+
+def test_parked_is_a_valid_status():
+    assert "PARKED" in VALID_STATUSES
+
+
+def test_extract_status_anchored_reads_parked():
+    body = "<!-- STATUS:PARKED SINCE:2026-09-10T00:00:00Z -->\n\nparked, not done\n"
+    assert extract_status(body) == "PARKED"
+    assert extract_status_anchored(body) == "PARKED"
+
+
+def test_parked_is_not_spec_ready():
+    body = "<!-- STATUS:PARKED SINCE:2026-09-10T00:00:00Z -->\n\nparked, not done\n"
+    assert is_spec_ready(body) is False
+
+
+def test_set_status_can_write_parked_and_back():
+    body = status_line(status="SPEC_READY") + "\n\nSpec text.\n"
+    parked = set_status(body, "PARKED", now_iso="2026-09-10T00:00:00Z")
+    assert extract_status_anchored(parked) == "PARKED"
+    unparked = set_status(parked, "SPEC_READY", now_iso="2026-09-11T00:00:00Z")
+    assert extract_status_anchored(unparked) == "SPEC_READY"
+
+
+def test_cli_extract_status_stdin_anchored_prints_parked():
+    """Acceptance item 1 (D#2122), driven exactly as written:
+
+    printf '<!-- STATUS:PARKED SINCE:2026-09-10T00:00:00Z -->\\nbody\\n' \\
+      | python3 backend/discussion_status.py extract-status --stdin --anchored
+
+    must print PARKED and exit 0.
+    """
+    stdin_body = "<!-- STATUS:PARKED SINCE:2026-09-10T00:00:00Z -->\nbody\n"
+    result = subprocess.run(
+        [sys.executable, str(_DISCUSSION_STATUS_SCRIPT), "extract-status", "--stdin", "--anchored"],
+        input=stdin_body,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert result.stdout.strip() == "PARKED"
+
+
+def test_unknown_status_token_near_parked_is_not_in_valid_statuses():
+    """Regression, acceptance item 6: a token that merely resembles PARKED
+    (e.g. a typo, "PARKD") must not be swept in by a loose match — it stays
+    outside VALID_STATUSES and is not SPEC_READY. The parser itself has never
+    mapped an unrecognized-but-well-formed token to "UNKNOWN" (it returns the
+    literal token — see test_extract_status_anchored_reads_parked and every
+    existing non-VALID_STATUSES fixture such as "DRAFT"/"NEEDS_REVISION" in
+    tests/test_spec_ready_gate.sh); the fail-closed behaviour this pins is
+    membership in VALID_STATUSES, and the caller-side hard-block that reads
+    on it (scripts/lib/spec-ready-gate.sh's fixture J / default branch,
+    unaffected by this change since "PARKD" != "PARKED" is an exact-string
+    mismatch, not a prefix one).
+    """
+    body = "<!-- STATUS:PARKD SINCE:2026-09-10T00:00:00Z -->\n\nprose\n"
+    assert extract_status_anchored(body) == "PARKD"
+    assert "PARKD" not in VALID_STATUSES
+    assert is_spec_ready(body) is False

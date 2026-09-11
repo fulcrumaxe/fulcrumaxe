@@ -135,3 +135,34 @@ Not fixed here because this lane is not live (no real spawn is dispatched throug
 see caveat 6). If/when it goes live, both `pr-tree.sh` provisioning and the three-way reason
 distinction need to be ported alongside it; parity should not be assumed just because the
 payload shape (`worktree_path`) matches.
+
+---
+
+## 8. stats.dora: TS still ignores `project`
+
+**Status:** Known divergence, TS side is behind. Python is authoritative (D#2518).
+
+Python's `stats.dora` handler (`backend/rpc/stats_dora.py`) was `UNSCOPABLE` — every value it
+read (`analytics_engineer._RELEASES_DIR`, `kpi_engine.REGISTRY`, both `Path(__file__)` module
+constants, and `analytics_engineer`'s module-level `REPO`) was bound to the serving checkout at
+import, so a `project` param reached nothing. D#2518 de-anchors all three: `compute_snapshot()`
+now takes an explicit `project_root` (releases + registry.json resolve under it) and `repo`
+(resolved per request via `backend/project_repo_slug.py`), and the handler declines with
+`UnresolvableProjectError` — distinguishable from an empty response — when a named project
+declares no repo, rather than answer with the serving checkout's numbers under that project's
+name. `stats.dora` is reclassified `SCOPED` in `backend/rpc_project_scope.py`.
+
+`ts-backend/src/rpc/stats-dora.ts`'s `handleDora()` still takes `_params` and ignores it (see
+the function's own docstring: "reserved for future project-scoping, same as Python" — that
+comment is now stale on the Python side). A `project` param sent to the TS native handler still
+returns the serving checkout's DORA/KPI numbers unconditionally; it does not decline.
+
+Not fixed here: `rpc_project_scope.py`'s classification registry and `dispatch_scoped()` have no
+TS twin (`ts-backend` handlers do their own per-handler project-param handling — see caveat 6's
+"batch 2 methods" precedent — there is no equivalent central registry to update), and porting
+`compute_snapshot()`'s three-anchor de-anchoring plus `project_repo_slug.ts`-equivalent
+resolution is a second PR's worth of work, not a same-diff addition to a Python-only fix.
+`tests/rpc-stats-dora.test.ts` only exercises `handleDora({})` (no project param) today, so this
+gap is not caught by the existing suite. If/when `stats.dora` needs real per-project scoping in
+the TS lane, port `project_root` / `repo` resolution and the decline path alongside it; parity
+should not be assumed just because the response shape matches.

@@ -100,6 +100,37 @@ Do not waste turns probing the sandbox boundary. If it blocks once, it blocks al
 
 ---
 
+## Engine Manifest Regeneration
+
+If your diff touches anything under `scripts/`, `.claude/` or `hooks/`, `engine/manifest.json`
+must be regenerated in the same PR — `scripts/ci/engine-manifest-guard.py` runs inside the
+required CI check and a stale manifest is a hard red.
+
+**Never run `scripts/engine-sync/manifest.py generate` in place inside your worktree.** It hashes
+whatever tree the script file happens to sit in — your worktree is a checkout of the private
+plane, so an in-place `generate` silently pins the manifest to the private plane's file contents
+while looking like a completely ordinary run (exit 0, well-formed output). `generate` refuses when
+it detects this (a populated `archive/` at the tree root — see `detect_wrong_plane()` in
+`manifest.py`, D#2510), but the refusal is a safety net, not the recipe: reach for the
+scratch-extraction recipe below directly rather than relying on being told no.
+
+Validated, end-to-end recipe — copy the script into a scratch tree extracted from the code
+plane's actual `main`, and run it there with an **absolute path**:
+
+```bash
+SC=$(mktemp -d)
+git archive code-plane/main | tar -x -C "$SC"
+git show <pr-head-ref>:<edited/path> > "$SC/<edited/path>"
+python3 "$SC/scripts/engine-sync/manifest.py" generate
+# "$SC/engine/manifest.json" is the file to add to the PR
+```
+
+Run against a real PR branch, this reports only the files that branch actually touched changed —
+nothing added, nothing removed. If a regen reports files you did not touch, stop and report it
+rather than trusting it.
+
+---
+
 ## Workflow
 
 ```

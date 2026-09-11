@@ -11,6 +11,9 @@ Subcommands:
   generate   Walk the allowlist, hash every included/non-excluded file with
              SHA-256, and write engine/manifest.json (sorted keys, no
              timestamps in the hashed or written content -> deterministic).
+             Refuses (exit 2, nothing written) if the tree about to be
+             hashed looks like the private/engine plane rather than the code
+             plane this manifest targets -- see detect_wrong_plane() (D#2510).
   verify     Recompute hashes for every file listed in engine/manifest.json
              against the current working tree, AND recompute the live
              allowlist candidate set so a file that matches the allowlist but
@@ -112,7 +115,47 @@ def read_engine_version() -> str:
     return VERSION_PATH.read_text().strip()
 
 
+def detect_wrong_plane(root: Path) -> str | None:
+    """Return a refusal reason if `root` is not the code-plane tree this
+    manifest targets, else None (D#2510).
+
+    `generate` used to hash whatever tree the script file happened to sit
+    in -- run it in place inside an executor's private-plane worktree and it
+    silently produced a well-formed manifest, exit 0, pinned to the wrong
+    repo's file contents. One measured incident re-pinned ~150 files nobody
+    touched; a test that only exercises the correct-tree path cannot see
+    this defect.
+
+    `archive/` is a directory the Archive Protocol (CLAUDE.md) keeps
+    populated with real files on the private/engine plane and denies
+    entirely from the code plane (scripts/ci/publish-denylist.sh) -- a
+    populated `archive/` at `root` is therefore a reliable, independently
+    enforced signal that `root` is not the code-plane tree engine/
+    manifest.json describes.
+    """
+    archive_dir = root / "archive"
+    if archive_dir.is_dir() and any(archive_dir.iterdir()):
+        return (
+            f"{root} contains a populated archive/ directory -- that marks it as "
+            "the private/engine plane, not the code plane this manifest targets. "
+            "Generating here would pin engine/manifest.json to the wrong repo's "
+            "file contents.\n"
+            "Use the scratch-extraction recipe instead:\n"
+            "  SC=$(mktemp -d)\n"
+            '  git archive code-plane/main | tar -x -C "$SC"\n'
+            '  git show <pr-head-ref>:<edited/path> > "$SC/<edited/path>"\n'
+            '  python3 "$SC/scripts/engine-sync/manifest.py" generate\n'
+            '  # "$SC/engine/manifest.json" is the file to add to the PR'
+        )
+    return None
+
+
 def cmd_generate(_args: argparse.Namespace) -> int:
+    wrong_plane = detect_wrong_plane(REPO_ROOT)
+    if wrong_plane is not None:
+        print(f"error: refusing to generate -- {wrong_plane}", file=sys.stderr)
+        return 2
+
     includes, excludes = read_allowlist()
     files = collect_files(REPO_ROOT, includes, excludes)
 

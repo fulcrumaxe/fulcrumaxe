@@ -44,24 +44,42 @@ from backend.kpi_engine import (  # noqa: E402
     compute_velocity,
     compute_pr_cycle_time,
 )
-from backend._repo import REPO  # noqa: E402
 
-_RELEASES_DIR = REPO_ROOT / ".autonomous-team" / "releases"
 _ANALYTICS_DIR = REPO_ROOT / "wiki" / "analytics"
 
 _7D_SECONDS = 7 * 24 * 3600
+
+
+def _releases_dir() -> Path:
+    """Return the serving checkout's own releases directory.
+
+    Computed on every call rather than cached as a module constant (D#2518):
+    a pre-joined ``_RELEASES_DIR = REPO_ROOT / ...`` bound at import time is
+    exactly what made ``stats.dora`` UNSCOPABLE — a per-request override had
+    nothing to replace. ``_load_recent_releases(releases_dir=...)`` is how a
+    caller reaches a different project's releases; this is only the
+    no-project default.
+    """
+    return REPO_ROOT / ".autonomous-team" / "releases"
 
 
 # ---------------------------------------------------------------------------
 # Change failure rate helper
 # ---------------------------------------------------------------------------
 
-def _load_recent_releases(cutoff_ts: float) -> list[dict]:
-    """Return release records within the trailing 7-day window."""
+def _load_recent_releases(cutoff_ts: float, releases_dir: "Path | None" = None) -> list[dict]:
+    """Return release records within the trailing 7-day window.
+
+    Args:
+        releases_dir: directory to glob ``*.json`` release records from, for
+            per-project scoping. Defaults to the serving checkout's own
+            releases dir when omitted.
+    """
+    effective_dir = releases_dir if releases_dir is not None else _releases_dir()
     releases: list[dict] = []
-    if not _RELEASES_DIR.exists():
+    if not effective_dir.exists():
         return releases
-    for rf in _RELEASES_DIR.glob("*.json"):
+    for rf in effective_dir.glob("*.json"):
         try:
             data = json.loads(rf.read_text(encoding="utf-8"))
             # Explicitly skip records with null/missing merged_at —
@@ -78,11 +96,21 @@ def _load_recent_releases(cutoff_ts: float) -> list[dict]:
     return releases
 
 
-def _compute_cfr(releases: list[dict]) -> str:
+def _compute_cfr(releases: list[dict], repo: "str | None" = None) -> str:
     """Compute change_failure_rate_pct using GitHub Bug discussions.
 
     Heuristic: a release "failed" if a Discussion labeled [Bug] was created
     within 24 hours of the release's merged_at timestamp.
+
+    Args:
+        repo: ``owner/name`` slug to query, for per-project scoping. Defaults
+            to the serving checkout's own repo (``backend._repo.REPO``) when
+            omitted — resolved lazily here, not at module import, so
+            importing this module binds no repo slug (D#2518). A caller
+            scoping to a *named* project must resolve that project's own
+            slug itself (see backend/project_repo_slug.py) and pass it
+            explicitly rather than relying on this default, which always
+            means "the serving checkout".
 
     Returns a formatted percentage string, or "n/a" when the signal is
     unavailable (no releases, gh CLI error, or insufficient data).
@@ -90,6 +118,10 @@ def _compute_cfr(releases: list[dict]) -> str:
     if not releases:
         # No releases in window — CFR undefined.
         return "n/a"
+
+    if repo is None:
+        from backend._repo import REPO as _default_repo  # noqa: PLC0415
+        repo = _default_repo
 
     # Fetch recent [Bug] Discussions from GitHub.
     # Uses analyst_bug_filer's category convention: label = "Bug" in the title.
@@ -99,7 +131,7 @@ def _compute_cfr(releases: list[dict]) -> str:
                 "gh", "api", "graphql",
                 "-f", (
                     'query=query{'
-                    f'repository(owner:"{REPO.split("/")[0]}",name:"{REPO.split("/")[1]}")' + "{"
+                    f'repository(owner:"{repo.split("/")[0]}",name:"{repo.split("/")[1]}")' + "{"
                     'discussions(first:100,categoryId:null,filterBy:{labels:[]}){nodes{title createdAt}}'
                     "}"
                     "}"
@@ -165,13 +197,31 @@ def _compute_cfr(releases: list[dict]) -> str:
 # Main snapshot function
 # ---------------------------------------------------------------------------
 
-def compute_snapshot(today: str | None = None) -> dict:
+def compute_snapshot(
+    today: str | None = None,
+    project_root: "Path | None" = None,
+    repo: "str | None" = None,
+) -> dict:
     """Compute the analytics snapshot dict for the trailing 7-day window.
 
     Parameters
     ----------
     today:
         Date string YYYY-MM-DD. Defaults to UTC today. Useful in tests.
+    project_root:
+        A project's own checkout root (the directory containing its
+        ``.autonomous-team/``), for per-project scoping (D#2518). When
+        given, releases and the registry are read from
+        ``<project_root>/.autonomous-team/{releases,registry.json}``
+        instead of the serving checkout's own. Omit for the serving
+        checkout's own snapshot (existing behaviour).
+    repo:
+        ``owner/name`` GitHub repo slug to query for lead time and change
+        failure rate, for per-project scoping. Omit for the serving
+        checkout's own repo (existing behaviour). Callers scoping to a
+        *named* project must resolve that project's slug themselves (see
+        backend/project_repo_slug.py) — passing ``None`` here always means
+        "the serving checkout", never "decline".
 
     Returns a dict with keys:
         date, deploy_frequency_per_day, lead_time_minutes_p50,
@@ -184,17 +234,23 @@ def compute_snapshot(today: str | None = None) -> dict:
     now = datetime.now(timezone.utc)
     cutoff_ts = now.timestamp() - _7D_SECONDS
 
+    releases_dir = (
+        Path(project_root) / ".autonomous-team" / "releases"
+        if project_root is not None
+        else None
+    )
+
     # --- DORA: deploy frequency + lead time (reuse release_manager) ---
-    dora = compute_dora_snapshot()
+    dora = compute_dora_snapshot(releases_dir=releases_dir, repo=repo)
     deploy_freq = dora["deploy_frequency_per_day"]
     lead_time = dora["lead_time_minutes_p50"]
 
     # --- DORA: change failure rate (computed here from releases + bug filings) ---
-    recent_releases = _load_recent_releases(cutoff_ts)
-    cfr = _compute_cfr(recent_releases)
+    recent_releases = _load_recent_releases(cutoff_ts, releases_dir=releases_dir)
+    cfr = _compute_cfr(recent_releases, repo=repo)
 
     # --- KPI: velocity + cycle time (reuse kpi_engine) ---
-    discussions = load_registry()
+    discussions = load_registry(repo_root=project_root)
     velocity = compute_velocity(discussions)
     cycle = compute_pr_cycle_time(discussions)
 

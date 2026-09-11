@@ -54,6 +54,19 @@ actual data, and decline (``UnresolvableProjectError``) rather than fall back
 when a named project cannot be resolved. ``stats.dora`` is reclassified
 ``UNSCOPABLE``.
 
+Background (D#2518)
+--------------------
+``stats.dora`` is now de-anchored too: ``analytics_engineer._RELEASES_DIR``
+and ``kpi_engine.REGISTRY`` are no longer module constants bound at import
+(D#856-style lazy accessors instead), and ``analytics_engineer.compute_snapshot()``
+takes an explicit ``project_root`` / ``repo`` that thread through to
+``release_manager.compute_dora_snapshot()`` and ``analytics_engineer._compute_cfr()``.
+The repo slug is resolved per request from ``backend/project_repo_slug.py``,
+matching ``stats.weekly_velocity`` and ``stats.cost_per_outcome``, and
+declines (``UnresolvableProjectError``) rather than falling back to the
+serving checkout's repo when a named project declares none. Reclassified
+``SCOPED`` below.
+
 Worse than the unaudited prose, briefly: PR #2330 corrected
 ``stats.loop_idle_ratio``'s reason to say plainly that it was *not* wrapped
 and was bound to the serving checkout — while leaving the classification
@@ -502,26 +515,22 @@ _CLASSIFICATIONS: dict[str, tuple[str, str]] = {
                                         "mismatching the two halves is not a "
                                         "harmless empty result"),
 
-    # -- Audited: bound to the serving checkout at import (D#2327 PR-a) -----
-    "stats.dora": (UNSCOPABLE, "was classified SCOPED on the shared 'already "
-                                "wrapped' string; it is wrapped, and the "
-                                "wrapper reaches nothing it reads. "
-                                "analytics_engineer.compute_snapshot() reads "
-                                "_RELEASES_DIR (analytics_engineer.py:49) and "
-                                "kpi_engine.REGISTRY (kpi_engine.py:27), both "
-                                "module constants built from "
-                                "Path(__file__).resolve().parent.parent at "
-                                "import and cached in sys.modules, and "
-                                "_compute_cfr() shells `gh api graphql` at the "
-                                "module-level REPO "
-                                "(analytics_engineer.py:97-102). PR #2312's "
-                                "code-reviewer was right that this handler "
-                                "ignores the project param entirely. Refuse "
-                                "rather than answer a cross-project request "
-                                "with the serving checkout's DORA numbers; "
-                                "de-anchoring analytics_engineer, "
-                                "release_manager and kpi_engine is a separate "
-                                "job"),
+    # -- Audited: de-anchored, resolves per request (D#2518) -----------------
+    "stats.dora": (SCOPED, "analytics_engineer.compute_snapshot() now takes "
+                            "an explicit project_root, resolved here per "
+                            "request via state_paths.for_project(project) -- "
+                            "releases and registry.json read from under it "
+                            "instead of the import-time _RELEASES_DIR / "
+                            "REGISTRY constants PR #2312's code-reviewer "
+                            "flagged. The repo slug for lead time and "
+                            "change-failure-rate is resolved per request via "
+                            "backend.project_repo_slug.resolve_project_repo_slug(), "
+                            "the same mechanism stats.weekly_velocity and "
+                            "stats.cost_per_outcome use, and this handler "
+                            "raises UnresolvableProjectError -- distinguishable "
+                            "from an empty response -- when a named project "
+                            "resolves to no slug, rather than substitute a "
+                            "repo this process happens to have"),
 }
 
 
@@ -600,8 +609,12 @@ _DATA_SOURCES: dict[str, str] = {
     # was broken and the half that decides the row set.
     "stats.weekly_velocity": DS_PROJECT_REPO,
     "stats.cost_per_outcome": DS_PROJECT_REPO,
-    # Module constants from __file__ plus a module-level REPO slug.
-    "stats.dora": DS_SERVING_CHECKOUT,
+    # Shells out to `gh` against a per-request slug (lead time + CFR); the
+    # gh-shelling half is what decides whether the response is served at all
+    # -- see the UnresolvableProjectError decline above -- so this is
+    # DS_PROJECT_REPO even though releases/registry.json are DS_PROJECT_PATH
+    # in shape, matching stats.cost_per_outcome's tie-break rule.
+    "stats.dora": DS_PROJECT_REPO,
 }
 
 

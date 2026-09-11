@@ -58,6 +58,10 @@ spec_ready_gate_check() {
       echo "Spawn blocked: $disc_label status is $status — work is already complete." >&2
       return 1
       ;;
+    PARKED)
+      echo "Spawn blocked: $disc_label status is PARKED — deliberately not started, not complete. Do not treat this as DONE; it remains outstanding until unparked." >&2
+      return 1
+      ;;
     SPEC_READY)
       # SPEC_READY says the Spec is written. BLOCKED-BY says whether it may be
       # started yet — the two are separate questions (D#1755). Refs are read from

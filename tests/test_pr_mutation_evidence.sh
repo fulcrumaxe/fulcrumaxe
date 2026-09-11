@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # tests/test_pr_mutation_evidence.sh — the seven required cases (D#1984
 # Spec acceptance items 4-10) plus the always-reverts assertion (item 9),
-# against the REAL script, on throwaway fixture repos.
+# plus the tool-presence cases (D#2537 Spec items 5-7, 9), against the REAL
+# script, on throwaway fixture repos.
 #
 # Run: bash tests/test_pr_mutation_evidence.sh
 # Expects: all assertions pass, exit 0
@@ -109,6 +110,29 @@ run_gate() {
   # exactly that condition — the same shape of defect this file exists to
   # catch, just relocated into the test harness itself.
   ( cd "$dir" && unset PR_BODY_FILE && PR_BODY="$body" bash "$GATE" 2>&1 )
+}
+
+# PATH with every directory that provides `$1` removed — used to simulate an
+# environment that is missing one tool without disturbing anything else the
+# gate script itself needs (git, awk, sed, grep, mktemp, timeout, bash).
+_path_without() {
+  local exe="$1" d out=""
+  local -a parts
+  IFS=':' read -ra parts <<<"$PATH"
+  for d in "${parts[@]}"; do
+    if [[ -n "$d" && -x "$d/$exe" ]]; then
+      continue
+    fi
+    out="${out:+$out:}$d"
+  done
+  printf '%s' "$out"
+}
+
+# Same as run_gate, but with $1 (a tool name) made unavailable on PATH.
+run_gate_without_tool() {
+  local dir="$1" body="$2" tool="$3" safe_path
+  safe_path="$(_path_without "$tool")"
+  ( cd "$dir" && unset PR_BODY_FILE && PATH="$safe_path" PR_BODY="$body" bash "$GATE" 2>&1 )
 }
 
 assert_reverted() {
@@ -352,6 +376,66 @@ if [[ $rc -ne 2 ]]; then
   fail "no PR_BODY/PR_BODY_FILE at all should exit 2, got $rc: $out"
 else
   pass "no input at all exits 2 — distinguishable from a real empty/absent claim"
+fi
+
+# ---------------------------------------------------------------------------
+# TC-10 (D#2537 items 5, 6) — the declared tool is not on PATH: this must be
+# reported loudly and specifically, and — because the command never ran — it
+# must NOT share an exit code or a message with a real "ran it, and it's
+# wrong" failure (TC-3/TC-4 above, both exit 1 with a "FAIL:" line).
+# ---------------------------------------------------------------------------
+echo "=== TC-10 (D#2537 items 5,6): required tool ('pytest') missing from PATH ==="
+repo="$(new_repo tc10)"
+body="## Mutation evidence
+
+Host shape: fresh clone (CI runner)
+Command: pytest tests/test_foo.py::test_bar -q
+
+$REPRODUCING_DIFF
+"
+out="$(run_gate_without_tool "$repo" "$body" pytest)"
+rc=$?
+if [[ $rc -ne 0 ]]; then
+  fail "a missing-tool claim should exit 0 (an environment gap, not a false claim), got $rc: $out"
+elif ! printf '%s' "$out" | grep -Fq "WARN: cannot evaluate this claim"; then
+  fail "missing-tool claim exited 0 but did not name the gap: $out"
+elif ! printf '%s' "$out" | grep -Fq "pytest"; then
+  fail "missing-tool claim did not name the missing tool: $out"
+elif printf '%s' "$out" | grep -Fq "FAIL:"; then
+  fail "missing-tool claim's output contains a FAIL: line — must not share wording with a real ran-and-false failure: $out"
+else
+  pass "missing-tool claim exits 0 with a distinct WARN message naming the missing tool"
+fi
+
+# ---------------------------------------------------------------------------
+# TC-11 (D#2537 item 7, and this Discussion's own acceptance criterion) — a
+# declared, machine-checkable block must never reach a blocking outcome that
+# a prose-only body avoids, for the same underlying truth (here: the runner
+# lacks the declared tool). Compares TC-1's prose exit code against a
+# machine-checkable claim in an identical tool-missing environment.
+# ---------------------------------------------------------------------------
+echo "=== TC-11 (D#2537 item 7): declared block is never worse off than prose ==="
+repo_prose="$(new_repo tc11-prose)"
+out_prose="$(run_gate "$repo_prose" "Just a description, no mutation evidence block here.")"
+rc_prose=$?
+
+repo_block="$(new_repo tc11-block)"
+body_block="## Mutation evidence
+
+Host shape: fresh clone (CI runner)
+Command: pytest tests/test_foo.py::test_bar -q
+
+$REPRODUCING_DIFF
+"
+out_block="$(run_gate_without_tool "$repo_block" "$body_block" pytest)"
+rc_block=$?
+
+if [[ $rc_prose -ne 0 ]]; then
+  fail "sanity: prose-only body should exit 0, got $rc_prose: $out_prose"
+elif [[ $rc_block -ne 0 ]]; then
+  fail "declared block went red (exit $rc_block) in an environment where prose stayed green (exit 0) — the exact asymmetry D#2537 exists to remove: $out_block"
+else
+  pass "declared block (exit $rc_block) and prose (exit $rc_prose) both exit 0 in the same tool-missing environment"
 fi
 
 echo

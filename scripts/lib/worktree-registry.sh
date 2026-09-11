@@ -1547,14 +1547,14 @@ for line in sys.stdin:
         return
       fi
 
-      # [MADRCTU]: the Spec's condition 4 is "no tracked changes", not
-      # specifically the [MADRC] porcelain codes -- those miss a tracked
-      # path replaced by a symlink (reports "T") and a merge conflict
-      # ("UU"/"AA"/etc, second column U). Widening only ever excludes more
-      # candidates, never removes a guard.
-      local status
-      status=$(echo "$status_out" | awk '{ code=substr($0,1,2); if (code ~ /[MADRCTU]/) print }')
-      if [[ -n "$status" ]]; then
+      # D#2140: any non-empty `git status --porcelain` output means the
+      # worktree is not clean -- untracked (`??`) included. The prior
+      # [MADRCTU] class match excluded `??`, so a worktree whose only
+      # uncommitted content was untracked scratch (exactly what a live
+      # agent-* worktree holds) fell through to the git-tracked bucket and
+      # reached `git worktree remove --force`. Step 5's back-compat path
+      # already rejects any `??` line (AC-1b); this makes Step 6 agree.
+      if [[ -n "$status_out" ]]; then
         echo "dirty" > "$outfile"
         return
       fi

@@ -5,6 +5,12 @@
  * a test-time one — and asserts they agree on the shared part of the chain
  * (config.json "repo" field, GH_REPO, _REPO, and the DEFAULT_REPO constant).
  * The origin-remote step is tui-only (D#2380) and is not compared here.
+ *
+ * The "agree on the shared precedence steps" block below only ever exercised
+ * non-empty inputs, so it could not catch a divergence in *emptiness*
+ * handling — exactly the shape of bug D#2520 found: ts-backend's resolveRepo()
+ * returned "" for a defined-but-empty GH_REPO while tui's already treated it
+ * as absent. The "agree on emptiness handling" block closes that gap.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -67,5 +73,57 @@ describe('the two resolvers agree on the shared precedence steps', () => {
     process.env['AF_REPO_ROOT'] = root;
     process.env['_REPO'] = 'underscore/target';
     expect(tuiResolveRepo()).toBe(tsBackendResolveRepo());
+  });
+});
+
+describe('the two resolvers agree on emptiness handling (D#2520)', () => {
+  it('GH_REPO="" is treated as absent by both, not as a literal empty repo', () => {
+    const root = makeRoot();
+    process.env['AF_REPO_ROOT'] = root;
+    process.env['GH_REPO'] = '';
+    process.env['_REPO'] = 'underscore/target';
+    expect(tuiResolveRepo()).toBe(tsBackendResolveRepo());
+    expect(tuiResolveRepo()).toBe('underscore/target');
+  });
+
+  it('a whitespace-only GH_REPO is treated as absent by both', () => {
+    const root = makeRoot();
+    process.env['AF_REPO_ROOT'] = root;
+    process.env['GH_REPO'] = '   ';
+    process.env['_REPO'] = 'underscore/target';
+    expect(tuiResolveRepo()).toBe(tsBackendResolveRepo());
+    expect(tuiResolveRepo()).toBe('underscore/target');
+  });
+
+  it('an empty config.json "repo" field is treated as absent by both', () => {
+    const root = makeRoot();
+    mkdirSync(join(root, '.autonomous-team'), { recursive: true });
+    writeFileSync(join(root, '.autonomous-team', 'config.json'), JSON.stringify({ repo: '' }));
+    process.env['AF_REPO_ROOT'] = root;
+    process.env['GH_REPO'] = 'ghrepo/target';
+    expect(tuiResolveRepo()).toBe(tsBackendResolveRepo());
+    expect(tuiResolveRepo()).toBe('ghrepo/target');
+  });
+
+  it('a whitespace-only config.json "repo" field is treated as absent by both', () => {
+    const root = makeRoot();
+    mkdirSync(join(root, '.autonomous-team'), { recursive: true });
+    writeFileSync(join(root, '.autonomous-team', 'config.json'), JSON.stringify({ repo: '   ' }));
+    process.env['AF_REPO_ROOT'] = root;
+    process.env['GH_REPO'] = 'ghrepo/target';
+    expect(tuiResolveRepo()).toBe(tsBackendResolveRepo());
+    expect(tuiResolveRepo()).toBe('ghrepo/target');
+  });
+
+  it('the all-empty terminal case resolves to DEFAULT_REPO on both sides, never ""', () => {
+    const root = makeRoot();
+    process.env['AF_REPO_ROOT'] = root;
+    process.env['GH_REPO'] = '';
+    process.env['_REPO'] = '';
+    const tuiRepo = tuiResolveRepo();
+    const tsBackendRepo = tsBackendResolveRepo();
+    expect(tuiRepo).not.toBe('');
+    expect(tsBackendRepo).not.toBe('');
+    expect(tuiRepo).toBe(tsBackendRepo);
   });
 });

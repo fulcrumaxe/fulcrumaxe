@@ -83,8 +83,24 @@ def classify_risk(diff_files: list[str], pr_labels: list[str]) -> str:
 # DORA metrics
 # ---------------------------------------------------------------------------
 
-def compute_dora_snapshot() -> dict:
+def compute_dora_snapshot(
+    releases_dir: "Path | None" = None,
+    repo: "str | None" = None,
+) -> dict:
     """Compute point-in-time DORA metrics from recent merge history.
+
+    Args:
+        releases_dir: directory to glob release records from, for
+            per-project scoping (D#2518). Defaults to the serving
+            checkout's own releases dir (``_RELEASES_DIR``) when omitted —
+            existing behaviour for ``record_release()`` and other AF-native
+            callers.
+        repo: ``owner/name`` GitHub repo slug to query for lead time, for
+            per-project scoping. Defaults to the serving checkout's own
+            repo (``CODE_REPO``) when omitted. A caller scoping to a
+            *named* project must resolve that project's own slug itself
+            (see backend/project_repo_slug.py) — passing ``None`` here
+            always means "the serving checkout", never "decline".
 
     Returns a dict with:
       deploy_frequency_per_day  — releases/day over trailing 7 days
@@ -93,6 +109,9 @@ def compute_dora_snapshot() -> dict:
 
     Returns -1 for metrics where there is insufficient data.
     """
+    effective_releases_dir = releases_dir if releases_dir is not None else _RELEASES_DIR
+    effective_repo = repo if repo is not None else CODE_REPO
+
     snapshot: dict = {
         "deploy_frequency_per_day": -1.0,
         "lead_time_minutes_p50": -1.0,
@@ -104,8 +123,8 @@ def compute_dora_snapshot() -> dict:
         now = datetime.now(timezone.utc)
         cutoff_ts = now.timestamp() - 7 * 24 * 3600
         recent_releases = []
-        if _RELEASES_DIR.exists():
-            for rf in _RELEASES_DIR.glob("*.json"):
+        if effective_releases_dir.exists():
+            for rf in effective_releases_dir.glob("*.json"):
                 try:
                     data = json.loads(rf.read_text(encoding="utf-8"))
                     # Explicitly skip records with null/missing merged_at —
@@ -129,7 +148,7 @@ def compute_dora_snapshot() -> dict:
         result = subprocess.run(
             [
                 "gh", "pr", "list",
-                "--repo", CODE_REPO,
+                "--repo", effective_repo,
                 "--state", "merged",
                 "--json", "number,createdAt,mergedAt",
                 "--limit", "50",

@@ -106,3 +106,103 @@ describe("resolveRepo precedence (unchanged by D#2348 PR-a)", () => {
     expect(resolveRepo()).toBe(DEFAULT_REPO);
   });
 });
+
+// BINDING mutation check (D#2520): a defined-but-empty or whitespace-only
+// value must not survive into the composed `gh` invocation. `??` only
+// short-circuits on null/undefined, so these assert on the composed argv,
+// not on resolveRepo()'s return value alone — a test on the return value
+// does not prove the empty string never reaches an argument list. Reverting
+// nonEmpty()'s use in resolveRepo() (restoring the bare `??` chain) turns
+// every case below red: composeGhInvocation() would receive "" for the
+// --repo argument instead of falling through to the next source.
+function composeGhInvocation(): string[] {
+  return ["gh", "pr", "list", "--repo", resolveRepo(), "--state", "open"];
+}
+
+describe("resolveRepo() empty-value handling in the composed command (D#2520)", () => {
+  it("GH_REPO=\"\" does not produce an empty --repo argument", () => {
+    process.env["AF_REPO_ROOT"] = emptyRepoRoot();
+    process.env["GH_REPO"] = "";
+    delete process.env["_REPO"];
+
+    const argv = composeGhInvocation();
+    const repoArg = argv[argv.indexOf("--repo") + 1];
+    expect(repoArg).not.toBe("");
+    expect(repoArg).toBe(DEFAULT_REPO);
+  });
+
+  it("GH_REPO=\"\" falls through to a non-empty _REPO instead of winning the step", () => {
+    process.env["AF_REPO_ROOT"] = emptyRepoRoot();
+    process.env["GH_REPO"] = "";
+    process.env["_REPO"] = "env/underscore-repo";
+
+    const argv = composeGhInvocation();
+    const repoArg = argv[argv.indexOf("--repo") + 1];
+    expect(repoArg).not.toBe("");
+    expect(repoArg).toBe("env/underscore-repo");
+  });
+
+  it("a whitespace-only GH_REPO does not produce an empty --repo argument", () => {
+    process.env["AF_REPO_ROOT"] = emptyRepoRoot();
+    process.env["GH_REPO"] = "   ";
+    delete process.env["_REPO"];
+
+    const argv = composeGhInvocation();
+    const repoArg = argv[argv.indexOf("--repo") + 1];
+    expect(repoArg).not.toBe("");
+    expect(repoArg).toBe(DEFAULT_REPO);
+  });
+
+  it("a whitespace-only _REPO falls through to DEFAULT_REPO, not into the argument list", () => {
+    process.env["AF_REPO_ROOT"] = emptyRepoRoot();
+    delete process.env["GH_REPO"];
+    process.env["_REPO"] = "\t\n ";
+
+    const argv = composeGhInvocation();
+    const repoArg = argv[argv.indexOf("--repo") + 1];
+    expect(repoArg).not.toBe("");
+    expect(repoArg).toBe(DEFAULT_REPO);
+  });
+
+  it("an empty .autonomous-team/config.json \"repo\" field does not win the step", () => {
+    const root = emptyRepoRoot();
+    mkdirSync(join(root, ".autonomous-team"), { recursive: true });
+    writeFileSync(join(root, ".autonomous-team", "config.json"), JSON.stringify({ repo: "" }));
+    process.env["AF_REPO_ROOT"] = root;
+    delete process.env["GH_REPO"];
+    delete process.env["_REPO"];
+
+    const argv = composeGhInvocation();
+    const repoArg = argv[argv.indexOf("--repo") + 1];
+    expect(repoArg).not.toBe("");
+    expect(repoArg).toBe(DEFAULT_REPO);
+  });
+
+  it("a whitespace-only config.json \"repo\" field falls through to GH_REPO", () => {
+    const root = emptyRepoRoot();
+    mkdirSync(join(root, ".autonomous-team"), { recursive: true });
+    writeFileSync(join(root, ".autonomous-team", "config.json"), JSON.stringify({ repo: "   " }));
+    process.env["AF_REPO_ROOT"] = root;
+    process.env["GH_REPO"] = "env/gh-repo";
+    delete process.env["_REPO"];
+
+    const argv = composeGhInvocation();
+    const repoArg = argv[argv.indexOf("--repo") + 1];
+    expect(repoArg).not.toBe("");
+    expect(repoArg).toBe("env/gh-repo");
+  });
+
+  it("the all-sources-empty terminal case resolves to DEFAULT_REPO, never an empty --repo argument", () => {
+    const root = emptyRepoRoot();
+    mkdirSync(join(root, ".autonomous-team"), { recursive: true });
+    writeFileSync(join(root, ".autonomous-team", "config.json"), JSON.stringify({ repo: "" }));
+    process.env["AF_REPO_ROOT"] = root;
+    process.env["GH_REPO"] = "";
+    process.env["_REPO"] = "";
+
+    const argv = composeGhInvocation();
+    const repoArg = argv[argv.indexOf("--repo") + 1];
+    expect(repoArg).not.toBe("");
+    expect(repoArg).toBe(DEFAULT_REPO);
+  });
+});
