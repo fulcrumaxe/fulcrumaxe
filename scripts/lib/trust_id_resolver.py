@@ -124,6 +124,13 @@ def resolve_login_to_id(login: str, *, timeout: int = 15, run: Optional[Callable
     except Exception:  # noqa: BLE001 — unparseable stdout (empty, truncated, non-JSON) is UNKNOWN
         return {"state": UNKNOWN, "id": None, "created_at": None}
 
+    if not isinstance(data, dict):
+        # Valid JSON but not an object (a bare string, number, or array) —
+        # parseable, but not a shape this function can read a GraphQL
+        # response out of. Same UNKNOWN fail-closed path as unparseable
+        # stdout, not a fourth outcome callers have to know about.
+        return {"state": UNKNOWN, "id": None, "created_at": None}
+
     errors = data.get("errors") or []
     if any(isinstance(e, dict) and e.get("type") == "NOT_FOUND" for e in errors):
         return {"state": ABSENT, "id": None, "created_at": None}

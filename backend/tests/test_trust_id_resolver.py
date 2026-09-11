@@ -69,6 +69,18 @@ def _run_other_error(*_args, **_kwargs):
     return _FakeResult(1, json.dumps({"errors": [{"type": "RATE_LIMITED"}]}))
 
 
+def _run_non_object_string(*_args, **_kwargs):
+    # D#2527: valid JSON, but a scalar — parses fine, but data.get("errors")
+    # would raise AttributeError on a str.
+    return _FakeResult(0, json.dumps("nope"))
+
+
+def _run_non_object_array(*_args, **_kwargs):
+    # D#2527: valid JSON, but an array — same AttributeError shape as the
+    # string case, on a different non-dict type.
+    return _FakeResult(0, json.dumps([]))
+
+
 # ---------------------------------------------------------------------------
 # AC2/AC3/AC4 — resolve_login_to_id's three-state contract
 # ---------------------------------------------------------------------------
@@ -110,6 +122,40 @@ class TestResolveLoginToId:
             tir.resolve_login_to_id("c", run=_run_resolved())["state"],
         }
         assert states == {tir.ABSENT, tir.UNKNOWN, tir.RESOLVED}
+
+    # -----------------------------------------------------------------------
+    # D#2527 — valid JSON that is not an object (a scalar or array) must
+    # resolve to UNKNOWN, not raise. Today's unfixed code hits
+    # `data.get("errors")` on a str/list and raises AttributeError — the
+    # trap here is a fixture whose stdout IS an object, which can't exercise
+    # this line at all, so both cases below use a JSON string and a JSON
+    # array specifically.
+    # -----------------------------------------------------------------------
+
+    def test_non_object_json_string_is_unknown_not_a_raise(self):
+        # Before the fix: raises AttributeError: 'str' object has no
+        # attribute 'get'. Reproduced directly against unfixed code plane
+        # main @ c786d910 before writing this fix.
+        res = tir.resolve_login_to_id("someone", run=_run_non_object_string)
+        assert res == {"state": tir.UNKNOWN, "id": None, "created_at": None}
+
+    def test_non_object_json_array_is_unknown_not_a_raise(self):
+        # Before the fix: raises AttributeError: 'list' object has no
+        # attribute 'get'. Reproduced directly against unfixed code plane
+        # main @ c786d910 before writing this fix.
+        res = tir.resolve_login_to_id("someone", run=_run_non_object_array)
+        assert res == {"state": tir.UNKNOWN, "id": None, "created_at": None}
+
+    def test_non_object_json_grants_no_id_fail_closed(self):
+        # Fail-closed, asserted directly rather than merely via the state
+        # label: `id` is the one field a caller could turn into an override
+        # grant (see resolve_allowlist_ids()/migrate_config_ids(), which
+        # only ever act on a RESOLVED result's id). It must be None here,
+        # for both non-object shapes, same as every other unparseable case.
+        for runner in (_run_non_object_string, _run_non_object_array):
+            res = tir.resolve_login_to_id("someone", run=runner)
+            assert res["id"] is None
+            assert res["state"] != tir.RESOLVED
 
 
 # ---------------------------------------------------------------------------
