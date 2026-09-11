@@ -104,7 +104,55 @@
 # tests/test_ci_status_check.sh CS-17 and CS-21 pin both halves, and CS-21
 # covers both the skipped shape (what actually happens) and the absent shape
 # (what was predicted, and what a later deletion of the job would produce).
-CI_REQUIRED_CHECKS=("tui" "dashboard" "ts-backend" "backend (import-smoke)")
+#
+# D#2318: a `preflight` job (running the always-on gates and failing if any of
+# them self-skips) and a `publish-denylist` job had both been live on this
+# workflow for some time, verified green/red by their own reviewers, but
+# neither name had been added here — the array lives outside the file scope
+# those PRs were frozen to. A red run of either was visible on the PR and
+# blocked nothing. Two more jobs in pr-gates.yml (`pr-link-policy`,
+# `pr-mutation-evidence`) carry the identical gap and the identical
+# CI_DISABLED-only condition, so this pass measured all four rather than
+# stopping at the two named in the finding.
+#
+# Names below are the byte-exact *reported* names, quoted from a real PR's
+# check-run list (`gh pr checks <N>`), not the job *key* — the two differ for
+# every addition here (`preflight` -> "preflight (always-on gates)";
+# `publish-denylist` -> "publish denylist"; `pr-link-policy` -> "PR link
+# policy"; `pr-mutation-evidence` -> "PR mutation evidence"). Measured on
+# fulcrumaxe/fulcrumaxe PR #151 (run 34510685375 / 34510685395): all four
+# report `success`, and none carries any condition beyond the
+# `vars.CI_DISABLED != 'true'` kill switch every already-required job also
+# carries — so property 2 above holds for each of them the same way it holds
+# for `tui`/`dashboard`/`ts-backend`/`backend (import-smoke)`, and none of
+# them can register the skipped-steps-concludes-success shape that made
+# "open-source export audit" unsafe to require.
+#
+# `pr-link-policy` and `pr-mutation-evidence` were promoted, not just
+# audited, because the measurement said to: both concluded `success` on all
+# of the last 10 merged code-plane PRs at the time of this change (#142-151),
+# so the "promote only what passed on all 10" rule this array's own governing
+# properties call for applies to them the same as to the other two.
+#
+# ── Required-vs-advisory audit (D#2318) ─────────────────────────────────────
+# One row per job across .github/workflows/ci.yml and pr-gates.yml, the two
+# workflow files this repo's PR gate reads:
+#
+#   job key              | reported name                | status   | reason
+#   ----------------------+-------------------------------+----------+-------------------------------------------
+#   build-test (matrix)  | tui, dashboard, ts-backend    | required | job-level `if: CI_DISABLED != 'true'` only; no per-repo condition
+#   backend               | backend (import-smoke)       | required | job-level `if: CI_DISABLED != 'true'` only; no per-repo condition
+#   preflight             | preflight (always-on gates)  | required | same condition as above; added D#2318
+#   publish-denylist      | publish denylist             | required | same condition as above; added D#2318, ordered first among the D#2318 additions (irreversibility: a publish cannot be undone by a follow-up PR)
+#   pr-link-policy        | PR link policy                | required | same condition as above; added D#2318 after measuring 10/10 pass on the last 10 merged code-plane PRs (#142-151)
+#   pr-mutation-evidence  | PR mutation evidence          | required | same condition as above; added D#2318 after measuring 10/10 pass on the last 10 merged code-plane PRs (#142-151)
+#   export-audit          | open-source export audit     | advisory | job-level `if:` additionally requires `github.repository == 'autonomous-agent-7/fulcrumaxe'` (the private repo); on the code plane, where PRs actually merge, that condition is false and the job concludes `skipped`, not absent — requiring it here would block every merge on this repo (D#2456)
+#
+# Do not promote `open-source export audit` on the strength of its `success`
+# runs elsewhere: the condition that keeps it out is a property of the job
+# (it cannot conclude anything but `skipped` on this plane), not a pass rate
+# that a later measurement could improve.
+CI_REQUIRED_CHECKS=("tui" "dashboard" "ts-backend" "backend (import-smoke)" "publish denylist" "preflight (always-on gates)" "PR link policy" "PR mutation evidence")
 
 # ── Gate streak markers (D#2271 PR-a) ───────────────────────────────────────
 # 138 ci_gate_stood_down rows sat in the audit trail for two weeks, each one

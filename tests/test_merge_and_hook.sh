@@ -191,15 +191,21 @@ if [[ "$ARGS" == *"--json headRefOid"* ]]; then
 fi
 
 # `gh api repos/.../commits/<sha>/check-runs --jq '.check_runs'` (D#1614 CI gate).
-# Default stub: all four required checks green, posted by github-actions —
+# Default stub: every required check green, posted by github-actions —
 # existing Two-Gate/HG-7 tests don't care about CI status, so they get an
 # all-green default unless a test explicitly overrides STUB_CI_CHECK_RUNS.
+# D#2318 grew CI_REQUIRED_CHECKS from four names to eight (preflight,
+# publish denylist, PR link policy, PR mutation evidence joined tui,
+# dashboard, ts-backend, backend (import-smoke)); this default carries all
+# eight now, or every test that relies on the default (rather than its own
+# STUB_CI_CHECK_RUNS override) would see the four new names as absent and the
+# CI gate would block merges these tests expect to proceed.
 if [[ "$ARGS" == *"check-runs"* ]]; then
   echo "GH_ARGS: $ARGS" >&2
   if [[ -n "${STUB_CI_CHECK_RUNS:-}" ]]; then
     printf '%s' "$STUB_CI_CHECK_RUNS"
   else
-    printf '%s' '[{"name":"tui","status":"completed","conclusion":"success","app":{"slug":"github-actions"},"html_url":""},{"name":"dashboard","status":"completed","conclusion":"success","app":{"slug":"github-actions"},"html_url":""},{"name":"ts-backend","status":"completed","conclusion":"success","app":{"slug":"github-actions"},"html_url":""},{"name":"backend (import-smoke)","status":"completed","conclusion":"success","app":{"slug":"github-actions"},"html_url":""},{"name":"open-source export audit","status":"completed","conclusion":"success","app":{"slug":"github-actions"},"html_url":""}]'
+    printf '%s' '[{"name":"tui","status":"completed","conclusion":"success","app":{"slug":"github-actions"},"html_url":""},{"name":"dashboard","status":"completed","conclusion":"success","app":{"slug":"github-actions"},"html_url":""},{"name":"ts-backend","status":"completed","conclusion":"success","app":{"slug":"github-actions"},"html_url":""},{"name":"backend (import-smoke)","status":"completed","conclusion":"success","app":{"slug":"github-actions"},"html_url":""},{"name":"preflight (always-on gates)","status":"completed","conclusion":"success","app":{"slug":"github-actions"},"html_url":""},{"name":"publish denylist","status":"completed","conclusion":"success","app":{"slug":"github-actions"},"html_url":""},{"name":"PR link policy","status":"completed","conclusion":"success","app":{"slug":"github-actions"},"html_url":""},{"name":"PR mutation evidence","status":"completed","conclusion":"success","app":{"slug":"github-actions"},"html_url":""},{"name":"open-source export audit","status":"completed","conclusion":"success","app":{"slug":"github-actions"},"html_url":""}]'
   fi
   exit 0
 fi
