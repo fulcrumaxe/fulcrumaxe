@@ -447,19 +447,21 @@ async function assemblePrompt(
     gate_line: gateLine,
     worktree_path:
       args.isolation === "worktree" ? (args.worktreePath || null) : null,
-    // D#2222 (bash-only, tracked as a deliberate gap, not an oversight): the
-    // bash implementation (scripts/spawn-agent.sh) provisions a PR-amend
-    // tree via pr-tree.sh and sets worktree_unprovisioned /
-    // worktree_unprovisioned_reason so backend/prompt_builder.py can tell a
-    // real provisioning failure from the canonical fresh-spawn shape (see
-    // that file's _build_unprovisioned_worktree_block). This TS lane has
-    // neither concept ported yet — omitting both keys here means
-    // worktree_unprovisioned defaults to false and no worktree block is
-    // rendered at all for a worktree-isolated spawn with no worktreePath,
-    // silently, rather than either the honest or the hard-fail message. This
-    // lane is not live yet, so it's not fixed here; if/when it goes live,
-    // pr-tree provisioning and the three-way reason distinction need to be
-    // ported alongside it, not assumed to already match.
+    // D#2222/D#2542 (bash-only, tracked as a deliberate gap, not an
+    // oversight): the bash implementation (scripts/spawn-agent.sh) sets
+    // worktree_unprovisioned / worktree_unprovisioned_reason so
+    // backend/prompt_builder.py can tell a real provisioning failure, a
+    // --pr amend (reason="pr_amend", D#2542 — no pr-tree is provisioned for
+    // this any more, the reason alone drives the rendered block), and the
+    // canonical fresh-spawn shape apart (see that file's
+    // _build_unprovisioned_worktree_block, now a four-way distinction, not
+    // three). This TS lane has neither concept ported yet — omitting both
+    // keys here means worktree_unprovisioned defaults to false and no
+    // worktree block is rendered at all for a worktree-isolated spawn with
+    // no worktreePath, silently, rather than any of the honest or hard-fail
+    // messages. This lane is not live yet, so it's not fixed here; if/when
+    // it goes live, the reason distinction needs to be ported alongside it,
+    // not assumed to already match.
     security_block: args.securityTrigger,
     hook_event_id: eventId,
     env_scrub_snippet: envScrubSnippet,

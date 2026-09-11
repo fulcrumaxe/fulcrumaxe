@@ -354,6 +354,140 @@ class TestUnprovisionedPrResolutionFailedReason:
 
 
 # ---------------------------------------------------------------------------
+# Unprovisioned worktree block, "pr_amend" reason (D#2542)
+#
+# A --pr worktree spawn used to have spawn-agent.sh provision a pr-tree via
+# scripts/lib/pr-tree.sh and assert it as "YOUR WORKTREE: <pr-tree path>" —
+# a path the Agent() tool never actually put the agent in, since its own
+# isolation param provisions the real tree regardless of --pr. The sandbox
+# correctly refused any write to the asserted-but-false path, so a
+# correctly-behaving fix-round executor failed having changed nothing
+# (recorded live on a fix round for PR #167). The fix: --pr now renders the
+# same "resolve your own root" shape as the canonical fresh-spawn case, but
+# must ALSO explain how to reach the PR's head content from that
+# self-resolved tree, and must NOT lose D#592's real fix — the "never write
+# to main" warning and the pwd step.
+# ---------------------------------------------------------------------------
+
+
+class TestUnprovisionedPrAmendReason:
+    def test_never_names_a_pr_tree_path(self):
+        # The core acceptance bar (item 4): no absolute path outside the
+        # agent's own tree may be presented as a write target.
+        sp = _make_prompt(
+            worktree_path=None,
+            worktree_unprovisioned=True,
+            worktree_unprovisioned_reason="pr_amend",
+            pr=167,
+        )
+        result = sp.render()
+        assert "YOUR WORKTREE" not in result
+        assert "pr-167-" not in result
+
+    def test_instructs_resolving_own_root(self):
+        sp = _make_prompt(
+            worktree_path=None,
+            worktree_unprovisioned=True,
+            worktree_unprovisioned_reason="pr_amend",
+            pr=167,
+        )
+        result = sp.render()
+        assert "pwd" in result
+        assert "git rev-parse --show-toplevel" in result
+
+    def test_keeps_the_never_write_to_main_warning(self):
+        # D#592's actual defect must not regress: this line, plus the pwd
+        # step above, is what stops an agent writing to main when no prefix
+        # is named.
+        sp = _make_prompt(
+            worktree_path=None,
+            worktree_unprovisioned=True,
+            worktree_unprovisioned_reason="pr_amend",
+            pr=167,
+        )
+        result = sp.render()
+        assert "Never write to" in result
+        assert "that is main" in result
+
+    def test_does_not_hard_fail_by_default(self):
+        # Unlike pr_resolution_failed, a resolved --pr amend is not a
+        # failure — the agent should proceed, not stop. (The block still
+        # keeps a hard-stop guard for the genuine no-isolation case, same
+        # as agent_tool_provisions — that guard is not the default path.)
+        sp = _make_prompt(
+            worktree_path=None,
+            worktree_unprovisioned=True,
+            worktree_unprovisioned_reason="pr_amend",
+            pr=167,
+        )
+        result = sp.render()
+        assert "NO WORKTREE WAS PROVISIONED" not in result
+        assert "that directory IS your worktree root" in result
+
+    def test_states_how_to_reach_pr_head_from_own_tree(self):
+        # Item 5: removing the false path is not licence to leave a fix
+        # round unable to work. Must name a concrete, sandbox-safe mechanism.
+        sp = _make_prompt(
+            worktree_path=None,
+            worktree_unprovisioned=True,
+            worktree_unprovisioned_reason="pr_amend",
+            pr=167,
+        )
+        result = sp.render()
+        assert "pull/167/head" in result
+        assert "code-plane-pr.sh" in result
+        assert "checkout" in result.lower()
+        assert "always-blocked" in result.lower()
+
+    def test_handles_missing_pr_number_gracefully(self):
+        sp = _make_prompt(
+            worktree_path=None,
+            worktree_unprovisioned=True,
+            worktree_unprovisioned_reason="pr_amend",
+            pr=None,
+        )
+        result = sp.render()
+        assert "YOUR WORKTREE" not in result
+        assert "pull/<N>/head" in result
+
+    def test_real_path_wins_over_pr_amend_reason(self):
+        sp = _make_prompt(
+            worktree_path="/tmp/wt-real",
+            worktree_unprovisioned=True,
+            worktree_unprovisioned_reason="pr_amend",
+            pr=167,
+        )
+        result = sp.render()
+        assert "YOUR WORKTREE: /tmp/wt-real" in result
+        assert "did not pre-provision a tree" not in result
+
+    def test_unprovisioned_block_after_volatile_boundary(self):
+        sp = _make_prompt(
+            worktree_path=None,
+            worktree_unprovisioned=True,
+            worktree_unprovisioned_reason="pr_amend",
+            pr=167,
+        )
+        result = sp.render()
+        vb_pos = result.index("VOLATILE_BOUNDARY")
+        wt_pos = result.index("did not pre-provision a tree")
+        assert wt_pos > vb_pos
+
+    def test_mutation_restoring_pr_tree_path_reintroduces_the_false_claim(self):
+        # D#2542 mutation check (item 9): simulating the reverted behaviour —
+        # a real (but false) pr-tree path handed straight to worktree_path,
+        # as the old code did — must go back to asserting "YOUR WORKTREE" on
+        # a pr-<N>-shaped path. This is the red side of red/green: it proves
+        # the new tests above would have caught the original defect.
+        sp = _make_prompt(
+            worktree_path="/repo/.claude/worktrees/pr-167-executor-executor-2463-1789123945",
+            worktree_unprovisioned=False,
+        )
+        result = sp.render()
+        assert "YOUR WORKTREE: /repo/.claude/worktrees/pr-167-" in result
+
+
+# ---------------------------------------------------------------------------
 # Security block
 # ---------------------------------------------------------------------------
 

@@ -87,12 +87,16 @@ _PR_TREE_READONLY_ROLES = frozenset({"code-reviewer", "acceptance-tester"})
 #   "" (default/unknown) or "pr_tree_failed": a real provisioning attempt
 #       was made (pr_tree_provision ran against a resolved head sha) and it
 #       failed — the honest answer is a hard stop, no fallback tree exists.
+#       (D#2542: spawn-agent.sh no longer attempts this provisioning for the
+#       prompt at all — see "pr_amend" below — so this shell-side reason is
+#       no longer produced, but the block stays: an unrecognized reason
+#       string must still fail this same honest way, not silently pass.)
 #   "pr_resolution_failed": --pr was given, but the head sha/branch could
-#       not even be resolved (gh api failure), so pr_tree_provision was
-#       never attempted. This must ALSO hard-fail, and must NOT be treated
-#       like the canonical case below: whatever tree the Agent tool's own
-#       isolation hands the agent is not the PR's branch, so proceeding
-#       would silently amend the wrong tree.
+#       not even be resolved (gh api failure), so there is nothing for the
+#       agent to fetch either. This must ALSO hard-fail, and must NOT be
+#       treated like the canonical case below: whatever tree the Agent
+#       tool's own isolation hands the agent is not the PR's branch, so
+#       proceeding would silently amend the wrong tree.
 #   "agent_tool_provisions": no provisioning was attempted at all, because
 #       none was spawn-agent.sh's to attempt: --isolation worktree was
 #       passed with no --pr and no --worktree-path, which is the canonical
@@ -102,11 +106,23 @@ _PR_TREE_READONLY_ROLES = frozenset({"code-reviewer", "acceptance-tester"})
 #       only assembles prompt text. Telling the agent to hard-fail in this
 #       one case was the original D#2222 bug: the canonical spawn shape was
 #       self-reporting as broken every time.
+#   "pr_amend" (D#2542): --pr was given and its head sha/branch DID resolve,
+#       but spawn-agent.sh still has nothing real to describe — the Agent()
+#       tool's own isolation param provisions the actual tree regardless of
+#       --pr, exactly as in "agent_tool_provisions" above (this script's own
+#       header already makes that argument; D#2542 is what stopped it
+#       carving out a --pr exception to its own reasoning). Not a failure:
+#       the agent resolves its own root and is told how to reach the PR's
+#       head content from there — fetch by URL, never checkout (an
+#       always-blocked verb in every worktree, not just outside one).
 _WT_REASON_AGENT_TOOL_PROVISIONS = "agent_tool_provisions"
 _WT_REASON_PR_RESOLUTION_FAILED = "pr_resolution_failed"
+_WT_REASON_PR_AMEND = "pr_amend"
 
 
-def _build_unprovisioned_worktree_block(role: str, reason: str = "") -> str:
+def _build_unprovisioned_worktree_block(
+    role: str, reason: str = "", pr: int | None = None
+) -> str:
     """Block emitted when worktree isolation was requested but spawn-agent.sh
     resolved no concrete path — replaces the old self-contradictory claim
     (asserting a worktree at a literal, unexpanded "$(pwd)" string).
@@ -114,6 +130,43 @@ def _build_unprovisioned_worktree_block(role: str, reason: str = "") -> str:
     Deliberately contains no "YOUR WORKTREE" line: that phrase is reserved
     for a real, provisioned path (see _build_worktree_block above).
     """
+    if reason == _WT_REASON_PR_AMEND:
+        pr_label = f"PR #{pr}" if pr else "this PR"
+        return "\n".join([
+            "spawn-agent.sh did not pre-provision a tree for this --pr spawn — that's",
+            "expected here too (D#2542): the Agent tool's own isolation param provisions",
+            "the real tree regardless of --pr, which this script cannot see or influence,",
+            "exactly like the canonical fresh-spawn case.",
+            "",
+            "Resolve your own root before your first Edit/Write:",
+            "  pwd",
+            "  git rev-parse --show-toplevel",
+            f"Both must agree, and neither may print {_REPO_ROOT} (the repo root, not a",
+            "worktree) — if either does, isolation was NOT applied to your spawn. STOP:",
+            "do not improvise a tree with checkout/switch/branch/reset/restore/worktree",
+            "or any other git verb; those are hard-blocked by design. Emit verdict: fail",
+            'with block_reason: "worktree_not_provisioned" in your AGENT_OUTPUT and stop.',
+            "",
+            "Otherwise, that directory IS your worktree root — confirm with",
+            "`git branch --show-current` (should not be main/master), then use it as the",
+            "absolute prefix for every Edit/Write call.",
+            f"Never write to {_REPO_ROOT}/<file> — that is main, not your worktree,",
+            "regardless of which tree you resolve yourself into.",
+            "",
+            f"This is a --pr fix round: {pr_label}'s head content is NOT in the tree above —",
+            "your tree starts from main, unrelated to the PR's branch. To reach it from",
+            "inside your own tree, fetch it explicitly (never `gh pr checkout` or any other",
+            "checkout — always-blocked, in this tree or any other):",
+            "  CODE_REPO=\"$(source scripts/lib/repo-resolve.sh && _resolve_code_repo)\"",
+            f"  git fetch \"https://github.com/${{CODE_REPO}}.git\" \"pull/{pr or '<N>'}/head\"",
+            "Read a file as it stands on the PR with `git show FETCH_HEAD:<path>` (safe,",
+            "read-only). To push a fix, build the new commit with",
+            "scripts/lib/code-plane-pr.sh — it edits via git plumbing (read-tree,",
+            "hash-object, write-tree, commit-tree) and never touches a local ref, the",
+            "index, or the working tree, so none of it is refused. See that file's header",
+            "for the build/push interface.",
+        ])
+
     if reason == _WT_REASON_AGENT_TOOL_PROVISIONS:
         return "\n".join([
             "spawn-agent.sh did not pre-provision a worktree for this spawn — that's",
@@ -396,7 +449,7 @@ class SpawnPrompt:
         if not self.worktree_path:
             if self.worktree_unprovisioned:
                 return _build_unprovisioned_worktree_block(
-                    self.role, self.worktree_unprovisioned_reason
+                    self.role, self.worktree_unprovisioned_reason, self.pr
                 )
             return ""
         wt = self.worktree_path
