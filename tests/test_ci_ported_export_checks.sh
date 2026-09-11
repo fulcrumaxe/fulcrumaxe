@@ -39,17 +39,40 @@ trap 'rm -rf "$SCRATCH"' EXIT
 run_rtg() { OUT="$(bash "$RTG" "$1" 2>&1)"; RC=$?; }
 
 # ---------------------------------------------------------------------------
-# repo-target-gate.sh — IDENTITIES-block presence (D#2492 fix round).
+# repo-target-gate.sh — IDENTITIES-block presence (D#2492 fix round, and the
+# D#2545 hardening of it).
 #
-# Deliberately synthetic and self-contained: neither fixture below needs a
-# real owner identity, so both run regardless of whether THIS repo's own
-# open-source/IDENTIFIER-RULES.txt carries an IDENTITIES block — unlike the
-# rest of this file's repo-target-gate.sh section, which needs one (see the
-# precondition below) and is exactly why these two live above it.
+# Deliberately synthetic and self-contained: none of the fixtures below need
+# a real owner identity, so all of them run regardless of whether THIS
+# repo's own open-source/IDENTIFIER-RULES.txt carries an IDENTITIES block —
+# unlike the rest of this file's repo-target-gate.sh section, which needs
+# one (see the precondition below) and is exactly why these live above it.
 # ---------------------------------------------------------------------------
-echo "repo-target-gate.sh — IDENTITIES block presence (D#2492)"
+echo "repo-target-gate.sh — IDENTITIES block presence (D#2492 / D#2545)"
 
-DIR="$SCRATCH/no-identities"
+DIR="$SCRATCH/no-identities-declared"
+mkdir -p "$DIR/open-source" "$DIR/scripts"
+cat > "$DIR/open-source/IDENTIFIER-RULES.txt" <<'EOF'
+NO_IDENTITIES=declared
+=== FORBIDDEN_PATTERNS_START ===
+whate[v]er
+=== FORBIDDEN_PATTERNS_END ===
+EOF
+git -C "$DIR" init -q
+git -C "$DIR" add -A
+run_rtg "$DIR"
+if [[ "$RC" -eq 0 && "$OUT" == *"SKIP"* && "$OUT" == *"IDENTITIES"* ]]; then
+  pass "no IDENTITIES block, but NO_IDENTITIES=declared present -> ledgered SKIP"
+else
+  fail "declared no-IDENTITIES rules file should skip, got rc=$RC: $OUT"
+fi
+
+# D#2545: the assertion this whole Discussion exists for. No IDENTITIES
+# block AND no declaration is what a stripped header on an otherwise
+# enforcing tree looks like — it must not read as the same "legitimate,
+# scoped-away" shape as the fixture directly above. Absence of both must
+# FAIL, not silently take the ledgered skip.
+DIR="$SCRATCH/no-identities-undeclared"
 mkdir -p "$DIR/open-source" "$DIR/scripts"
 cat > "$DIR/open-source/IDENTIFIER-RULES.txt" <<'EOF'
 === FORBIDDEN_PATTERNS_START ===
@@ -59,10 +82,10 @@ EOF
 git -C "$DIR" init -q
 git -C "$DIR" add -A
 run_rtg "$DIR"
-if [[ "$RC" -eq 0 && "$OUT" == *"SKIP"* && "$OUT" == *"IDENTITIES"* ]]; then
-  pass "no IDENTITIES block at all -> ledgered SKIP, not a FAIL"
+if [[ "$RC" -ne 0 && "$OUT" == *"NO_IDENTITIES"* ]]; then
+  pass "no IDENTITIES block and no declaration -> hard FAIL, not a skip"
 else
-  fail "no-IDENTITIES rules file should skip, got rc=$RC: $OUT"
+  fail "undeclared no-IDENTITIES rules file should fail, got rc=$RC: $OUT"
 fi
 
 DIR="$SCRATCH/identities-no-owner"
@@ -100,9 +123,24 @@ fi
 # scripts/ci/repo-target-gate.sh itself makes this same distinction (a
 # ledgered SKIP on no-IDENTITIES vs a hard FAIL on IDENTITIES-present-but-
 # broken); this precondition mirrors it so the two never drift apart.
+#
+# D#2545: mirroring "absence of the header" was itself the shared blind
+# spot — this precondition and the gate agreed on the same absence-inferred
+# skip, so one deleted header line silently disabled both. This now keys on
+# the same explicit declaration the gate requires (NO_IDENTITIES=declared),
+# not on the header being missing. On a tree where the header was stripped
+# without that declaration, this errors out instead of silently skipping
+# the fixture-based assertions below — which is exactly the "test that
+# exists to catch the gate going inert" not going inert itself.
 if ! grep -q '^=== IDENTITIES_START ===' "$RULES_FILE"; then
-  echo "SKIP: $RULES_FILE has no IDENTITIES block (code-plane minimal rules file, D#2492) — no owner identity to build fixtures from"
-  exit 0
+  DECLARED="$(sed -n 's/^[[:space:]]*NO_IDENTITIES=\(.*\)$/\1/p' "$RULES_FILE" | head -1)"
+  DECLARED="${DECLARED%"${DECLARED##*[![:space:]]}"}"
+  if [[ "$DECLARED" == "declared" ]]; then
+    echo "SKIP: $RULES_FILE has no IDENTITIES block and declares NO_IDENTITIES=declared (code-plane minimal rules file, D#2492/D#2545) — no owner identity to build fixtures from"
+    exit 0
+  fi
+  echo "FAIL: $RULES_FILE has no IDENTITIES block and does not declare NO_IDENTITIES=declared — the gate under test would now hard-FAIL on this tree (D#2545), so this precondition cannot silently skip either"
+  exit 1
 fi
 OWNER="$(sed -n 's/^[[:space:]]*OLD_OWNER=\(.*\)$/\1/p' "$RULES_FILE" | head -1)"
 CURRENT="$(sed -n 's/^[[:space:]]*CURRENT_REPO=\(.*\)$/\1/p' "$RULES_FILE" | head -1)"
