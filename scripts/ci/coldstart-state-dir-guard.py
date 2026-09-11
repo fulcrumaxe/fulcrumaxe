@@ -114,13 +114,37 @@ BANNED_REASON_SUBSTRINGS = [
     "lives there, not here",
 ]
 
+def _nonempty_alternation(literals: tuple[str, ...], label: str) -> str:
+    """Join `literals` into a "|"-separated regex alternation, refusing to
+    produce one that can match the empty string.
+
+    An empty `literals`, or a `literals` made entirely of empty strings,
+    joins into an alternation with a zero-width branch. Wrapped in the
+    surrounding match logic that treats "matched" as "provably safe to
+    skip", a zero-width branch matches at nearly every position — so instead
+    of flagging every line it flags none, and the guard reports a clean scan
+    having checked nothing. Same shape as `manifest.py verify` on an empty
+    pin set (D#1928): an empty input set means "could not establish", not
+    "established, and it is fine" — refuse rather than report clean (D#2493).
+    """
+    alt = "|".join(re.escape(lit) for lit in literals)
+    if not literals or re.match(alt, "") is not None:
+        sys.exit(
+            f"coldstart-state-dir-guard: {label} is empty or compiles to a "
+            f"degenerate pattern that matches the empty string — refusing to "
+            f"report a clean scan (that would mean checked nothing, not "
+            f"checked everything). Got: {literals!r}"
+        )
+    return alt
+
+
 # The coldstart ENTRY POINTS — the scripts that create a state dir, or
 # delegate to one that does. Deliberately an explicit list rather than a
 # `coldstart*.sh` wildcard: scripts/lib/coldstart-preflight.sh and
 # scripts/lib/coldstart-halt-flow.sh match that shape, create no state dir,
 # and would be permanent false positives.
 ENTRY_POINTS = ("coldstart-project.sh", "coldstart-unified.sh", "coldstart.sh")
-_ENTRY_ALT = "|".join(re.escape(e) for e in ENTRY_POINTS)
+_ENTRY_ALT = _nonempty_alternation(ENTRY_POINTS, "ENTRY_POINTS")
 
 SCRIPT_LITERAL_RE = re.compile(_ENTRY_ALT)
 
@@ -139,7 +163,7 @@ EXEC_TOKEN_RE = re.compile(r"""(?:^|[\s;&|(\["',])(?:bash|sh|env)(?:["'\s,)\]]|$
 # any unrelated word containing it (a fixture path like "fake-home", a project
 # named "test-host"), silently exempting the line with no warning (D#2351).
 NON_MUTATING_FLAGS = ("--help", "-h", "--dry-run", "--self-test", "--version")
-_NON_MUTATING_ALT = "|".join(re.escape(f) for f in NON_MUTATING_FLAGS)
+_NON_MUTATING_ALT = _nonempty_alternation(NON_MUTATING_FLAGS, "NON_MUTATING_FLAGS")
 NON_MUTATING_FLAG_RE = re.compile(
     r"""(?:^|[\s;&|(\["',])(?:""" + _NON_MUTATING_ALT + r""")(?:["'\s,)\]]|$)"""
 )
