@@ -161,13 +161,26 @@ Do NOT fall back to any other browser driver. Do NOT substitute code review.
    b2. READINESS CHECK -- required before any screenshot (D#2549):
 
       Evaluate the readiness predicate in-page and poll it until true or a
-      20s timeout, e.g.:
+      20s timeout:
         mcp__ns__evaluate_script(script=DASHBOARD_READY_SCRIPT)
-      where DASHBOARD_READY_SCRIPT is the literal expression documented in
-      dashboard/src/lib/dashboardReady.ts (`isDashboardReady` / its
-      `DASHBOARD_READY_SCRIPT` export -- copy it verbatim, do not
-      approximate it):
 
+      DASHBOARD_READY_SCRIPT is the literal expression inlined below, between
+      the BEGIN/END markers. THIS INLINED COPY IS AUTHORITATIVE -- use it
+      exactly as written here. Do NOT read, import, or copy the predicate out
+      of the PR under test's own `dashboard/src/lib/dashboardReady.ts`: that
+      file is part of the code this step exists to test, not a trusted
+      source. A PR head that ships
+      `export const DASHBOARD_READY_SCRIPT = "true"` would make the
+      readiness gate pass unconditionally and disable the exact check this
+      step exists to enforce -- the gate must never come from the thing it
+      gates. `dashboard/src/lib/__tests__/dashboardReady.test.ts` keeps this
+      inlined copy behaviorally and byte-identical to the trusted
+      `dashboard/src/lib/dashboardReady.ts` in THIS repo's own tree on every
+      commit, but that test can only ever see the trusted source's file --
+      never a PR head under test, which is exactly the property this
+      instruction depends on.
+
+<!-- DASHBOARD_READY_SCRIPT:BEGIN -->
         (() => {
           const body = document.body;
           if (!body) return false;
@@ -177,6 +190,7 @@ Do NOT fall back to any other browser driver. Do NOT substitute code review.
           if (containers.length === 0) return false;
           return Array.from(containers).some(el => el.children.length > 0);
         })()
+<!-- DASHBOARD_READY_SCRIPT:END -->
 
       Poll every 1-2s until it returns `true`, or 20s elapses. This is
       NOT a fixed sleep-then-screenshot -- it is the specific condition
