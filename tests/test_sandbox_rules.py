@@ -4725,3 +4725,375 @@ class TestD2448NonObjectPayloadIsQuiet:
         )
         assert result.returncode == 0
         assert "not an object" not in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# D#2483 PR-a -- the relative-path dial-registry basename check at
+# _scan_command_segments' segment_text block used to run one unanchored
+# substring search over the WHOLE JOINED segment text for every write-
+# candidate segment, so it fired on a protected basename merely mentioned in
+# prose -- an agent reporting the block by name tripped it, and could not
+# report being blocked by this rule without tripping it again. See the code
+# comment at that site (hooks/sandbox_rules.py) for the full before/after and
+# the positive-control measurement that justified the split below.
+# ---------------------------------------------------------------------------
+
+_D2483_SCRIPT_BASENAME = _DIAL_PROTECTED_SUFFIXES[3]
+_D2483_REGISTRY_BASENAME = _DIAL_PROTECTED_SUFFIXES[0]
+
+
+class TestD2483ProseNotAPathMention:
+    """The three false positives measured against the code plane before this
+    fix, plus the negative control that must not start blocking as a side
+    effect of the rewrite."""
+
+    def test_prose_mention_via_log_rotation_comment_allowed(self) -> None:
+        cmd = (
+            "rotate-team-log.sh comment "
+            '"test: ' + _D2483_SCRIPT_BASENAME + ' named in prose"'
+        )
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is True, f"expected ALLOW, got reason={d.reason!r}"
+
+    def test_prose_mention_via_gh_issue_comment_body_allowed(self) -> None:
+        cmd = 'gh issue comment --body "see ' + _D2483_SCRIPT_BASENAME + '"'
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is True, f"expected ALLOW, got reason={d.reason!r}"
+
+    def test_prose_mention_of_registry_file_via_gh_issue_comment_allowed(self) -> None:
+        cmd = 'gh issue comment --body "' + _D2483_REGISTRY_BASENAME + ' is protected"'
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is True, f"expected ALLOW, got reason={d.reason!r}"
+
+    def test_midword_mention_still_allowed(self) -> None:
+        # Must not start blocking as a side effect of the rewrite -- the word
+        # boundaries in _PROTECTED_BASENAME_RE were never the defect.
+        cmd = 'echo "a' + _D2483_SCRIPT_BASENAME + 'b"'
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is True
+
+
+class TestD2483RealBlocksSurviveTheRewrite:
+    """Re-derived independently of the Discussion's own measurement table
+    (D#2483 Spec item 3): every _DIAL_PROTECTED_SUFFIXES entry, crossed with
+    the SEC-8 spellings (absolute, relative, ./-relative, ~-prefixed,
+    dotdot-relative, glued key=value), still blocks a real write verb after
+    the rewrite."""
+
+    _STATE_DIR = f"{FIXTURE_HOME}/.autonomous-forever-state"
+
+    def _spellings(self, name: str) -> dict[str, str]:
+        return {
+            "absolute": f"{self._STATE_DIR}/{name}",
+            "relative": name,
+            "dot_relative": f"./{name}",
+            "tilde": f"~/.autonomous-forever-state/{name}",
+            "dotdot": f"../../.autonomous-forever-state/{name}",
+            "glued_kv": f"--file={name}",
+        }
+
+    @pytest.mark.parametrize("suffix", list(_DIAL_PROTECTED_SUFFIXES))
+    @pytest.mark.parametrize("verb_template", ["rm -f {p}", "sed -i s/a/b/ {p}"])
+    def test_matrix_still_blocked(self, suffix: str, verb_template: str) -> None:
+        for spelling_name, path in self._spellings(suffix).items():
+            cmd = verb_template.format(p=path)
+            d = classify_bash(cmd, _WT_CLAUDE)
+            assert d.allow is False, (
+                f"expected BLOCK for `{cmd}` ({spelling_name} spelling of "
+                f"{suffix!r}), got allow=True"
+            )
+
+    def test_glued_relative_key_value_blocked(self) -> None:
+        # The one spelling the OLD unconditional substring scan caught that
+        # neither classify_bash step 1d's exact whole-token match nor the
+        # `_WHOLE_TOKEN_PATH_RE` loop below (absolute-only) reach on their
+        # own: a glued flag=value token splits into a flag and a bare
+        # relative value that only a scan of the value half (not the whole
+        # token) can see.
+        cmd = "rm -f --file=" + _D2483_REGISTRY_BASENAME
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False
+        assert _D2483_REGISTRY_BASENAME in d.reason
+
+
+class TestD2483PythonPayloadRelativeBasenameStillBlocked:
+    """The one shape that ONLY the segment_text scan (now scoped to python/
+    python3 segments) can catch: a dial-protected basename spelled relative
+    inside a python -c payload string. `_ABS_PATH_TOKEN_RE`'s deep scan below
+    is absolute-only, and classify_bash step 1d's operand scan compares a
+    WHOLE shell token's basename -- the entire `-c` payload is one token, so
+    it never equals a bare protected filename. Measured: disabling the
+    segment_text scan entirely (for every segment, the D#2483 positive
+    control) turns exactly these shapes red -- 4 tests in
+    TestD1749PathBasedWriteDetection / TestD1749Round4Findings -- nothing
+    else in this suite depends on it."""
+
+    @pytest.mark.parametrize("suffix", list(_DIAL_PROTECTED_SUFFIXES))
+    def test_every_protected_suffix_relative_inside_python_c_blocked(
+        self, suffix: str
+    ) -> None:
+        cmd = "python3 -c \"open('" + suffix + "','a').write('x')\""
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False, f"expected BLOCK for suffix {suffix!r}, got allow=True"
+        assert suffix in d.reason
+
+
+# ---------------------------------------------------------------------------
+# D#2483 PR-171 fix round -- two BASE-BLOCK-to-HEAD-ALLOW regressions the
+# code review measured in the rewrite above, plus the two shapes that must
+# keep working unchanged (D#2541's pre-existing gap, and the prose case this
+# whole Discussion exists to fix).
+# ---------------------------------------------------------------------------
+
+
+class TestD2483PR171CompoundRedirectStillBlocked:
+    """`&>`/`&>>` (bash's stdout+stderr shorthand) used to reach
+    `_classify_unenumerated_write` as a corrupted single-token pseudo-segment
+    (`>audit.jsonl`, `>>audit.jsonl` with the `>`/`>>` glued to the target),
+    because the generic `[;&|]` padding pads the bare `&` away but has no
+    rule for `>`. The exact basename match that replaced the old unanchored
+    substring scan doesn't match a glued `>`-prefixed token, so this
+    regressed from BLOCK to ALLOW. Fixed by normalising `&>`/`&>>` into their
+    padded parts before that generic pass runs."""
+
+    @pytest.mark.parametrize("suffix", list(_DIAL_PROTECTED_SUFFIXES))
+    @pytest.mark.parametrize("operator", ["&>", "&>>"])
+    def test_compound_redirect_blocked(self, suffix: str, operator: str) -> None:
+        cmd = f"echo x {operator}{suffix}"
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+        assert suffix in d.reason
+
+    def test_piped_force_redirect_unaffected(self) -> None:
+        # `>|` must keep blocking (it already did, by a different mechanism
+        # -- the `|` gets padded, leaving a clean single-token segment) --
+        # the fix above must not disturb it.
+        for cmd in (
+            f"echo x >|{_D2483_REGISTRY_BASENAME}",
+            f"echo x >| {_D2483_REGISTRY_BASENAME}",
+        ):
+            d = classify_bash(cmd, _WT_CLAUDE)
+            assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+
+    def test_spaced_plain_redirect_unaffected(self) -> None:
+        cmd = f"echo x > {_D2483_REGISTRY_BASENAME}"
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False
+
+    def test_glued_plain_redirect_still_the_preexisting_d2541_gap(self) -> None:
+        # Not this PR's regression and not this PR's fix -- `>foo` with no
+        # leading `&` is untouched by the `&>`/`&>>` normalisation above.
+        # Documented here so a future change to this gap notices this test.
+        cmd = f"echo x >{_D2483_REGISTRY_BASENAME}"
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is True
+
+
+class TestD2483PR171InterpreterVersionToleranceStillBlocked:
+    """The exact-name frozenset `_PY_INTERPRETER_NAMES` (`{"python3",
+    "python"}`) lost the segment-text write-detection layer for any other
+    real interpreter spelling -- both for the relative-path scan above and
+    for the pre-existing absolute-path deep-scan gate that shares the same
+    gate. `.venv/bin/python3.12` is this repo's own resolved interpreter, so
+    this isn't an exotic spelling. Fixed with `_is_py_interpreter_name()`, a
+    version-suffix-tolerant predicate."""
+
+    @pytest.mark.parametrize("interpreter", ["python3.11", "python3.12", "pypy3", "pypy"])
+    def test_relative_payload_write_blocked(self, interpreter: str) -> None:
+        cmd = interpreter + " -c \"open('" + _D2483_REGISTRY_BASENAME + "','a').write('x')\""
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+        assert _D2483_REGISTRY_BASENAME in d.reason
+
+    @pytest.mark.parametrize("interpreter", ["python3.11", "python3.12", "pypy3"])
+    def test_absolute_payload_write_blocked(self, interpreter: str) -> None:
+        target = f"{FIXTURE_HOME}/.autonomous-forever-state/{_D2483_REGISTRY_BASENAME}"
+        cmd = interpreter + " -c \"open('" + target + "','w').write('x')\""
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+
+    def test_unrelated_name_containing_python_not_matched(self) -> None:
+        # _is_py_interpreter_name() is anchored at both ends -- must not
+        # start matching a name that merely contains "python".
+        assert sandbox_rules._is_py_interpreter_name("python3-config") is False
+        assert sandbox_rules._is_py_interpreter_name("ipython") is False
+        assert sandbox_rules._is_py_interpreter_name("python3") is True
+        assert sandbox_rules._is_py_interpreter_name("python") is True
+
+
+class TestD2483PR171ProseStillNotAPathMention:
+    """Re-confirms the fix round didn't reopen the false positive this whole
+    Discussion exists to close -- run again here, next to the two regression
+    fixes above, rather than trusting distance in the file to prove it."""
+
+    def test_prose_mention_still_allowed(self) -> None:
+        cmd = 'gh issue comment --body "see ' + _D2483_SCRIPT_BASENAME + '"'
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is True, f"expected ALLOW, got reason={d.reason!r}"
+
+
+# ---------------------------------------------------------------------------
+# D#2483 PR-171 fix round 3 -- security re-review found a LARGER regression
+# than the two round-2 fixed: both python-payload checks gated on the
+# segment's COMMAND NAME (effectively argv[0]) rather than on whether the
+# segment carries a python interpreter TOKEN anywhere. Any command-prefix
+# wrapper in front of the interpreter -- including this repo's own standard
+# `timeout --kill-after=5s N <cmd>` bounded-run shape
+# (scripts/preflight-fast.sh, scripts/smoke-test.sh) -- lost the guard
+# entirely. This was a test-coverage gap, not a broken suite: CI stayed
+# green through two rounds because nothing exercised a prefixed form.
+# ---------------------------------------------------------------------------
+
+
+class TestD2483PR171Round3PrefixedInterpreterStillBlocked:
+    """Fixed by `_segment_has_py_interpreter_token()`, which scans every
+    token in the segment for a python/pypy interpreter name instead of just
+    the segment's resolved command name. Covers both python-payload gates:
+    the relative dial-protected-basename scan (site 1) and the absolute-path
+    deep scan (site 2) -- both shared the same broken gate."""
+
+    _PREFIX_TEMPLATES = {
+        "timeout": "timeout 60 {interp}",
+        "timeout_kill_after": "timeout --kill-after=5s 600 {interp}",
+        "nohup": "nohup {interp}",
+        "nohup_env": "nohup env FOO=bar {interp}",
+        "nice": "nice -n 10 {interp}",
+        "stdbuf": "stdbuf -oL {interp}",
+        "xargs": "xargs {interp}",
+        "command": "command {interp}",
+        "env": "env {interp}",
+        "uv_run": "uv run {interp}",
+    }
+
+    @pytest.mark.parametrize("prefix_name", list(_PREFIX_TEMPLATES))
+    def test_relative_payload_write_blocked_through_prefix(
+        self, prefix_name: str
+    ) -> None:
+        template = self._PREFIX_TEMPLATES[prefix_name]
+        cmd = template.format(interp="python3") + (
+            " -c \"open('" + _D2483_REGISTRY_BASENAME + "','a').write('x')\""
+        )
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+        assert _D2483_REGISTRY_BASENAME in d.reason
+
+    @pytest.mark.parametrize("prefix_name", list(_PREFIX_TEMPLATES))
+    def test_absolute_payload_write_blocked_through_prefix(
+        self, prefix_name: str
+    ) -> None:
+        template = self._PREFIX_TEMPLATES[prefix_name]
+        target = f"{FIXTURE_HOME}/.autonomous-forever-state/{_D2483_REGISTRY_BASENAME}"
+        cmd = template.format(interp="python3") + (
+            " -c \"open('" + target + "','w').write('x')\""
+        )
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+
+    def test_own_standard_bounded_run_shape_blocked(self) -> None:
+        # The exact invocation shape this repo's own scripts/preflight-fast.sh
+        # and scripts/smoke-test.sh use -- verbatim, not just its template.
+        cmd = (
+            "timeout --kill-after=5s 600 python3 -c \"open('"
+            + _D2483_REGISTRY_BASENAME
+            + "','a').write('x')\""
+        )
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+
+    def test_prose_mention_through_prefix_still_allowed(self) -> None:
+        # The fix widens WHICH segments get scanned, not what the scan
+        # matches -- a prefixed non-write command must stay allowed.
+        cmd = 'timeout 60 gh issue comment --body "see ' + _D2483_SCRIPT_BASENAME + '"'
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is True, f"expected ALLOW, got reason={d.reason!r}"
+
+
+class TestD2483PR171Round3NonPythonInterpreterKnownGap:
+    """`_segment_has_py_interpreter_token()` is python/pypy-only by
+    construction -- it delegates to `_is_py_interpreter_name()`, the same
+    predicate `_PY_INTERPRETER_NAME_RE` defines. A `perl -e` / `ruby -e` /
+    `node -e` write to a dial-protected file's RELATIVE name is not reached
+    by either python-payload gate, with or without a command-prefix wrapper.
+
+    This is a ROUND-1 regression, not a pre-existing gap: at the merge base
+    all three interpreters were BLOCKED, by the old unconditional substring
+    scan that ran over every write-candidate segment regardless of
+    interpreter. Round 1 of this PR narrowed that scan to python/pypy-only
+    to remove the prose false positive this whole Discussion exists to fix
+    -- perl/ruby/node lost coverage as the accepted cost of that narrowing.
+    Round 3 (this class's namesake) neither caused nor fixed it; it only
+    widened WHICH segments reach the already-narrowed, python-only check.
+    Documented here, the same way D#2541's glued-redirect gap is documented
+    next to its own fix, so a future change to this gate notices the gap
+    rather than silently reopening or silently widening it."""
+
+    @pytest.mark.parametrize(
+        "cmd_template",
+        [
+            "perl -e \"open(F,'>>','{target}'); print F 'x';\"",
+            "ruby -e \"File.write('{target}','x')\"",
+            "node -e \"require('fs').appendFileSync('{target}','x')\"",
+            "timeout 60 perl -e \"open(F,'>>','{target}'); print F 'x';\"",
+        ],
+    )
+    def test_non_python_interpreter_relative_write_not_reached(
+        self, cmd_template: str
+    ) -> None:
+        cmd = cmd_template.format(target=_D2483_REGISTRY_BASENAME)
+        d = classify_bash(cmd, _WT_CLAUDE)
+        # Documenting the known gap, not asserting it is desirable:
+        # `_segment_has_py_interpreter_token()` cannot reach this by
+        # construction -- see the class docstring.
+        assert d.allow is True, (
+            f"known non-python gap closed for `{cmd}` -- if this now blocks, "
+            "update this test and the module comment above "
+            "_segment_has_py_interpreter_token that documents the gap"
+        )
+
+
+# ---------------------------------------------------------------------------
+# D#2483 PR-171 fix round 4 -- code review found that EVERY existing
+# "absolute payload" test above reaches its BLOCK verdict through site 1
+# (the relative-basename scan's unanchored `_PROTECTED_BASENAME_RE.search`
+# over the whole joined segment text), never through site 2 (the
+# absolute-path deep scan `_segment_has_py_interpreter_token()` gates
+# further down). Every one of those tests writes to a
+# `_DIAL_PROTECTED_SUFFIXES` basename, and that basename's literal text
+# sits in the segment whether the write target is spelled relative or
+# absolute -- site 1 fires first and returns before site 2's code ever
+# runs. Measured directly: reverting site 2 alone left the round-3 suite
+# (25 tests) fully green; reverting site 1 alone turned 19 of those 25 red.
+# Site 2's round-3 fix was therefore unproven by this file.
+# ---------------------------------------------------------------------------
+
+
+class TestD2483PR171Round4Site2OnlyReachable:
+    """A write target that is (a) absolute -- a site-2 candidate at all,
+    (b) outside the worktree -- something for site 2's unenumerated-write
+    check to actually block, (c) NOT a `_DIAL_PROTECTED_SUFFIXES` basename
+    -- so site 1's substring scan can't preempt it, and (d) embedded inside
+    a python -c payload rather than spelled as its own shell token -- so
+    the unconditional whole-token absolute-path loop (which runs before
+    either python-gated check) can't catch it either. Only site 2's deep
+    payload scan can reach this: `_segment_has_py_interpreter_token()` ->
+    `_python_c_payload()` -> `_ABS_PATH_TOKEN_RE` ->
+    `_evaluate_unenumerated_candidate()`.
+
+    Directly measured against this exact test: reverting site 2 alone
+    turns it red; reverting site 1 alone leaves it green."""
+
+    def test_absolute_outside_worktree_non_protected_target_reaches_site_2(
+        self,
+    ) -> None:
+        assert "notes.txt" not in _DIAL_PROTECTED_SUFFIXES
+        target = f"{_MAIN_REPO}/scratch-outside-worktree/notes.txt"
+        cmd = "python3 -c \"open('" + target + "','w').write('x')\""
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+        # The discriminating assertion: the reason must be site 2's
+        # unenumerated-write reason, not site 1's dial-registry reason --
+        # confirms site 2's own code path, not site 1, produced this BLOCK.
+        assert sandbox_rules._UNENUMERATED_WRITE_REASON in d.reason, (
+            f"expected site 2's unenumerated-write reason, got {d.reason!r} "
+            "-- this no longer isolates site 2 from site 1"
+        )
