@@ -110,6 +110,18 @@ class TestFindIncompleteBatches:
         _write_metric_rows("42", expected)
         assert ba.find_incomplete_batches() == []
 
+    def test_complete_batch_with_extra_metrics_reports_nothing(self, isolated_db):
+        """A batch that wrote every expected metric plus an unrelated extra
+        one is still complete (superset, not just full match) — the
+        find_incomplete_batches() comment documents this ("complete (or
+        superset, e.g. extra unrelated metrics)") but nothing previously
+        asserted it, so the subset check could regress to an exact-match
+        comparison without any test catching it."""
+        expected = ["time_to_merge_seconds", "fix_cycle_count"]
+        ba.mark_batch_attempt("42", expected)
+        _write_metric_rows("42", [*expected, "some_other_metric_from_a_different_step"])
+        assert ba.find_incomplete_batches() == []
+
     def test_partial_prefix_batch_reported_naming_pr(self, isolated_db):
         """Item 8: a proper-prefix batch is reported, naming the PR."""
         expected = ["time_to_merge_seconds", "fix_cycle_count", "pr_file_conflict_score"]
