@@ -3,9 +3,9 @@
 # its own port, for browser-testing (D#2549).
 #
 # THE BUG THIS FIXES: the long-running vite on 5173 serves the shared
-# checkout at /home/jp/fulcrumaxe/dashboard — main, always — not any PR's
-# code. Every browser-tester screenshot of 5173 was a screenshot of main
-# (measured, D#2549). This script materializes the PR's actual head into a
+# checkout's dashboard/ directory — main, always — not any PR's code. Every
+# browser-tester screenshot of 5173 was a screenshot of main (measured,
+# D#2549). This script materializes the PR's actual head into a
 # private scratch tree and starts a SEPARATE vite instance on a free port
 # against it. It never binds, kills, or restarts anything already running:
 # 5173 and the three backend services (api/rpc/sse) are left exactly as they
