@@ -1068,6 +1068,7 @@ PYEOF
 import sys, os
 sys.path.insert(0, "$REPO_ROOT/backend")
 from stats_writer import record_many
+from stats.batch_attempt import mark_batch_attempt
 import datetime
 
 pr = "$PR"
@@ -1148,6 +1149,17 @@ if cost_source_str == "agent_run":
     rows.append({"metric": "cost_per_merged_pr_usd", "value": cost_usd, "unit": "usd", "tags": cost_tags, "source": "post-merge-hook"})
 else:
     rows.append({"metric": "cost_attribution_unresolved_count", "value": 1.0, "unit": "count", "tags": cost_tags, "source": "post-merge-hook"})
+
+# Batch-attempt marker (D#2524 PR-b): written via its own short, separately
+# retried connection BEFORE record_many(), so it survives record_many()
+# raising later in this same invocation. This is what lets a merge with
+# zero metric_event rows be told apart from a merge whose stats step never
+# ran at all — see backend/stats/batch_attempt.py. A marker-write failure
+# is logged but never aborts the actual metrics write below.
+try:
+    mark_batch_attempt(pr, [r["metric"] for r in rows], source="post-merge-hook")
+except Exception as _mark_exc:
+    print(f"[post-merge-hook] WARNING: batch-attempt marker write failed: {_mark_exc}")
 
 record_many(rows)
 
