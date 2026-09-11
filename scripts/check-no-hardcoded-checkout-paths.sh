@@ -8,13 +8,33 @@
 # Deliberately does not spell out the two example paths from that bug inline —
 # they'd match this file's own PATTERN below and self-flag on every run.
 #
-# What a green result establishes (D#2018): it certifies the absence of
-# literal checkout-path substrings of the derived shapes below — the exact
-# resolved checkout path, and a home/Users/root path ending in this repo's
-# basename — from the tracked tree; it does NOT certify the absence of
-# hardcoded paths in general (string-built, split-across-lines, or
-# otherwise adversarially disguised paths are out of scope — see
-# CLAUDE.md's "hooks/ is a Guardrail, Not a Security Boundary").
+# What a green result establishes (D#2018, widened by D#2017/D#2040): it
+# certifies the absence of literal checkout-path substrings of the derived
+# shapes below — the exact resolved checkout path; a home/Users/root path
+# ending in this repo's basename, either immediately or nested one level
+# under a literal "work/" segment (catches the real GitHub Actions layout,
+# /home/runner/work/<repo>/<repo>/...); and the slug-mangled equivalent of
+# both (Claude Code's own project-directory encoding, "/" replaced with
+# "-" throughout the absolute path — deliberately not spelled out as a
+# worked example here for the same self-flagging reason as the rest of
+# this header) — from the tracked tree. It does NOT certify the absence
+# of hardcoded paths in general. Known residual gaps, stated so a green
+# run doesn't imply more than it does:
+#   - String-built, split-across-lines, or otherwise adversarially
+#     disguised paths (see CLAUDE.md's "hooks/ is a Guardrail, Not a
+#     Security Boundary" — this guard is not a security boundary either).
+#   - A checkout whose directory name differs from the repo's canonical
+#     basename (rename, symlink, alternate clone) is not detectable by the
+#     basename-keyed components above — both key on PATTERN_BASENAME by
+#     construction, and there is no repo-identity signal weaker than that
+#     to key on instead. The exact-resolved-root component still catches a
+#     literal naming THIS checkout's own path regardless of its basename;
+#     a literal naming a DIFFERENT, differently-named checkout is out of
+#     scope (D#2040).
+#   - A username containing a literal "-" is indistinguishable from a
+#     slug-mangled path separator in the mangled-form components — an
+#     accidental, not adversarial, blind spot in the same spirit as the
+#     one above.
 #
 # Lives under scripts/, not tests/ (D#1877 review round 2): scripts/lib/
 # preflight-common.sh calls this as a wired-in gate, and scripts/ is what
@@ -115,6 +135,22 @@ fi
 # second variable for the same purpose.
 source "$(dirname "${BASH_SOURCE[0]}")/lib/repo-root-resolve.sh"
 PATTERN_ROOT="$(_resolve_main_repo_root)"
+
+# D#2040 item 4: _resolve_main_repo_root() returning empty is not reachable
+# through its documented contract, but if it ever did, an empty PATTERN_ROOT
+# collapses the union below to a leading empty alternative — and how THAT
+# behaves is grep-implementation-dependent (observed: ugrep matches every
+# line of every file; GNU grep's behaviour on the same pattern is expected
+# to match, by POSIX ERE semantics, though unverified on this host — see the
+# PR body for which grep implementations were actually run). Neither is the
+# named, single failure a broken resolver deserves. Fail loudly and by name
+# instead of inheriting whichever flavor of wrong a given host's grep
+# produces.
+if [ -z "$PATTERN_ROOT" ]; then
+  echo "FAIL: _resolve_main_repo_root() returned an empty checkout root — cannot build a checkout-path pattern without one" >&2
+  exit 1
+fi
+
 PATTERN_BASENAME="$(basename "$PATTERN_ROOT")"
 
 # ERE-escape a literal string for safe embedding in $PATTERN below — a
@@ -128,22 +164,49 @@ _escape_ere() {
 _PATTERN_ROOT_ESC="$(_escape_ere "$PATTERN_ROOT")"
 _PATTERN_BASENAME_ESC="$(_escape_ere "$PATTERN_BASENAME")"
 
-# Two components, unioned:
+# Three components, unioned:
 #   1. The exact resolved checkout path — catches it on any host, any
 #      layout, including a checkout not under a home directory at all.
 #   2. A home-directory-shaped path keyed on THIS repo's basename, under
 #      ANY username: /home/<user>/<basename>, /Users/<user>/<basename>
 #      (macOS), /root/<basename>. This is what generalises coverage past
 #      "agent" and "jp" to an arbitrary third username, a CI runner's
-#      home, or a Mac — the whole point of D#2018 — while still refusing
-#      to fire on every unrelated "/home/*" mention in the tree (a plain
-#      "/home/[^/]+/" catch-all would be far too broad to be useful).
+#      home, or a Mac (D#2018), *and* past "immediately after the
+#      username" to the real GitHub Actions default layout,
+#      /home/runner/work/<repo>/<repo>/... (D#2040), by also allowing one
+#      specific, named intervening segment — "work/", the literal
+#      directory name the Actions runner nests every checkout under, not
+#      an arbitrary one. A fully general "any number of intervening
+#      segments" form was tried first and reverted: it also matched a
+#      legitimate synthetic fixture elsewhere in the tree that is
+#      deliberately shaped like a local-clone path one level deeper than
+#      this repo's basename, planted on purpose to exercise a different
+#      code path's fallback behaviour — which is exactly the over-blocking
+#      failure D#2040 itself names as the one that matters more than a
+#      residual miss (see the PR body for the specific file/line; not
+#      spelled out here for the same self-flagging reason as the rest of
+#      this header). Still refuses to fire on every unrelated "/home/*"
+#      mention in the tree, because the basename must still appear as a
+#      full path segment, not a substring.
+#   3. The slug-mangled equivalent of both of the above (D#2017): Claude
+#      Code's own project-directory encoding for a transcript path replaces
+#      every "/" in the absolute checkout path with "-" (deliberately not
+#      spelled out as a worked example here — same self-flagging reason as
+#      the rest of this header). Components 1 and 2 both key on "/" as a
+#      separator, so this form evaded them entirely — found live at
+#      backend/tests/fixtures/prompt_golden_executor.txt:335. Same
+#      construction as component 2, mangled: the exact root mangled, plus a
+#      home-shaped generalisation for an arbitrary username, with the same
+#      "work" segment allowance.
 # Guarded against an empty basename (e.g. a checkout at the filesystem
-# root) making the second component "/home/[^/]+/" — that would match
-# almost anything.
-PATTERN="$_PATTERN_ROOT_ESC"
+# root) making the second/third components "/home/[^/]+/(work/)?" or
+# "-home-[^-]+-(work-)?" — that would match almost anything.
+_PATTERN_ROOT_SLUG_ESC="$(_escape_ere "${PATTERN_ROOT//\//-}")"
+
+PATTERN="${_PATTERN_ROOT_ESC}|${_PATTERN_ROOT_SLUG_ESC}"
 if [ -n "$_PATTERN_BASENAME_ESC" ]; then
-  PATTERN="${PATTERN}|/home/[^/]+/${_PATTERN_BASENAME_ESC}|/Users/[^/]+/${_PATTERN_BASENAME_ESC}|/root/${_PATTERN_BASENAME_ESC}"
+  PATTERN="${PATTERN}|/home/[^/]+/(work/)?${_PATTERN_BASENAME_ESC}|/Users/[^/]+/(work/)?${_PATTERN_BASENAME_ESC}|/root/(work/)?${_PATTERN_BASENAME_ESC}"
+  PATTERN="${PATTERN}|-home-[^-]+-(work-)?${_PATTERN_BASENAME_ESC}|-Users-[^-]+-(work-)?${_PATTERN_BASENAME_ESC}|-root-(work-)?${_PATTERN_BASENAME_ESC}"
 fi
 
 FAIL=0

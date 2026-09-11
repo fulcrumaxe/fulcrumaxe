@@ -108,6 +108,22 @@ new_fixture() {
   echo "$dir"
 }
 
+# new_fixture_basename <basename> — like new_fixture, but pins the fixture's
+# own checkout directory to a caller-chosen basename instead of the suite's
+# default "checkout" pin. D#2017's exact reproduction literal
+# ("-home-agent-autonomous-forever") names a checkout basename
+# ("autonomous-forever") that isn't "checkout", so that one test needs its
+# own basename rather than sharing new_fixture's.
+new_fixture_basename() {
+  local base="$1" dir
+  dir="$(mktemp -d)/$base"
+  mkdir -p "$dir/$(dirname "$CHECK_REL")/lib" "$dir/$(dirname "$ALLOWLIST_REL")"
+  cp "$CHECK_SRC" "$dir/$CHECK_REL"
+  chmod u+w "$dir/$CHECK_REL"  # D#2384 — see new_fixture()'s comment above
+  cp "$REPO_ROOT/scripts/lib/repo-root-resolve.sh" "$dir/scripts/lib/repo-root-resolve.sh"
+  echo "$dir"
+}
+
 write_allowlist() {
   # write_allowlist <dir> <content>
   printf '%s\n' "$2" > "$1/$ALLOWLIST_REL"
@@ -762,9 +778,12 @@ mutate8_script="$(mktemp)"
 cat > "$mutate8_script" <<'PYEOF'
 import sys
 src = open(sys.argv[1]).read()
-old = '''PATTERN="$_PATTERN_ROOT_ESC"
+old = '''_PATTERN_ROOT_SLUG_ESC="$(_escape_ere "${PATTERN_ROOT//\//-}")"
+
+PATTERN="${_PATTERN_ROOT_ESC}|${_PATTERN_ROOT_SLUG_ESC}"
 if [ -n "$_PATTERN_BASENAME_ESC" ]; then
-  PATTERN="${PATTERN}|/home/[^/]+/${_PATTERN_BASENAME_ESC}|/Users/[^/]+/${_PATTERN_BASENAME_ESC}|/root/${_PATTERN_BASENAME_ESC}"
+  PATTERN="${PATTERN}|/home/[^/]+/(work/)?${_PATTERN_BASENAME_ESC}|/Users/[^/]+/(work/)?${_PATTERN_BASENAME_ESC}|/root/(work/)?${_PATTERN_BASENAME_ESC}"
+  PATTERN="${PATTERN}|-home-[^-]+-(work-)?${_PATTERN_BASENAME_ESC}|-Users-[^-]+-(work-)?${_PATTERN_BASENAME_ESC}|-root-(work-)?${_PATTERN_BASENAME_ESC}"
 fi'''
 new = "PATTERN='/home/(agent|jp)'"
 assert old in src, "mutation 8 target block not found"
@@ -811,6 +830,187 @@ else
 fi
 rm -rf "$d"
 rm -f "$mutate8_script"
+
+echo ""
+echo "=== Slug-mangled checkout paths (D#2017) ==="
+# Claude Code's own project-directory encoding for a transcript path
+# replaces every "/" in the absolute checkout path with "-", so
+# "/home/agent/autonomous-forever" becomes "-home-agent-autonomous-forever".
+# Both existing pattern components key on "/" as a separator, so the
+# mangled form evaded the guard entirely — found live at
+# backend/tests/fixtures/prompt_golden_executor.txt:335.
+
+# --- The exact reproduction literal from the Discussion, under a fixture
+#     whose own basename is "autonomous-forever" (not the suite's usual
+#     "checkout" pin) so PATTERN_BASENAME matches it. ---
+d="$(new_fixture_basename "autonomous-forever")"
+write_allowlist "$d" "# nothing allowlisted"
+printf 'TRANSCRIPT_DIR="$HOME/.claude/projects/-home-agent-autonomous-forever"\n' > "$d/app.sh"
+init_repo "$d"
+run_check "$d"
+if [[ "$RC" -eq 1 ]] && echo "$OUT" | grep -q "app.sh:1 contains a hardcoded checkout path"; then
+  pass "slug-mangled checkout path (-home-agent-autonomous-forever) is caught"
+else
+  fail "slug-mangled checkout path should have been caught (rc=$RC $OUT)"
+fi
+rm -rf "$d"
+
+# --- Arbitrary-username coverage in slug form, on the suite's default
+#     "checkout" basename — mirrors the D#2018 path-form coverage above. ---
+d="$(new_fixture)"
+write_allowlist "$d" "# nothing allowlisted"
+printf 'GLOB="-home-thirduser-checkout"\n' > "$d/app.sh"
+init_repo "$d"
+run_check "$d"
+if [[ "$RC" -eq 1 ]] && echo "$OUT" | grep -q "app.sh:1 contains a hardcoded checkout path"; then
+  pass "slug-mangled arbitrary-username checkout path (-home-thirduser-checkout) is caught"
+else
+  fail "slug-mangled arbitrary-username checkout path should have been caught (rc=$RC $OUT)"
+fi
+rm -rf "$d"
+
+# --- Unrelated hyphenated prose that merely resembles the shape must NOT
+#     flag — D#2017's own explicit negative example for the equivalent
+#     python-side pattern. ---
+d="$(new_fixture)"
+write_allowlist "$d" "# nothing allowlisted"
+printf 'echo "installing home-brew-agent now"\n' > "$d/app.sh"
+init_repo "$d"
+run_check "$d"
+if [[ "$RC" -eq 0 ]]; then
+  pass "unrelated hyphenated prose (home-brew-agent) is not flagged"
+else
+  fail "unrelated hyphenated prose should not be flagged ($OUT)"
+fi
+rm -rf "$d"
+
+echo ""
+echo "=== Mutation testing: slug-form coverage removed ==="
+# --- Mutation 9: strip the slug-mangled PATTERN components. The
+#     reproduction fixture above (FAILs on the real check) must now
+#     false-PASS on the mutant, proving the new coverage is load-bearing. ---
+mutate9_script="$(mktemp)"
+cat > "$mutate9_script" <<'PYEOF'
+import sys
+src = open(sys.argv[1]).read()
+old = '''_PATTERN_ROOT_SLUG_ESC="$(_escape_ere "${PATTERN_ROOT//\\//-}")"
+
+PATTERN="${_PATTERN_ROOT_ESC}|${_PATTERN_ROOT_SLUG_ESC}"
+if [ -n "$_PATTERN_BASENAME_ESC" ]; then
+  PATTERN="${PATTERN}|/home/[^/]+/(work/)?${_PATTERN_BASENAME_ESC}|/Users/[^/]+/(work/)?${_PATTERN_BASENAME_ESC}|/root/(work/)?${_PATTERN_BASENAME_ESC}"
+  PATTERN="${PATTERN}|-home-[^-]+-(work-)?${_PATTERN_BASENAME_ESC}|-Users-[^-]+-(work-)?${_PATTERN_BASENAME_ESC}|-root-(work-)?${_PATTERN_BASENAME_ESC}"
+fi'''
+new = '''PATTERN="${_PATTERN_ROOT_ESC}"
+if [ -n "$_PATTERN_BASENAME_ESC" ]; then
+  PATTERN="${PATTERN}|/home/[^/]+/(work/)?${_PATTERN_BASENAME_ESC}|/Users/[^/]+/(work/)?${_PATTERN_BASENAME_ESC}|/root/(work/)?${_PATTERN_BASENAME_ESC}"
+fi'''
+assert old in src, "mutation 9 target block not found"
+src = src.replace(old, new, 1)
+open(sys.argv[2], "w").write(src)
+PYEOF
+
+d="$(new_fixture_basename "autonomous-forever")"
+write_allowlist "$d" "# nothing allowlisted"
+printf 'TRANSCRIPT_DIR="$HOME/.claude/projects/-home-agent-autonomous-forever"\n' > "$d/app.sh"
+init_repo "$d"
+mutate_check_py "$d" "$mutate9_script"
+run_check "$d"
+if [[ "$RC" -eq 0 ]]; then
+  pass "mutant 9: removing slug-form pattern coverage false-passes the reproduction fixture"
+else
+  fail "mutant 9 should have false-passed without slug-form coverage ($OUT)"
+fi
+rm -rf "$d"
+rm -f "$mutate9_script"
+
+echo ""
+echo "=== Real GitHub Actions checkout layout (D#2040) ==="
+# The default Actions runner layout nests the repo one level deeper than
+# the old pattern's "basename immediately after /home/<user>/" required:
+# /home/runner/work/<repo>/<repo>/... . Byte-exact "/home/runner/work/"
+# per acceptance item 2, not a simplified stand-in.
+d="$(new_fixture)"
+write_allowlist "$d" "# nothing allowlisted"
+printf 'CHECKOUT = "/home/runner/work/checkout/checkout/backend/x.py"\n' > "$d/app.py"
+init_repo "$d"
+run_check "$d"
+if [[ "$RC" -eq 1 ]] && echo "$OUT" | grep -q "app.py:1 contains a hardcoded checkout path"; then
+  pass "real GitHub Actions checkout layout (/home/runner/work/<repo>/<repo>/...) is caught"
+else
+  fail "real GitHub Actions checkout layout should have been caught (rc=$RC $OUT)"
+fi
+rm -rf "$d"
+
+# --- A correct in-repo relative path must NOT flag — the fourth row of
+#     D#2040's four-shape table, and the one that actually proves the
+#     widened pattern isn't simply matching everything. ---
+d="$(new_fixture)"
+write_allowlist "$d" "# nothing allowlisted"
+printf 'IMPORT_PATH = "backend/x.py"\n' > "$d/app.py"
+init_repo "$d"
+run_check "$d"
+if [[ "$RC" -eq 0 ]]; then
+  pass "correct in-repo relative path (backend/x.py) is not flagged"
+else
+  fail "correct in-repo relative path should not be flagged ($OUT)"
+fi
+rm -rf "$d"
+
+echo ""
+echo "=== Mismatched-basename checkout (D#2040 — documented limitation) ==="
+# A checkout whose directory name differs from the repo's canonical name
+# can't be told apart from an unrelated directory by a basename-keyed
+# pattern component — both home-rooted components key on PATTERN_BASENAME
+# by construction, so this case is not fixable by widening them further
+# (see the PR body / header comment for why). What IS still caught is a
+# literal naming the checkout's own EXACT resolved path — the guard's
+# first pattern component, independent of basename entirely. This fixture
+# proves that holds even when the checkout's directory name looks nothing
+# like a repo name.
+parent="$(mktemp -d)"
+d="$parent/clone_2_totally_renamed"
+mkdir -p "$d/$(dirname "$CHECK_REL")/lib" "$d/$(dirname "$ALLOWLIST_REL")"
+cp "$CHECK_SRC" "$d/$CHECK_REL"
+cp "$REPO_ROOT/scripts/lib/repo-root-resolve.sh" "$d/scripts/lib/repo-root-resolve.sh"
+write_allowlist "$d" "# nothing allowlisted"
+printf 'PATH_LITERAL = "%s/backend/x.py"\n' "$d" > "$d/app.py"
+init_repo "$d"
+run_check "$d"
+if [[ "$RC" -eq 1 ]] && echo "$OUT" | grep -q "app.py:1 contains a hardcoded checkout path"; then
+  pass "exact-resolved-root component still catches a literal under a mismatched basename"
+else
+  fail "exact-resolved-root component should still catch a mismatched-basename literal (rc=$RC $OUT)"
+fi
+rm -rf "$parent"
+
+echo ""
+echo "=== Empty-resolver guard (D#2040 item 4) ==="
+# _resolve_main_repo_root() can't be made to return empty through its
+# documented contract, so this stubs the check's OWN copy of PATTERN_ROOT
+# the same way the mutation-testing blocks above stub other behaviour —
+# forcing exactly the shape the guard must fail loudly on instead of
+# inheriting whichever of "matches everything" (GNU grep) or "errors"
+# (ugrep) an empty ERE alternative happens to produce on a given host.
+d="$(new_fixture)"
+write_allowlist "$d" "# nothing allowlisted"
+printf 'no path literals here\n' > "$d/app.txt"
+init_repo "$d"
+cat > "$d/mutate_empty_root.py" <<'PYEOF'
+import sys
+src = open(sys.argv[1]).read()
+old = 'PATTERN_ROOT="$(_resolve_main_repo_root)"'
+assert old in src, "empty-resolver mutation target line not found"
+src = src.replace(old, 'PATTERN_ROOT=""', 1)
+open(sys.argv[2], "w").write(src)
+PYEOF
+mutate_check_py "$d" "$d/mutate_empty_root.py"
+run_check "$d"
+if [[ "$RC" -ne 0 ]] && echo "$OUT" | grep -q "_resolve_main_repo_root"; then
+  pass "empty PATTERN_ROOT (resolver returning empty) hard-fails naming the resolver"
+else
+  fail "empty PATTERN_ROOT should hard-fail naming _resolve_main_repo_root (rc=$RC $OUT)"
+fi
+rm -rf "$d"
 
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="
