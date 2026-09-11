@@ -1,0 +1,45 @@
+# open-source/IDENTIFIER-RULES.txt — code-plane forbidden-identifier list.
+#
+# Drives scripts/check-forbidden-identifiers.sh, the pre-push scan wired
+# into run_always_gates() (scripts/lib/preflight-common.sh).
+#
+# This file is scoped to the code plane on purpose. It is NOT a copy of the
+# private engine repo's fuller rules file: that file's own prose documents
+# in detail which strings are forbidden and why, which is exactly the kind
+# of thing this repo should not publish about itself. This file carries
+# only the bare patterns the public plane needs to enforce, with no
+# elaboration.
+#
+# Format matches what scripts/check-forbidden-identifiers.sh parses:
+# === SECTION_START === / === SECTION_END === blocks, `#`-comments and
+# blank lines ignored inside a block, {TOKEN} filled from IDENTITIES.
+#
+# D#2492: this file did not exist here before — the guard silently
+# self-skipped on its own absence and reported green.
+#
+# No IDENTITIES block, and there deliberately never will be one here.
+# scripts/ci/repo-target-gate.sh treats open-source/ existing as its
+# tree-shape signal, then reads an OLD_OWNER key out of this file — but that
+# key IS the private engine owner's name, and writing it into a file this
+# repo publishes would disclose the exact identifier that gate exists to
+# keep off the code plane. A published rules file structurally cannot carry
+# it without defeating its own purpose. repo-target-gate.sh distinguishes
+# this case — no IDENTITIES block at all — from a broken one (block present,
+# OLD_OWNER missing or empty) and treats only the latter as rot; this file's
+# shape is a documented non-enforcement decision, not the pre-D#2492 silent
+# skip. See that script's own comments at the tree-shape check for the
+# up-to-date mechanics. Separately, and unrelated to this file: that script
+# has a pre-existing stale-ALLOWLIST-entry defect, named as a follow-up in
+# the PR description rather than bundled here.
+
+=== FORBIDDEN_PATTERNS_START ===
+john[p]roblems
+[Jj][Pp][Oo][Ss]
+claw[c]ode
+=== FORBIDDEN_PATTERNS_END ===
+
+=== PREPUSH_EXEMPT_START ===
+=== PREPUSH_EXEMPT_END ===
+
+=== ALLOWLIST_START ===
+=== ALLOWLIST_END ===

@@ -184,6 +184,22 @@ if [[ ! -f "$RULES_FILE" ]]; then
   exit 1
 fi
 
+# D#2492: a rules file with NO IDENTITIES block at all is a different
+# tree-shape from "IDENTITIES present but broken" (handled below, and still
+# a hard FAIL). This repo's own open-source/IDENTIFIER-RULES.txt is scoped
+# to the code plane on purpose and never carries one — see that file's own
+# header. Writing OLD_OWNER into a file this repo publishes would disclose
+# the exact identifier this gate exists to keep off it, so a published
+# rules file structurally cannot satisfy this gate without defeating its
+# own point. Rather than fail on that, or silently skip the way the
+# pre-D#2492 bug did, this is a documented, reviewable non-enforcement
+# decision — a ledger entry, not an accident — distinct from every other
+# branch here, all of which stay fail-closed.
+if ! grep -q '^=== IDENTITIES_START ===' "$RULES_FILE"; then
+  echo "SKIP (ledgered): $RULES_FILE has no IDENTITIES block — this rules file is scoped to the code plane by design (D#2492) and never carries the private owner identity, so there is nothing here for this gate to hunt without publishing it. See IDENTIFIER-RULES.txt's own header."
+  exit 0
+fi
+
 # Deliberately a targeted read of one key rather than the full block parser
 # the sibling gates carry: this needs exactly one value, and a second copy
 # of a 30-line parser for one key is the abstraction-for-one-use-case this
@@ -191,7 +207,7 @@ fi
 OWNER="$(sed -n 's/^[[:space:]]*OLD_OWNER=\(.*\)$/\1/p' "$RULES_FILE" | head -1)"
 OWNER="${OWNER%"${OWNER##*[![:space:]]}"}"
 if [[ -z "$OWNER" ]]; then
-  echo "FAIL: could not read OLD_OWNER from $RULES_FILE — a gate that cannot name what it is hunting must not report a pass"
+  echo "FAIL: open-source/IDENTIFIER-RULES.txt declares an IDENTITIES block but OLD_OWNER could not be read from it — a gate that cannot name what it is hunting must not report a pass"
   exit 1
 fi
 

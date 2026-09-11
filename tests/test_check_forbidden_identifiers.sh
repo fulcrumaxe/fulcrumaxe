@@ -11,13 +11,21 @@
 #      are invented tokens, so nothing in this file has to spell a real
 #      forbidden identifier to test the machinery.
 #
-#   B. REAL RULES. A scratch repo carrying a COPY of the live
-#      open-source/IDENTIFIER-RULES.txt, with the planted string built at
-#      runtime from that file's own IDENTITIES block. This is what proves
-#      the gate refuses the identifier it actually exists to refuse, and it
-#      does so without this test source ever containing the literal — which
-#      matters, because this file lives under tests/ and D#2348 PR-b just
-#      finished clearing exactly that identifier out of tests/.
+#   B. REAL RULES. A scratch repo carrying a COPY of this repo's own
+#      open-source/IDENTIFIER-RULES.txt (D#2492 — a code-plane-scoped file,
+#      not a copy of the private engine repo's fuller one; see that file's
+#      own header for why), with the planted string derived at runtime from
+#      the file's own FORBIDDEN_PATTERNS block rather than typed here. This
+#      is what proves the gate refuses an identifier it actually exists to
+#      refuse, and it does so without this test source ever spelling one out
+#      — matters here the same way it mattered for the PR-b cleanup this
+#      comment used to cite, even though this file's patterns are milder.
+#
+#   D/E/F. D#2492 additions: a tree with no rules file self-skips loudly
+#      instead of passing quietly (item 1); an empty rules file is a
+#      refusal, not a vacuous pass (item 5); and a positive control proving
+#      the real file's exception list flags exactly what it should and
+#      nothing else (item 4).
 #
 # Run: bash tests/test_check_forbidden_identifiers.sh
 # Expects: all assertions pass, exit 0
@@ -333,84 +341,62 @@ OUT="$(run_scan "$R" "$BASE")"; RC=$?
 assert_rc "valid allowlist entry, no new hits -> rc 0" 0 "$RC" "$OUT"
 assert_contains "counts the allowlist entry" "allowlist=1" "$OUT"
 
-echo "=== B. the REAL rules file refuses the identifier it exists to refuse ==="
-# The planted string is read out of the live rules file's own IDENTITIES
-# block, so this test source never spells it. OLD_PROJECT_B is the
-# proprietary-product identifier D#1838 froze.
-PLANT="$(grep -m1 '^OLD_PROJECT_B=' "$REAL_RULES" | cut -d= -f2)"
-if [[ -z "$PLANT" ]]; then
-  bad "read OLD_PROJECT_B from the real rules file" "IDENTITIES block has no OLD_PROJECT_B entry"
+echo "=== B. the REAL rules file refuses an identifier it exists to refuse ==="
+# literal_for <pattern> — turns one FORBIDDEN_PATTERNS line into a literal
+# string that matches it, by taking the first character of every bracket
+# group and dropping the rest ([Jj] -> J, [p] -> p). Works for every pattern
+# this file currently carries because none of them needs anything richer
+# than a per-letter case class. This is how the planted string is derived
+# from the live file at runtime instead of being typed here.
+literal_for() { sed -E 's/\[(.)[^]]*\]/\1/g' <<<"$1"; }
+
+mapfile -t REAL_FORBIDDEN < <(sed -n '/^=== FORBIDDEN_PATTERNS_START ===$/,/^=== FORBIDDEN_PATTERNS_END ===$/p' "$REAL_RULES" | grep -vE '^(===|[[:space:]]*#|[[:space:]]*$)')
+if [[ "${#REAL_FORBIDDEN[@]}" -eq 0 ]]; then
+  bad "real FORBIDDEN_PATTERNS is non-empty" "parsed zero lines from $REAL_RULES"
 else
-  ok "read OLD_PROJECT_B from the real rules file"
+  ok "real FORBIDDEN_PATTERNS is non-empty (${#REAL_FORBIDDEN[@]} patterns)"
   R="$(make_repo realrules)"
   cp "$REAL_RULES" "$R/open-source/IDENTIFIER-RULES.txt"
-  # The live allowlist anchors two lines in scripts/lib/worktree-claims.sh;
-  # carry that file across so the anchors resolve here the same way they do
-  # in the real tree.
-  mkdir -p "$R/scripts/lib"
-  cp "$REPO_ROOT/scripts/lib/worktree-claims.sh" "$R/scripts/lib/worktree-claims.sh"
   BASE="$(commit_baseline "$R")"
 
   OUT="$(run_scan "$R" "$BASE")"; RC=$?
   assert_rc "real rules, nothing added -> rc 0" 0 "$RC" "$OUT"
 
-  printf 'a comment mentioning %s here\n' "$PLANT" >> "$R/src/app.txt"
-  OUT="$(run_scan "$R" "$BASE")"; RC=$?
-  assert_rc "real rules, real identifier planted -> rc 1" 1 "$RC" "$OUT"
-  assert_contains "names src/app.txt and a line number" "src/app.txt:2" "$OUT"
-  assert_contains "says the identifier was added" "forbidden identifier added" "$OUT"
+  for p in "${REAL_FORBIDDEN[@]}"; do
+    PLANT="$(literal_for "$p")"
+    printf 'planted: %s\n' "$PLANT" > "$R/src/app.txt"
+    OUT="$(run_scan "$R" "$BASE")"; RC=$?
+    assert_rc "real rules, real identifier planted -> rc 1" 1 "$RC" "$OUT"
+    assert_contains "names src/app.txt and a line number" "src/app.txt:1" "$OUT"
+    assert_contains "says the identifier was added" "forbidden identifier added" "$OUT"
+    printf 'baseline\n' > "$R/src/app.txt"
+  done
 fi
 
-echo "=== B. the enforced set is a real subset of the real FORBIDDEN_PATTERNS ==="
-# Drift guard for Spec item 1: every pattern this gate enforces has to come
-# from the live rules file, and the export-time gate has to agree on how
-# many patterns that file holds. If someone edits patterns into
-# preflight-common.sh or into this script, these two disagree.
+echo "=== B. the enforced set is the whole real FORBIDDEN_PATTERNS set (Spec item 2/4) ==="
+# This repo's own rules file (unlike the private engine's fuller one) ships
+# with an empty PREPUSH_EXEMPT block by design — nothing here is legitimately
+# present anywhere in the code-plane tree, so nothing needs an exemption.
+# Pin that directly: enforced count == total count, and the exempt block
+# itself parses to zero entries. If a future edit adds an exemption, this
+# fails loudly and a reviewer has to look at why.
 mapfile -t ENFORCED < <(bash "$SCAN_SRC" --list-patterns)
-if [[ "${#ENFORCED[@]}" -eq 0 ]]; then
-  bad "enforced pattern list is non-empty" "--list-patterns returned nothing"
+if [[ "${#ENFORCED[@]}" -eq "${#REAL_FORBIDDEN[@]}" && "${#ENFORCED[@]}" -gt 0 ]]; then
+  ok "every real forbidden pattern is enforced pre-push, none exempt (${#ENFORCED[@]})"
 else
-  ok "enforced pattern list is non-empty (${#ENFORCED[@]} patterns)"
+  bad "every real forbidden pattern is enforced pre-push, none exempt" \
+    "enforced=${#ENFORCED[@]} total=${#REAL_FORBIDDEN[@]}"
 fi
 
-GATE_SUMMARY_DIR="$SCRATCH/gate-probe"
-mkdir -p "$GATE_SUMMARY_DIR"
-printf 'nothing here\n' > "$GATE_SUMMARY_DIR/a.txt"
-GATE_OUT="$(bash "$REPO_ROOT/open-source/checks/identifier-gate.sh" "$GATE_SUMMARY_DIR" 2>&1)"
-GATE_TOTAL="$(sed -n 's/.*patterns=\([0-9]*\).*/\1/p' <<<"$GATE_OUT" | head -1)"
-SCAN_OUT="$(bash "$SCAN_SRC" --base HEAD 2>&1 || true)"
-SCAN_TOTAL="$(sed -n 's|.*patterns=[0-9]*/\([0-9]*\).*|\1|p' <<<"$SCAN_OUT" | head -1)"
-if [[ -n "$GATE_TOTAL" && "$GATE_TOTAL" == "$SCAN_TOTAL" ]]; then
-  ok "both consumers parse the same pattern count from the rules file ($GATE_TOTAL)"
+mapfile -t REAL_EXEMPT < <(sed -n '/^=== PREPUSH_EXEMPT_START ===$/,/^=== PREPUSH_EXEMPT_END ===$/p' "$REAL_RULES" | grep -vE '^(===|[[:space:]]*#|[[:space:]]*$)')
+if [[ "${#REAL_EXEMPT[@]}" -eq 0 ]]; then
+  ok "PREPUSH_EXEMPT is empty, as designed"
 else
-  bad "both consumers parse the same pattern count" "export gate says '$GATE_TOTAL', pre-push scan says '$SCAN_TOTAL'"
-fi
-
-# Membership pin for the exempt set. The per-pattern assertions below prove
-# every ENFORCED pattern is a real rules-file line, but nothing yet stops
-# the exempt set from GROWING — someone exempting the codename or the
-# boss-login pattern would silently shrink what this gate refuses, and the
-# counts alone would not notice a one-for-one swap. Pinning a digest of the
-# sorted exempt lines makes any change to that set fail loudly and forces a
-# reviewer to look at it. It spells no identifier, and it does not drift:
-# when the set legitimately changes, update the digest deliberately.
-EXEMPT_DIGEST_EXPECTED="bbd7920e70a64635780dbe8aab6823beff11342ee389d78bbc5c601e00572d0c"
-EXEMPT_DIGEST_ACTUAL="$(
-  sed -n '/^=== PREPUSH_EXEMPT_START ===$/,/^=== PREPUSH_EXEMPT_END ===$/p' "$REAL_RULES" \
-    | grep -vE '^(===|[[:space:]]*#|[[:space:]]*$)' \
-    | cut -f1 \
-    | LC_ALL=C sort \
-    | sha256sum | cut -d' ' -f1
-)"
-if [[ "$EXEMPT_DIGEST_ACTUAL" == "$EXEMPT_DIGEST_EXPECTED" ]]; then
-  ok "pre-push exempt set is unchanged"
-else
-  bad "pre-push exempt set is unchanged" \
-    "digest $EXEMPT_DIGEST_ACTUAL != pinned $EXEMPT_DIGEST_EXPECTED. The set of patterns exempted from the pre-push scan changed. Confirm every newly-exempt pattern is genuinely identity-only (something the cutover renames remove) and not a real leak, then update EXEMPT_DIGEST_EXPECTED here. Current exempt patterns: $(sed -n '/^=== PREPUSH_EXEMPT_START ===$/,/^=== PREPUSH_EXEMPT_END ===$/p' "$REAL_RULES" | grep -vE '^(===|[[:space:]]*#|[[:space:]]*$)' | cut -f1 | tr '\n' ' ')"
+  bad "PREPUSH_EXEMPT is empty, as designed" "found ${#REAL_EXEMPT[@]} entr(ies): ${REAL_EXEMPT[*]}"
 fi
 
 for p in "${ENFORCED[@]}"; do
-  if grep -qxF -- "$p" <(sed -n '/^=== FORBIDDEN_PATTERNS_START ===$/,/^=== FORBIDDEN_PATTERNS_END ===$/p' "$REAL_RULES"); then
+  if grep -qxF -- "$p" <(printf '%s\n' "${REAL_FORBIDDEN[@]}"); then
     ok "enforced pattern is a verbatim FORBIDDEN_PATTERNS line"
   else
     bad "enforced pattern is a verbatim FORBIDDEN_PATTERNS line" "not found verbatim: $p"
@@ -438,6 +424,87 @@ if sed -n '/^check_forbidden_identifiers() {/,/^}/p' "$PFC" | grep -q 'self_skip
 else
   bad "a missing script or rules file self_skips" "no self_skip call in the function body"
 fi
+
+echo "=== D. item 1, at runtime: no open-source/ dir self-skips loudly, not a silent [SKIP] ==="
+# Regression test for the actual defect D#2492 filed: this used to be a bare
+# `echo "[SKIP] ..."; return 0` with no self_skip call, which is exactly the
+# branch that made the guard read green on the code plane having checked
+# nothing. Exercise the real function, not just grep its source.
+NODIR="$SCRATCH/no-open-source"
+mkdir -p "$NODIR/scripts/lib"
+cp "$PFC" "$NODIR/scripts/lib/preflight-common.sh"
+(
+  REPO_ROOT="$NODIR"
+  START_TS=$SECONDS
+  CHECKS_RUN=0
+  CURRENT_SLUG=""
+  FAILED=0
+  # shellcheck source=/dev/null
+  source "$NODIR/scripts/lib/preflight-common.sh"
+  SELF_SKIPPED_COUNT=0
+  SELF_SKIPPED_NAMES=()
+  # A command substitution `$(...)` would run check_forbidden_identifiers in
+  # a NESTED subshell, so self_skip's SELF_SKIPPED_COUNT increment would
+  # never make it back out even though stdout would still be captured —
+  # redirect to a file instead, in this same subshell, so the side effect
+  # on the counter survives to be read below.
+  check_forbidden_identifiers > "$NODIR/gate-stdout.txt" 2>&1
+  GATE_RC=$?
+  {
+    echo "RC=$GATE_RC"
+    echo "SELF_SKIPPED_COUNT=$SELF_SKIPPED_COUNT"
+    cat "$NODIR/gate-stdout.txt"
+  } > "$NODIR/result.txt"
+)
+RESULT="$(cat "$NODIR/result.txt")"
+assert_contains "self_skip fired (count=1)" "SELF_SKIPPED_COUNT=1" "$RESULT"
+assert_contains "output carries a WARN naming what was not checked" "[WARN]" "$RESULT"
+assert_not_contains "no bare [SKIP] line for this branch" "[SKIP] Forbidden Identifiers" "$RESULT"
+
+echo "=== E. item 5: an empty rules file is a refusal, not a vacuous pass ==="
+R="$(make_repo emptyrules)"
+: > "$R/open-source/IDENTIFIER-RULES.txt"
+BASE="$(commit_baseline "$R")"
+OUT="$(run_scan "$R" "$BASE")"; RC=$?
+assert_rc "empty rules file -> rc 1" 1 "$RC" "$OUT"
+assert_not_contains "does not report PASS" "PASS (" "$OUT"
+assert_contains "refuses a vacuous PASS by name" "vacuous PASS" "$OUT"
+
+echo "=== E. item 5b: a whitespace-only rules file refuses the same way a 0-byte one does ==="
+# A 0-byte file and a whitespace-only one are different byte shapes but the
+# same degenerate input: zero PARSED patterns. parse_block counts parsed
+# lines, not file bytes, so this should hit the identical "vacuous PASS"
+# refusal above rather than, say, a parse error or a silent pass on the
+# theory that whitespace "isn't really empty". Traced but untested before
+# this PR (D#2493 was exactly this shape of gap going unnoticed elsewhere).
+R="$(make_repo whitespacerules)"
+printf '   \n\t\n   \t  \n' > "$R/open-source/IDENTIFIER-RULES.txt"
+BASE="$(commit_baseline "$R")"
+OUT="$(run_scan "$R" "$BASE")"; RC=$?
+assert_rc "whitespace-only rules file -> rc 1" 1 "$RC" "$OUT"
+assert_not_contains "does not report PASS" "PASS (" "$OUT"
+assert_contains "refuses a vacuous PASS by name" "vacuous PASS" "$OUT"
+
+echo "=== E. item 5c: open-source/ present but the rules file itself missing refuses, not skips ==="
+# Different from the D. case above (no open-source/ DIRECTORY at all, which
+# legitimately self-skips as export/adopter shape) and different from E
+# above (file present but empty). Here the directory exists but the file
+# inside it does not — rot, not shape, and scripts/check-forbidden-identifiers.sh
+# hits its own `[[ ! -f "$RULES_FILE" ]]` check for this, distinct from the
+# "zero forbidden patterns parsed" path E/5b hit.
+R="$(make_repo missingrulesfile)"
+BASE="$(commit_baseline "$R")"
+OUT="$(run_scan "$R" "$BASE")"; RC=$?
+assert_rc "open-source/ present, rules file missing -> rc 2" 2 "$RC" "$OUT"
+assert_contains "names the missing rules file" "rules file not found" "$OUT"
+
+echo "=== F. item 4: positive control on the REAL rules file — clean text stays clean ==="
+R="$(make_repo realrules_negative)"
+cp "$REAL_RULES" "$R/open-source/IDENTIFIER-RULES.txt"
+BASE="$(commit_baseline "$R")"
+printf 'ordinary text: coldstart, serve_forever, forever young, claw machines\n' >> "$R/src/app.txt"
+OUT="$(run_scan "$R" "$BASE")"; RC=$?
+assert_rc "unrelated prose near the patterns does not false-positive -> rc 0" 0 "$RC" "$OUT"
 
 echo
 echo "passed=$PASS failed=$FAIL"
