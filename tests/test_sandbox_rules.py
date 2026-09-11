@@ -5014,15 +5014,24 @@ class TestD2483PR171Round3NonPythonInterpreterKnownGap:
     predicate `_PY_INTERPRETER_NAME_RE` defines. A `perl -e` / `ruby -e` /
     `node -e` write to a dial-protected file's RELATIVE name is not reached
     by either python-payload gate, with or without a command-prefix wrapper.
-    Not this round's regression and not this round's fix -- documented here,
-    the same way D#2541's glued-redirect gap is documented next to its own
-    fix, so a future change to this gate notices the gap rather than
-    silently reopening or silently widening it."""
+
+    This is a ROUND-1 regression, not a pre-existing gap: at the merge base
+    all three interpreters were BLOCKED, by the old unconditional substring
+    scan that ran over every write-candidate segment regardless of
+    interpreter. Round 1 of this PR narrowed that scan to python/pypy-only
+    to remove the prose false positive this whole Discussion exists to fix
+    -- perl/ruby/node lost coverage as the accepted cost of that narrowing.
+    Round 3 (this class's namesake) neither caused nor fixed it; it only
+    widened WHICH segments reach the already-narrowed, python-only check.
+    Documented here, the same way D#2541's glued-redirect gap is documented
+    next to its own fix, so a future change to this gate notices the gap
+    rather than silently reopening or silently widening it."""
 
     @pytest.mark.parametrize(
         "cmd_template",
         [
             "perl -e \"open(F,'>>','{target}'); print F 'x';\"",
+            "ruby -e \"File.write('{target}','x')\"",
             "node -e \"require('fs').appendFileSync('{target}','x')\"",
             "timeout 60 perl -e \"open(F,'>>','{target}'); print F 'x';\"",
         ],
@@ -5039,4 +5048,52 @@ class TestD2483PR171Round3NonPythonInterpreterKnownGap:
             f"known non-python gap closed for `{cmd}` -- if this now blocks, "
             "update this test and the module comment above "
             "_segment_has_py_interpreter_token that documents the gap"
+        )
+
+
+# ---------------------------------------------------------------------------
+# D#2483 PR-171 fix round 4 -- code review found that EVERY existing
+# "absolute payload" test above reaches its BLOCK verdict through site 1
+# (the relative-basename scan's unanchored `_PROTECTED_BASENAME_RE.search`
+# over the whole joined segment text), never through site 2 (the
+# absolute-path deep scan `_segment_has_py_interpreter_token()` gates
+# further down). Every one of those tests writes to a
+# `_DIAL_PROTECTED_SUFFIXES` basename, and that basename's literal text
+# sits in the segment whether the write target is spelled relative or
+# absolute -- site 1 fires first and returns before site 2's code ever
+# runs. Measured directly: reverting site 2 alone left the round-3 suite
+# (25 tests) fully green; reverting site 1 alone turned 19 of those 25 red.
+# Site 2's round-3 fix was therefore unproven by this file.
+# ---------------------------------------------------------------------------
+
+
+class TestD2483PR171Round4Site2OnlyReachable:
+    """A write target that is (a) absolute -- a site-2 candidate at all,
+    (b) outside the worktree -- something for site 2's unenumerated-write
+    check to actually block, (c) NOT a `_DIAL_PROTECTED_SUFFIXES` basename
+    -- so site 1's substring scan can't preempt it, and (d) embedded inside
+    a python -c payload rather than spelled as its own shell token -- so
+    the unconditional whole-token absolute-path loop (which runs before
+    either python-gated check) can't catch it either. Only site 2's deep
+    payload scan can reach this: `_segment_has_py_interpreter_token()` ->
+    `_python_c_payload()` -> `_ABS_PATH_TOKEN_RE` ->
+    `_evaluate_unenumerated_candidate()`.
+
+    Directly measured against this exact test: reverting site 2 alone
+    turns it red; reverting site 1 alone leaves it green."""
+
+    def test_absolute_outside_worktree_non_protected_target_reaches_site_2(
+        self,
+    ) -> None:
+        assert "notes.txt" not in _DIAL_PROTECTED_SUFFIXES
+        target = f"{_MAIN_REPO}/scratch-outside-worktree/notes.txt"
+        cmd = "python3 -c \"open('" + target + "','w').write('x')\""
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+        # The discriminating assertion: the reason must be site 2's
+        # unenumerated-write reason, not site 1's dial-registry reason --
+        # confirms site 2's own code path, not site 1, produced this BLOCK.
+        assert sandbox_rules._UNENUMERATED_WRITE_REASON in d.reason, (
+            f"expected site 2's unenumerated-write reason, got {d.reason!r} "
+            "-- this no longer isolates site 2 from site 1"
         )

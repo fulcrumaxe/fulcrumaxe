@@ -3344,9 +3344,16 @@ def _scan_command_segments(
             # python/pypy-only by construction (matches
             # `_is_py_interpreter_name()`'s own scope): a `perl -e`, `ruby
             # -e`, or `node -e` write to a dial-protected file's relative
-            # name is NOT caught by check (2) either before or after round
-            # 3 — a known, named, unfixed gap, not a claim this pair of
-            # checks now covers every interpreter.
+            # name is NOT caught by check (2) — but this is NOT a
+            # pre-existing gap. At the merge base, the OLD unconditional
+            # substring scan caught all three (it ran over every
+            # write-candidate segment, not just python ones). Round 1 of
+            # THIS PR narrowed that scan to python/pypy-only to remove the
+            # prose false positive this whole Discussion exists to fix —
+            # perl/ruby/node lost coverage as the accepted cost of that
+            # narrowing, deliberately, not as a side effect. Round 3 only
+            # widened WHICH segments reach the already-narrowed check; it
+            # neither caused nor could have fixed this gap.
             #
             # (1) A protected basename spelled as a whole token, OR as the
             #     value half of a glued `key=value` argument (`--file=
