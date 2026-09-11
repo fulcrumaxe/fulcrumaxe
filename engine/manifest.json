@@ -78,6 +78,7 @@
     "scripts/check-wiki-index.sh": "ff5ba939a3be723024e5038caf4610750e17256ec2b8a061c1381e1f4470741d",
     "scripts/ci/clean-install-check.sh": "5ab4e7bfac1fe430c76d23d76b289fe9327e937e8669f4ef106381d98643c8df",
     "scripts/ci/coldstart-backlog-importer-agreement-guard.sh": "b2f8c58015532d1e71ebcc2368d94db8f706be30b96a8505833c47443c2f3555",
+    "scripts/ci/commands-twin-divergence-guard.sh": "6fdea4bfba6d8cb160a6e9fbc655ee24f4fb8d9d7ae12bbf3501e612e9985e71",
     "scripts/ci/dangling-doc-commands.sh": "8cbbd54637801eb15b41c306a487dda6ad05d60b8c76f46b9a408180bb7c6fc3",
     "scripts/ci/pr-link-policy.sh": "e351e659d3f48db86eb0829e8f7b08a62dde5b85e3151bd8d438ca06cbc5d99d",
     "scripts/ci/pr-mutation-evidence.sh": "c66495a3c08523653aeda35847e7a77f0e9658dd78df15daf92fec8346c7073c",
