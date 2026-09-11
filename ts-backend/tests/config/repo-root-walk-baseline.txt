@@ -33,7 +33,7 @@ rpc/stats-batch3.ts 1
 rpc/stats-dora.ts 1
 rpc/stats.ts 3
 spawn/budget.ts 3
-spawn/circuit-breaker.ts 2
+spawn/circuit-breaker.ts 1
 spawn/claude-spawn-tracker.ts 1
 spawn/control-plane.ts 1
 spawn/cost-tracker.ts 1
