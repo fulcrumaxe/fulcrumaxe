@@ -264,7 +264,7 @@
     "scripts/smoke-test.sh": "3b414359e0e7707f3d9d691fa5f4c71b389866fec5b9f340df5648ad6ed02df5",
     "scripts/spawn-agent.sh": "f4d8017a4c0cb300c3b844f9f5de86dc89fbb5a959c631e0e1e61c99550b9fd4",
     "scripts/spawn-browser-tester.sh": "ee76f595039cd56c0415b595f11d03569984bcb64c4496dfb610c7dafedde247",
-    "scripts/spawn-hourly-stats.sh": "1de4af1890d95aa522a9c609834517e0d3a93e125616b69a6cbe434369f4472d",
+    "scripts/spawn-hourly-stats.sh": "4604304fe70d99e405266f06ea30ac71fb25da947ff787364f990adc94ebeca0",
     "scripts/spawn-run-analyst-if-stale.sh": "1aed689f7a3757a31f85b3faa2ccd2add9a363f6164b98e1b107a4a2b5e4ffef",
     "scripts/start-dashboard.sh": "4521359cf3fb3fbe8accd2eed868abcaa09be3008bfa02181a3f7c647ba5884a",
     "scripts/start-live-analyst.sh": "a66a56dff5f6697490c153b8b6921351517714b193176d03e7ccb5b84e74759d",
