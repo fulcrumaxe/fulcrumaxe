@@ -28,6 +28,7 @@ Usage (library):
 import argparse
 import fcntl
 import json
+import os
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -47,8 +48,30 @@ STALE_BREAKER_DAYS = 7
 
 _bb = Blackboard()
 
-# Path to the append-only transition history log
-_HISTORY_FILE = Path(__file__).resolve().parent.parent / ".autonomous-team" / "circuit-breaker-history.jsonl"
+# Test-only override hook. None (the default, always true in production) means
+# "resolve through state_paths at call time" — see _history_file() below.
+# Setting this directly (tests do, via unittest.mock.patch.object) bypasses
+# that resolver and use this path instead, same as before D#2478.
+_HISTORY_FILE: Path | None = None
+
+
+def _history_file() -> Path:
+    """Resolve the circuit-breaker history log path — ONE resolver (D#2478 item 4).
+
+    Used to be ``Path(__file__).resolve().parent.parent / ".autonomous-team" /
+    "circuit-breaker-history.jsonl"`` — a module-relative guess that happened
+    to land on the shared state file only because `.autonomous-team/` in the
+    main checkout is a symlink into STATE_DIR. A worktree has no such symlink,
+    so that guess created a fresh, orphaned local file instead (D#2478
+    Correction 3). ``backend.state_paths.CIRCUIT_BREAKER_HISTORY`` is the
+    single source of truth for this path everywhere else in the codebase;
+    this resolves through it too, every call, so both the reader and the
+    writer here always agree with it.
+    """
+    if _HISTORY_FILE is not None:
+        return _HISTORY_FILE
+    from backend import state_paths  # noqa: PLC0415
+    return state_paths.CIRCUIT_BREAKER_HISTORY
 
 
 def _key(discussion: int) -> str:
@@ -60,6 +83,7 @@ def _meta_key(discussion: int) -> str:
 
 
 def _append_history(
+    discussion: int,
     role: str,
     from_state: str,
     to_state: str,
@@ -67,8 +91,18 @@ def _append_history(
     context: dict,
     last_pr: int | None = None,
 ) -> None:
-    """Append one transition line to the history JSONL file (atomic via O_APPEND + flock)."""
+    """Append one transition line to the history JSONL file (atomic via O_APPEND + flock).
+
+    ``discussion`` and ``source`` are what make a row identify the event it
+    records (D#2478 item 1): two different breakers can trip in the same
+    wall-clock second (timestamp is second-resolution) with the same role and
+    reason, and without a breaker identifier those rows were byte-identical.
+    ``source`` separates a real spawn-failure trip from the test suite
+    exercising this same code path, by checking the same env var pytest
+    itself sets — no caller has to pass it.
+    """
     line = {
+        "discussion": discussion,
         "role": role,
         "from_state": from_state,
         "to_state": to_state,
@@ -76,10 +110,12 @@ def _append_history(
         "reason": reason,
         "context": context,
         "last_pr": last_pr,
+        "source": "test" if os.environ.get("PYTEST_CURRENT_TEST") else "production",
     }
-    _HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    history_path = _history_file()
+    history_path.parent.mkdir(parents=True, exist_ok=True)
     # Open with O_APPEND for atomic multi-process writes; flock provides extra safety
-    with open(_HISTORY_FILE, "a") as fh:
+    with open(history_path, "a") as fh:
         fcntl.flock(fh, fcntl.LOCK_EX)
         try:
             fh.write(json.dumps(line) + "\n")
@@ -90,10 +126,11 @@ def _append_history(
 
 def history(role: str, limit: int = 20) -> list[dict]:
     """Return up to *limit* most-recent transitions for *role* (newest last)."""
-    if not _HISTORY_FILE.exists():
+    history_path = _history_file()
+    if not history_path.exists():
         return []
     matches: list[dict] = []
-    with open(_HISTORY_FILE) as fh:
+    with open(history_path) as fh:
         for raw in fh:
             raw = raw.strip()
             if not raw:
@@ -134,6 +171,7 @@ def record_failure(discussion: int, agent: str, reason: str, last_pr: int | None
     # Emit history transition on threshold crossing
     if current < DEFAULT_THRESHOLD <= new_count:
         _append_history(
+            discussion=discussion,
             role=agent,
             from_state="healthy",
             to_state="tripped",
@@ -155,6 +193,7 @@ def record_success(discussion: int, agent: str = "unknown", last_pr: int | None 
     _bb.delete(_meta_key(discussion))
     if was_tripped:
         _append_history(
+            discussion=discussion,
             role=agent,
             from_state="tripped",
             to_state="healthy",
@@ -409,6 +448,7 @@ def expire_stale(
             _bb.delete(_key(disc))
             _bb.delete(_meta_key(disc))
             _append_history(
+                discussion=disc,
                 role="circuit-breaker/auto-expire",
                 from_state="tripped",
                 to_state="expired",
