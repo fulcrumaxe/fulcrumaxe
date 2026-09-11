@@ -386,6 +386,44 @@ else
 fi
 rm -rf "$d"
 
+# --- .autonomous-team/CRITICAL-PATH-2026-09-10.md and
+#     .autonomous-team/EXECUTOR-STANDING-BRIEF.md are excluded by
+#     construction (D#2531) — both are engine-plane-only operator runbooks
+#     whose whole job is to tell a human which directory to stand in, so a
+#     literal checkout path in them is the content, not a defect. ---
+d="$(new_fixture)"
+write_allowlist "$d" "# nothing allowlisted"
+mkdir -p "$d/.autonomous-team"
+printf 'stand in /home/agent/checkout\n' > "$d/.autonomous-team/CRITICAL-PATH-2026-09-10.md"
+printf 'cd /home/testuser/checkout\n' > "$d/.autonomous-team/EXECUTOR-STANDING-BRIEF.md"
+init_repo "$d"
+run_check "$d"
+if [[ "$RC" -eq 0 ]]; then
+  pass ".autonomous-team/CRITICAL-PATH-2026-09-10.md and .autonomous-team/EXECUTOR-STANDING-BRIEF.md excluded by construction"
+else
+  fail "the two engine-plane-only runbooks should be excluded ($OUT)"
+fi
+rm -rf "$d"
+
+# --- Near-miss filenames for the two runbook exclusions are NOT exempt —
+#     same exact-path discipline as every other exclusion above: no prefix,
+#     no glob, can't silently widen to a sibling file. ---
+d="$(new_fixture)"
+write_allowlist "$d" "# nothing allowlisted"
+mkdir -p "$d/.autonomous-team"
+printf 'X = "/home/agent/checkout"\n' > "$d/.autonomous-team/EXECUTOR-STANDING-BRIEF.md.bak"
+printf 'X = "/home/agent/checkout"\n' > "$d/.autonomous-team/OTHER.md"
+init_repo "$d"
+run_check "$d"
+if [[ "$RC" -eq 1 ]] \
+  && echo "$OUT" | grep -q ".autonomous-team/EXECUTOR-STANDING-BRIEF.md.bak:1" \
+  && echo "$OUT" | grep -q ".autonomous-team/OTHER.md:1"; then
+  pass "runbook exclusions are exact-path matches — near-miss filenames are still scanned"
+else
+  fail "near-miss filenames under .autonomous-team/ should still be scanned, not excluded ($OUT)"
+fi
+rm -rf "$d"
+
 echo ""
 echo "=== Multi-line files ==="
 
