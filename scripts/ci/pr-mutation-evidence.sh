@@ -68,6 +68,24 @@
 # pass-on-silence makes lying strictly worse than saying nothing, which is
 # the right ordering while adoption of the block is voluntary.
 #
+# TOOL PRESENCE — CHECKED BEFORE A DECLARED COMMAND IS EVER RUN (D#2537)
+#
+# This gate is required, but for weeks the job it ran in had no dependency
+# install step: `pytest` was declared in requirements.txt, not ambient on the
+# runner image, so a real, honest `pytest ...` claim failed with a tooling
+# error that shared its exit code AND its message shape with "ran it, and
+# the claim was false" — the more rigorous a PR's evidence, the less likely
+# it could merge. The workflow now installs this repo's Python dependencies
+# before this script runs (see .github/workflows/pr-gates.yml), which closes
+# the gap for the tools this repo already depends on. This script no longer
+# assumes that stays true forever: before invoking a declared command it
+# checks the tool it needs is actually present (`command -v`, and for a
+# `python3 -m X` form, that the module actually imports — `command -v
+# python3` alone would not have caught today's exact defect, since
+# `ubuntu-latest` always ships a `python3`). "Cannot evaluate this claim" is
+# reported loudly and distinctly from a real FAIL, and does not block — see
+# the tool-presence check below for why.
+#
 # FORMAT
 #
 #   ## Mutation evidence
@@ -102,11 +120,16 @@
 # live checkout.
 #
 # Exit 0 = no block present (nothing claimed, nothing to reproduce), or a
-#          claim was made and reproduced (green clean, red patched).
-# Exit 1 = a claim was made and did not reproduce, the command was rejected,
-#          the patch did not apply, or the checkout could not be measured.
-#          There is deliberately no SKIP branch on a real claim: a check that
-#          cannot measure a claim it was handed must not report a pass.
+#          claim was made and reproduced (green clean, red patched), or a
+#          claim was made but this environment cannot run the tool it needs
+#          (an environment gap, logged loudly on stderr as a WARN — not a
+#          verdict on the claim, and not a block: see "TOOL PRESENCE" above
+#          and Spec D#2537 item 7, "never worse off than prose").
+# Exit 1 = a claim was made, the declared tool WAS available, and it did not
+#          reproduce; or the command was rejected, the patch did not apply,
+#          or the checkout could not be measured. There is deliberately no
+#          SKIP branch on a real, measurable claim: a check that COULD
+#          measure a claim it was handed must not report a pass.
 # Exit 2 = usage error (neither input set, or PR_BODY_FILE unreadable).
 
 set -uo pipefail
@@ -192,6 +215,53 @@ if ! command_allowed "$COMMAND"; then
   echo "FAIL: rejected command: '${COMMAND:-<absent or empty>}'" >&2
   echo "      Command: must start with one of: 'pytest ', 'python3 -m pytest ', 'python3 -m unittest ', 'bash tests/'." >&2
   exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Tool presence — checked before the command is invoked, or even before the
+# diff is parsed (D#2537). "I could not run this" and "I ran it and the
+# claim was false" must never share an exit code or a message: this branch
+# owns the first, everything below owns the second.
+#
+# `command -v` is the literal instrument the Spec asks for, plus a module
+# import check for the `python3 -m X` forms — `command -v python3` alone
+# would pass on `ubuntu-latest` even when the module the PR actually needs
+# (pytest) is not installed, which is precisely today's defect restated.
+#
+# A missing tool is NOT a false claim: the command never ran, so it neither
+# reproduced nor failed to. Blocking here would make a declared,
+# machine-checkable block strictly worse than prose for the identical
+# underlying truth (the environment cannot evaluate either one) — the one
+# outcome this Discussion exists to rule out (Spec item 7). So this exits 0,
+# like the "no block" case above, but with a WARN loud enough on stderr that
+# an operator reading the log does not mistake silence for verification.
+# ---------------------------------------------------------------------------
+MISSING_TOOL=""
+case "$COMMAND" in
+  "pytest "*)
+    command -v pytest >/dev/null 2>&1 || MISSING_TOOL="pytest"
+    ;;
+  "python3 -m pytest "*)
+    if ! command -v python3 >/dev/null 2>&1; then
+      MISSING_TOOL="python3"
+    elif ! python3 -c "import pytest" >/dev/null 2>&1; then
+      MISSING_TOOL="pytest (python3 -c \"import pytest\" failed — module not installed)"
+    fi
+    ;;
+  "python3 -m unittest "*)
+    command -v python3 >/dev/null 2>&1 || MISSING_TOOL="python3"
+    ;;
+  "bash tests/"*)
+    command -v bash >/dev/null 2>&1 || MISSING_TOOL="bash"
+    ;;
+esac
+
+if [[ -n "$MISSING_TOOL" ]]; then
+  echo "WARN: cannot evaluate this claim — required tool not available in this environment: $MISSING_TOOL" >&2
+  echo "      Command declared: '$COMMAND'" >&2
+  echo "      This is an environment gap, not a false claim: the command was never run, so it neither reproduced nor failed to reproduce." >&2
+  echo "      Distinct from every FAIL below (those mean the command ran) and from 'PASS: no mutation evidence block' above (this claim WAS declared, just unmeasurable here)." >&2
+  exit 0
 fi
 
 # ---------------------------------------------------------------------------

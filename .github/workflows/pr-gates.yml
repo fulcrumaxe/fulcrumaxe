@@ -111,6 +111,24 @@ jobs:
         with:
           fetch-depth: 0
 
+      # D#2537: this job is required (scripts/lib/ci-status-check.sh) and its
+      # script can declare a real `pytest ...` command, but `ubuntu-latest`
+      # does not ship this repo's test dependencies — pytest is declared in
+      # requirements.txt, not ambient. Without this step every honest,
+      # machine-checkable mutation claim failed with a tooling error, while a
+      # prose-only body passed: the gate punished rigour. Same Setup
+      # Python + install convention as the `backend (import-smoke)` job in
+      # ci.yml (D#2537 standing rule 2 / Spec Implementation Notes: match the
+      # existing recipe rather than invent a second one).
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
       # Same body-to-file discipline as PR link policy above, and for the
       # identical reason: the runner prints a step's env block into the log
       # before the step runs, so the body must never pass through `env:`.
