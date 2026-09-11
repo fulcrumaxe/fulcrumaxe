@@ -11,15 +11,29 @@
 #     [--security-trigger])
 #   Agent(subagent_type="executor", prompt="$PROMPT")
 #
-# --worktree-path requires --pr (D#2222): it names the pre-provisioned PR-head
-# tree scripts/lib/pr-tree.sh checks out for a --pr spawn, which is a path
-# this script controls. A fresh (no --pr) --isolation worktree spawn has no
-# such tree for this script to describe — the real one is provisioned by the
-# Agent tool's own isolation="worktree" param on the Agent() call below, which
-# this script cannot see or influence. Passing --worktree-path without --pr
-# is rejected: the Agent() call always provisions its own tree regardless,
-# so the flag would only produce a registry entry describing one nothing runs
-# in. For the canonical fresh-spawn shape, pass --isolation worktree alone.
+# --worktree-path requires --pr (D#2222): it names a directory the caller
+# (the SDK-lane dispatcher; see backend/orchestrator/dispatch.py) has already
+# provisioned, which this script sets up (state-dir sync, node_modules
+# symlinks) for that lane to run in. Passing --worktree-path without --pr is
+# rejected: nothing provisions a matching directory in that shape, so the
+# flag would only produce a registry entry describing one nothing runs in.
+# For the canonical fresh-spawn shape, pass --isolation worktree alone.
+#
+# D#2542: a --pr spawn (with or without an explicit --worktree-path) used to
+# have this script assert that directory to the Agent()/CC-lane prompt as
+# "YOUR WORKTREE: <path>" — but the Agent() tool's own isolation="worktree"
+# param provisions the REAL tree for that lane regardless of --pr, a tree
+# this script cannot see or influence, exactly as it already argued two
+# paragraphs up for the no-pr case. Asserting a path there was describing a
+# tree nothing in the CC lane ever ran in; the sandbox correctly refused any
+# write to it, and a correctly-behaving fix-round executor failed having
+# changed nothing (recorded live on a fix round for PR #167). A --pr spawn
+# now renders the same "resolve your own root" shape the canonical
+# fresh-spawn case always has, tagged so prompt_builder can also explain how
+# to reach the PR's head content from that self-resolved tree — see
+# section 5 below. The directory itself is still set up here when
+# --worktree-path is given, because the SDK lane genuinely does execute
+# in it; only the CC-prompt's claim about it changes.
 #
 # The script:
 #   1. Generates a stable event-id (<role>-<discussion>-<unix-ts>)
@@ -118,15 +132,19 @@ if [[ -z "$TASK_PROMPT" && -z "$DRY_RUN_ENV_DUMP" ]]; then
   exit 1
 fi
 
-# D#2222: --worktree-path only makes sense paired with --pr (the pre-provision
-# lane below checks out the PR's own branch/sha at a path spawn-agent.sh
-# controls). Without --pr there is no tree for this flag to describe — the
-# canonical fresh-spawn shape is `--isolation worktree` alone, and the tree
-# is provisioned by the Agent tool's own isolation param on the actual
-# Agent() call, not by this script. Accepting --worktree-path here anyway
-# used to silently produce a registry entry describing a tree the Agent tool
-# never uses (it provisions its own regardless) -- see D#2222. Reject loudly
-# instead of accepting-and-ignoring.
+# D#2222: --worktree-path only makes sense paired with --pr — it names a
+# directory the caller (the SDK-lane dispatcher) has already provisioned for
+# a PR-amend spawn, which section 5 below sets up (state-dir sync,
+# node_modules symlinks) but, since D#2542, no longer asserts to the CC
+# prompt as the agent's own location (the Agent() tool provisions that tree
+# regardless of --pr; see the file header). Without --pr there is no PR
+# context for this directory to belong to at all — the canonical fresh-spawn
+# shape is `--isolation worktree` alone, and that tree is provisioned by the
+# Agent tool's own isolation param on the actual Agent() call, not by this
+# script. Accepting --worktree-path here anyway used to silently produce a
+# registry entry describing a tree the Agent tool never uses (it provisions
+# its own regardless) -- see D#2222. Reject loudly instead of
+# accepting-and-ignoring.
 if [[ -n "$WORKTREE_PATH_ARG" && -z "$PR_ARG" ]]; then
   echo "Error: --worktree-path requires --pr. Without --pr there is no PR branch/sha for" >&2
   echo "this script to check the path out to, and the Agent() tool provisions its own" >&2
@@ -945,14 +963,30 @@ fi
 # "null" — never a claim about one. The old fallback asserted a worktree at
 # the literal, unexpanded string "$(pwd)  # your worktree root — verify
 # with: pwd", which was self-contradictory whenever the caller's cwd was not
-# actually a worktree (the case this whole Discussion is about). When
-# --pr is set and no --worktree-path was supplied, this provisions a tree at
-# the PR's head sha via scripts/lib/pr-tree.sh — deliberately NOT
-# scripts/lib/verify-tree.sh, which write-protects every tracked file and
-# clones with origin pointed at the local checkout, both fatal for a tree
-# that needs to be edited and pushed. See pr-tree.sh's header for the full
-# split rationale. On any failure to resolve a real path, _WT_UNPROVISIONED
-# is set so prompt_builder emits the honest "no tree" block instead.
+# actually a worktree (the case this whole Discussion is about).
+#
+# D#2542: a --pr spawn used to be provisioned a real tree here (either via
+# --worktree-path directly, or auto-provisioned via scripts/lib/pr-tree.sh)
+# and that path was asserted to the CC prompt as "YOUR WORKTREE: <path>".
+# That was false for the Agent()/CC lane: its isolation="worktree" param
+# provisions the actual tree regardless of --pr, a tree this script cannot
+# see or influence — the same reasoning the file header already gives for
+# the no-pr case, with no --pr exception. Every --pr worktree spawn now
+# renders that same "resolve your own root" block, tagged with
+# reason="pr_amend" so prompt_builder can also explain how to reach the
+# PR's head content from that self-resolved tree (fetch by URL +
+# scripts/lib/code-plane-pr.sh — see backend/prompt_builder.py). Auto-
+# provisioning a pr-tree purely to describe it is gone with it: nothing
+# ever ran in that directory (the CC lane never cd's there, and nothing
+# else read it), so provisioning one was waste that only grew
+# .claude/worktrees/ for the reaper to later collect. scripts/lib/pr-tree.sh
+# itself is untouched — it still backs scripts/lib/pr-dependents.sh and
+# backend/spawn_templates/docs-writer.tmpl.
+#
+# --worktree-path is unaffected in one respect: when given, its directory
+# is still set up here (state-dir sync, node_modules symlinks), because the
+# SDK-lane dispatcher genuinely does execute there — see the file header.
+# Only the CC prompt's claim about the agent's own location changes.
 _WORKTREE_PATH_JSON="null"
 _WT_UNPROVISIONED=""
 # D#2222: WHY no path was resolved — see backend/prompt_builder.py's
@@ -970,40 +1004,22 @@ if [[ "$ISOLATION" == "worktree" ]]; then
       fi
     done
     unset _nm_dir _nm_src _nm_dst
-    _WORKTREE_PATH_JSON=$(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$WORKTREE_PATH_ARG")
+    _WT_UNPROVISIONED=1
+    _WT_UNPROVISIONED_REASON="pr_amend"
   elif [[ -n "$PR_ARG" ]]; then
     if [[ -n "$_PA_SHA_FULL" ]]; then
-      # shellcheck source=scripts/lib/pr-tree.sh
-      source "$SCRIPT_DIR/lib/pr-tree.sh"
-      _PT_DEST="$REPO_ROOT/.claude/worktrees/pr-${PR_ARG}-${ROLE}-${EVENT_ID}"
-      if _PT_PATH=$(pr_tree_provision "$PR_ARG" "$_PA_SHA_FULL" "$_PT_DEST" 2>&1); then
-        (cd "$_PT_PATH" && bash "$SCRIPT_DIR/setup-state-dir.sh" >/dev/null 2>&1) || true
-        for _nm_dir in tui dashboard; do
-          _nm_src="$REPO_ROOT/$_nm_dir/node_modules"
-          _nm_dst="$_PT_PATH/$_nm_dir/node_modules"
-          if [ -d "$_nm_src" ] && [ ! -e "$_nm_dst" ]; then
-            ln -s "$_nm_src" "$_nm_dst"
-          fi
-        done
-        unset _nm_dir _nm_src _nm_dst
-        _WORKTREE_PATH_JSON=$(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$_PT_PATH")
-      else
-        echo "WARN: pr_tree_provision failed for PR #${PR_ARG}: $_PT_PATH" >&2
-        _WORKTREE_PATH_JSON="null"
-        _WT_UNPROVISIONED=1
-        _WT_UNPROVISIONED_REASON="pr_tree_failed"
-      fi
-      unset _PT_DEST _PT_PATH
+      _WT_UNPROVISIONED=1
+      _WT_UNPROVISIONED_REASON="pr_amend"
     else
       # PR review finding on D#2222's original fix: --pr was given but the
       # head sha could not be resolved earlier (gh api failure — see the WARN
-      # above), so pr_tree_provision was never even attempted. This must NOT
-      # collapse into the "agent_tool_provisions" case below: for a --pr
-      # amend, whatever tree the Agent tool's own isolation happens to hand
-      # the agent is NOT the PR's branch, so proceeding there would silently
-      # amend the wrong tree. Tag this distinctly and hard-fail.
-      echo "WARN: cannot provision PR-amend worktree for PR #${PR_ARG} — head sha resolution failed (see WARN above)" >&2
-      _WORKTREE_PATH_JSON="null"
+      # above). This must NOT collapse into "pr_amend": with no resolved
+      # head there is nothing for the agent to fetch either, so hard-fail
+      # distinctly rather than hand it fetch instructions it cannot complete
+      # — whatever tree the Agent tool's own isolation hands the agent is
+      # NOT the PR's branch, so proceeding there would silently amend the
+      # wrong tree.
+      echo "WARN: cannot resolve PR-amend content for PR #${PR_ARG} — head sha resolution failed (see WARN above)" >&2
       _WT_UNPROVISIONED=1
       _WT_UNPROVISIONED_REASON="pr_resolution_failed"
     fi

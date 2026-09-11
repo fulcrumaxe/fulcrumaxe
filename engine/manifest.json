@@ -260,7 +260,7 @@
     "scripts/set-ci-kill-switch.sh": "d3f87088d2d020b7550cb7189fa1ed6f5df2464a310f66e0df81501bcd552862",
     "scripts/setup-dev.sh": "00b492be47f7247cf43d00c136676e96831f2dec11155bce636b77f52c580753",
     "scripts/smoke-test.sh": "3b414359e0e7707f3d9d691fa5f4c71b389866fec5b9f340df5648ad6ed02df5",
-    "scripts/spawn-agent.sh": "1b71f1dd95d7591b2578b42cdffb6f46330a9d71083b49842428425485ea8836",
+    "scripts/spawn-agent.sh": "f4d8017a4c0cb300c3b844f9f5de86dc89fbb5a959c631e0e1e61c99550b9fd4",
     "scripts/spawn-browser-tester.sh": "ee76f595039cd56c0415b595f11d03569984bcb64c4496dfb610c7dafedde247",
     "scripts/spawn-hourly-stats.sh": "1de4af1890d95aa522a9c609834517e0d3a93e125616b69a6cbe434369f4472d",
     "scripts/spawn-run-analyst-if-stale.sh": "1aed689f7a3757a31f85b3faa2ccd2add9a363f6164b98e1b107a4a2b5e4ffef",
