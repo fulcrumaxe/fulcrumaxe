@@ -54,3 +54,36 @@ def sort_metrics(metrics: list[dict]) -> list[dict]:
             ordered.append(by_name[name])
 
     return ordered
+
+
+# ---------------------------------------------------------------------------
+# Retired metrics (D#2539)
+# ---------------------------------------------------------------------------
+#
+# A metric with no active writer isn't automatically "retired" — it might
+# just be new and not wired up yet, or paused. "Retired" is a stronger,
+# explicit claim: someone deliberately stopped producing it and said so in a
+# PR. That claim needs a name, a reason and a date attached to it, which a
+# bare boolean (see backend/stats/freshness.is_monitored) can't carry.
+#
+# This is the single source of truth for that claim. The dashboard mirrors
+# it in dashboard/src/pages/stats/retiredMetrics.ts (parity note there points
+# back here) — same pattern as METRIC_ORDER above.
+RETIRED_METRICS: dict[str, dict[str, str]] = {
+    "acceptance_criteria_pass_rate": {
+        "retired_by_pr": "134",
+        "retired_date": "2026-09-10",
+        "reason": (
+            "its scorer counted a criterion as passed whenever any word "
+            "longer than three characters from it appeared anywhere in the "
+            "PR body or comments — near-guaranteed to match, since the PR "
+            "body is written by the same person working from that same "
+            "criterion text. It never measured anything."
+        ),
+    },
+}
+
+
+def is_retired(name: str) -> bool:
+    """True when *name* has an explicit retirement record in RETIRED_METRICS."""
+    return name in RETIRED_METRICS

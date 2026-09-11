@@ -158,7 +158,7 @@ describe('MetricSparkline unit label', () => {
     // AC2: normal ratio metrics must still render as NN.N%
     render(
       <MetricSparkline
-        label="acceptance_criteria_pass_rate"
+        label="reviewer_acceptance_latency_seconds"
         value={0.873}
         unit="ratio"
         series={[]}
@@ -186,5 +186,56 @@ describe('MetricSparkline unit label', () => {
     expect(screen.getByText('count')).toBeInTheDocument()
     expect(screen.queryByText(/1800000/)).not.toBeInTheDocument()
     expect(screen.queryByText(/%/)).not.toBeInTheDocument()
+  })
+})
+
+// ----------------------------------------------------------------------------
+// MetricSparkline — retired-metric label and sentinel rendering (D#2539)
+// ----------------------------------------------------------------------------
+
+describe('MetricSparkline retired metric and sentinel rendering', () => {
+  it('renders a "not applicable" value distinct from "—" for a -1 sentinel', () => {
+    render(
+      <MetricSparkline
+        label="spec_to_first_pr_latency_seconds"
+        value={-1}
+        unit="seconds"
+        series={[]}
+        updatedAt={null}
+      />
+    )
+    expect(screen.getByText('not applicable')).toBeInTheDocument()
+    expect(screen.queryByText('—')).not.toBeInTheDocument()
+    expect(screen.queryByText('n/a')).not.toBeInTheDocument()
+  })
+
+  it('labels a retired metric visibly, without hiding it', () => {
+    render(
+      <MetricSparkline
+        label="acceptance_criteria_pass_rate"
+        value={-1}
+        unit="ratio"
+        series={[]}
+        updatedAt={null}
+      />
+    )
+    expect(screen.getByTestId('metric-card-acceptance_criteria_pass_rate')).toBeInTheDocument()
+    const badge = screen.getByTestId('metric-retired-badge')
+    expect(badge).toBeInTheDocument()
+    expect(badge.textContent).toBe('retired')
+    expect(badge.title).toContain('PR #134')
+  })
+
+  it('does not show a retired badge for a metric with no retirement record', () => {
+    render(
+      <MetricSparkline
+        label="spec_to_first_pr_latency_seconds"
+        value={219}
+        unit="seconds"
+        series={[]}
+        updatedAt={null}
+      />
+    )
+    expect(screen.queryByTestId('metric-retired-badge')).not.toBeInTheDocument()
   })
 })

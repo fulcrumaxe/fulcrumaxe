@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { jsonRpc } from '../api/client'
+import { isStaleAndAlarming } from '../pages/stats/retiredMetrics'
 
 interface FreshnessRow {
   metric_name: string
@@ -69,10 +70,11 @@ export default function StaleBanner() {
         if (!cancelled) {
           // A metric nobody writes any more can't be "stale" in a way anyone
           // can act on. bootstrap_ping sat here asserting 1243h for 51 days,
-          // which is how you train people to ignore the banner.
-          const stale = data.rows.filter(
-            r => r.monitored !== false && r.age_seconds >= data.warn_age_seconds,
-          )
+          // which is how you train people to ignore the banner. A metric
+          // that was deliberately retired (see retiredMetrics.ts) is the
+          // same story told on purpose, not by accident — it must never
+          // alarm either, regardless of `monitored` (D#2539).
+          const stale = data.rows.filter(r => isStaleAndAlarming(r, data.warn_age_seconds))
           setStaleRows(stale)
         }
       } catch {
