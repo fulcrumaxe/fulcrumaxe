@@ -184,7 +184,7 @@
     "scripts/lib/gh-label.sh": "4a9ec5c5825eaa26343120ea20cd2f2e38196a4585348db00fd322ad452c6739",
     "scripts/lib/gh-precondition.sh": "bb708e064fb1300538a58937bf1ef1fcd433f32df2d73bcb69963aeaaf3758ed",
     "scripts/lib/hook-event.sh": "2d9aa3227fd89e77f92962090c844d498eaa4e841357a8a2acd0bb19025f6a58",
-    "scripts/lib/merge-gate-labels.sh": "bd14afd7a1709d8695b2c988de767d254e89ba90938b668b412808669af14742",
+    "scripts/lib/merge-gate-labels.sh": "6a5070423a6b64afe15a67a910fede9e0a0f4c1179b861a48347c067e99c3865",
     "scripts/lib/orphan-triage.sh": "54a23fa6aee1efb4e0966b2434d6441c16de49a50e4d4ae9691b323d60835bf9",
     "scripts/lib/panel-helpers.sh": "5bf1da231050450a58e07b5009268d45170921fc8e7876f873adcc2631e80ea8",
     "scripts/lib/panel-quorum.sh": "95709ed73dff4025978119e37613812ef60d1c57aba6f9d74b161cc16e8f73f5",
