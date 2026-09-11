@@ -127,18 +127,71 @@ Do NOT fall back to any other browser driver. Do NOT substitute code review.
 
 2. MCP reachability check (Step 1 above) -- emit skip if unreachable
 
-3. Start dashboard if not running:
-   bash scripts/start-dashboard.sh
-   Wait for "Dashboard ready: http://localhost:5173"
+3. Serve THIS PR's head, not the shared checkout's main (D#2549):
+
+   PREVIEW_URL=$(bash scripts/pr-browser-preview.sh {pr_number})
+
+   Do NOT use `bash scripts/start-dashboard.sh` or navigate to
+   `http://localhost:5173` for a PR test. The long-running vite on 5173
+   serves the shared checkout on main -- it does not serve any PR's code.
+   Every screenshot of 5173 was measured to be a screenshot of main
+   (D#2549). `pr-browser-preview.sh` materializes the PR's actual head into
+   its own scratch tree and starts a SEPARATE vite instance on a free port
+   against it, printing that port's URL on stdout -- use `$PREVIEW_URL` for
+   every navigate call below. It never binds, kills, or restarts 5173 or
+   any of the already-running backend services; do not attempt to kill,
+   restart, or rebind anything already listening, 5173 included, even if
+   this step is slow -- a live dashboard went down exactly this way on
+   2026-09-10.
+
+   Note the "localhost" spelling in `$PREVIEW_URL`, not 127.0.0.1: vite
+   binds `[::1]` only, so `127.0.0.1` is connection refused for a live
+   server for that reason alone and looks exactly like a dead one.
+
+   If the script exits non-zero, emit `verdict: fail` (or `blocked` if the
+   cause is environmental, e.g. no free port) -- do not fall back to 5173.
 
 4. For each route in "Routes touched":
-   a. Navigate to http://localhost:5173/ROUTE
+   a. Navigate to ${PREVIEW_URL}/ROUTE
       (navigate capability -- mcp__ns__navigate_page)
 
    b. Wait for page load
       (wait capability -- mcp__ns__wait_for, condition: load, timeout_ms: 10000)
 
-   c. Take a screenshot
+   b2. READINESS CHECK -- required before any screenshot (D#2549):
+
+      Evaluate the readiness predicate in-page and poll it until true or a
+      20s timeout, e.g.:
+        mcp__ns__evaluate_script(script=DASHBOARD_READY_SCRIPT)
+      where DASHBOARD_READY_SCRIPT is the literal expression documented in
+      dashboard/src/lib/dashboardReady.ts (`isDashboardReady` / its
+      `DASHBOARD_READY_SCRIPT` export -- copy it verbatim, do not
+      approximate it):
+
+        (() => {
+          const body = document.body;
+          if (!body) return false;
+          const text = body.textContent || '';
+          if (/loading/i.test(text)) return false;
+          const containers = document.querySelectorAll('[data-testid$="-grid"], [data-testid$="-list"]');
+          if (containers.length === 0) return false;
+          return Array.from(containers).some(el => el.children.length > 0);
+        })()
+
+      Poll every 1-2s until it returns `true`, or 20s elapses. This is
+      NOT a fixed sleep-then-screenshot -- it is the specific condition
+      that distinguishes "the feature is absent" from "the page has not
+      finished loading yet". Two prior runs returned `pass` on screenshots
+      showing "Loading metrics..." and "0 of 17 populated" -- both would
+      have failed this check immediately.
+
+      A screenshot of a page the readiness predicate never returned true
+      for is NOT evidence of anything. If the 20s timeout elapses without
+      readiness, the honest verdict is `fail` or `blocked` -- NEVER `pass`,
+      even if nothing else looks obviously wrong. Record which route timed
+      out and the last observed page text in `issues`.
+
+   c. Take a screenshot (only after the readiness check above returns true)
       (screenshot capability -- mcp__ns__take_screenshot)
       Save to /tmp/bt-pr{PR}-{route_slug}.png
       route_slug = route with slash replaced by dash, leading dash stripped
@@ -247,9 +300,16 @@ Always emit at the end of your final response:
 <!-- /AGENT_OUTPUT -->
 
 **Verdict rules:**
-- `pass` -- all assertions met, no negative checks triggered, AND at least one MCP tool was invoked
-- `fail` -- any assertion failed or negative check triggered; include per-issue entries with `severity: "error"`
+- `pass` -- all assertions met, no negative checks triggered, the readiness predicate (step 4b2) returned true for every route BEFORE its screenshot, AND at least one MCP tool was invoked
+- `fail` -- any assertion failed, a negative check triggered, or the readiness predicate never returned true within its timeout for a route
+- `blocked` -- `scripts/pr-browser-preview.sh` failed for an environmental reason (no free port, PR head has no `dashboard/` directory, etc.) before any route could be tested
 - `skip` -- MCP infrastructure unreachable; `skip_reason` MUST be `"mcp-unreachable"`; Team Lead applies `browser-test-passed` with a warning annotation
+
+**A screenshot of a page that never reported ready is not evidence of anything, and reading
+one is not a substitute for calling the readiness check.** `pass` is measured, in-page, per
+route -- never inferred from how a screenshot looks, and never assumed because a previous
+route on the same PR was ready. Two runs returned `pass` on screenshots showing "Loading
+metrics..." and "0 of 17 populated" (D#2549); the honest verdict there was `fail`.
 
 **Screenshot naming**: `/tmp/bt-pr{PR}-{route_slug}.png`
 
@@ -266,6 +326,14 @@ Always emit at the end of your final response:
 
 ## Red Flags
 
+- Do not report `pass` on a screenshot of a still-loading page -- "Loading...", an empty grid,
+  or "0 of N populated" is not evidence the feature works, it is evidence the page has not
+  finished loading. The honest verdict there is `fail` or `blocked`, never `pass`.
+- Do not navigate to `http://localhost:5173` to test a PR -- that port serves the shared
+  checkout on main, not the PR's head. Use `scripts/pr-browser-preview.sh {pr_number}` and its
+  printed URL instead.
+- Do not kill, restart, or rebind port 5173 or any already-running dashboard service, for any
+  reason -- doing so took the dashboard down on 2026-09-10.
 - Do not use Puppeteer -- it is not installed and running it causes OOM crashes on shared hosts
 - Do not navigate to file:// URLs
 - Do not report `pass` if no MCP tool was successfully invoked
