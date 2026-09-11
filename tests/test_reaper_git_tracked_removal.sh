@@ -479,6 +479,35 @@ _assert_dir_exists "$OPENPR_T11_DIR" "T11c: detached worktree WITH a matching op
 git -C "$REPO" worktree remove --force "$OPENPR_T11_DIR" >/dev/null 2>&1 || true
 
 # ===========================================================================
+# Test 12 (D#2140, the binding item): a worktree whose ONLY uncommitted
+# content is untracked (`?? .scratch/`) must NOT classify as clean. The
+# classifier's [MADRCTU] class does not match `??`, so a worktree like this
+# fell through to the git-tracked bucket and was force-removed by a real
+# --enable-git-tracked-removal pass -- exactly the scratch content every
+# live agent-* worktree holds. This runs the REAL (non-dry-run) removal
+# path, not a preview: a dry-run cannot observe a --force call gated inside
+# the non-dry-run arm.
+# ===========================================================================
+echo ""
+echo "=== Test 12: worktree with only untracked content (D#2140) is not removed ==="
+
+_add_wt "untracked-t12"
+UNTRACKED_T12_DIR="${WORKTREES_DIR}/untracked-t12"
+mkdir -p "${UNTRACKED_T12_DIR}/.scratch"
+echo "precious untracked scratch content" > "${UNTRACKED_T12_DIR}/.scratch/notes.txt"
+touch -t "$OLD_TS" "$UNTRACKED_T12_DIR"  # re-age after mkdir/echo bumped mtime
+
+OUT12=$(WTR_OPEN_PR_BRANCHES_OVERRIDE="" _run_reaper --enable-git-tracked-removal)
+RC12=$?
+
+_assert_exit0 "$RC12" "T12: real opted-in run exits 0"
+_assert_dir_exists "$UNTRACKED_T12_DIR" "T12: untracked-only worktree was NOT removed (D#2140)"
+_assert_contains "$OUT12" "skipped-dirty=" "T12: skip-breakdown reports skipped-dirty for the untracked-only worktree"
+_assert_not_contains "$OUT12" "removed (git-tracked): untracked-t12" "T12: no removal action logged for it"
+
+git -C "$REPO" worktree remove --force "$UNTRACKED_T12_DIR" >/dev/null 2>&1 || true
+
+# ===========================================================================
 # Mutation proofs (rule: every new test must be proven able to fail)
 # ===========================================================================
 echo ""
@@ -562,9 +591,7 @@ import sys
 path = sys.argv[1]
 with open(path) as f:
     text = f.read()
-marker = '''      local status
-      status=$(echo "$status_out" | awk '{ code=substr($0,1,2); if (code ~ /[MADRCTU]/) print }')
-      if [[ -n "$status" ]]; then
+marker = '''      if [[ -n "$status_out" ]]; then
         echo "dirty" > "$outfile"
         return
       fi
@@ -605,6 +632,72 @@ else
 fi
 rm -f "$MUTATED_LIB2"
 git -C "$REPO" worktree remove --force "$DIRTY_MUT_DIR" >/dev/null 2>&1 || true
+
+# --- D#2140 negative control: restore the old [MADRCTU]-only match (which
+#     excludes `??`) and confirm an untracked-only worktree becomes a
+#     would-remove candidate again -- proves the fix actually depends on
+#     matching the untracked line, not on some other guard. ---------------
+_add_wt "untracked-mut-d2140"
+UNTRACKED_MUT_D2140_DIR="${WORKTREES_DIR}/untracked-mut-d2140"
+mkdir -p "${UNTRACKED_MUT_D2140_DIR}/.scratch"
+echo "scratch" > "${UNTRACKED_MUT_D2140_DIR}/.scratch/notes.txt"
+touch -t "$OLD_TS" "$UNTRACKED_MUT_D2140_DIR"  # re-age after mkdir/echo bumped mtime
+
+MUTATED_LIB8="${TMPDIR_ROOT}/worktree-registry.mutated8.sh"
+cp "$REGISTRY_LIB" "$MUTATED_LIB8"
+python3 - "$MUTATED_LIB8" <<'PYEOF'
+import sys
+path = sys.argv[1]
+with open(path) as f:
+    text = f.read()
+marker = '''      if [[ -n "$status_out" ]]; then
+        echo "dirty" > "$outfile"
+        return
+      fi
+'''
+replacement = '''      local _d2140_status
+      _d2140_status=$(echo "$status_out" | awk '{ code=substr($0,1,2); if (code ~ /[MADRCTU]/) print }')
+      if [[ -n "$_d2140_status" ]]; then
+        echo "dirty" > "$outfile"
+        return
+      fi
+'''
+assert marker in text, "D#2140 mutation anchor not found -- source shape changed"
+text = text.replace(marker, replacement, 1)
+with open(path, "w") as f:
+    f.write(text)
+PYEOF
+
+MUT_D2140_OUT=$( \
+  _WTR_REPO_ROOT="$REPO" \
+  _WTR_REGISTRY="${AUTONOMOUS_TEAM_DIR}/worktrees.json" \
+  _WTR_LOCK="${AUTONOMOUS_TEAM_DIR}/worktrees.json.lock" \
+  _WTR_ARCHIVE_DIR="$ARCHIVE_DIR" \
+  _WTR_WORKTREES_DIR="$WORKTREES_DIR" \
+  _WTR_AUDIT_DIR="$AUDIT_DIR" \
+  _WTR_AUDIT_FILE="${AUDIT_DIR}/audit.jsonl" \
+  WTR_TEST_MODE=1 \
+  WTR_OPEN_PR_BRANCHES_OVERRIDE="" \
+    bash -c "
+set -uo pipefail
+source '${MUTATED_LIB8}'
+_WTR_REPO_ROOT='${REPO}'
+_WTR_REGISTRY='${AUTONOMOUS_TEAM_DIR}/worktrees.json'
+_WTR_LOCK='${AUTONOMOUS_TEAM_DIR}/worktrees.json.lock'
+_WTR_ARCHIVE_DIR='${ARCHIVE_DIR}'
+_WTR_WORKTREES_DIR='${WORKTREES_DIR}'
+_WTR_AUDIT_DIR='${AUDIT_DIR}'
+_WTR_AUDIT_FILE='${AUDIT_DIR}/audit.jsonl'
+_cmd_reap --ttl-min 1 --dry-run --enable-git-tracked-removal
+" 2>&1)
+
+if echo "$MUT_D2140_OUT" | grep -qF "would-remove (git-tracked): untracked-mut-d2140"; then
+  _pass "D#2140 mutation proof: reverting to the [MADRCTU]-only match turns an untracked-only worktree into a would-remove candidate again, as expected"
+else
+  _fail "D#2140 mutation proof: untracked-mut-d2140 was NOT turned into a would-remove candidate -- mutation had no effect"
+fi
+rm -f "$MUTATED_LIB8"
+git -C "$REPO" worktree remove --force "$UNTRACKED_MUT_D2140_DIR" >/dev/null 2>&1 || true
 
 # --- AC-10 negative control: delete the unpushed-commit check. -----------
 _add_wt "unpushed-mut"
