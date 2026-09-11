@@ -549,7 +549,6 @@ scripts/backfill-budget-spent.py	F401	1	`json` imported but unused
 scripts/backfill-cost-tracker.py	F401	1	`backend.cost_tracker._DEFAULT_PRICING` imported but unused
 scripts/backfill-cost-tracker.py	F401	1	`json` imported but unused
 scripts/backfill-cost-tracker.py	F541	1	f-string without any placeholders
-scripts/ci/coldstart-state-dir-guard.py	F401	1	`sys` imported but unused
 scripts/ci/project-liveness-guard.py	F401	1	`shutil` imported but unused
 scripts/ci/project-liveness-guard.py	F401	1	`time` imported but unused
 scripts/ci/rpc-scope-cache-guard.py	F401	1	`subprocess` imported but unused
