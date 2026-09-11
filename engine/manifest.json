@@ -242,7 +242,7 @@
     "scripts/reap-worktrees.sh": "5ed2cbb89f0b4a861543dcfb14903621340f7ae1992f4e164fee644f206acd56",
     "scripts/reap-zombie-chromes.sh": "6c87b5cdbbd9a27f723fe9ce5ffe24910a20b1fee9d3e11111418731f467f60f",
     "scripts/record-agent-result.sh": "326cb62acbf9b2b121e98223dd6d129daf70acc4caa421754ea68c8cff888a14",
-    "scripts/refresh-gate-label.sh": "8c8416800463bf0e6473df46972084dbea0a2445f48ed02f0fda8b33b79923e5",
+    "scripts/refresh-gate-label.sh": "e9a37e49a7650fd1ffac6389e41c3893b3756c6421a10a5f7834b4b793300c2b",
     "scripts/refresh-loop-snapshot.sh": "fb989eb0cfa3e3a860a8684ec69648e1d819629d685789c7822eed2955edb4e8",
     "scripts/replay-debater.sh": "ca883dd486daa16f46aca863508fad4859ae4d55ee867ab7520e3259e734b384",
     "scripts/replay-hook-event.sh": "16a33759317a6f569834e328fa5bae95ef2ce8ab86735a2a5feab53034d8e229",

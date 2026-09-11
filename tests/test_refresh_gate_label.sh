@@ -19,6 +19,16 @@
 #   3. A NACK label (scripts/lib/merge-gate-labels.sh) is refused by name —
 #      nonzero exit, zero mutations, regardless of whether it was present.
 #   4. Usage error (missing pr or label) exits nonzero before any gh call.
+#   5. THE FIX-ROUND WINDOW: label present, the add fails once (simulated
+#      403), the retry succeeds -> label still present at the end, exit 0.
+#      This is the exact scenario the code-reviewer reproduced against PR
+#      #170's original single-shot add.
+#   6. Label present, every add attempt fails (persistent outage) -> the
+#      script exits nonzero with a CRITICAL, named remediation message
+#      rather than exiting silently.
+#   7. Label absent, every add attempt fails -> exit nonzero, but nothing
+#      was ever removed, so state is unchanged (label still absent, same as
+#      before the script ran) and the message says so plainly, not CRITICAL.
 #
 # Usage:
 #   bash tests/test_refresh_gate_label.sh
@@ -55,6 +65,14 @@ assert_eq() {
 # `gh pr view <pr> --json labels --jq '.labels[].name'` — the call
 # refresh-gate-label.sh makes directly — returns the state file's contents
 # one label per line, matching real gh --jq output for that expression.
+#
+# GH_STUB_ADD_FAIL_COUNT (optional): number of times the NEXT
+# addLabelsToLabelable calls for a given PR+label should fail before
+# succeeding (simulating a transient 403 — D#2535 fix round). Each failing
+# call is logged as "... FAILED (simulated)" and exits nonzero without
+# touching label state, exactly like a real rejected mutation. A count high
+# enough to outlast the script's own retry budget simulates a persistent
+# outage instead of a transient one.
 build_gh_stub() {
   local bindir="$1"
   mkdir -p "$bindir"
@@ -104,6 +122,20 @@ if [[ "${1:-}" == "api" && "${2:-}" == "graphql" ]]; then
   if [[ "$QUERY" == *"addLabelsToLabelable"* ]]; then
     pr="${GH_STUB_CURRENT_PR:-unknown}"
     label="${GH_STUB_CURRENT_LABEL:-unknown}"
+    failfile="$STATE_DIR/add-fail-remaining-$pr-$label"
+    remaining=0
+    if [[ -f "$failfile" ]]; then
+      remaining="$(cat "$failfile")"
+    elif [[ -n "${GH_STUB_ADD_FAIL_COUNT:-}" ]]; then
+      remaining="$GH_STUB_ADD_FAIL_COUNT"
+    fi
+    if [[ "$remaining" -gt 0 ]]; then
+      remaining=$((remaining - 1))
+      echo "$remaining" > "$failfile"
+      echo "MUTATE addLabelsToLabelable $label FAILED (simulated)" >> "$MUT_LOG"
+      echo "simulated: 403 secondary rate limit" >&2
+      exit 1
+    fi
     echo "MUTATE addLabelsToLabelable $label" >> "$MUT_LOG"
     # A real re-add of a label already on the issue is a no-op: GitHub writes
     # no new event and the label set doesn't change. Mirror that here so a
@@ -162,12 +194,15 @@ mkdir -p "$GH_STUB_STATE_DIR"
 # setting: AUTONOMOUS_TEAM_REPO for the former, LABEL_REPO for the latter.
 export AUTONOMOUS_TEAM_REPO="fulcrumaxe/fulcrumaxe"
 export LABEL_REPO="fulcrumaxe/fulcrumaxe"
+# Every test below runs the retry loop at test speed, not real backoff time.
+export REFRESH_GATE_LABEL_RETRY_SECONDS=0
 
 # ── Test 1: label absent -> plain add ────────────────────────────────────────
 echo "Test 1: label absent on the PR -> plain add (one mutation, no remove)"
 export GH_STUB_LOG="$TEST_DIR/log1"
 export GH_STUB_CURRENT_PR=501
 export GH_STUB_CURRENT_LABEL="code-review-passed"
+unset GH_STUB_ADD_FAIL_COUNT
 bash "$REFRESH_SH" 501 code-review-passed >"$TEST_DIR/out1.txt" 2>&1
 RC=$?
 assert_eq "test1: exit 0" "$RC" "0"
@@ -182,6 +217,7 @@ echo "Test 2: label already present -> remove then add (two mutations, in order)
 export GH_STUB_LOG="$TEST_DIR/log2"
 export GH_STUB_CURRENT_PR=502
 export GH_STUB_CURRENT_LABEL="code-review-passed"
+unset GH_STUB_ADD_FAIL_COUNT
 echo "code-review-passed" > "$GH_STUB_STATE_DIR/labels-502.txt"
 bash "$REFRESH_SH" 502 code-review-passed >"$TEST_DIR/out2.txt" 2>&1
 RC=$?
@@ -205,6 +241,7 @@ for nack_label in "${MERGE_GATE_NACK_LABELS[@]}"; do
   export GH_STUB_LOG="$TEST_DIR/log-nack-$PR_COUNTER"
   export GH_STUB_CURRENT_PR="$PR_COUNTER"
   export GH_STUB_CURRENT_LABEL="$nack_label"
+  unset GH_STUB_ADD_FAIL_COUNT
   bash "$REFRESH_SH" "$PR_COUNTER" "$nack_label" >"$TEST_DIR/out-nack-$PR_COUNTER.txt" 2>&1
   RC=$?
   if [[ "$RC" -ne 0 ]]; then
@@ -220,6 +257,7 @@ echo "Test 4: missing args -> usage error, no gh call"
 export GH_STUB_LOG="$TEST_DIR/log-usage"
 export GH_STUB_CURRENT_PR=""
 export GH_STUB_CURRENT_LABEL=""
+unset GH_STUB_ADD_FAIL_COUNT
 bash "$REFRESH_SH" 700 >"$TEST_DIR/out-usage.txt" 2>&1
 RC=$?
 if [[ "$RC" -ne 0 ]]; then
@@ -232,6 +270,110 @@ if [[ ! -f "$GH_STUB_LOG" ]]; then
 else
   fail "test4: no gh call made before the usage error" "$(cat "$GH_STUB_LOG")"
 fi
+
+# ── Test 5: THE FIX-ROUND WINDOW — transient add failure, retry recovers ────
+# This reproduces the code-reviewer's exact finding on PR #170: remove
+# succeeds, the re-add hits a simulated 403 once, and the label must still
+# be present at the end — not left stripped just because the first add
+# attempt failed.
+echo "Test 5: label present, add fails once (simulated 403), retry recovers -> label still present"
+export GH_STUB_LOG="$TEST_DIR/log5"
+export GH_STUB_CURRENT_PR=503
+export GH_STUB_CURRENT_LABEL="code-review-passed"
+export GH_STUB_ADD_FAIL_COUNT=1
+export REFRESH_GATE_LABEL_MAX_ADD_ATTEMPTS=3
+echo "code-review-passed" > "$GH_STUB_STATE_DIR/labels-503.txt"
+bash "$REFRESH_SH" 503 code-review-passed >"$TEST_DIR/out5.txt" 2>&1
+RC=$?
+assert_eq "test5: exit 0 once the retry succeeds" "$RC" "0"
+FINAL=$(cat "$GH_STUB_STATE_DIR/labels-503.txt" 2>/dev/null || true)
+assert_eq "test5: label present after the window (never left stripped)" "$FINAL" "code-review-passed"
+EXPECTED_SEQ5=$'MUTATE removeLabelsFromLabelable code-review-passed\nMUTATE addLabelsToLabelable code-review-passed FAILED (simulated)\nMUTATE addLabelsToLabelable code-review-passed'
+assert_eq "test5: remove, failed add, successful retry — in that order" "$(mutations_of)" "$EXPECTED_SEQ5"
+if grep -q "add attempt 1/3 failed" "$TEST_DIR/out5.txt"; then
+  pass "test5: helper reports the failed attempt"
+else
+  fail "test5: helper reports the failed attempt" "$(cat "$TEST_DIR/out5.txt")"
+fi
+if grep -q "applied fresh on PR #503" "$TEST_DIR/out5.txt"; then
+  pass "test5: helper reports the eventual success"
+else
+  fail "test5: helper reports the eventual success" "$(cat "$TEST_DIR/out5.txt")"
+fi
+unset REFRESH_GATE_LABEL_MAX_ADD_ATTEMPTS
+unset GH_STUB_ADD_FAIL_COUNT
+
+# ── Test 6: label present, every add attempt fails -> loud, named failure ───
+# No bounded retry can out-wait a fully down API. What must never happen is
+# silence: the script must exit nonzero and say exactly what state the PR is
+# in and how to fix it by hand.
+echo "Test 6: label present, every add attempt fails (persistent outage) -> CRITICAL, not silent"
+export GH_STUB_LOG="$TEST_DIR/log6"
+export GH_STUB_CURRENT_PR=504
+export GH_STUB_CURRENT_LABEL="code-review-passed"
+export GH_STUB_ADD_FAIL_COUNT=99
+export REFRESH_GATE_LABEL_MAX_ADD_ATTEMPTS=2
+echo "code-review-passed" > "$GH_STUB_STATE_DIR/labels-504.txt"
+bash "$REFRESH_SH" 504 code-review-passed >"$TEST_DIR/out6.txt" 2>&1
+RC=$?
+if [[ "$RC" -ne 0 ]]; then
+  pass "test6: exits nonzero when every attempt fails"
+else
+  fail "test6: exits nonzero when every attempt fails" "got rc=0"
+fi
+if grep -q "CRITICAL.*'code-review-passed' was present on PR #504" "$TEST_DIR/out6.txt" \
+  && grep -q "gh pr edit 504 --repo fulcrumaxe/fulcrumaxe --add-label code-review-passed" "$TEST_DIR/out6.txt"; then
+  pass "test6: CRITICAL message names the PR, the label, and the exact remediation command"
+else
+  fail "test6: CRITICAL message names the PR, the label, and the exact remediation command" "$(cat "$TEST_DIR/out6.txt")"
+fi
+if [[ -f "${GH_STUB_LOG}.mutations" ]]; then
+  ADD_ATTEMPTS_6=$(grep -c "MUTATE addLabelsToLabelable code-review-passed FAILED" "${GH_STUB_LOG}.mutations")
+else
+  ADD_ATTEMPTS_6=0
+fi
+assert_eq "test6: exactly REFRESH_GATE_LABEL_MAX_ADD_ATTEMPTS add attempts were made" "$ADD_ATTEMPTS_6" "2"
+unset REFRESH_GATE_LABEL_MAX_ADD_ATTEMPTS
+unset GH_STUB_ADD_FAIL_COUNT
+
+# ── Test 7: label absent, every add attempt fails -> unchanged, not CRITICAL ─
+# Nothing was ever removed here, so a failed first-time add leaves the PR
+# exactly as it started (label absent). This must be reported as a plain
+# failure, not as the CRITICAL "label was stripped" case — nothing was lost.
+echo "Test 7: label absent, every add attempt fails -> state unchanged, no CRITICAL wording"
+export GH_STUB_LOG="$TEST_DIR/log7"
+export GH_STUB_CURRENT_PR=505
+export GH_STUB_CURRENT_LABEL="code-review-passed"
+export GH_STUB_ADD_FAIL_COUNT=99
+export REFRESH_GATE_LABEL_MAX_ADD_ATTEMPTS=2
+rm -f "$GH_STUB_STATE_DIR/labels-505.txt"
+bash "$REFRESH_SH" 505 code-review-passed >"$TEST_DIR/out7.txt" 2>&1
+RC=$?
+if [[ "$RC" -ne 0 ]]; then
+  pass "test7: exits nonzero when every attempt fails"
+else
+  fail "test7: exits nonzero when every attempt fails" "got rc=0"
+fi
+FINAL7=$(cat "$GH_STUB_STATE_DIR/labels-505.txt" 2>/dev/null || true)
+assert_eq "test7: label still absent — matches its starting state" "$FINAL7" ""
+if [[ -f "${GH_STUB_LOG}.mutations" ]]; then
+  REMOVE_CALLS_7=$(grep -c "MUTATE removeLabelsFromLabelable" "${GH_STUB_LOG}.mutations")
+else
+  REMOVE_CALLS_7=0
+fi
+assert_eq "test7: nothing was ever removed (it was never present)" "$REMOVE_CALLS_7" "0"
+if grep -q "CRITICAL" "$TEST_DIR/out7.txt"; then
+  fail "test7: no CRITICAL wording — nothing was lost" "$(cat "$TEST_DIR/out7.txt")"
+else
+  pass "test7: no CRITICAL wording — nothing was lost"
+fi
+if grep -q "state is unchanged" "$TEST_DIR/out7.txt"; then
+  pass "test7: message says state is unchanged"
+else
+  fail "test7: message says state is unchanged" "$(cat "$TEST_DIR/out7.txt")"
+fi
+unset REFRESH_GATE_LABEL_MAX_ADD_ATTEMPTS
+unset GH_STUB_ADD_FAIL_COUNT
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
