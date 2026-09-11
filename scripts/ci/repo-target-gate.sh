@@ -195,9 +195,29 @@ fi
 # pre-D#2492 bug did, this is a documented, reviewable non-enforcement
 # decision — a ledger entry, not an accident — distinct from every other
 # branch here, all of which stay fail-closed.
+#
+# D#2545: the check above used to stop at "is the header missing" and treat
+# that alone as license to skip. That made "this file is legitimately
+# scoped to the code plane" indistinguishable from "an enforcing tree just
+# had its === IDENTITIES_START === line deleted" — and it was a strictly
+# weaker position than pre-D#2492, when the structure-blind sed below ran
+# unconditionally and would still have found OLD_OWNER= and enforced. The
+# skip now needs an EXPLICIT declaration (a bare NO_IDENTITIES=declared
+# line) before it is taken. "I have deliberately declared this tree carries
+# no identities" and "I could not find a header line" are different
+# statements; only the first is safe to trust with a clean exit. Absence of
+# both the header AND the declaration is a hard FAIL, not a skip — a tree
+# that says nothing about itself gets enforcement, exactly like every other
+# branch here.
 if ! grep -q '^=== IDENTITIES_START ===' "$RULES_FILE"; then
-  echo "SKIP (ledgered): $RULES_FILE has no IDENTITIES block — this rules file is scoped to the code plane by design (D#2492) and never carries the private owner identity, so there is nothing here for this gate to hunt without publishing it. See IDENTIFIER-RULES.txt's own header."
-  exit 0
+  DECLARED="$(sed -n 's/^[[:space:]]*NO_IDENTITIES=\(.*\)$/\1/p' "$RULES_FILE" | head -1)"
+  DECLARED="${DECLARED%"${DECLARED##*[![:space:]]}"}"
+  if [[ "$DECLARED" == "declared" ]]; then
+    echo "SKIP (ledgered): $RULES_FILE has no IDENTITIES block and declares NO_IDENTITIES=declared — this rules file is scoped to the code plane by design (D#2492) and never carries the private owner identity, so there is nothing here for this gate to hunt without publishing it. See IDENTIFIER-RULES.txt's own header."
+    exit 0
+  fi
+  echo "FAIL: $RULES_FILE has no IDENTITIES block and does not declare NO_IDENTITIES=declared — this could be a legitimately code-plane-scoped file missing its declaration, or an enforcing tree with the header line stripped, and a gate that cannot tell those two apart must not report a pass (D#2545)"
+  exit 1
 fi
 
 # Deliberately a targeted read of one key rather than the full block parser

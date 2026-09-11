@@ -31,6 +31,17 @@
 # up-to-date mechanics. Separately, and unrelated to this file: that script
 # has a pre-existing stale-ALLOWLIST-entry defect, named as a follow-up in
 # the PR description rather than bundled here.
+#
+# D#2545: repo-target-gate.sh used to infer "this file legitimately has no
+# IDENTITIES block" from the mere absence of the === IDENTITIES_START ===
+# header, which made this file indistinguishable from an enforcing tree
+# that had that one header line stripped. The gate now requires an
+# explicit declaration before it will skip on that absence — the bare key
+# below, matched token-for-token, not the shape of the file around it. Do
+# not remove this line: without it, this file's own legitimate
+# non-enforcement now reads as unproven and repo-target-gate.sh FAILs
+# instead of skipping.
+NO_IDENTITIES=declared
 
 === FORBIDDEN_PATTERNS_START ===
 john[p]roblems
