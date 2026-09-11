@@ -45,10 +45,18 @@ ORIGINAL_NAME = "autonomous-forever"
 
 
 def _render_with_repo(role: str, repo: str) -> str:
-    """Render a template substituting {{REPO}} with *repo* (REPO_OWNER/REPO_NAME auto-derived)."""
+    """Render a template substituting {{REPO}} with *repo* (REPO_OWNER/REPO_NAME auto-derived).
+
+    Also pins {{CODE_REPO}} to the same *repo*. Some roles' PR-scoped `gh`
+    calls render {{CODE_REPO}} rather than {{REPO}} (the two plane-aware
+    placeholders spawn_templates.py binds independently) — without pinning
+    it here too, this helper's portability check would only see whichever
+    half of a role's calls still happens to use {{REPO}}, and would miss a
+    role whose {{REPO}} usage moved entirely to {{CODE_REPO}}.
+    """
     return st.render_body(
         role,
-        vars={"REPO": repo},
+        vars={"REPO": repo, "CODE_REPO": repo},
         ignore_unknown=True,
     )
 

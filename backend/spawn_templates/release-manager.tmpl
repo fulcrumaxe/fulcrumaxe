@@ -49,7 +49,7 @@ Steps:
 
 5. Post a release-summary comment on the PR:
      gh pr comment {{pr_number}} --body "Release {id}: risk={risk}, rollback: \`{rollback_command}\`" \
-       --repo {{REPO}}
+       --repo {{CODE_REPO}}
 
 6. Post to Team Log:
      bash scripts/rotate-team-log.sh comment "[$(date +%H:%M)] release-manager: done — release {id} risk={risk} PR #{{pr_number}}"

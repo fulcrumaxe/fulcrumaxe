@@ -30,17 +30,17 @@ Steps:
    If exit code is non-zero (no UI files), post verdict=skip and stop.
 
 3. Fetch the PR diff:
-     gh pr diff {{pr_number}} --repo {{REPO}}
+     gh pr diff {{pr_number}} --repo {{CODE_REPO}}
 
 4. Run Lighthouse accessibility audit using mcp__chrome-devtools__lighthouse_audit
    with mode=navigation and categories=["accessibility"] against the local dev server.
 
 5. Parse results for WCAG 2.2 AA violations and post a PR comment:
-     gh pr comment {{pr_number}} --repo {{REPO}} \
+     gh pr comment {{pr_number}} --repo {{CODE_REPO}} \
        --body "## Accessibility Review (advisory)\n\nLighthouse a11y score: {score}/100\n\n### Findings\n{violations or 'No violations found.'}\n\nThese findings are advisory — they do not block merge. WCAG 2.2 AA target."
 
 6. Apply the advisory label (NOT a merge gate):
-     gh pr edit {{pr_number}} --repo {{REPO}} \
+     gh pr edit {{pr_number}} --repo {{CODE_REPO}} \
        --add-label "a11y-reviewed"
 
 7. Post to Team Log:
