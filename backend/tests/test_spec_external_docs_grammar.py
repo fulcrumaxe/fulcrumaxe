@@ -25,6 +25,7 @@ scan path. The reproduction is not used by any production code path.
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 import shutil
@@ -132,13 +133,51 @@ class TestRedBeforeRealSourceStaysLazy:
 
 
 # ---------------------------------------------------------------------------
-# Criterion 3 — whole-tree differential, Python. Real files, not a fixture.
+# Ground truth for "is this name really imported anywhere in the live tree",
+# computed fresh on every run instead of hardcoded (D#2528 / D#1996: a
+# differential test that asserts against a frozen snapshot of the tree goes
+# permanently red the moment the tree drifts, and a permanently-red
+# differential test is worse than no test at all — it stops carrying
+# information the moment it's absorbed into a known-red baseline).
+#
+# `ast` is used rather than another regex: it is simpler than, and
+# independent of, the extractor under test, and it is authoritative about
+# what a file really imports (a docstring or comment that merely looks like
+# an import statement can't fool a real parser the way it can fool a regex).
+# It intentionally does NOT apply the TS-shaped-line guard or diff-only
+# narrowing the real extractor applies — those are exactly the behaviors
+# under test, so ground truth must not depend on them.
 # ---------------------------------------------------------------------------
 
-_DROPPED_14 = frozenset({
-    "Discussion", "GitHub", "_is_kernel_device", "_state_dir", "a", "agent",
-    "an", "clean", "config", "multiple", "other", "stays", "the", "wherever",
-})
+
+def _derive_real_third_party_imports(files: list[Path]) -> frozenset[str]:
+    stdlib = _STDLIB_NAMES
+    allowlist = _load_allowlist()
+    first_party = _FIRST_PARTY_NAMES
+    names: set[str] = set()
+    for path in files:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    names.add(alias.name.split(".")[0])
+            elif isinstance(node, ast.ImportFrom):
+                if node.level:  # relative import: `from . import x`
+                    continue
+                if node.module:
+                    names.add(node.module.split(".")[0])
+    return frozenset(
+        n for n in names if n not in stdlib and n not in allowlist and n not in first_party
+    )
+
+
+# ---------------------------------------------------------------------------
+# Criterion 3 — whole-tree differential, Python. Real files, not a fixture.
+# ---------------------------------------------------------------------------
 
 
 class TestWholeTreeDifferential:
@@ -155,22 +194,29 @@ class TestWholeTreeDifferential:
             old_names |= set(_old_extract_python_externals(text))
             new_names |= set(_extract_python_externals(text))
 
-        assert len(old_names) == 40, sorted(old_names)
-        assert len(new_names) == 26, sorted(new_names)
-        assert old_names - new_names == _DROPPED_14
-        assert new_names - old_names == set()
+        # Structural invariant, true by construction and independent of tree
+        # content: the grammar-accurate matcher only narrows the naive one
+        # (both share the same stdlib/allowlist/first-party/TS-guard
+        # filters; the grammar requirement can only remove candidates, never
+        # add them).
+        assert new_names <= old_names, sorted(new_names - old_names)
+
+        dropped = old_names - new_names
+        # The narrowing must be non-vacuous on the real tree, or this test
+        # isn't differentiating anything.
+        assert dropped, "old and new extractors agree on every name over the live tree"
+
+        # And it must be safe: nothing the grammar fix drops is a genuine
+        # import the tree actually relies on — this is what makes the test
+        # able to catch a narrowing regression, not just a wording change.
+        true_positives = _derive_real_third_party_imports(files)
+        lost_real_imports = dropped & true_positives
+        assert not lost_real_imports, f"grammar fix dropped real imports: {sorted(lost_real_imports)}"
 
 
 # ---------------------------------------------------------------------------
 # Criterion 4 — no true positive lost, each from its real importing file.
 # ---------------------------------------------------------------------------
-
-_TRUE_POSITIVES = (
-    "fastapi", "textual", "yaml", "httpx", "claude_agent_sdk", "anthropic",
-    "pydantic", "starlette", "uvicorn", "dateutil", "jwt", "torch", "trl",
-    "unsloth", "transformers", "datasets", "huggingface_hub", "keyring",
-    "pyseccomp", "cryptography", "aiohttp", "rich", "anyio", "PIL",
-)
 
 
 class TestNoTruePositiveLost:
@@ -180,7 +226,13 @@ class TestNoTruePositiveLost:
         for path in files:
             text = path.read_text(encoding="utf-8", errors="replace")
             found |= set(_extract_python_externals(text))
-        missing = [n for n in _TRUE_POSITIVES if n not in found]
+
+        true_positives = _derive_real_third_party_imports(files)
+        # A ground truth that came back empty would make the assertion below
+        # vacuous — fail loudly instead of silently passing.
+        assert true_positives, "no real third-party imports found in the live tree to check against"
+
+        missing = sorted(true_positives - found)
         assert not missing, f"lost true positives: {missing}"
 
 
