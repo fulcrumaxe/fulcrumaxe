@@ -66,7 +66,7 @@
     "scripts/capture-proof.sh": "b4cef46fa8cea1fcf487e9365e9f0ca26c29e0f21556aecdaad530e9fc56ceb6",
     "scripts/check-bun-test-timeout.sh": "e2331c8810b534d48165f9bb01338ec259fcd2dd0135d31ea0ba61a9c00bd988",
     "scripts/check-forbidden-identifiers.sh": "d1c832544ac46c3a4a2ef503165e9436e71966422a2b074bc22d2bad1139b67f",
-    "scripts/check-no-hardcoded-checkout-paths.sh": "9a45be66e3ea871398ee2fe2b52f5d4cb196fb1649d0766b3b7860db8270b4eb",
+    "scripts/check-no-hardcoded-checkout-paths.sh": "9a11019004ad8aa64e4cf91e6e917df94bed11f9c94cb9e883a2916970934634",
     "scripts/check-pr-cli-touched.sh": "b2adaab3117c87821730b6c7abeecd1199369b477466a8aaf320bbec2950d0c3",
     "scripts/check-pr-dashboard-touched.sh": "380e0581e9c8341a3f0a262ddfc13efd081fa6cf889463578cc2070ba890ec05",
     "scripts/check-prompt-drift.sh": "a3979c568a39494bd19fa5bcdb74174b3575f022365b41de9584824ecea7c189",
