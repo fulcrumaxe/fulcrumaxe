@@ -172,6 +172,13 @@ class TestHasOpenDoneMarker:
         assert has_open_done_marker(body, done_value="CLOSED") is True
         assert has_open_done_marker(body, done_value="DONE") is False
 
+    def test_parked_marker_is_not_flagged(self):
+        # D#2122: PARKED means "deliberately not started", not "finished" —
+        # it must never trip the DONE detector, even in the exact well-formed
+        # first-line shape that DOES trip it for DONE.
+        body = "<!-- STATUS:PARKED SINCE:2026-09-10T00:00:00Z -->\n\nparked, not done\n"
+        assert has_open_done_marker(body) is False
+
 
 class TestRunSweep:
     def test_combines_log_and_body_detectors(self, tmp_path):
@@ -235,6 +242,14 @@ class TestRunSweep:
                     "body": "<!-- STATUS:DONE SINCE:2026-01-01T00:00:00Z -->\n\nordinary body\n",
                     "closed": True,
                 },
+                # D#2122 discriminating case, both directions in one run: an
+                # OPEN Discussion correctly marked PARKED must NOT be flagged
+                # — same first-line-marker shape as 1908 above, different
+                # value, and the detector must still tell them apart.
+                2122: {
+                    "body": "<!-- STATUS:PARKED SINCE:2026-09-10T00:00:00Z -->\n\nparked, not done\n",
+                    "closed": False,
+                },
             }
 
         report = run_sweep(repo_root=tmp_path, fetch_closed_fn=fake_fetch)
@@ -245,6 +260,7 @@ class TestRunSweep:
 
         assert 2020 not in by_number, "OPEN + non-DONE marker must not be flagged"
         assert 1997 not in by_number, "CLOSED + single clean DONE marker must not be flagged"
+        assert 2122 not in by_number, "OPEN + correctly-PARKED marker must not be flagged"
 
     def test_sources_scanned_never_empty_even_with_no_files(self, tmp_path):
         report = run_sweep(repo_root=tmp_path, fetch_closed_fn=lambda: {})

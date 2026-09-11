@@ -204,7 +204,7 @@
     "scripts/lib/run-analyst-sweep.sh": "138f5d286622dae672e54e4e7e34bfc30a5559d33ed8ca72c6bfb58af7641ee3",
     "scripts/lib/security-trigger.sh": "97cb941f4c928161475753054ad3dc7f72f81a8aed8b112a064eb6ff80661bde",
     "scripts/lib/self-observe-gate.sh": "3ae54ae3a7f69a4ebd3e30436e6d2f121d0e4d928224ebf6327a7c6ddf968a6e",
-    "scripts/lib/spec-ready-gate.sh": "3f7ea3a9724294d857e6e4f6b4d0477a307b7f1fb031cd6ebf65cc587c5809e5",
+    "scripts/lib/spec-ready-gate.sh": "cd4e2be3ea92cfd450d8986f8a49b167dc421fea149dd9aa4f5ed4f2e20786ec",
     "scripts/lib/stuck-pr-detect.sh": "5ad6fdaa5891b71a38e614aeac85167789fe2374571f158d2c0264b6da8322ec",
     "scripts/lib/team-lead-prompts.sh": "f9e3a5b0dc46f833ba88b9c9f1d7ff367a4bd624c1d45065121f3e651c087aa5",
     "scripts/lib/tree-capability.sh": "0773910698d04cf521f17f2b4f5c5123f8904e0268606e6299a79ef23cc51d11",

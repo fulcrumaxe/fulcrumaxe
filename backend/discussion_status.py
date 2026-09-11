@@ -69,6 +69,11 @@ VALID_STATUSES = {
     "REVIEWING",
     "DONE",
     "CLOSED",
+    # PARKED means "deliberately not started" — distinct from DONE ("finished").
+    # The spawn gate refuses it like DONE/CLOSED (scripts/lib/spec-ready-gate.sh),
+    # but backlog/count readers must treat it as OUTSTANDING, not complete
+    # (backend/registry.py). See D#2122.
+    "PARKED",
 }
 
 # The three required section headers (in the three-section spec template).
