@@ -2347,17 +2347,22 @@ _READONLY_COMMAND_NAMES: frozenset[str] = frozenset(
 # is a plain script-file invocation (`python3 seed.py`), where the write target
 # lives inside a file we cannot see into; see the F19 residual-risk note above.
 #
-# D#2483 PR-171 fix round (review regression 2): this used to be an exact-name
-# frozenset (`{"python3", "python"}`), which loses this whole layer for any
-# other real interpreter spelling — `python3.11`, `python3.12`, `pypy3`, "uv
-# run python" all fell through it, for BOTH the relative-path segment_text
-# scan below and the pre-existing absolute-path deep-scan gate that shares
-# this same check. Not an exotic-spelling concern: `.venv/bin/python3.12` is
-# the resolved interpreter on this repo's own PATH, ahead of the nix-store
+# D#2483 PR-171 fix round 2 (review regression 2): this used to be an
+# exact-name frozenset (`{"python3", "python"}`), which loses this whole
+# layer for any other real interpreter SPELLING — `python3.11`, `python3.12`,
+# `pypy3` all fell through it, for BOTH the relative-path segment_text scan
+# below and the pre-existing absolute-path deep-scan gate that shares this
+# same check. Not an exotic-spelling concern: `.venv/bin/python3.12` is the
+# resolved interpreter on this repo's own PATH, ahead of the nix-store
 # `python3`. `_is_py_interpreter_name()` is version-suffix tolerant instead —
 # `python`/`python2`/`python3`/`pythonX.Y` and the `pypy` family — anchored at
 # both ends so it still does not match an unrelated name that merely contains
 # "python" (`python3-config`, `ipython`).
+#
+# This predicate tests one TOKEN's name; it was never the reason `timeout
+# ... python3 ...` / `uv run python ...` lost the guard — that was which
+# TOKEN got tested (argv[0] only), fixed in round 3 by
+# `_segment_has_py_interpreter_token()`, not by this regex.
 _PY_INTERPRETER_NAME_RE: re.Pattern[str] = re.compile(r"^(?:python|pypy)(?:[23](?:\.\d+)?)?$")
 
 
@@ -2874,6 +2879,46 @@ def _segment_command_name(tokens: list[str]) -> Optional[str]:
     return None
 
 
+def _segment_has_py_interpreter_token(segment: list[str]) -> bool:
+    """True if ANY token in *segment* is a python/pypy interpreter basename.
+
+    D#2483 PR-171 fix round 3 (security re-review): the two python-payload
+    gates below (`_scan_command_segments`'s relative-basename scan and its
+    absolute-path deep-scan) used to test only `_segment_command_name(segment)`
+    — effectively argv[0] — against `_is_py_interpreter_name()`. That is
+    right when the interpreter genuinely IS argv[0], but wrong whenever a
+    command-prefix wrapper sits in front of it: `timeout 60 python3 -c ...`,
+    `nohup python3 -c ...`, `nice -n 10 python3 -c ...`, `stdbuf -oL python3
+    -c ...`, `xargs python3 -c ...`, `command python3 -c ...`, and `uv run
+    python -c ...` all resolve to a command NAME of `timeout` / `nohup` /
+    `nice` / `stdbuf` / `xargs` / `command` / `uv` — none of which is a
+    python interpreter name — so both gates silently skipped the payload
+    scan for all of them. `timeout --kill-after=5s N python3 ...` is this
+    repo's own standard bounded-run shape (`scripts/preflight-fast.sh`,
+    `scripts/smoke-test.sh`), so this was not an exotic gap.
+
+    Unlike `_command_positions` (which enumerates a fixed
+    `_COMMAND_WRAPPER_TOKENS` allowlist to skip PAST a wrapper to find the
+    command it wraps), this checks every token in the segment for an
+    interpreter match directly — mirroring the shape `_heredoc_feeding_kind`
+    already uses to resolve what reads a heredoc body, except that function
+    trusts a single command position (the heredoc redirect line has exactly
+    one command to ask about) where this one cannot: an unbounded and
+    growing set of wrapper spellings (`uv run` is two tokens and isn't a
+    single-token wrapper at all) means enumerating wrappers here would just
+    move the gap to the next unlisted one. Scanning every token instead
+    means no wrapper enumeration is needed — measured: regressions on the 34
+    known prefixed-invocation shapes drop to 3 (`perl -e`, `ruby -e`, `node
+    -e` — see module note above `_PY_INTERPRETER_NAME_RE`, this predicate is
+    python/pypy-only by construction and cannot reach a non-python
+    interpreter no matter how it is gated) — and all 11 prose-mention false
+    positives this Discussion exists to fix stay fixed, because this only
+    widens WHICH segments get the python-payload scan, not what the scan
+    itself matches.
+    """
+    return any(_is_py_interpreter_name(os.path.basename(t)) for t in segment)
+
+
 def _sed_is_in_place(tokens: list[str]) -> bool:
     """Return True if a `sed` segment uses in-place editing.
 
@@ -3281,13 +3326,27 @@ def _scan_command_segments(
             # "..."` were both refused even though neither writes a file.
             # Replaced with two narrower, still-per-segment checks that
             # together cover every real shape the old one did, minus the
-            # prose false positive — re-measured after the PR-171 fix round
-            # (both blocking regressions the fix round found are covered by
-            # the `&>`/`&>>` normalisation above and by
-            # `_is_py_interpreter_name()`'s version tolerance, not by this
-            # pair of checks itself). `>`/`>>` glued with no leading `&`
+            # prose false positive. `>`/`>>` glued with no leading `&`
             # remains a known, pre-existing gap (D#2541), unchanged by this
             # PR either way.
+            #
+            # Three fix rounds on this pair of checks, each caught by the
+            # next security re-review rather than by CI (every round left a
+            # green suite): round 2 fixed the `&>`/`&>>` glued-redirect
+            # regression and `_is_py_interpreter_name()`'s version
+            # tolerance (`python3.11`, `pypy3`, ...). Round 3 fixed a LARGER
+            # one — gating check (2) below on the segment's COMMAND NAME
+            # lost the guard for any of `timeout`/`nohup`/`nice`/`stdbuf`/
+            # `xargs`/`command`/`uv run` in front of the interpreter (34
+            # regressed shapes, including this repo's own standard
+            # `timeout --kill-after=5s N python3 ...` invocation) — see
+            # `_segment_has_py_interpreter_token`'s docstring. That gate is
+            # python/pypy-only by construction (matches
+            # `_is_py_interpreter_name()`'s own scope): a `perl -e`, `ruby
+            # -e`, or `node -e` write to a dial-protected file's relative
+            # name is NOT caught by check (2) either before or after round
+            # 3 — a known, named, unfixed gap, not a claim this pair of
+            # checks now covers every interpreter.
             #
             # (1) A protected basename spelled as a whole token, OR as the
             #     value half of a glued `key=value` argument (`--file=
@@ -3303,24 +3362,26 @@ def _scan_command_segments(
             #     basename (the whole token, since it has no `/` or `=`) is
             #     the entire sentence, not an exact suffix name.
             #
-            # (2) For python/pypy interpreter segments only
-            #     (`_is_py_interpreter_name()`, the same gate the payload
-            #     deep-scan below uses): the
-            #     original unanchored substring search, kept exactly as it
-            #     was. This is the only layer that catches a protected
-            #     basename spelled RELATIVE *inside* a `-c` payload string —
-            #     `python3 -c "open('audit.jsonl','a').write('x')"` — which
-            #     the deep payload scan below can't reach (it only extracts
-            #     ABSOLUTE candidates, via `_ABS_PATH_TOKEN_RE`) and which
-            #     (1) above can't reach either (the match doesn't end at the
-            #     token's end or start right after `=`; the payload
-            #     continues past the filename). Measured: disabling the
-            #     original check entirely and running the full
+            # (2) For segments carrying a python/pypy interpreter TOKEN
+            #     anywhere (`_segment_has_py_interpreter_token()` — any
+            #     position, not just argv[0], since round 3 fixed exactly
+            #     that gap): the original unanchored substring search, kept
+            #     exactly as it was. This is the only layer that catches a
+            #     protected basename spelled RELATIVE *inside* a `-c`
+            #     payload string — `python3 -c "open('audit.jsonl','a')
+            #     .write('x')"`, `timeout 60 python3 -c "...audit.jsonl..."`
+            #     — which the deep payload scan below can't reach (it only
+            #     extracts ABSOLUTE candidates, via `_ABS_PATH_TOKEN_RE`)
+            #     and which (1) above can't reach either (the match doesn't
+            #     end at the token's end or start right after `=`; the
+            #     payload continues past the filename). Measured: disabling
+            #     the original check entirely and running the full
             #     tests/test_sandbox_rules.py suite turns exactly 4 tests
             #     red, all of them python -c payload writes to a dial-
             #     protected file — nothing else in the suite needs the
-            #     unanchored form, which is why it is scoped to python
-            #     segments rather than kept global.
+            #     unanchored form, which is why it is scoped to segments
+            #     carrying a python interpreter token rather than kept
+            #     global.
             for tok in segment:
                 glued_value = tok.split("=", 1)[1] if "=" in tok else None
                 for candidate in (tok, glued_value):
@@ -3333,8 +3394,7 @@ def _scan_command_segments(
                             reason=f"dial-registry write blocked: {name} is read-only for sub-agents",
                         )
 
-            seg_name = _segment_command_name(segment)
-            if _is_py_interpreter_name(seg_name):
+            if _segment_has_py_interpreter_token(segment):
                 segment_text = " ".join(segment)
                 basename_match = _PROTECTED_BASENAME_RE.search(segment_text)
                 if basename_match:
@@ -3364,8 +3424,13 @@ def _scan_command_segments(
             # demonstrates write intent — see `_python_payload_has_write_call`
             # for why that's a different, narrower gate than "not proven
             # read-only" (which also fires for a genuine read like R6).
-            seg_name = _segment_command_name(segment)
-            if _is_py_interpreter_name(seg_name):
+            #
+            # D#2483 PR-171 round 3: this gate shares
+            # `_segment_has_py_interpreter_token()` with the relative-basename
+            # scan above — same regression (command-name-only gating lost a
+            # prefixed interpreter), same fix, same known non-python gap. See
+            # that function's docstring.
+            if _segment_has_py_interpreter_token(segment):
                 payload, _saw_dash_c = _python_c_payload(segment)
                 if payload is not None and _python_payload_has_write_call(payload):
                     collapsed_payload = _COLLAPSE_MULTISLASH_RE.sub("/", payload)

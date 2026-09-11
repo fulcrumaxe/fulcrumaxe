@@ -4930,3 +4930,113 @@ class TestD2483PR171ProseStillNotAPathMention:
         cmd = 'gh issue comment --body "see ' + _D2483_SCRIPT_BASENAME + '"'
         d = classify_bash(cmd, _WT_CLAUDE)
         assert d.allow is True, f"expected ALLOW, got reason={d.reason!r}"
+
+
+# ---------------------------------------------------------------------------
+# D#2483 PR-171 fix round 3 -- security re-review found a LARGER regression
+# than the two round-2 fixed: both python-payload checks gated on the
+# segment's COMMAND NAME (effectively argv[0]) rather than on whether the
+# segment carries a python interpreter TOKEN anywhere. Any command-prefix
+# wrapper in front of the interpreter -- including this repo's own standard
+# `timeout --kill-after=5s N <cmd>` bounded-run shape
+# (scripts/preflight-fast.sh, scripts/smoke-test.sh) -- lost the guard
+# entirely. This was a test-coverage gap, not a broken suite: CI stayed
+# green through two rounds because nothing exercised a prefixed form.
+# ---------------------------------------------------------------------------
+
+
+class TestD2483PR171Round3PrefixedInterpreterStillBlocked:
+    """Fixed by `_segment_has_py_interpreter_token()`, which scans every
+    token in the segment for a python/pypy interpreter name instead of just
+    the segment's resolved command name. Covers both python-payload gates:
+    the relative dial-protected-basename scan (site 1) and the absolute-path
+    deep scan (site 2) -- both shared the same broken gate."""
+
+    _PREFIX_TEMPLATES = {
+        "timeout": "timeout 60 {interp}",
+        "timeout_kill_after": "timeout --kill-after=5s 600 {interp}",
+        "nohup": "nohup {interp}",
+        "nohup_env": "nohup env FOO=bar {interp}",
+        "nice": "nice -n 10 {interp}",
+        "stdbuf": "stdbuf -oL {interp}",
+        "xargs": "xargs {interp}",
+        "command": "command {interp}",
+        "env": "env {interp}",
+        "uv_run": "uv run {interp}",
+    }
+
+    @pytest.mark.parametrize("prefix_name", list(_PREFIX_TEMPLATES))
+    def test_relative_payload_write_blocked_through_prefix(
+        self, prefix_name: str
+    ) -> None:
+        template = self._PREFIX_TEMPLATES[prefix_name]
+        cmd = template.format(interp="python3") + (
+            " -c \"open('" + _D2483_REGISTRY_BASENAME + "','a').write('x')\""
+        )
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+        assert _D2483_REGISTRY_BASENAME in d.reason
+
+    @pytest.mark.parametrize("prefix_name", list(_PREFIX_TEMPLATES))
+    def test_absolute_payload_write_blocked_through_prefix(
+        self, prefix_name: str
+    ) -> None:
+        template = self._PREFIX_TEMPLATES[prefix_name]
+        target = f"{FIXTURE_HOME}/.autonomous-forever-state/{_D2483_REGISTRY_BASENAME}"
+        cmd = template.format(interp="python3") + (
+            " -c \"open('" + target + "','w').write('x')\""
+        )
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+
+    def test_own_standard_bounded_run_shape_blocked(self) -> None:
+        # The exact invocation shape this repo's own scripts/preflight-fast.sh
+        # and scripts/smoke-test.sh use -- verbatim, not just its template.
+        cmd = (
+            "timeout --kill-after=5s 600 python3 -c \"open('"
+            + _D2483_REGISTRY_BASENAME
+            + "','a').write('x')\""
+        )
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+
+    def test_prose_mention_through_prefix_still_allowed(self) -> None:
+        # The fix widens WHICH segments get scanned, not what the scan
+        # matches -- a prefixed non-write command must stay allowed.
+        cmd = 'timeout 60 gh issue comment --body "see ' + _D2483_SCRIPT_BASENAME + '"'
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is True, f"expected ALLOW, got reason={d.reason!r}"
+
+
+class TestD2483PR171Round3NonPythonInterpreterKnownGap:
+    """`_segment_has_py_interpreter_token()` is python/pypy-only by
+    construction -- it delegates to `_is_py_interpreter_name()`, the same
+    predicate `_PY_INTERPRETER_NAME_RE` defines. A `perl -e` / `ruby -e` /
+    `node -e` write to a dial-protected file's RELATIVE name is not reached
+    by either python-payload gate, with or without a command-prefix wrapper.
+    Not this round's regression and not this round's fix -- documented here,
+    the same way D#2541's glued-redirect gap is documented next to its own
+    fix, so a future change to this gate notices the gap rather than
+    silently reopening or silently widening it."""
+
+    @pytest.mark.parametrize(
+        "cmd_template",
+        [
+            "perl -e \"open(F,'>>','{target}'); print F 'x';\"",
+            "node -e \"require('fs').appendFileSync('{target}','x')\"",
+            "timeout 60 perl -e \"open(F,'>>','{target}'); print F 'x';\"",
+        ],
+    )
+    def test_non_python_interpreter_relative_write_not_reached(
+        self, cmd_template: str
+    ) -> None:
+        cmd = cmd_template.format(target=_D2483_REGISTRY_BASENAME)
+        d = classify_bash(cmd, _WT_CLAUDE)
+        # Documenting the known gap, not asserting it is desirable:
+        # `_segment_has_py_interpreter_token()` cannot reach this by
+        # construction -- see the class docstring.
+        assert d.allow is True, (
+            f"known non-python gap closed for `{cmd}` -- if this now blocks, "
+            "update this test and the module comment above "
+            "_segment_has_py_interpreter_token that documents the gap"
+        )
