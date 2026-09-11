@@ -86,6 +86,7 @@
     "scripts/ci/readme-links.sh": "9e20698b339438194616e0b5e82c97ded29110974e4c8f1b96722a2941b23e77",
     "scripts/ci/repo-target-gate.sh": "27e269abfbde5bd6fb26e841d648b55f65e8e8bf4725e316fd6a89f22c6762ee",
     "scripts/ci/run-guards.sh": "63be7d7866a10c8ac7579ef3e303965ab7c07491a9818bd648edc0179b67cacd",
+    "scripts/ci/subshell-mutation-guard.sh": "57f00a4daf19b8ae2ba95fb6927838195b8257a7194f8ef1ac827be95d758a53",
     "scripts/ci/triage-discard-unreadable-meta-guard.sh": "860b25ea2513a6abb4a6332282854270d86c891c2d53b99839b0bbfe989c625e",
     "scripts/ci/ts-backend-test-integrity.sh": "681c61a8092f8f77ec48924b9b7d7d76f1cfaa6d6eddd6f26fa53a6cc5244d70",
     "scripts/ci/unpinned-gh-pr-guard.sh": "7d43e8bf4151714e7128c3a31b160b0384cc2f4fc00d35602979024bd33c1ce4",
