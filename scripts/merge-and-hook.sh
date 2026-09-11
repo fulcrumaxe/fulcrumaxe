@@ -237,8 +237,10 @@ echo "[merge-and-hook] merge-gate labels OK for PR #$PR — no blocking label pr
 # the loop's fail-open behaviour is unchanged and out of scope here.
 #
 # No --force flag, for the same reason the label-presence checks above have
-# none: the remedy (get the label re-applied against the current head) is
-# always available and leaves a visible trail on the PR itself.
+# none: the remedy — refresh the label against the current head with
+# scripts/refresh-gate-label.sh (D#2535; a bare `gh pr edit --add-label` on
+# an already-present label is a no-op and writes no new event) — is always
+# available and leaves a visible trail on the PR itself.
 _TIMELINE_RC=0
 _TIMELINE="$(gh api "repos/${_CODE_REPO}/issues/${PR}/timeline" --paginate \
   -q '.[] | select(.event=="labeled" or .event=="head_ref_force_pushed" or .event=="committed" or (.event // "" | startswith("base_ref_"))) | "\(.created_at // .committer.date)\t\(.event)\t\(.label.name // "")"' \
@@ -268,7 +270,7 @@ if [[ -n "$_STALE_AFTER_TS" ]]; then
     fi
     if [[ "$_LABEL_TS" < "$_STALE_AFTER_TS" ]]; then
       echo "[merge-and-hook] ERROR: PR #$PR's '$_gate_label' label is stale — labeled $_LABEL_TS, but $_STALE_AFTER_EVENT happened after, at $_STALE_AFTER_TS. The reviewed commit is not the current head. Refusing to merge." >&2
-      echo "[merge-and-hook] Get '$_gate_label' re-applied against the current head. There is no override flag for this check." >&2
+      echo "[merge-and-hook] Run: bash scripts/refresh-gate-label.sh $PR $_gate_label — re-applying an already-present label is a no-op and will not clear this (D#2535). There is no override flag for this check." >&2
       exit 1
     fi
   done

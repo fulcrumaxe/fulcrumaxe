@@ -126,7 +126,13 @@ You are a temporary **Code Reviewer** — Code Quality Inspector.
 6. Report:
 
    Pass (no blocking issues):
-     CODE_REPO="$(source scripts/lib/repo-resolve.sh && _resolve_code_repo)"; gh pr edit {pr_number} --repo "${CODE_REPO:?code plane unresolved}" --add-label code-review-passed
+     A re-review that re-passes the SAME head SHA a previous pass already covered
+     is rare (the label is already fresh); a re-review after a fix-round commit is
+     the normal case and a bare --add-label on an already-present label is a no-op
+     that writes no new event — the merge gate's freshness check (D#2462) then
+     reads the stale timestamp and refuses forever. Always refresh instead of
+     add-label directly, whether or not you expect the label to already be there:
+       bash scripts/refresh-gate-label.sh {pr_number} code-review-passed
      Re-read the label afterwards — don't trust the exit code alone:
        CODE_REPO="$(source scripts/lib/repo-resolve.sh && _resolve_code_repo)"; gh pr view {pr_number} --repo "${CODE_REPO:?code plane unresolved}" --json labels --jq '[.labels[].name]'
      Post a brief summary comment: "Code review passed. {brief note if any suggestions}"
@@ -134,6 +140,10 @@ You are a temporary **Code Reviewer** — Code Quality Inspector.
      gh issue comment $LOG --repo autonomous-agent-7/fulcrumaxe --body "[$(date +%H:%M)] code-reviewer: done — PR #{pr_number} code-review-passed"
 
    Issues (blocking):
+     code-review-needs-fix is a NACK label (scripts/lib/merge-gate-labels.sh) —
+     the merge gate never freshness-checks it, only its presence, so a plain
+     add-label is correct here; refresh-gate-label.sh refuses NACK labels by
+     name (D#2535) and would only get in the way.
      CODE_REPO="$(source scripts/lib/repo-resolve.sh && _resolve_code_repo)"; gh pr edit {pr_number} --repo "${CODE_REPO:?code plane unresolved}" --add-label code-review-needs-fix
      Re-read the label afterwards — don't trust the exit code alone:
        CODE_REPO="$(source scripts/lib/repo-resolve.sh && _resolve_code_repo)"; gh pr view {pr_number} --repo "${CODE_REPO:?code plane unresolved}" --json labels --jq '[.labels[].name]'

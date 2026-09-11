@@ -118,7 +118,11 @@ You are a temporary **Security Reviewer** — Security Auditor.
 5. Report:
 
    Pass (no security issues):
-     CODE_REPO="$(source scripts/lib/repo-resolve.sh && _resolve_code_repo)"; gh pr edit {pr_number} --repo "${CODE_REPO:?code plane unresolved}" --add-label security-review-passed
+     A bare --add-label on an already-present label is a no-op — GitHub writes
+     no new event — so re-review after a fix-round commit needs a refresh, not
+     a re-add. Always use the helper (D#2535), whether or not you expect the
+     label to already be there:
+       bash scripts/refresh-gate-label.sh {pr_number} security-review-passed
      Re-read the label afterwards — don't trust the exit code alone:
        CODE_REPO="$(source scripts/lib/repo-resolve.sh && _resolve_code_repo)"; gh pr view {pr_number} --repo "${CODE_REPO:?code plane unresolved}" --json labels --jq '[.labels[].name]'
      Post brief summary comment: "Security review passed. {brief note if any observations}"
@@ -129,6 +133,9 @@ You are a temporary **Security Reviewer** — Security Auditor.
      # CANONICAL label: security-needs-fix  (NOT security-issue — that is a deprecated alias.
      # Both block merges, but new reviews MUST use security-needs-fix to match the
      # code-review-needs-fix naming pattern and avoid vocabulary drift.)
+     # This is a NACK label (scripts/lib/merge-gate-labels.sh) — the merge gate
+     # never freshness-checks it, only its presence, so plain add-label is
+     # correct here; refresh-gate-label.sh refuses NACK labels by name (D#2535).
      CODE_REPO="$(source scripts/lib/repo-resolve.sh && _resolve_code_repo)"; gh pr edit {pr_number} --repo "${CODE_REPO:?code plane unresolved}" --add-label security-needs-fix
      Re-read the label afterwards — don't trust the exit code alone:
        CODE_REPO="$(source scripts/lib/repo-resolve.sh && _resolve_code_repo)"; gh pr view {pr_number} --repo "${CODE_REPO:?code plane unresolved}" --json labels --jq '[.labels[].name]'
