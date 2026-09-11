@@ -36,19 +36,43 @@ _COMPLETION_BLOCK_RE = re.compile(
 _KV_PLAIN_RE = re.compile(r"^(\w+):\s*(.+)")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-REGISTRY = REPO_ROOT / ".autonomous-team" / "registry.json"
 METRICS = REPO_ROOT / ".autonomous-team" / "loop-metrics.jsonl"
 KPI_OUT = REPO_ROOT / ".autonomous-team" / "kpi.json"
 
 logger = logging.getLogger(__name__)
 
 
-def load_registry() -> list[dict]:
-    if not REGISTRY.exists():
-        logger.warning("registry not found at %s — velocity and cycle time will be zero", REGISTRY)
+def _registry_path() -> Path:
+    """Return the serving checkout's own registry.json path.
+
+    Computed on every call rather than cached as a module constant (D#2518):
+    a pre-joined ``REGISTRY = REPO_ROOT / ...`` bound at import time is what
+    made ``stats.dora`` UNSCOPABLE — a per-request override had nothing to
+    replace. ``load_registry(repo_root=...)`` is how a caller reaches a
+    different project's registry; this is only the no-project default.
+    """
+    return REPO_ROOT / ".autonomous-team" / "registry.json"
+
+
+def load_registry(repo_root: "Path | None" = None) -> list[dict]:
+    """Load discussion records from registry.json.
+
+    Args:
+        repo_root: project checkout root to read ``<repo_root>/.autonomous-team/
+            registry.json`` from, for per-project scoping. Defaults to the
+            serving checkout's own registry.json when omitted — existing
+            behaviour for AF-native callers.
+    """
+    registry_path = (
+        Path(repo_root) / ".autonomous-team" / "registry.json"
+        if repo_root is not None
+        else _registry_path()
+    )
+    if not registry_path.exists():
+        logger.warning("registry not found at %s — velocity and cycle time will be zero", registry_path)
         return []
     try:
-        data = json.loads(REGISTRY.read_text())
+        data = json.loads(registry_path.read_text())
         discussions = data.get("discussions", [])
         if not isinstance(discussions, list):
             logger.warning("registry.json missing 'discussions' list")
@@ -518,7 +542,9 @@ def cycle_time_histogram(days: int = 90, repo_root: "Path | None" = None) -> lis
     # When using the default repo root, delegate to load_registry() so that
     # callers (and tests) can patch a single well-known symbol.  For an
     # explicit repo_root override (per-project scoping) we read directly from
-    # that path because load_registry() is hardcoded to REPO_ROOT.
+    # that path rather than through load_registry(repo_root=...) — this
+    # branch predates that parameter and duplicating the read here is a
+    # smaller diff than threading a second call path through it.
     if repo_root is None:
         discussions = load_registry()
     else:

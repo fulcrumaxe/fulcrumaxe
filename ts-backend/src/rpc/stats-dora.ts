@@ -367,7 +367,9 @@ function loadRegistry(): Array<Record<string, unknown>> {
 /**
  * stats.dora — return DORA + KPI snapshot for the dashboard.
  *
- * params is accepted and ignored (reserved for future project-scoping, same as Python).
+ * params is accepted and ignored. Python's twin (backend/rpc/stats_dora.py)
+ * now honors a `project` param (D#2518) — this TS handler does not yet;
+ * see PARITY-CAVEATS.md #8.
  */
 export async function handleDora(
   _params: Record<string, unknown>

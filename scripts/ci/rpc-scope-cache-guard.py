@@ -485,8 +485,10 @@ class Fixture:
 
 GUARD_ROLE = "guard-fixture-role"
 GUARD_DISCUSSION = 913700501  # implausible as a real Discussion number
+GUARD_PR = 9002  # distinct from the gh shim's hardcoded PR 9001 above
 DURATIONS = {"alpha": 111.0, "beta": 222.0}
 TOKENS = {"alpha": (1000, 500), "beta": (9000, 4000)}
+RELEASE_COUNTS = {"alpha": 1, "beta": 3}
 
 
 def _seed_agent_feed(state_dir: Path, project: str) -> None:
@@ -539,6 +541,38 @@ def _seed_cosmetic_blocks(state_dir: Path, project: str) -> None:
     (hook_events / f"cosmetic-blocks-{today}.jsonl").write_text(
         "\n".join(lines) + "\n", encoding="utf-8"
     )
+
+
+def _seed_dora_releases(state_dir: Path, project: str) -> None:
+    """Seed <project_root>/.autonomous-team/releases/*.json — release
+    records analytics_engineer.compute_snapshot() reads for stats.dora
+    (D#2518), via the project_root the handler resolves as
+    ``state_dir.parent / project`` (backend/rpc/stats_dora.py). Differing
+    release counts per project, each merged well inside the trailing-7-day
+    window compute_dora_snapshot() checks, make deploy_frequency_per_day
+    genuinely differ between alpha and beta — plain JSON files under a
+    project root the handler already resolves, no git checkout needed.
+    """
+    import datetime as _dt
+
+    project_root = state_dir.parent / project
+    releases_dir = project_root / ".autonomous-team" / "releases"
+    releases_dir.mkdir(parents=True, exist_ok=True)
+    now = _dt.datetime.now(_dt.timezone.utc)
+    for i in range(RELEASE_COUNTS[project]):
+        merged_at = (now - _dt.timedelta(hours=2, minutes=i)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        record = {
+            "id": f"guard-{project}-{i:03d}",
+            "pr_numbers": [GUARD_PR + i],
+            "merged_at": merged_at,
+            "merge_shas": [],
+            "risk": "low",
+            "rollback_command": "git revert HEAD --no-edit",
+            "runbook_needed": False,
+        }
+        (releases_dir / f"guard-{project}-{i:03d}.json").write_text(
+            json.dumps(record), encoding="utf-8"
+        )
 
 
 def _seed_agent_run_and_cost(project: str, rpc_project_scope) -> None:
@@ -607,6 +641,7 @@ def seed_all(fixture: Fixture, rpc_project_scope, dispatch_scoped, rpc_methods) 
         _seed_loop_metrics(state_dir, project)
         _seed_a2a(state_dir, project)
         _seed_cosmetic_blocks(state_dir, project)
+        _seed_dora_releases(state_dir, project)
         _seed_agent_run_and_cost(project, rpc_project_scope)
         _seed_metric_events(project, rpc_project_scope)
         _seed_auth_retry(project, rpc_project_scope, dispatch_scoped, rpc_methods["auth_retry.record"])

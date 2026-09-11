@@ -155,6 +155,7 @@ SEEDS: dict[str, dict] = {
         "dial_rejected": 1,
         "auth_retries": 3,
         "open_runs": 1,
+        "release_count": 1,
     },
     "beta": {
         "token": "walrus",
@@ -176,6 +177,7 @@ SEEDS: dict[str, dict] = {
         "dial_rejected": 4,
         "auth_retries": 8,
         "open_runs": 3,
+        "release_count": 3,
     },
 }
 
@@ -682,6 +684,36 @@ def _seed_audit_log(state_dir: Path, project: str) -> None:
     (state_dir / "audit.jsonl").write_text("\n".join(rows) + "\n", encoding="utf-8")
 
 
+def _seed_dora_releases(state_dir: Path, project: str) -> None:
+    """Seed <project_root>/.autonomous-team/releases/*.json — release
+    records analytics_engineer.compute_snapshot() reads for stats.dora
+    (D#2518), via the project_root the handler resolves as
+    ``state_dir.parent / project`` (backend/rpc/stats_dora.py, same seam
+    kpi.history/kpi.cycle_time use — see their ledger entries above).
+    Differing release counts per project, each merged well inside the
+    trailing-7-day window compute_dora_snapshot() checks, make
+    deploy_frequency_per_day genuinely differ rather than needing a ledger
+    entry: unlike kpi.history/kpi.cycle_time this data is plain JSON files,
+    not a git checkout, so seeding it here is cheap.
+    """
+    project_root = state_dir.parent / project
+    releases_dir = project_root / ".autonomous-team" / "releases"
+    releases_dir.mkdir(parents=True, exist_ok=True)
+    for i in range(SEEDS[project]["release_count"]):
+        record = {
+            "id": f"guard-{SEEDS[project]['token']}-{i:03d}",
+            "pr_numbers": [GUARD_PR + i],
+            "merged_at": _anchored_iso(minutes_ago=120 + i),
+            "merge_shas": [],
+            "risk": "low",
+            "rollback_command": "git revert HEAD --no-edit",
+            "runbook_needed": False,
+        }
+        (releases_dir / f"guard-{SEEDS[project]['token']}-{i:03d}.json").write_text(
+            json.dumps(record), encoding="utf-8"
+        )
+
+
 def _seed_auth_retry(project: str, dispatch_scoped, rpc_methods) -> None:
     """auth_retry.record IS the write path — seed auth_retry.summary by
     calling the real RPC a different number of times per project."""
@@ -840,6 +872,7 @@ def seed_all(fixture: Fixture, rpc_project_scope, dispatch_scoped, rpc_methods) 
         _seed_a2a(state_dir, project)
         _seed_cosmetic_blocks(state_dir, project)
         _seed_audit_log(state_dir, project)
+        _seed_dora_releases(state_dir, project)
         _seed_duckdb(project, rpc_project_scope)
         _seed_auth_retry(project, dispatch_scoped, rpc_methods)
 

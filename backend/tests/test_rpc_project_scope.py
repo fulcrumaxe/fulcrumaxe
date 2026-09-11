@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import threading
 from pathlib import Path
 
@@ -46,6 +47,7 @@ import pytest
 from backend import rpc_project_scope as scope
 
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
+_REPO_ROOT_FOR_SUBPROCESS = _BACKEND_DIR.parent
 
 
 # ---------------------------------------------------------------------------
@@ -657,3 +659,228 @@ def test_discussions_get_pr_info_cache_keyed_on_repo(tmp_path, monkeypatch):
         "projB's discussions.get returned projA's cached pr.info -- the "
         "nested pr.info cache key must include repo_owner/repo_name"
     )
+
+
+# ---------------------------------------------------------------------------
+# D#2518 -- stats.dora: three module constants (analytics_engineer._RELEASES_DIR,
+# kpi_engine.REGISTRY, analytics_engineer's module-level REPO) bound stats.dora
+# to the serving checkout at import, so a per-request project param reached
+# nothing. Spec (Acceptance) items 1-8.
+# ---------------------------------------------------------------------------
+
+
+def test_stats_dora_is_scoped_not_unscopable():
+    """Item 6: stats.dora must no longer be classified UNSCOPABLE, and its
+    reason must name the new resolution rather than repeat the shared
+    'already wrapped' string that produced the wrong classification for
+    stats.loop_idle_ratio (D#2330).
+    """
+    kind, reason = scope.classification_for("stats.dora")
+    assert kind == scope.SCOPED, f"stats.dora is still {kind!r} after D#2518"
+    assert reason and reason.strip()
+    assert "already wrapped in _with_project_stats_db()" not in reason, (
+        "stats.dora's reason must name its own resolution, not repeat the "
+        "shared wrapper string that was never true for this handler"
+    )
+
+
+def test_stats_dora_data_source_is_reachable_by_project():
+    """The registry-consistency guard (scripts/ci/rpc-scope-registry-guard.py)
+    refuses a SCOPED entry whose audited data source is DS_SERVING_CHECKOUT.
+    Pin the post-fix value here too so a regression is caught by pytest, not
+    only by the CI guard script.
+    """
+    source = scope._DATA_SOURCES.get("stats.dora")
+    assert source in scope.DATA_SOURCES_REACHED_BY_PROJECT, (
+        f"stats.dora data source {source!r} is not one a per-request "
+        "override reaches"
+    )
+
+
+def test_stats_dora_binds_no_path_or_repo_slug_at_import():
+    """Item 3: importing analytics_engineer and kpi_engine must bind no path
+    and no repo slug at import time -- asserted on a fresh interpreter with a
+    clean sys.modules, not a re-import into a warm one (a re-import returns
+    the cached module and would pass against the unfixed code).
+
+    Pre-fix, analytics_engineer._RELEASES_DIR and kpi_engine.REGISTRY were
+    module constants built from Path(__file__).resolve().parent.parent at
+    import, and analytics_engineer.REPO was `from backend._repo import REPO`
+    at module level. Post-fix, all three are resolved lazily (a zero-arg
+    accessor function, or a local import inside the function that needs the
+    value) so neither module binds a fixed path or repo slug as an importable
+    attribute.
+    """
+    probe = (
+        "import backend.analytics_engineer as ae\n"
+        "import backend.kpi_engine as ke\n"
+        "assert not hasattr(ae, '_RELEASES_DIR'), "
+        "'_RELEASES_DIR must not be a bound module attribute'\n"
+        "assert not hasattr(ae, 'REPO'), "
+        "'REPO must not be a bound module attribute'\n"
+        "assert not hasattr(ke, 'REGISTRY'), "
+        "'REGISTRY must not be a bound module attribute'\n"
+        "assert callable(ae._releases_dir), "
+        "'_releases_dir must be a callable accessor'\n"
+        "assert callable(ke._registry_path), "
+        "'_registry_path must be a callable accessor'\n"
+        "print('OK')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=str(_REPO_ROOT_FOR_SUBPROCESS),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, (
+        f"fresh-interpreter import bound a path or repo slug:\n"
+        f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
+    )
+    assert "OK" in result.stdout
+
+
+def _write_project_layout(
+    tmp_path: Path,
+    name: str,
+    repo: "str | None",
+    release_count: int,
+) -> None:
+    """Build a project's dashboard-runtime.json (repo, may be omitted) and
+    its local checkout's .autonomous-team/{releases,registry.json}, matching
+    the resolution convention backend/server.py's kpi.history/kpi.cycle_time
+    RPC handlers already use: state_dir.parent / project.
+    """
+    import datetime as _dt
+
+    state_dir = tmp_path / f".{name}-state"
+    state_dir.mkdir()
+    runtime: dict = {}
+    if repo is not None:
+        runtime["repo"] = repo
+    (state_dir / "dashboard-runtime.json").write_text(json.dumps(runtime))
+
+    checkout = tmp_path / name / ".autonomous-team"
+    releases_dir = checkout / "releases"
+    releases_dir.mkdir(parents=True)
+    now = _dt.datetime.now(_dt.timezone.utc)
+    for i in range(release_count):
+        (releases_dir / f"release-{i}.json").write_text(json.dumps({
+            "id": f"2026-09-01-{i:03d}",
+            "merged_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }))
+    (checkout / "registry.json").write_text(json.dumps({"discussions": []}))
+
+
+def _fake_gh_run(cmd, **kwargs):
+    """Minimal `gh` stand-in for stats.dora's two subprocess calls: `gh pr
+    list` (lead time) and `gh api graphql` (CFR bug discussions). Both
+    return an empty-but-valid payload so neither field forces a real network
+    call or introduces nondeterminism into the deploy-frequency assertion.
+    """
+    class _Result:
+        returncode = 0
+        stderr = ""
+        stdout = ""
+
+    r = _Result()
+    if cmd[:3] == ["gh", "pr", "list"]:
+        r.stdout = "[]"
+    elif cmd[:2] == ["gh", "api"]:
+        r.stdout = json.dumps(
+            {"data": {"repository": {"discussions": {"nodes": []}}}}
+        )
+    return r
+
+
+def test_stats_dora_project_param_returns_that_projects_data(tmp_path, monkeypatch):
+    """Item 4: stats.dora {"project": <other project>} must return that
+    project's data, asserted on a value that differs between the two
+    projects -- not merely on a non-empty response.
+    """
+    from backend import server as srv
+
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(subprocess, "run", _fake_gh_run)
+
+    _write_project_layout(tmp_path, "projA", "acme/projA", release_count=1)
+    _write_project_layout(tmp_path, "projB", "acme/projB", release_count=5)
+
+    result_a = scope.dispatch_scoped(
+        "stats.dora", {"project": "projA"}, srv._RPC_METHODS["stats.dora"],
+    )
+    result_b = scope.dispatch_scoped(
+        "stats.dora", {"project": "projB"}, srv._RPC_METHODS["stats.dora"],
+    )
+
+    assert result_a["deploy_frequency_per_day"] != result_b["deploy_frequency_per_day"], (
+        "projA (1 release) and projB (5 releases) must report different "
+        "deploy_frequency_per_day -- identical values would mean stats.dora "
+        "served one project's (or the serving checkout's) data for both"
+    )
+    assert result_a["deploy_frequency_per_day"] == round(1 / 7.0, 4)
+    assert result_b["deploy_frequency_per_day"] == round(5 / 7.0, 4)
+
+
+def test_stats_dora_no_project_param_unaffected(tmp_path, monkeypatch):
+    """No-regression companion: the serving checkout's own dashboard (no
+    project param) must be unaffected by the new project_root/repo params.
+    """
+    from backend import server as srv
+
+    monkeypatch.setattr(subprocess, "run", _fake_gh_run)
+
+    result = scope.dispatch_scoped(
+        "stats.dora", {}, srv._RPC_METHODS["stats.dora"],
+    )
+    assert "applicable" in result
+    assert isinstance(result["deploy_frequency_per_day"], float)
+
+
+def test_stats_dora_declines_when_project_has_no_repo(tmp_path, monkeypatch):
+    """Item 5: when the requested project declares no repo, stats.dora must
+    decline -- raise, not fall back to the serving checkout's repo and not
+    silently substitute an empty/zeroed response. The raise is what makes
+    this distinguishable from an empty result: dispatch_scoped never
+    returns for a declined call, whereas a genuinely-empty project (no
+    releases, no registry entries) still returns a normal (if mostly-zero)
+    dict.
+    """
+    from backend import server as srv
+
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(subprocess, "run", _fake_gh_run)
+
+    _write_project_layout(tmp_path, "norepoproj", repo=None, release_count=1)
+
+    with pytest.raises(scope.UnresolvableProjectError) as exc_info:
+        scope.dispatch_scoped(
+            "stats.dora", {"project": "norepoproj"}, srv._RPC_METHODS["stats.dora"],
+        )
+    assert hasattr(exc_info.value, "rpc_code"), (
+        "UnresolvableProjectError must carry rpc_code so both dispatch "
+        "sites surface this as a non-null JSON-RPC error"
+    )
+
+
+def test_stats_dora_declined_response_distinguishable_from_empty_project(
+    tmp_path, monkeypatch,
+):
+    """Item 5 (continued): a project with a resolvable repo but genuinely no
+    data (no releases, empty registry) must NOT raise -- it returns an
+    empty-but-normal response. Only the no-repo case raises. This is the
+    companion assertion that makes the decline "distinguishable from an
+    empty result" rather than merely different in isolation.
+    """
+    from backend import server as srv
+
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(subprocess, "run", _fake_gh_run)
+
+    _write_project_layout(tmp_path, "emptyproj", "acme/emptyproj", release_count=0)
+
+    result = scope.dispatch_scoped(
+        "stats.dora", {"project": "emptyproj"}, srv._RPC_METHODS["stats.dora"],
+    )
+    assert result["deploy_frequency_per_day"] == 0.0
+    assert result["applicable"] is False

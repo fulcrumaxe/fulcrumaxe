@@ -30,11 +30,11 @@ class TestEmptyReleases(unittest.TestCase):
         """compute_snapshot with no release files must not crash."""
         import tempfile, os
         with tempfile.TemporaryDirectory() as tmpdir:
-            fake_releases = Path(tmpdir) / "releases"
-            fake_releases.mkdir()
+            project_root = Path(tmpdir)
+            fake_releases = project_root / ".autonomous-team" / "releases"
+            fake_releases.mkdir(parents=True)
 
             with (
-                patch("backend.analytics_engineer._RELEASES_DIR", fake_releases),
                 patch("backend.analytics_engineer.compute_dora_snapshot") as mock_dora,
                 patch("backend.analytics_engineer.load_registry", return_value=[]),
             ):
@@ -44,7 +44,7 @@ class TestEmptyReleases(unittest.TestCase):
                     "change_failure_rate_pct": -1.0,
                 }
                 from backend.analytics_engineer import compute_snapshot
-                snap = compute_snapshot(today="2099-01-01")
+                snap = compute_snapshot(today="2099-01-01", project_root=project_root)
 
         self.assertEqual(snap["date"], "2099-01-01")
         self.assertEqual(snap["deploy_frequency_per_day"], 0.0)
@@ -194,10 +194,9 @@ class TestTrailingWindow(unittest.TestCase):
             releases_dir.mkdir()
             (releases_dir / "old.json").write_text(json.dumps(fake_data))
 
-            with patch("backend.analytics_engineer._RELEASES_DIR", releases_dir):
-                from backend.analytics_engineer import _load_recent_releases
-                cutoff_ts = now.timestamp() - 7 * 24 * 3600
-                releases = _load_recent_releases(cutoff_ts)
+            from backend.analytics_engineer import _load_recent_releases
+            cutoff_ts = now.timestamp() - 7 * 24 * 3600
+            releases = _load_recent_releases(cutoff_ts, releases_dir=releases_dir)
 
         self.assertEqual(releases, [], "Release older than 7d must be excluded")
 
@@ -217,10 +216,9 @@ class TestTrailingWindow(unittest.TestCase):
             releases_dir.mkdir()
             (releases_dir / "recent.json").write_text(json.dumps(fake_data))
 
-            with patch("backend.analytics_engineer._RELEASES_DIR", releases_dir):
-                from backend.analytics_engineer import _load_recent_releases
-                cutoff_ts = now.timestamp() - 7 * 24 * 3600
-                releases = _load_recent_releases(cutoff_ts)
+            from backend.analytics_engineer import _load_recent_releases
+            cutoff_ts = now.timestamp() - 7 * 24 * 3600
+            releases = _load_recent_releases(cutoff_ts, releases_dir=releases_dir)
 
         self.assertEqual(len(releases), 1)
         self.assertEqual(releases[0]["id"], "recent-release")
@@ -236,7 +234,6 @@ class TestModuleReuse(unittest.TestCase):
         with (
             patch("backend.analytics_engineer.compute_dora_snapshot") as mock_dora,
             patch("backend.analytics_engineer.load_registry", return_value=[]),
-            patch("backend.analytics_engineer._RELEASES_DIR", Path("/nonexistent")),
         ):
             mock_dora.return_value = {
                 "deploy_frequency_per_day": 3.14,
@@ -244,7 +241,7 @@ class TestModuleReuse(unittest.TestCase):
                 "change_failure_rate_pct": -1.0,
             }
             from backend.analytics_engineer import compute_snapshot
-            snap = compute_snapshot(today="2099-01-01")
+            snap = compute_snapshot(today="2099-01-01", project_root=Path("/nonexistent"))
 
         mock_dora.assert_called_once()
         self.assertEqual(snap["deploy_frequency_per_day"], 3.14)
@@ -257,7 +254,6 @@ class TestModuleReuse(unittest.TestCase):
             patch("backend.analytics_engineer.load_registry") as mock_reg,
             patch("backend.analytics_engineer.compute_velocity") as mock_vel,
             patch("backend.analytics_engineer.compute_pr_cycle_time") as mock_ct,
-            patch("backend.analytics_engineer._RELEASES_DIR", Path("/nonexistent")),
         ):
             mock_dora.return_value = {
                 "deploy_frequency_per_day": 0.0,
@@ -269,7 +265,7 @@ class TestModuleReuse(unittest.TestCase):
             mock_ct.return_value = {"mean_hours": 3.0, "median_hours": 2.5, "total_measured": 10}
 
             from backend.analytics_engineer import compute_snapshot
-            snap = compute_snapshot(today="2099-01-01")
+            snap = compute_snapshot(today="2099-01-01", project_root=Path("/nonexistent"))
 
         mock_reg.assert_called_once()
         mock_vel.assert_called_once()
@@ -283,6 +279,35 @@ class TestModuleReuse(unittest.TestCase):
         assert _DEFAULT_GATES.get("analytics_engineer") is True, (
             "gates.analytics_engineer must default to True in _DEFAULT_GATES"
         )
+
+    def test_compute_snapshot_threads_project_root_and_repo_through(self):
+        """D#2518: project_root/repo passed to compute_snapshot must reach
+        compute_dora_snapshot(releases_dir=..., repo=...) and
+        load_registry(repo_root=...) — not silently dropped in favor of the
+        serving checkout's own module-level defaults.
+        """
+        project_root = Path("/some/project/checkout")
+        repo = "acme/otherproj"
+
+        with (
+            patch("backend.analytics_engineer.compute_dora_snapshot") as mock_dora,
+            patch("backend.analytics_engineer.load_registry", return_value=[]) as mock_reg,
+            patch("backend.analytics_engineer._load_recent_releases", return_value=[]) as mock_lrr,
+        ):
+            mock_dora.return_value = {
+                "deploy_frequency_per_day": 0.0,
+                "lead_time_minutes_p50": -1.0,
+                "change_failure_rate_pct": -1.0,
+            }
+            from backend.analytics_engineer import compute_snapshot
+            compute_snapshot(today="2099-01-01", project_root=project_root, repo=repo)
+
+        expected_releases_dir = project_root / ".autonomous-team" / "releases"
+        mock_dora.assert_called_once_with(releases_dir=expected_releases_dir, repo=repo)
+        mock_reg.assert_called_once_with(repo_root=project_root)
+        mock_lrr.assert_called_once()
+        _cutoff_ts, kwargs = mock_lrr.call_args.args[0], mock_lrr.call_args.kwargs
+        assert kwargs.get("releases_dir") == expected_releases_dir
 
 
 if __name__ == "__main__":
