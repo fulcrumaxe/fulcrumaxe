@@ -183,16 +183,27 @@ _smg_trim() {
 # scan: no ';' at all needs no split, and ';' with no quote and no paren
 # anywhere in the line is unambiguous to split plainly. Everything else pays
 # for one pass over the line's characters.
+#
+# Sets _SMG_STATEMENTS (array) rather than printing + being captured via
+# `mapfile -t ... < <(...)`: this runs once per physical line across every
+# file in BOTH passes, and `< <(...)` forks a subshell on every call — the
+# same cost _smg_trim's comment above measures, just not yet paid down here
+# when this function was first written (D#2512 fix round). On a real-tree
+# run this was the dominant cost by far: a CI runner exceeded the workflow's
+# 10-minute job budget without finishing a single pass; converted to this
+# global-set convention, the same run completes in well under two minutes
+# even on a slower shared runner. Splitting logic itself is unchanged —
+# tests/test_subshell_mutation_guard.sh's 12 cases pass identically either
+# way, since they observe findings, never this function's calling
+# convention.
 _smg_split_statements() {
   local text="$1"
   if [[ "$text" != *';'* ]]; then
-    printf '%s\n' "$text"
+    _SMG_STATEMENTS=("$text")
     return
   fi
   if [[ "$text" != *'"'* && "$text" != *"'"* && "$text" != *'('* ]]; then
-    local -a parts
-    IFS=';' read -ra parts <<< "$text"
-    printf '%s\n' "${parts[@]}"
+    IFS=';' read -ra _SMG_STATEMENTS <<< "$text"
     return
   fi
 
@@ -233,7 +244,7 @@ _smg_split_statements() {
     prevch="$ch"
   done
   out+=("$buf")
-  printf '%s\n' "${out[@]}"
+  _SMG_STATEMENTS=("${out[@]}")
 }
 
 # True (prints 1) if TEXT — everything after a matched `NAME=` — has a
@@ -390,8 +401,8 @@ for file in "${FILES[@]}"; do
     closes="${body_text//[^\}]/}"
     depth=$((depth + ${#opens} - ${#closes}))
 
-    mapfile -t STATEMENTS < <(_smg_split_statements "$body_text")
-    for raw_stmt in "${STATEMENTS[@]}"; do
+    _smg_split_statements "$body_text"
+    for raw_stmt in "${_SMG_STATEMENTS[@]}"; do
       _smg_trim "$raw_stmt"
       stmt="$_SMG_OUT"
       [[ -z "$stmt" ]] && continue
@@ -521,8 +532,8 @@ for file in "${FILES[@]}"; do
       in_heredoc=1
     fi
 
-    mapfile -t STATEMENTS < <(_smg_split_statements "$line")
-    for raw_stmt in "${STATEMENTS[@]}"; do
+    _smg_split_statements "$line"
+    for raw_stmt in "${_SMG_STATEMENTS[@]}"; do
       _smg_trim "$raw_stmt"
       stmt="$_SMG_OUT"
       [[ -z "$stmt" ]] && continue

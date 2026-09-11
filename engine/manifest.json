@@ -208,7 +208,7 @@
     "scripts/lib/self-observe-gate.sh": "3ae54ae3a7f69a4ebd3e30436e6d2f121d0e4d928224ebf6327a7c6ddf968a6e",
     "scripts/lib/spec-ready-gate.sh": "3f7ea3a9724294d857e6e4f6b4d0477a307b7f1fb031cd6ebf65cc587c5809e5",
     "scripts/lib/stuck-pr-detect.sh": "5ad6fdaa5891b71a38e614aeac85167789fe2374571f158d2c0264b6da8322ec",
-    "scripts/lib/subshell-mutation-scan.sh": "d491458c140c7ae59c08bd14fa3a9971c4c07bcc72efd120ad55b99865415e17",
+    "scripts/lib/subshell-mutation-scan.sh": "3adb7615f9cf829d3b7d7bb7454965fc7676f4986b2793bb8f7acdb8adeac64c",
     "scripts/lib/team-lead-prompts.sh": "f9e3a5b0dc46f833ba88b9c9f1d7ff367a4bd624c1d45065121f3e651c087aa5",
     "scripts/lib/tree-capability.sh": "0773910698d04cf521f17f2b4f5c5123f8904e0268606e6299a79ef23cc51d11",
     "scripts/lib/two-gate-check.sh": "8359c8c8062a5c6c9cdf3f81e53359858640a888880ba7a407cd737694bf4f0b",
