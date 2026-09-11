@@ -217,7 +217,7 @@
     "scripts/lib/worktree-claims.sh": "6b7fa514ddda1a51ffe75e3ca8357c48d217a38b91ec5dcbccca124ef51b4c02",
     "scripts/lib/worktree-disk-guard.sh": "b7592597baf348ec4f57497842aae5f9656f18ea9243ff6ecbc8f24e89ecbe6d",
     "scripts/lib/worktree-ground-check.sh": "1d997773618d2e5da653c1d3af148ba6419d4eb34869a0d9053e8020ae6b36a3",
-    "scripts/lib/worktree-registry.sh": "6468cf182f9223d74d1db638615557847fa0394f3732f83df2b3d85c0c3e5519",
+    "scripts/lib/worktree-registry.sh": "069e197353f723daf73e223f192957b291d21f8ce8136b28cd9031ca4ea6e34d",
     "scripts/lint-spawn-prompt.sh": "dfc8ae96045687c39d1c2fed85f060cd4df00d5369d97f8722226e1cc85a3e17",
     "scripts/loop-health-watchdog.sh": "498b976f202007e41621f0ee89cc4b13cba0c9c142c021bf15235660aee4ad05",
     "scripts/loop-phased-step5.sh": "a2cae3f412d4afb71f292e88d87d5843f376ae1a50dac5c881d14b3adb10bf33",
