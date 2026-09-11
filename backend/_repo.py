@@ -39,13 +39,27 @@ from backend._repo_planes import resolve_code_repo, resolve_discussion_repo
 from backend._repo_remote import repo_slug_from_git_config
 
 
+def _non_empty(value: object) -> str | None:
+    """Treat unset, empty and whitespace-only values as absent (D#2536).
+
+    A bare truthiness check (`if value:`) lets a whitespace-only string win a
+    precedence step and reach ``REPO.split("/", 1)`` at module import below,
+    which raises an unhelpful ``ValueError`` instead of this module's own
+    actionable ``RuntimeError``. Mirrors ``nonEmpty()`` in
+    ts-backend/src/config/repo.ts (D#2520): returns *value* unchanged when it
+    is a string with non-whitespace content, else None — this is a presence
+    test, not a normalizer, so a legitimate value's surrounding whitespace is
+    never stripped.
+    """
+    return value if isinstance(value, str) and value.strip() else None
+
+
 def _read_project_json(path: Path) -> str | None:
     """Return the 'repo' field from *path* if readable, else None."""
     try:
         with path.open() as f:
             data = json.load(f)
-        repo = data.get("repo")
-        return repo if repo else None
+        return _non_empty(data.get("repo"))
     except (OSError, ValueError):
         return None
 
@@ -66,7 +80,7 @@ def _load_repo() -> str:
     """
     # 1. Explicit env override — highest priority.
     env_repo = os.environ.get("AUTONOMOUS_TEAM_REPO")
-    if env_repo:
+    if _non_empty(env_repo):
         return env_repo
 
     # 2. State-dir project.json — supports AUTONOMOUS_TEAM_STATE_DIR override.
@@ -89,7 +103,7 @@ def _load_repo() -> str:
     # 4. The origin remote. Never raises and never shells out; returns None
     # for anything that isn't a well-formed OWNER/NAME.
     repo = repo_slug_from_git_config(repo_root)
-    if repo:
+    if _non_empty(repo):
         return repo
 
     # 5. Nothing resolved — fail loudly rather than default to a repo the

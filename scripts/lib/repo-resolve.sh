@@ -17,6 +17,22 @@
 # with the real slug, so step 1 always resolves here and step 3 is never
 # reached in our own runtime.
 
+# Treat a whitespace-only value the same as an unset one at every precedence
+# step below (D#2536). A bare `[[ -n ]]` test lets "   " win a step and get
+# echoed as a resolved slug — `_require_code_repo`'s own `-z` guard is built
+# to stop exactly that from reaching `gh`, so a source this permissive
+# defeats it before it ever runs. Parameter expansion only, no subshell: these
+# resolvers are called per-command by design (CLAUDE.md: "resolve in the same
+# statement that uses it"), so a fork per call here is a real, paid-every-time
+# cost. Prints the trimmed value; callers that need the original untrimmed
+# value keep using "$r" — this is a presence test, not a normalizer.
+_repo_trim() {
+  local v="$1"
+  v="${v#"${v%%[![:space:]]*}"}"
+  v="${v%"${v##*[![:space:]]}"}"
+  printf '%s' "$v"
+}
+
 _resolve_repo() {
   local repo_root cj
   repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -24,9 +40,9 @@ _resolve_repo() {
   if [[ -f "$cj" ]]; then
     local r
     r=$(python3 -c "import json,sys; print(json.load(open('$cj')).get('repo',''))" 2>/dev/null || true)
-    if [[ -n "$r" ]]; then echo "$r"; return; fi
+    if [[ -n "$(_repo_trim "$r")" ]]; then echo "$r"; return; fi
   fi
-  if [[ -n "${AUTONOMOUS_TEAM_REPO:-}" ]]; then
+  if [[ -n "$(_repo_trim "${AUTONOMOUS_TEAM_REPO:-}")" ]]; then
     echo "$AUTONOMOUS_TEAM_REPO"
     return
   fi
@@ -95,7 +111,7 @@ print(v if isinstance(v, str) else "")' "$cj" "$key" 2>/dev/null || true
 _resolve_code_repo() {
   local r
   r="$(_repo_config_field code_repo)"
-  if [[ -n "$r" ]]; then echo "$r"; return; fi
+  if [[ -n "$(_repo_trim "$r")" ]]; then echo "$r"; return; fi
   _resolve_repo
 }
 
@@ -105,7 +121,7 @@ _resolve_code_repo() {
 _resolve_discussion_repo() {
   local r
   r="$(_repo_config_field discussion_repo)"
-  if [[ -n "$r" ]]; then echo "$r"; return; fi
+  if [[ -n "$(_repo_trim "$r")" ]]; then echo "$r"; return; fi
   _resolve_repo 2>/dev/null || return 0
 }
 
@@ -131,7 +147,7 @@ _resolve_discussion_repo() {
 _require_code_repo() {
   local context="${1:-code-plane call}" r
   r="$(_resolve_code_repo 2>/dev/null || true)"
-  if [[ -z "$r" ]]; then
+  if [[ -z "$(_repo_trim "$r")" ]]; then
     echo "error: ${context}: could not resolve the code repo — refusing to run against an unresolved plane, because \`gh --repo \"\"\` silently falls back to the checkout's git remote instead of failing. Add a \"code_repo\" (or \"repo\") field to .autonomous-team/config.json, or set AUTONOMOUS_TEAM_REPO." >&2
     return 1
   fi
