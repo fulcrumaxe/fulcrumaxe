@@ -843,6 +843,7 @@ def registered_metrics() -> frozenset[str]:
         "wasted_tokens_ratio",              # scripts/spawn-hourly-stats.sh
         "impersonation_rate",               # scripts/spawn-hourly-stats.sh
         "hard_rule_violation_count",        # scripts/spawn-hourly-stats.sh
+        "spawn_hourly_stats_heartbeat",     # scripts/spawn-hourly-stats.sh (D#2501 — unconditional liveness row)
         # post-merge-hook.sh writers:
         "time_to_merge_seconds",
         "fix_cycle_count",

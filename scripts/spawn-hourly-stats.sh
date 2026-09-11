@@ -2,6 +2,7 @@
 # spawn-hourly-stats.sh — emit hourly metrics to stats.duckdb
 #
 # Metrics emitted:
+#   spawn_hourly_stats_heartbeat — unconditional liveness row, one per run
 #   wasted_tokens_ratio    — tokens on fail/needs-fix agents ÷ total tokens (past 24h)
 #   impersonation_rate     — reviewer_skipped findings ÷ impl-coord runs (past 24h)
 #   hard_rule_violation_count — forbidden_subagent_type + git_rm_usage + team_lead_self_edit
@@ -44,6 +45,21 @@ stats_writer.record(
 print('[hourly-stats] recorded ${metric}=${value} ${unit}')
 "
 }
+
+# ── 0. heartbeat ───────────────────────────────────────────────────────────────
+# Unconditional — written before any measurement guard, on a path with no
+# early return above it. This is what makes "the job did not run" observably
+# different from "the job ran and found nothing" (D#2501): the three metrics
+# below can all legitimately skip when their 24h window is empty, and after
+# that skip a dead cron and an idle-but-alive one produce the identical
+# observable — no rows. This row is emitted every single run regardless of
+# what the metrics below find, so its own age (via the freshness watchdog,
+# which ages any metric_event row by MAX(ts) — see
+# backend/stats_freshness_watchdog.py and registered_metrics() in
+# backend/stats_writer.py) is the liveness signal. Do NOT make this
+# conditional on any of the three metrics below having a value — that would
+# silently reintroduce the exact ambiguity this row exists to remove.
+emit_metric "spawn_hourly_stats_heartbeat" "1" "count" "{}"
 
 # ── 1. wasted_tokens_ratio ────────────────────────────────────────────────────
 # An empty WASTED_RATIO means "no token-bearing feed rows fell in the 24h
