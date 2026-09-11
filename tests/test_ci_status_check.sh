@@ -1089,6 +1089,96 @@ assert_contains "CS-22d: FAILING names the duplicated check" "PR link policy" "$
 unset CI_STATUS_OVERRIDE_20198 CI_STATUS_HEAD_SHA_20198
 
 # -----------------------------------------------------------------------
+# CS-23 (D#2548): a superseded red run must not block a merge forever, but
+# worst-wins must survive for duplicates that carry no ordering signal.
+#
+# D#2463 fixed array-position trust; it did not add any notion of
+# supersession, so a check that failed and was later re-run green (no new
+# head commit — pr-gates.yml triggers on `edited` as well as `synchronize`
+# for exactly this reason) stayed blocking forever. Measured live on
+# fulcrumaxe/fulcrumaxe PR #182: three independent runs of "PR mutation
+# evidence" at one head SHA, real check_suite ids 93731517752 (a manual
+# re-run of the original 12:54Z lineage — the id stays anchored to that
+# lineage's original creation, not the re-run's clock time), 93732211550
+# (12:57Z) and 93735350021 (13:09Z). check_suite.id is assigned by GitHub at
+# CREATION time, before any of the fork's own job steps run, so nothing in
+# PR content can move it — unlike started_at/completed_at, which a slow step
+# can inflate.
+# -----------------------------------------------------------------------
+_gha_cs() {
+  # _gha_cs <name> <conclusion> <check_suite_id> [<html_url>]
+  printf '{"name":"%s","status":"completed","conclusion":"%s","app":{"slug":"github-actions"},"html_url":"%s","check_suite":{"id":%s}}' "$1" "$2" "${4:-}" "$3"
+}
+_gha_id() {
+  # _gha_id <name> <conclusion> <run_id> [<html_url>] — check_suite absent,
+  # exercising the fallback-to-check-run-id path in _lineage_rank.
+  printf '{"name":"%s","status":"completed","conclusion":"%s","app":{"slug":"github-actions"},"html_url":"%s","id":%s}' "$1" "$2" "${4:-}" "$3"
+}
+BASE_GREEN_NO_MUTATION="$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"','"$(_gha 'backend (import-smoke)' success)"','"$(_gha 'publish denylist' success)"','"$(_gha 'preflight (always-on gates)' success)"','"$(_gha 'PR link policy' success)"
+
+echo ""
+echo "=== CS-23a (AC-1): older run FAILURE, newer independent run SUCCESS -> not blocking ==="
+CS23A='['"$BASE_GREEN_NO_MUTATION"','"$(_gha_cs 'PR mutation evidence' failure 93731517752 'https://x/old-fail')"','"$(_gha_cs 'PR mutation evidence' success 93735350021 'https://x/new-pass')"']'
+export CI_STATUS_OVERRIDE_20199="$CS23A"
+export CI_STATUS_HEAD_SHA_20199="deadbeefa1"
+OUT=$(_run_status 20199); RC=$?
+assert_exit_0 "CS-23a: newer independent SUCCESS supersedes an older FAILURE" "$RC"
+assert_contains "CS-23a: STATE is pass" "STATE:pass" "$OUT"
+unset CI_STATUS_OVERRIDE_20199 CI_STATUS_HEAD_SHA_20199
+
+echo ""
+echo "=== CS-23b (AC-2): older run SUCCESS, newer independent run FAILURE -> blocking ==="
+CS23B='['"$BASE_GREEN_NO_MUTATION"','"$(_gha_cs 'PR mutation evidence' success 93731517752 'https://x/old-pass')"','"$(_gha_cs 'PR mutation evidence' failure 93735350021 'https://x/new-fail')"']'
+export CI_STATUS_OVERRIDE_20200="$CS23B"
+export CI_STATUS_HEAD_SHA_20200="deadbeefa2"
+OUT=$(_run_status 20200); RC=$?
+assert_exit_1 "CS-23b: newer independent FAILURE supersedes an older SUCCESS" "$RC"
+assert_contains "CS-23b: FAILING names the duplicated check" "PR mutation evidence" "$OUT"
+assert_contains "CS-23b: URL points at the newer (failing) run" "new-fail" "$OUT"
+unset CI_STATUS_OVERRIDE_20200 CI_STATUS_HEAD_SHA_20200
+
+echo ""
+echo "=== CS-23c (AC-3): duplicates with NO lineage signal -> worst-wins preserved ==="
+# Deliberately built with plain _gha (no check_suite, no id) — the exact
+# shape D#2463's own CS-22 fixtures use. Neither entry is identifiable as
+# superseding the other, so every entry stays a candidate and the failure
+# still blocks, byte-for-byte the D#2463 behaviour.
+CS23C='['"$BASE_GREEN_NO_MUTATION"','"$(_gha 'PR mutation evidence' success)"','"$(_gha 'PR mutation evidence' failure 'https://x/unranked-fail')"']'
+export CI_STATUS_OVERRIDE_20201="$CS23C"
+export CI_STATUS_HEAD_SHA_20201="deadbeefa3"
+OUT=$(_run_status 20201); RC=$?
+assert_exit_1 "CS-23c: with no lineage signal at all, a failing duplicate still blocks" "$RC"
+assert_contains "CS-23c: FAILING names the duplicated check" "PR mutation evidence" "$OUT"
+unset CI_STATUS_OVERRIDE_20201 CI_STATUS_HEAD_SHA_20201
+
+echo ""
+echo "=== CS-23d (AC-4): a red run at a stale head does not block a green current head ==="
+# There is no shared state between two distinct (pr, head-sha) evaluations —
+# each call resolves its own head SHA and fetches check-runs for that SHA
+# alone, so a red fixture registered under one PR/head can never leak into a
+# different PR/head's evaluation.
+STALE_RED='['"$BASE_GREEN_NO_MUTATION"','"$(_gha 'PR mutation evidence' failure 'https://x/stale-fail')"']'
+CURRENT_GREEN='['"$BASE_GREEN_NO_MUTATION"','"$(_gha 'PR mutation evidence' success)"']'
+export CI_STATUS_OVERRIDE_20202="$STALE_RED"
+export CI_STATUS_HEAD_SHA_20202="stalehead01"
+export CI_STATUS_OVERRIDE_20203="$CURRENT_GREEN"
+export CI_STATUS_HEAD_SHA_20203="currenthead01"
+OUT_STALE=$(_run_status 20202); RC_STALE=$?
+OUT_CUR=$(_run_status 20203); RC_CUR=$?
+assert_exit_1 "CS-23d: the stale head's own evaluation is red (sanity check on the fixture)" "$RC_STALE"
+assert_exit_0 "CS-23d: the current head's evaluation is unaffected and passes" "$RC_CUR"
+unset CI_STATUS_OVERRIDE_20202 CI_STATUS_HEAD_SHA_20202 CI_STATUS_OVERRIDE_20203 CI_STATUS_HEAD_SHA_20203
+
+echo ""
+echo "=== CS-23e: check_suite absent, check-run id present -> id fallback still ranks correctly ==="
+CS23E='['"$BASE_GREEN_NO_MUTATION"','"$(_gha_id 'PR mutation evidence' failure 100 'https://x/id-old-fail')"','"$(_gha_id 'PR mutation evidence' success 200 'https://x/id-new-pass')"']'
+export CI_STATUS_OVERRIDE_20204="$CS23E"
+export CI_STATUS_HEAD_SHA_20204="deadbeefa5"
+OUT=$(_run_status 20204); RC=$?
+assert_exit_0 "CS-23e: id fallback lets a newer SUCCESS supersede an older FAILURE too" "$RC"
+unset CI_STATUS_OVERRIDE_20204 CI_STATUS_HEAD_SHA_20204
+
+# -----------------------------------------------------------------------
 # Summary
 # -----------------------------------------------------------------------
 echo ""

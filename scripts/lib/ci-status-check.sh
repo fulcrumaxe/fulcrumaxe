@@ -478,15 +478,75 @@ def _bucket(r):
 
 # Fail-closed ordering for combining duplicates of the SAME required name:
 # a real failure outranks a no-run, which outranks still-pending, which
-# outranks success. A name is only clear (`success`) when EVERY entry for
-# it is a completed success — one bad entry, wherever it sits in the API
-# response, is enough to hold the name back. This is deliberately stricter
-# than "trust whichever entry is chronologically latest": this evaluator has
-# no reliable ordering signal to trust (see the comment above `by_name`), and
-# on a merge gate that has to fail closed against contributors we've never
-# met, refusing to merge on an unresolved duplicate is the safe direction to
-# be wrong in.
+# outranks success. A name is only clear (`success`) when EVERY SURVIVING
+# candidate for it (see _surviving_candidates below) is a completed success
+# — one bad candidate is enough to hold the name back. Two independent runs
+# tied at the same rank, or both unrankable, are exactly the case this
+# evaluator has no reliable way to order (see the comment above `by_name`),
+# and on a merge gate that has to fail closed against contributors we've
+# never met, refusing to merge on an unresolved duplicate is the safe
+# direction to be wrong in.
 _BUCKET_RANK = {"failing": 0, "did_not_run": 1, "pending": 2, "success": 3}
+
+# D#2548: narrow duplicates of the SAME required name to the surviving
+# lineage(s) before the worst-wins tie-break above ever runs.
+#
+# GitHub's own re-run button already collapses same-lineage attempts to one
+# entry server-side — an attempt-2 check-run REPLACES its attempt-1
+# predecessor in this list rather than appearing alongside it (verified
+# directly against a live re-run on fulcrumaxe/fulcrumaxe PR #182, workflow
+# run 34601379411). So every duplicate this evaluator ever sees is already a
+# genuinely independent check_suite/workflow run, not an attempt pair — a
+# rule keyed on run_attempt would be a no-op on the real defect.
+#
+# The real defect: pr-gates.yml triggers on `edited` as well as `synchronize`
+# specifically so PR-body-reading checks like "PR mutation evidence" get a
+# fresh, independent run when the body changes with no new head commit. Two
+# runs of the same required name can legitimately disagree at ONE head SHA —
+# one evaluated a stale body, the other a corrected one — and the newer run
+# should supersede the older, the same way a re-run supersedes an attempt.
+#
+# Signal used: check_suite.id, falling back to the check-run's own `id` when
+# check_suite is absent. Both are integer resource ids GitHub's backend
+# assigns at CREATION time, before any of the run's own job steps execute —
+# nothing in a fork's workflow content can move, inflate, or race this value;
+# a fork controls how long its job takes to run (started_at / completed_at),
+# never the id it is handed when the run is queued. Verified directly on PR
+# #182: three independent runs of "PR mutation evidence" at one head SHA had
+# check_suite ids 93732211550 (queued ~12:57), 93735350021 (queued ~13:09),
+# and 93731517752 for a manual re-run of the original 12:54 lineage — the
+# re-run's id correctly sorts BEFORE the other two, because re-running an old
+# lineage doesn't create a new one; it is still that lineage's stale, frozen
+# event payload. D#2463's "no reliable ordering signal" concern was about
+# array POSITION and wall-clock timestamps, both of which a job's own steps
+# can influence (e.g. a slow step inflates completed_at); a creation-time id
+# is neither.
+#
+# An entry with no check_suite and no id — every synthetic fixture in this
+# suite, and the only shape D#2463's own CS-22 tests construct — can't be
+# ranked at all, so it is never treated as superseded: it stays a candidate
+# for worst-wins alongside whatever the newest RANKED entry is. When nothing
+# in a name's duplicate set carries a rank, every entry is a candidate and
+# the result is byte-for-byte the D#2463 behaviour — worst-wins over the
+# whole set. CS-22a-d exercise exactly that path, unchanged.
+def _lineage_rank(r):
+    cs = r.get("check_suite")
+    if isinstance(cs, dict) and isinstance(cs.get("id"), int):
+        return cs["id"]
+    rid = r.get("id")
+    if isinstance(rid, int):
+        return rid
+    return None
+
+def _surviving_candidates(entries):
+    ranked = [(r, _lineage_rank(r)) for r in entries]
+    known = [(r, rank) for r, rank in ranked if rank is not None]
+    if not known:
+        return list(entries)
+    max_rank = max(rank for _, rank in known)
+    candidates = [r for r, rank in known if rank == max_rank]
+    candidates += [r for r, rank in ranked if rank is None]
+    return candidates
 
 missing, pending, failing, did_not_run = [], [], [], []
 for name in required:
@@ -494,7 +554,7 @@ for name in required:
     if not entries:
         missing.append(name)
         continue
-    worst = min(entries, key=lambda r: _BUCKET_RANK[_bucket(r)])
+    worst = min(_surviving_candidates(entries), key=lambda r: _BUCKET_RANK[_bucket(r)])
     bucket = _bucket(worst)
     if bucket == "success":
         continue
