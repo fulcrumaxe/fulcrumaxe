@@ -392,6 +392,25 @@ import json, sys
 
 required = sys.argv[1:]
 
+# D#2463: an empty required set is never a legitimate "nothing is required"
+# configuration in this codebase — CI_REQUIRED_CHECKS is a single hardcoded,
+# heavily-documented bash array (scripts/lib/ci-status-check.sh) and every
+# caller passes it verbatim via "${CI_REQUIRED_CHECKS[@]}"; there is no code
+# path anywhere that intentionally produces zero names. Reaching this
+# evaluator with zero required names therefore means the caller's array
+# failed to populate — a bug, not a policy choice — and the four-bucket
+# state machine below has no bucket for "nothing to check" other than the
+# vacuously-true `else: STATUS=pass` at the bottom, which would silently
+# wave through a real PR because of a caller-side defect. Refuse loudly
+# before reaching that branch instead of ever letting an empty list arrive
+# there.
+if not required:
+    print("STATUS=fail")
+    print("REASON=required-checks list is empty — refusing to treat an empty set as 'nothing required'; this means the caller's required-checks configuration failed to populate")
+    print("FAILING=")
+    print("URL=")
+    sys.exit(0)
+
 try:
     raw = sys.stdin.read()
     runs = json.loads(raw) if raw.strip() else []
@@ -420,11 +439,24 @@ if not trusted:
     print("URL=")
     sys.exit(0)
 
+# D#2463: group ALL check-runs sharing a required name, not just the last one
+# seen. A real rollup (fulcrumaxe/fulcrumaxe PR #155, measured on head
+# 4933635) had three required names — "PR link policy", "PR mutation
+# evidence", "publish denylist" — each posted twice (two separate workflow
+# runs on the same head SHA), and the GitHub API does not return check-runs
+# in chronological order: on that PR the OLDER of each duplicated pair came
+# LAST in the array, not the newer one. The previous `by_name[name] = r`
+# picked whichever entry happened to be last in API response order and
+# called that "last occurrence wins (reruns appear later)" — an assumption
+# the real data contradicts. Picking by array position instead of by outcome
+# is exactly the shape of bug that lets a stale success silently overwrite a
+# live failure, or vice versa, depending on response ordering neither this
+# script nor GitHub's docs guarantee.
 by_name = {}
 for r in trusted:
     name = r.get("name")
     if name in required:
-        by_name[name] = r  # last occurrence wins (reruns appear later)
+        by_name.setdefault(name, []).append(r)
 
 # Four buckets, not three. `skipped` was in the accept set beside `success`
 # until D#1987 — a required check that never ran read as a required check that
@@ -432,23 +464,46 @@ for r in trusted:
 # `skipped` gets a bucket of its own rather than being folded into `failing`,
 # because "the check went red" and "the check did not run" are different
 # operator actions and want different first moves.
+def _bucket(r):
+    if r.get("status") != "completed":
+        return "pending"
+    conclusion = r.get("conclusion")
+    if conclusion == "success":
+        return "success"
+    if conclusion == "skipped":
+        return "did_not_run"
+    # cancelled / timed_out / neutral / stale / action_required / failure
+    # and anything GitHub adds later: unknown conclusions fail closed.
+    return "failing"
+
+# Fail-closed ordering for combining duplicates of the SAME required name:
+# a real failure outranks a no-run, which outranks still-pending, which
+# outranks success. A name is only clear (`success`) when EVERY entry for
+# it is a completed success — one bad entry, wherever it sits in the API
+# response, is enough to hold the name back. This is deliberately stricter
+# than "trust whichever entry is chronologically latest": this evaluator has
+# no reliable ordering signal to trust (see the comment above `by_name`), and
+# on a merge gate that has to fail closed against contributors we've never
+# met, refusing to merge on an unresolved duplicate is the safe direction to
+# be wrong in.
+_BUCKET_RANK = {"failing": 0, "did_not_run": 1, "pending": 2, "success": 3}
+
 missing, pending, failing, did_not_run = [], [], [], []
 for name in required:
-    r = by_name.get(name)
-    if r is None:
+    entries = by_name.get(name)
+    if not entries:
         missing.append(name)
         continue
-    conclusion = r.get("conclusion")
-    if r.get("status") != "completed":
-        pending.append(name)
-    elif conclusion == "success":
+    worst = min(entries, key=lambda r: _BUCKET_RANK[_bucket(r)])
+    bucket = _bucket(worst)
+    if bucket == "success":
         continue
-    elif conclusion == "skipped":
-        did_not_run.append((name, r.get("html_url") or ""))
+    elif bucket == "pending":
+        pending.append(name)
+    elif bucket == "did_not_run":
+        did_not_run.append((name, worst.get("html_url") or ""))
     else:
-        # cancelled / timed_out / neutral / stale / action_required / failure
-        # and anything GitHub adds later: unknown conclusions fail closed.
-        failing.append((name, r.get("html_url") or ""))
+        failing.append((name, worst.get("html_url") or ""))
 
 # Report order: absent, then red, then did-not-run, then pending. A red check
 # outranks a skipped one on a mixed set because it is the more concrete signal,
