@@ -305,13 +305,22 @@ while IFS= read -r entry; do
 done < <(grep -vE '^\s*(#|$)' "$ALLOWLIST")
 
 # Tracked files containing the pattern, excluding archive/** by
-# construction (a whole subtree, by design) and three exact files by
-# construction (never via an allowlist entry, so none of these three can
+# construction (a whole subtree, by design) and five exact files by
+# construction (never via an allowlist entry, so none of these five can
 # go stale): the two generated wiki files, and this guard's own hermetic
 # test harness (its synthetic mutation fixtures deliberately contain the
-# pattern as test data). Each -vxF is a literal full-line match against
-# `git ls-files` output — not a prefix, not a glob — so the exclusion is
-# structurally incapable of widening past the one path it names;
+# pattern as test data). The other two are engine-plane-only operator
+# runbooks, excluded for D#2531:
+#   .autonomous-team/CRITICAL-PATH-2026-09-10.md — tells a human which
+#     directory to stand in; the literal checkout path is the content,
+#     not a defect.
+#   .autonomous-team/EXECUTOR-STANDING-BRIEF.md — same reason, same file
+#     family. .autonomous-team/ is untracked on the code plane, so both
+#     lines are a no-op there and only take effect on an engine-plane
+#     checkout where the files exist.
+# Each -vxF is a literal full-line match against `git ls-files` output —
+# not a prefix, not a glob — so the exclusion is structurally incapable of
+# widening past the one path it names;
 # tests/test_no_hardcoded_checkout_paths_guard.sh asserts this directly
 # with a near-miss filename that must NOT be excluded.
 mapfile -t MATCH_FILES < <(
@@ -320,6 +329,8 @@ mapfile -t MATCH_FILES < <(
     | grep -vxF 'wiki/Changelog.md' \
     | grep -vxF 'wiki/Project-Status.md' \
     | grep -vxF 'tests/test_no_hardcoded_checkout_paths_guard.sh' \
+    | grep -vxF '.autonomous-team/CRITICAL-PATH-2026-09-10.md' \
+    | grep -vxF '.autonomous-team/EXECUTOR-STANDING-BRIEF.md' \
     | xargs -r -d '\n' grep -lE "$PATTERN" -- 2>/dev/null
 )
 
