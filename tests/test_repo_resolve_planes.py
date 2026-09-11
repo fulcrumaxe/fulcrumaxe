@@ -170,10 +170,11 @@ def test_code_repo_still_fails_loudly_when_nothing_resolves(tmp_path):
     "config",
     [
         {"repo": "owner/r", "code_repo": ""},
+        {"repo": "owner/r", "code_repo": "   "},
         {"repo": "owner/r", "code_repo": 42},
         {"repo": "owner/r", "code_repo": {"nested": "no"}},
     ],
-    ids=["empty-string", "non-string", "object"],
+    ids=["empty-string", "whitespace-only", "non-string", "object"],
 )
 def test_unusable_code_repo_value_falls_back_to_repo(tmp_path, config):
     out, rc = _call(tmp_path, "_resolve_code_repo", config)
@@ -195,3 +196,78 @@ def test_malformed_config_json_falls_back_rather_than_crashing(tmp_path):
     )
     assert proc.returncode == 0
     assert proc.stdout.strip() == "owner/from-env"
+
+
+# --- D#2536: a whitespace-only value defeats a bare `[[ -n ]]` gate ---------
+#
+# `_resolve_code_repo`/`_resolve_discussion_repo` already normalize
+# whitespace-only input above (it falls through like an empty value). This
+# section covers the two properties D#2536 is specifically about: the
+# `_require_code_repo` chokepoint's own independent guard, and keeping
+# "absent" and "whitespace-only" distinguishable for the Discussion plane.
+
+
+def test_require_code_repo_rejects_whitespace_only(tmp_path):
+    """`_require_code_repo` prints nothing on stdout, an actionable message
+    on stderr, and returns 1 for a whitespace-only resolution — the same
+    contract it already has for an empty one, not the pre-fix `[[ -z "$r" ]]`
+    gate that a whitespace-only value silently passes through."""
+    fake = _fake_repo(tmp_path, None)
+    runner = fake / "runner.sh"
+    runner.write_text(
+        'source "$(dirname "$0")/scripts/lib/repo-resolve.sh"\n'
+        "AUTONOMOUS_TEAM_REPO='   '\n"
+        '_require_code_repo "test-context"\n'
+    )
+    env = os.environ.copy()
+    env.pop("AUTONOMOUS_TEAM_REPO", None)
+    proc = subprocess.run(
+        ["bash", str(runner)], capture_output=True, text=True, env=env
+    )
+    assert proc.returncode == 1
+    assert proc.stdout == ""
+    assert "could not resolve the code repo" in proc.stderr
+
+
+def test_require_code_repo_still_accepts_well_formed(tmp_path):
+    """Sanity check alongside the rejection test above: a real slug is
+    unaffected by the whitespace fix."""
+    out, rc = _call(tmp_path, "_require_code_repo", {"code_repo": "owner/public"})
+    assert (out, rc) == ("owner/public", 0)
+
+
+def test_absent_and_whitespace_only_discussion_repo_both_fall_through_the_same_way(
+    tmp_path,
+):
+    """THE TRAP (D#2536 item 6): an absent discussion_repo is legitimately
+    empty-and-fine — not an error — for a fork with no private twin. A
+    blanket "empty is always an error" fix would break every such fork. This
+    asserts the two stay distinguishable in cause (one key is missing, the
+    other is present-but-degenerate) while agreeing in effect: both fall
+    through the precedence chain exactly like any other absent value,
+    landing on whatever "repo" resolves to, or on empty-and-fine when
+    nothing resolves at all — neither ever surfaces as an error, and neither
+    is ever returned as a literal "   "."""
+    config_with_repo = {"repo": "owner/legacy"}
+    absent, absent_rc = _call(
+        tmp_path / "absent", "_resolve_discussion_repo", config_with_repo
+    )
+    whitespace, whitespace_rc = _call(
+        tmp_path / "whitespace",
+        "_resolve_discussion_repo",
+        {**config_with_repo, "discussion_repo": "   "},
+    )
+    assert (absent, absent_rc) == ("owner/legacy", 0)
+    assert (whitespace, whitespace_rc) == ("owner/legacy", 0)
+
+    # And with nothing at all configured, both land on empty-and-fine.
+    absent_nothing, absent_nothing_rc = _call(
+        tmp_path / "absent-nothing", "_resolve_discussion_repo", {}
+    )
+    whitespace_nothing, whitespace_nothing_rc = _call(
+        tmp_path / "whitespace-nothing",
+        "_resolve_discussion_repo",
+        {"discussion_repo": "   "},
+    )
+    assert (absent_nothing, absent_nothing_rc) == ("", 0)
+    assert (whitespace_nothing, whitespace_nothing_rc) == ("", 0)

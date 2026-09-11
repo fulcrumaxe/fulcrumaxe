@@ -121,6 +121,51 @@ class TestRepoResolve:
         assert repo == "fallback/no-key"
 
 
+class TestWhitespaceOnlyIsTreatedAsAbsent:
+    """D#2536: a whitespace-only value must never be echoed back as a
+    resolved slug — treat it the same as unset/empty at every step."""
+
+    def test_whitespace_only_repo_field_falls_through(self):
+        """Whitespace-only config.json "repo" falls through to env, not to
+        a literal "   " (the pre-fix bug: `[[ -n "   " ]]` is true)."""
+        repo, rc = _run_repo_resolve(
+            project_json_content={"repo": "   "},
+            env_override={"AUTONOMOUS_TEAM_REPO": "fallback/from-env"},
+        )
+        assert rc == 0
+        assert repo == "fallback/from-env"
+
+    def test_whitespace_only_env_var_fails_loudly(self):
+        """Whitespace-only AUTONOMOUS_TEAM_REPO with no config.json fails
+        loudly (non-zero, no stdout) exactly like the unset case — it must
+        never be echoed back as a "resolved" slug."""
+        repo, rc = _run_repo_resolve(
+            project_json_content=None,
+            env_override={"AUTONOMOUS_TEAM_REPO": "   "},
+        )
+        assert rc == 1
+        assert repo == ""
+
+    def test_no_resolver_ever_returns_a_degenerate_value(self):
+        """No input in this class produces a non-empty result that isn't a
+        well-formed OWNER/NAME — either a real slug, or nothing at all."""
+        for project_json_content, env_override in [
+            (None, {}),
+            (None, {"AUTONOMOUS_TEAM_REPO": "   "}),
+            ({"repo": "   "}, {}),
+            ({"repo": "\t\n "}, {}),
+        ]:
+            repo, rc = _run_repo_resolve(
+                project_json_content=project_json_content, env_override=env_override
+            )
+            if repo:
+                assert "/" in repo and repo.strip() == repo, (
+                    f"got a degenerate non-empty result: {repo!r}"
+                )
+            else:
+                assert rc != 0
+
+
 class TestSpawnTemplatesRepoLoad:
     """Test that spawn_templates.py _load_repo() follows the same resolution order."""
 
