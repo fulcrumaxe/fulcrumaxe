@@ -66,7 +66,9 @@ metrics, emit a markdown snapshot to wiki/analytics/<YYYY-MM-DD>.md.
 - .autonomous-team/releases/*.json -- release artifacts
 - .autonomous-team/registry.json -- discussion registry for KPI
 - .autonomous-team/loop-metrics.jsonl -- loop iteration data
-- gh pr list --state merged -- lead time computation (via release_manager)
+- gh pr list --state merged -- lead time computation. You never run this yourself:
+  release_manager.compute_dora_snapshot() does, against the **code plane**
+  (`backend._repo.CODE_REPO`, already pinned there).
 
 ---
 
