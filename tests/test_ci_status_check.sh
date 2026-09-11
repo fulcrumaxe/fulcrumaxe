@@ -1020,6 +1020,75 @@ assert_contains "CS-21e: STATE is pass" "STATE:pass" "$OUT"
 unset CI_STATUS_OVERRIDE_20194 CI_STATUS_HEAD_SHA_20194
 
 # -----------------------------------------------------------------------
+# CS-22 (D#2463): two fail-open paths in the duplicate-name / empty-required
+# handling. CS-22a/b reproduce the exact rollup shape measured on a real PR
+# (fulcrumaxe/fulcrumaxe PR #155): three required names each posted twice by
+# two separate workflow runs on the same head SHA. CS-22c covers the
+# empty-required-set path, which needs a different seam (CI_REQUIRED_CHECKS
+# itself, not a check-runs override) since it is never empty in production.
+# -----------------------------------------------------------------------
+echo ""
+echo "=== CS-22a: duplicate required names, every duplicate green -> still passes ==="
+DUP_ALL_GREEN='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"','"$(_gha 'backend (import-smoke)' success)"','"$(_gha 'preflight (always-on gates)' success)"','"$(_gha 'publish denylist' success 'https://x/runs/new')"','"$(_gha 'publish denylist' success 'https://x/runs/old')"','"$(_gha 'PR link policy' success 'https://x/runs/new')"','"$(_gha 'PR link policy' success 'https://x/runs/old')"','"$(_gha 'PR mutation evidence' success 'https://x/runs/new')"','"$(_gha 'PR mutation evidence' success 'https://x/runs/old')"']'
+export CI_STATUS_OVERRIDE_20195="$DUP_ALL_GREEN"
+export CI_STATUS_HEAD_SHA_20195="deadbeef95"
+OUT=$(_run_status 20195); RC=$?
+assert_exit_0 "CS-22a: three required names duplicated, every copy green, still passes" "$RC"
+unset CI_STATUS_OVERRIDE_20195 CI_STATUS_HEAD_SHA_20195
+
+echo ""
+echo "=== CS-22b: duplicate required name, one copy failing -> now blocked regardless of which copy is last ==="
+# Reproduces the exact defect: 'PR link policy' posted twice, one failing
+# copy and one successful copy. The successful copy is LAST in the array —
+# the position the old 'last occurrence wins' logic trusted — so this fixture
+# is the shape that used to fail OPEN (pass) and must now fail CLOSED.
+DUP_ONE_FAILING='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"','"$(_gha 'backend (import-smoke)' success)"','"$(_gha 'preflight (always-on gates)' success)"','"$(_gha 'publish denylist' success)"','"$(_gha 'PR mutation evidence' success)"','"$(_gha 'PR link policy' failure 'https://x/runs/failed-one')"','"$(_gha 'PR link policy' success 'https://x/runs/success-one')"']'
+export CI_STATUS_OVERRIDE_20196="$DUP_ONE_FAILING"
+export CI_STATUS_HEAD_SHA_20196="deadbeef96"
+OUT=$(_run_status 20196); RC=$?
+assert_exit_1 "CS-22b: a failing duplicate blocks even though a green duplicate is last in the array" "$RC"
+assert_contains "CS-22b: FAILING names the duplicated check" "PR link policy" "$OUT"
+unset CI_STATUS_OVERRIDE_20196 CI_STATUS_HEAD_SHA_20196
+
+echo ""
+echo "=== CS-22c: empty required-checks set -> fails closed and loud, never silently passes ==="
+DUP_ALL_GREEN_20197="$DUP_ALL_GREEN"
+export CI_STATUS_OVERRIDE_20197="$DUP_ALL_GREEN_20197"
+export CI_STATUS_HEAD_SHA_20197="deadbeef97"
+OUT=$(
+  (
+    source "$CI_LIB"
+    CI_REQUIRED_CHECKS=()
+    check_ci_status 20197 "test-owner/test-repo"
+    rc=$?
+    echo "RC:$rc"
+    echo "STATE:${CI_STATUS_STATE:-}"
+    echo "REASON:${CI_STATUS_FAIL_REASON:-}"
+    exit "$rc"
+  )
+)
+RC=$?
+assert_exit_1 "CS-22c: an empty CI_REQUIRED_CHECKS blocks instead of vacuously passing" "$RC"
+assert_contains "CS-22c: reason says the required-checks list is empty" "required-checks list is empty" "$OUT"
+assert_not_contains "CS-22c: never lands in STATE:pass" "STATE:pass" "$OUT"
+unset CI_STATUS_OVERRIDE_20197 CI_STATUS_HEAD_SHA_20197
+
+echo ""
+echo "=== CS-22d: duplicate required name, failing copy LAST -> the other ordering also blocks ==="
+# CS-22b already proves failure-first/success-last blocks. _bucket ranking is
+# a min() over all entries for the name, so array position shouldn't matter —
+# but that was exactly the previous code's bug (it mattered, silently). Prove
+# the reverse ordering too, so "order-independent" is a checked fact rather
+# than an implementation detail nobody is asserting on.
+DUP_ONE_FAILING_REVERSED='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"','"$(_gha 'backend (import-smoke)' success)"','"$(_gha 'preflight (always-on gates)' success)"','"$(_gha 'publish denylist' success)"','"$(_gha 'PR mutation evidence' success)"','"$(_gha 'PR link policy' success 'https://x/runs/success-one')"','"$(_gha 'PR link policy' failure 'https://x/runs/failed-one')"']'
+export CI_STATUS_OVERRIDE_20198="$DUP_ONE_FAILING_REVERSED"
+export CI_STATUS_HEAD_SHA_20198="deadbeef98"
+OUT=$(_run_status 20198); RC=$?
+assert_exit_1 "CS-22d: a failing duplicate blocks with the failing copy last too" "$RC"
+assert_contains "CS-22d: FAILING names the duplicated check" "PR link policy" "$OUT"
+unset CI_STATUS_OVERRIDE_20198 CI_STATUS_HEAD_SHA_20198
+
+# -----------------------------------------------------------------------
 # Summary
 # -----------------------------------------------------------------------
 echo ""
