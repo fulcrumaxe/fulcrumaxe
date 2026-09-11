@@ -4725,3 +4725,114 @@ class TestD2448NonObjectPayloadIsQuiet:
         )
         assert result.returncode == 0
         assert "not an object" not in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# D#2483 PR-a -- the relative-path dial-registry basename check at
+# _scan_command_segments' segment_text block used to run one unanchored
+# substring search over the WHOLE JOINED segment text for every write-
+# candidate segment, so it fired on a protected basename merely mentioned in
+# prose -- an agent reporting the block by name tripped it, and could not
+# report being blocked by this rule without tripping it again. See the code
+# comment at that site (hooks/sandbox_rules.py) for the full before/after and
+# the positive-control measurement that justified the split below.
+# ---------------------------------------------------------------------------
+
+_D2483_SCRIPT_BASENAME = _DIAL_PROTECTED_SUFFIXES[3]
+_D2483_REGISTRY_BASENAME = _DIAL_PROTECTED_SUFFIXES[0]
+
+
+class TestD2483ProseNotAPathMention:
+    """The three false positives measured against the code plane before this
+    fix, plus the negative control that must not start blocking as a side
+    effect of the rewrite."""
+
+    def test_prose_mention_via_log_rotation_comment_allowed(self) -> None:
+        cmd = (
+            "rotate-team-log.sh comment "
+            '"test: ' + _D2483_SCRIPT_BASENAME + ' named in prose"'
+        )
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is True, f"expected ALLOW, got reason={d.reason!r}"
+
+    def test_prose_mention_via_gh_issue_comment_body_allowed(self) -> None:
+        cmd = 'gh issue comment --body "see ' + _D2483_SCRIPT_BASENAME + '"'
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is True, f"expected ALLOW, got reason={d.reason!r}"
+
+    def test_prose_mention_of_registry_file_via_gh_issue_comment_allowed(self) -> None:
+        cmd = 'gh issue comment --body "' + _D2483_REGISTRY_BASENAME + ' is protected"'
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is True, f"expected ALLOW, got reason={d.reason!r}"
+
+    def test_midword_mention_still_allowed(self) -> None:
+        # Must not start blocking as a side effect of the rewrite -- the word
+        # boundaries in _PROTECTED_BASENAME_RE were never the defect.
+        cmd = 'echo "a' + _D2483_SCRIPT_BASENAME + 'b"'
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is True
+
+
+class TestD2483RealBlocksSurviveTheRewrite:
+    """Re-derived independently of the Discussion's own measurement table
+    (D#2483 Spec item 3): every _DIAL_PROTECTED_SUFFIXES entry, crossed with
+    the SEC-8 spellings (absolute, relative, ./-relative, ~-prefixed,
+    dotdot-relative, glued key=value), still blocks a real write verb after
+    the rewrite."""
+
+    _STATE_DIR = f"{FIXTURE_HOME}/.autonomous-forever-state"
+
+    def _spellings(self, name: str) -> dict[str, str]:
+        return {
+            "absolute": f"{self._STATE_DIR}/{name}",
+            "relative": name,
+            "dot_relative": f"./{name}",
+            "tilde": f"~/.autonomous-forever-state/{name}",
+            "dotdot": f"../../.autonomous-forever-state/{name}",
+            "glued_kv": f"--file={name}",
+        }
+
+    @pytest.mark.parametrize("suffix", list(_DIAL_PROTECTED_SUFFIXES))
+    @pytest.mark.parametrize("verb_template", ["rm -f {p}", "sed -i s/a/b/ {p}"])
+    def test_matrix_still_blocked(self, suffix: str, verb_template: str) -> None:
+        for spelling_name, path in self._spellings(suffix).items():
+            cmd = verb_template.format(p=path)
+            d = classify_bash(cmd, _WT_CLAUDE)
+            assert d.allow is False, (
+                f"expected BLOCK for `{cmd}` ({spelling_name} spelling of "
+                f"{suffix!r}), got allow=True"
+            )
+
+    def test_glued_relative_key_value_blocked(self) -> None:
+        # The one spelling the OLD unconditional substring scan caught that
+        # neither classify_bash step 1d's exact whole-token match nor the
+        # `_WHOLE_TOKEN_PATH_RE` loop below (absolute-only) reach on their
+        # own: a glued flag=value token splits into a flag and a bare
+        # relative value that only a scan of the value half (not the whole
+        # token) can see.
+        cmd = "rm -f --file=" + _D2483_REGISTRY_BASENAME
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False
+        assert _D2483_REGISTRY_BASENAME in d.reason
+
+
+class TestD2483PythonPayloadRelativeBasenameStillBlocked:
+    """The one shape that ONLY the segment_text scan (now scoped to python/
+    python3 segments) can catch: a dial-protected basename spelled relative
+    inside a python -c payload string. `_ABS_PATH_TOKEN_RE`'s deep scan below
+    is absolute-only, and classify_bash step 1d's operand scan compares a
+    WHOLE shell token's basename -- the entire `-c` payload is one token, so
+    it never equals a bare protected filename. Measured: disabling the
+    segment_text scan entirely (for every segment, the D#2483 positive
+    control) turns exactly these shapes red -- 4 tests in
+    TestD1749PathBasedWriteDetection / TestD1749Round4Findings -- nothing
+    else in this suite depends on it."""
+
+    @pytest.mark.parametrize("suffix", list(_DIAL_PROTECTED_SUFFIXES))
+    def test_every_protected_suffix_relative_inside_python_c_blocked(
+        self, suffix: str
+    ) -> None:
+        cmd = "python3 -c \"open('" + suffix + "','a').write('x')\""
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False, f"expected BLOCK for suffix {suffix!r}, got allow=True"
+        assert suffix in d.reason

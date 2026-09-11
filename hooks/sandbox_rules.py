@@ -3238,13 +3238,69 @@ def _scan_command_segments(
 
             # Relative-path dial-registry basename protection, parity with what
             # classify_path_write already does for relative paths (Spec item B8).
-            segment_text = " ".join(segment)
-            basename_match = _PROTECTED_BASENAME_RE.search(segment_text)
-            if basename_match:
-                return Decision(
-                    allow=False,
-                    reason=f"dial-registry write blocked: {basename_match.group(1)} is read-only for sub-agents",
-                )
+            #
+            # D#2483 PR-a: this used to be one unconditional substring search
+            # over the WHOLE JOINED segment text (`" ".join(segment)`), which
+            # blocked a protected basename merely MENTIONED in prose inside
+            # any write-candidate segment — `gh issue comment --body "see
+            # provision-dial-allowlist.sh"` and `rotate-team-log.sh comment
+            # "..."` were both refused even though neither writes a file.
+            # Replaced with two narrower, still-per-segment checks that
+            # together cover every real shape the old one did, minus the
+            # prose false positive:
+            #
+            # (1) A protected basename spelled as a whole token, OR as the
+            #     value half of a glued `key=value` argument (`--file=
+            #     dial-registry.json`) — checked by exact basename equality,
+            #     the same rule `_protected_basename_operand()` already uses
+            #     for step 1d's operand scan. Needed because that scan only
+            #     ever compares a WHOLE token's basename; it never splits a
+            #     glued `key=value` token, so `--file=dial-registry.json`
+            #     (relative value half) reached neither it nor the
+            #     `_WHOLE_TOKEN_PATH_RE` loop below (which requires the value
+            #     half to start with `/`). A prose token like `"dial-
+            #     registry.json is protected"` does NOT match here: its
+            #     basename (the whole token, since it has no `/` or `=`) is
+            #     the entire sentence, not an exact suffix name.
+            #
+            # (2) For python/python3 segments only (`_PY_INTERPRETER_NAMES`,
+            #     the same gate the payload deep-scan below uses): the
+            #     original unanchored substring search, kept exactly as it
+            #     was. This is the only layer that catches a protected
+            #     basename spelled RELATIVE *inside* a `-c` payload string —
+            #     `python3 -c "open('audit.jsonl','a').write('x')"` — which
+            #     the deep payload scan below can't reach (it only extracts
+            #     ABSOLUTE candidates, via `_ABS_PATH_TOKEN_RE`) and which
+            #     (1) above can't reach either (the match doesn't end at the
+            #     token's end or start right after `=`; the payload
+            #     continues past the filename). Measured: disabling the
+            #     original check entirely and running the full
+            #     tests/test_sandbox_rules.py suite turns exactly 4 tests
+            #     red, all of them python -c payload writes to a dial-
+            #     protected file — nothing else in the suite needs the
+            #     unanchored form, which is why it is scoped to python
+            #     segments rather than kept global.
+            for tok in segment:
+                glued_value = tok.split("=", 1)[1] if "=" in tok else None
+                for candidate in (tok, glued_value):
+                    if not candidate:
+                        continue
+                    name = Path(candidate).name
+                    if name in _DIAL_PROTECTED_SUFFIXES:
+                        return Decision(
+                            allow=False,
+                            reason=f"dial-registry write blocked: {name} is read-only for sub-agents",
+                        )
+
+            seg_name = _segment_command_name(segment)
+            if seg_name in _PY_INTERPRETER_NAMES:
+                segment_text = " ".join(segment)
+                basename_match = _PROTECTED_BASENAME_RE.search(segment_text)
+                if basename_match:
+                    return Decision(
+                        allow=False,
+                        reason=f"dial-registry write blocked: {basename_match.group(1)} is read-only for sub-agents",
+                    )
 
             # D#2246 item 1: whole-token match, not substring search. A token
             # (or the value half of a `key=/path` glued argument) is a candidate
