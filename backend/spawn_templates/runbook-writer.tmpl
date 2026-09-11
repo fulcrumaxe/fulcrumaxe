@@ -37,7 +37,7 @@ Steps:
      bash scripts/rotate-team-log.sh comment "[$(date +%H:%M)] runbook-writer: started — PR #{{pr_number}} (release {{release_id}})"
 
 2. Fetch the PR diff:
-     gh pr diff {{pr_number}} --repo {{REPO}}
+     gh pr diff {{pr_number}} --repo {{CODE_REPO}}
 
 3. Identify the module from the diff:
    - backend/server.py           -> wiki/runbooks/backend-server.md
@@ -67,7 +67,7 @@ Steps:
 
 6. Post PR comment:
      gh pr comment {{pr_number}} --body "Runbook: <list of files written/updated>" \
-       --repo {{REPO}}
+       --repo {{CODE_REPO}}
 
 7. Post to Team Log:
      bash scripts/rotate-team-log.sh comment "[$(date +%H:%M)] runbook-writer: done — PR #{{pr_number}} verdict=done"
