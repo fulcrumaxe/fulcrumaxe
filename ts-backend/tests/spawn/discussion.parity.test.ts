@@ -340,6 +340,7 @@ describe("discussion-status: VALID_STATUSES constant", () => {
     expect(VALID_STATUSES.has("REVIEWING")).toBe(true);
     expect(VALID_STATUSES.has("DONE")).toBe(true);
     expect(VALID_STATUSES.has("CLOSED")).toBe(true);
+    expect(VALID_STATUSES.has("PARKED")).toBe(true);
   });
 });
 

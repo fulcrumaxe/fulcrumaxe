@@ -181,6 +181,15 @@ function checkSpecReadiness(
       reason: `Discussion #${discussion} status is ${firstStatus} — work is already complete`,
     };
   }
+  // PARKED is distinct from DONE: deliberately not started, not finished.
+  // Message text must distinguish the two — see backend/discussion_status.py
+  // VALID_STATUSES and scripts/lib/spec-ready-gate.sh (D#2122).
+  if (firstStatus === "PARKED") {
+    return {
+      blocked: true,
+      reason: `Discussion #${discussion} status is PARKED — deliberately not started, not complete. Do not treat this as DONE; it remains outstanding until unparked`,
+    };
+  }
 
   // Must be SPEC_READY
   if (!/STATUS:\s*SPEC_READY/.test(body)) {
@@ -695,6 +704,14 @@ export async function runSpawnAgent(
               return {
                 blocked: true,
                 reason: `Discussion #${args.discussion} status is ${firstStatus} — work is already complete`,
+              };
+            }
+            // PARKED is distinct from DONE — see the sibling check in
+            // checkSpecReadiness() above (D#2122).
+            if (firstStatus === "PARKED") {
+              return {
+                blocked: true,
+                reason: `Discussion #${args.discussion} status is PARKED — deliberately not started, not complete. Do not treat this as DONE; it remains outstanding until unparked`,
               };
             }
             if (!/STATUS:\s*SPEC_READY/.test(body)) {

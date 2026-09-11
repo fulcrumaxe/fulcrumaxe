@@ -123,6 +123,27 @@ STATUS: SPEC_READY as discussed in the meeting, no HTML comment form used.
 EOF
 )
 
+FIXTURE_J=$(cat <<'EOF'
+<!-- STATUS:PARKED SINCE:2026-09-10T00:00:00Z -->
+
+## Deliberately not started
+
+Parked, not finished. Must not spawn, and must not read as DONE.
+EOF
+)
+
+# Acceptance item 6 regression: a near-miss token ("PARKD", not "PARKED")
+# must still hard-block via the catch-all branch, exact-string match only —
+# never a prefix/glob match that would let a typo slip through as parked.
+FIXTURE_K=$(cat <<'EOF'
+<!-- STATUS:PARKD SINCE:2026-09-10T00:00:00Z -->
+
+## Typo, not a real status
+
+This must still block, same as any other unrecognized token.
+EOF
+)
+
 # name : body-var : expected (OPEN|BLOCK) : old-bug-expected (OPEN|BLOCK)
 CASES="
 A FIXTURE_A OPEN OPEN
@@ -134,6 +155,8 @@ F FIXTURE_F BLOCK BLOCK
 G FIXTURE_G BLOCK BLOCK
 H FIXTURE_H BLOCK OPEN
 I FIXTURE_I BLOCK OPEN
+J FIXTURE_J BLOCK BLOCK
+K FIXTURE_K BLOCK BLOCK
 "
 
 echo "== New gate (spec_ready_gate_check) vs Implementation Notes table =="
@@ -188,6 +211,23 @@ if [[ "$DONE_MSG" == *"status is DONE"* && "$DONE_MSG" == *"already complete"* ]
   _pass "DONE fixture message states status + already-complete"
 else
   _fail "DONE fixture message wrong: $DONE_MSG"
+fi
+
+PARKED_MSG=$(spec_ready_gate_check "$FIXTURE_J" 42 2>&1 >/dev/null)
+if [[ "$PARKED_MSG" == *"status is PARKED"* && "$PARKED_MSG" == *"not complete"* ]]; then
+  _pass "PARKED fixture message states status + not-complete"
+else
+  _fail "PARKED fixture message wrong: $PARKED_MSG"
+fi
+if [[ "$PARKED_MSG" == *"already complete"* ]]; then
+  _fail "PARKED fixture message wrongly reuses the DONE 'already complete' wording — must be distinguishable: $PARKED_MSG"
+fi
+
+PARKD_MSG=$(spec_ready_gate_check "$FIXTURE_K" 42 2>&1 >/dev/null)
+if [[ "$PARKD_MSG" == *"status is PARKED"* ]]; then
+  _fail "PARKD (typo) fixture wrongly matched as PARKED — exact-match regression: $PARKD_MSG"
+else
+  _pass "PARKD (typo) fixture falls through to the generic not-SPEC_READY block, not the PARKED branch"
 fi
 
 UNKNOWN_MSG=$(spec_ready_gate_check "$FIXTURE_F" 42 2>&1 >/dev/null)

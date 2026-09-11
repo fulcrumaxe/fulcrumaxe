@@ -131,6 +131,11 @@ class DiscussionRegistry:
         # DONE discussions are always closed, so include them for velocity.
         open_discussions = self._open_only(discussions)
         total = len(open_discussions)
+        # Exact-string match on "DONE" — a PARKED discussion (deliberately
+        # not started, stays open) never lands here and is instead folded
+        # into `total` above via `_open_only`. Do not widen this to
+        # `in ("DONE", "PARKED")`: that would reproduce the bug D#2122 fixed
+        # (a PARKED item silently reading as complete) under a new name.
         done_items = [d for d in discussions if d.get("status") == "DONE"]
         in_progress = [d for d in open_discussions if d.get("status") in ("IMPLEMENTING", "REVIEWING")]
         spec_ready = [d for d in open_discussions if d.get("status") == "SPEC_READY"]
@@ -216,11 +221,16 @@ class DiscussionRegistry:
         total = len(discussions)
         open_discussions = self._open_only(discussions)
 
+        # PARKED discussions are open (closed_at is None), so they land in
+        # `buckets["PARKED"]` here like any other open status — that is what
+        # makes them count as outstanding rather than disappearing.
         buckets: dict[str, int] = {}
         for d in open_discussions:
             status = d.get("status") or "UNKNOWN"
             buckets[status] = buckets.get(status, 0) + 1
 
+        # Exact-string match — see the matching note in stats() above. PARKED
+        # must never be folded in here.
         done_count = sum(1 for d in discussions if d.get("status") == "DONE")
 
         return {
@@ -481,6 +491,8 @@ class DiscussionRegistry:
         # Count only open discussions for active work metrics; all for done/velocity.
         open_discussions = self._open_only(discussions)
         total = len(open_discussions)
+        # Exact-string match — see the matching note in stats() above. PARKED
+        # must never be folded in here.
         done = [d for d in discussions if d.get("status") == "DONE"]
         in_progress = [d for d in open_discussions if d.get("status") in ("IMPLEMENTING", "REVIEWING")]
         done_count = len(done)

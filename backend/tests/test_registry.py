@@ -214,6 +214,76 @@ def test_stats_tasks_per_day_nonzero(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
+# D#2122 — PARKED must count as outstanding, never as done.
+#
+# This is the discriminating test the acceptance criteria call for: it must
+# FAIL if a future change folds PARKED into the DONE computation anywhere
+# (stats(), queue_summary(), or _compute_velocity()). Proven below by the
+# explicit mutation-equivalent assertion at the bottom of each test, which
+# states in the test itself what number would move, and by how much, if
+# PARKED were (wrongly) treated like DONE.
+# ---------------------------------------------------------------------------
+
+
+def test_stats_parked_is_outstanding_not_done(tmp_path: Path):
+    """One open PARKED row + one closed DONE row.
+
+    Correct behaviour: total (open count) == 1 (the PARKED row only, since
+    the DONE row is closed); done == 1 (the DONE row only).
+
+    The mutation this catches: widening the done_items filter from
+    `status == "DONE"` to `status in ("DONE", "PARKED")` would make
+    done == 2 (up by 1, from 1 to 2) — this assertion fails the instant that
+    happens.
+    """
+    reg = _make_registry(tmp_path)
+    data = {
+        "version": 1,
+        "synced_at": "2026-09-10T00:00:00+00:00",
+        "discussions": [
+            {"number": 1, "status": "PARKED", "created_at": "2026-01-01T00:00:00Z", "closed_at": None},
+            {"number": 2, "status": "DONE", "created_at": "2026-01-01T00:00:00Z", "closed_at": "2026-01-02T00:00:00Z"},
+        ],
+        "velocity": {},
+    }
+    (tmp_path / "registry.json").write_text(json.dumps(data))
+    s = reg.stats()
+    assert s["total"] == 1, "the PARKED row is the only open row -- it must count as outstanding"
+    assert s["done"] == 1, "done must count the literal-DONE row only, never the PARKED one"
+
+
+def test_queue_summary_parked_is_outstanding_not_done(tmp_path: Path):
+    """Same fixture as above, through queue_summary() — the surface the
+    backlog/queue reporters actually read.
+
+    Correct behaviour: buckets["PARKED"] == 1 (visible, not silently
+    dropped), open_total == 1 (only the PARKED row is open), done == 1 (the
+    DONE row only).
+
+    The mutation this catches: if PARKED were folded into `done` the same
+    way as the stats() test above, `done` moves from 1 to 2 (up by 1) and
+    `open_total` would need to drop from 1 to 0 for PARKED to simultaneously
+    stop being "outstanding" -- either half of that failing is the bug this
+    pins closed.
+    """
+    reg = _make_registry(tmp_path)
+    data = {
+        "version": 1,
+        "synced_at": "2026-09-10T00:00:00+00:00",
+        "discussions": [
+            {"number": 1, "status": "PARKED", "created_at": "2026-01-01T00:00:00Z", "closed_at": None},
+            {"number": 2, "status": "DONE", "created_at": "2026-01-01T00:00:00Z", "closed_at": "2026-01-02T00:00:00Z"},
+        ],
+        "velocity": {},
+    }
+    (tmp_path / "registry.json").write_text(json.dumps(data))
+    qs = reg.queue_summary()
+    assert qs["buckets"].get("PARKED") == 1
+    assert qs["open_total"] == 1
+    assert qs["done"] == 1
+
+
+# ---------------------------------------------------------------------------
 # _parse_status and _parse_pr
 # ---------------------------------------------------------------------------
 

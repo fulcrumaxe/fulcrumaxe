@@ -55,6 +55,9 @@ export const VALID_STATUSES = new Set([
   "REVIEWING",
   "DONE",
   "CLOSED",
+  // PARKED — deliberately not started, distinct from DONE (finished).
+  // Mirrors backend/discussion_status.py's VALID_STATUSES. See D#2122.
+  "PARKED",
 ]);
 
 export const REQUIRED_SECTIONS: string[] = [

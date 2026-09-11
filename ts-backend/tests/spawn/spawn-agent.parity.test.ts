@@ -18,6 +18,9 @@
  *   2. cap-blocked       — fleet cap hit (8 open runs) → exit 1
  *   3. spec-not-ready    — discussion body missing SPEC_READY status → exit 1
  *   4. already-done      — STATUS:DONE in body → exit 1
+ *   4b. parked           — STATUS:PARKED in body → exit 1, via BOTH refusal
+ *                           sites (injected body AND live fresh-body read),
+ *                           message text checked against the bash gate (D#2122)
  *
  * Decision parity documented (TS unit-tested, bash parity not structurally testable):
  *   - dial-denied: The bash reads dial state from dial_registry.py / ~/.autonomous-forever-state/
@@ -45,7 +48,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync, existsSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
@@ -106,6 +109,34 @@ Already finished.
 
 No further work needed.
 `;
+
+/**
+ * Body with STATUS:PARKED — should block executor spawns with a message
+ * distinct from DONE's "already complete" wording (D#2122).
+ */
+const PARKED_BODY = `<!-- STATUS:PARKED SINCE:2026-09-10T00:00:00Z -->
+
+## Intent
+
+Deliberately parked, not started.
+
+## Spec (Acceptance)
+
+- [ ] Parked pending a decision.
+
+## Implementation Notes
+
+None yet — parked.
+`;
+
+/**
+ * The exact distinguishing phrase both the bash gate (spec-ready-gate.sh)
+ * and the TS gate (spawn-agent.ts, both check sites) must emit for PARKED.
+ * Asserting on this shared substring — rather than a looser /PARKED/i match
+ * — is what would actually catch a wording drift between the two gates.
+ */
+const PARKED_MESSAGE_CORE =
+  "status is PARKED — deliberately not started, not complete. Do not treat this as DONE; it remains outstanding until unparked";
 
 /** Normal config: agent.spawn dial = 4 (allows level-2 check). */
 function makeConfigNormal(): Record<string, unknown> {
@@ -762,6 +793,146 @@ describe("scenario: already-done (TS + bash parity)", () => {
     );
 
     expect(bash.exitCode).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SCENARIO 4b: parked — STATUS:PARKED blocks executor via BOTH refusal
+// sites, with a message distinct from DONE's "already complete" (D#2122).
+//
+// runSpawnAgent() has two independent PARKED-refusal branches:
+//   1. checkSpecReadiness() (spawn-agent.ts), reached only when the caller
+//      does NOT pass opts.discussionBody — it fresh-reads the body via
+//      readFreshBody() -> `python3 backend/discussion_cache.py get-body
+//      --fresh`.
+//   2. The inline duplicate inside runSpawnAgent's own PM-gate, reached only
+//      when opts.discussionBody IS provided (the test-injection seam every
+//      other scenario in this file already uses).
+//
+// Set-membership tests (discussion.parity.test.ts) only assert PARKED is in
+// VALID_STATUSES — they never call the refusal code, so a prior review
+// confirmed the full suite still passed 20/20 with BOTH blocks deleted. The
+// two "TS blocks..." tests below close that: each one only reaches ONE of
+// the two blocks (see the PR body for the delete-one/watch-it-fail/restore
+// verification of both, done independently).
+// ---------------------------------------------------------------------------
+
+describe("scenario: parked (TS + bash parity)", () => {
+  it("TS blocks executor when discussion is PARKED via injected body (inline PM-gate check)", async () => {
+    const configPath = join(tempDir, ".autonomous-team", "config.json");
+    writeFileSync(configPath, JSON.stringify(makeConfigNormal(), null, 2));
+
+    const result = await runSpawnAgent(
+      {
+        role: "executor",
+        discussion: 4242,
+        taskPrompt: "Implement things.",
+        isolation: "",
+        worktreePath: "",
+        securityTrigger: false,
+        touchpoints: "",
+        overrideCap: false,
+        dryRunEnvDump: false,
+        noRegister: false,
+        pr: null,
+        operationClass: "",
+        sdkLane: false,
+      },
+      {
+        repoRootOverride: REPO_ROOT,
+        configPathOverride: configPath,
+        discussionBody: PARKED_BODY,
+      }
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(result.blockReason).toContain(PARKED_MESSAGE_CORE);
+    expect(result.blockReason).not.toMatch(/already complete/i);
+  });
+
+  it("TS blocks executor when discussion is PARKED via a live fresh-body read (checkSpecReadiness)", async () => {
+    // No discussionBody this time — forces runSpawnAgent through
+    // checkSpecReadiness() -> readFreshBody() -> a real `python3
+    // backend/discussion_cache.py get-body --fresh` subprocess call. Stand a
+    // fake `python3` in front of it on PATH (same technique as
+    // fresh-body-read.parity.test.ts) so this stays offline and
+    // deterministic instead of hitting live GitHub.
+    const configPath = join(tempDir, ".autonomous-team", "config.json");
+    writeFileSync(configPath, JSON.stringify(makeConfigNormal(), null, 2));
+
+    const fakeRepoRoot = join(tempDir, "fake-repo");
+    mkdirSync(join(fakeRepoRoot, "backend"), { recursive: true });
+    writeFileSync(join(fakeRepoRoot, "backend", "discussion_cache.py"), "# fixture placeholder\n");
+
+    const binDir = join(tempDir, "bin");
+    mkdirSync(binDir, { recursive: true });
+    const fakePython3Script = `#!/usr/bin/env bash
+if [[ "$*" == *"get-body"* ]]; then
+  cat <<'BODY'
+${PARKED_BODY}
+BODY
+  exit 0
+fi
+exit 1
+`;
+    const fakePython3 = join(binDir, "python3");
+    writeFileSync(fakePython3, fakePython3Script, { encoding: "utf-8" });
+    chmodSync(fakePython3, 0o755);
+
+    const origPath = process.env["PATH"];
+    process.env["PATH"] = `${binDir}:${origPath ?? ""}`;
+
+    try {
+      const result = await runSpawnAgent(
+        {
+          role: "executor",
+          discussion: 4343,
+          taskPrompt: "Implement things.",
+          isolation: "",
+          worktreePath: "",
+          securityTrigger: false,
+          touchpoints: "",
+          overrideCap: false,
+          dryRunEnvDump: false,
+          noRegister: false,
+          pr: null,
+          operationClass: "",
+          sdkLane: false,
+        },
+        {
+          repoRootOverride: fakeRepoRoot,
+          configPathOverride: configPath,
+          // No discussionBody — this is the point of this test.
+        }
+      );
+
+      expect(result.exitCode).toBe(1);
+      expect(result.blockReason).toContain(PARKED_MESSAGE_CORE);
+      expect(result.blockReason).not.toMatch(/already complete/i);
+    } finally {
+      process.env["PATH"] = origPath;
+    }
+  });
+
+  it("bash and TS gates emit the identical PARKED refusal message text", () => {
+    // Run the real spec_ready_gate_check() bash function (not a paraphrase),
+    // sourced from scripts/lib/spec-ready-gate.sh, against a live PARKED
+    // fixture body — mirrors tests/test_spec_ready_gate.sh's own PARKED
+    // coverage. Confirms the TS message (asserted above) is not a wording
+    // drift from the bash one.
+    const script = `
+set -euo pipefail
+source "${join(REPO_ROOT, "scripts", "lib", "spec-ready-gate.sh")}"
+spec_ready_gate_check "$1" "4242" 2>&1 >/dev/null || true
+`;
+    const bash = spawnSync("bash", ["-c", script, "bash", PARKED_BODY], {
+      encoding: "utf-8",
+      timeout: 15_000,
+    });
+    const bashMsg = `${bash.stdout}${bash.stderr}`;
+
+    expect(bashMsg).toContain(PARKED_MESSAGE_CORE);
+    expect(bashMsg).not.toContain("already complete");
   });
 });
 
