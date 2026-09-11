@@ -7,8 +7,9 @@
  * `failures/` namespace. After 3 consecutive failures the circuit opens and
  * the Team Lead skips spawning agents for that Discussion until manually reset.
  *
- * State transitions are persisted to `.autonomous-team/circuit-breaker-history.jsonl`
- * so operators can see the timeline of trips and resets over time.
+ * State transitions are persisted to `<STATE_DIR>/circuit-breaker-history.jsonl`
+ * (see config/state-paths.ts circuitBreakerHistory()) so operators can see the
+ * timeline of trips and resets over time.
  *
  * CLI usage:
  *   bun run ts-backend/src/spawn/circuit-breaker.ts status [discussion_number]
@@ -39,7 +40,7 @@ import {
 import { dirname, join, relative, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 import { repoName, repoOwner } from "../config/repo.js";
-import { blackboardDir } from "../config/state-paths.js";
+import { blackboardDir, circuitBreakerHistory } from "../config/state-paths.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -93,10 +94,16 @@ function _bbRoot(): string {
 // History file path
 // ---------------------------------------------------------------------------
 
+// Mirrors backend/circuit_breaker.py's _history_file() (D#2478): resolves
+// through the shared state-dir SSOT (config/state-paths.ts) every call, same
+// as Python resolves through backend/state_paths.py every call. This used to
+// be a module-relative guess (repoRoot/.autonomous-team/...) that only landed
+// on the real state file because .autonomous-team/ in the main checkout is a
+// symlink into STATE_DIR — a worktree or CI checkout has no such symlink, so
+// the guess silently read/wrote an orphaned local file instead, invisible to
+// AUTONOMOUS_TEAM_STATE_DIR overrides and to Python's own (now-fixed) writes.
 function _historyFilePath(): string {
-  const here = new URL(import.meta.url).pathname;
-  const repoRoot = join(here, "..", "..", "..", "..");
-  return join(repoRoot, ".autonomous-team", "circuit-breaker-history.jsonl");
+  return circuitBreakerHistory();
 }
 
 // ---------------------------------------------------------------------------

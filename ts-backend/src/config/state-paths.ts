@@ -44,3 +44,8 @@ export function auditJsonl(): string {
 export function blackboardDir(): string {
   return join(stateDir(), "blackboard");
 }
+
+/** Circuit-breaker transition history log (circuit_breaker.py _history_file() equivalent). */
+export function circuitBreakerHistory(): string {
+  return join(stateDir(), "circuit-breaker-history.jsonl");
+}
