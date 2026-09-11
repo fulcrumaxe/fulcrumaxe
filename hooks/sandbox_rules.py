@@ -2346,7 +2346,24 @@ _READONLY_COMMAND_NAMES: frozenset[str] = frozenset(
 # arguments are visible tokens) — the one shape genuinely NOT scannable this way
 # is a plain script-file invocation (`python3 seed.py`), where the write target
 # lives inside a file we cannot see into; see the F19 residual-risk note above.
-_PY_INTERPRETER_NAMES: frozenset[str] = frozenset(["python3", "python"])
+#
+# D#2483 PR-171 fix round (review regression 2): this used to be an exact-name
+# frozenset (`{"python3", "python"}`), which loses this whole layer for any
+# other real interpreter spelling — `python3.11`, `python3.12`, `pypy3`, "uv
+# run python" all fell through it, for BOTH the relative-path segment_text
+# scan below and the pre-existing absolute-path deep-scan gate that shares
+# this same check. Not an exotic-spelling concern: `.venv/bin/python3.12` is
+# the resolved interpreter on this repo's own PATH, ahead of the nix-store
+# `python3`. `_is_py_interpreter_name()` is version-suffix tolerant instead —
+# `python`/`python2`/`python3`/`pythonX.Y` and the `pypy` family — anchored at
+# both ends so it still does not match an unrelated name that merely contains
+# "python" (`python3-config`, `ipython`).
+_PY_INTERPRETER_NAME_RE: re.Pattern[str] = re.compile(r"^(?:python|pypy)(?:[23](?:\.\d+)?)?$")
+
+
+def _is_py_interpreter_name(name: Optional[str]) -> bool:
+    """True if *name* is a python/pypy interpreter basename, any version."""
+    return name is not None and bool(_PY_INTERPRETER_NAME_RE.match(name))
 
 # Round-1 write-call-name enumeration (`_PY_WRITE_SIGNAL_RE`) was removed in round
 # 2 — round-1 security review live-verified it was incomplete by design (os.system,
@@ -3011,7 +3028,7 @@ def _is_segment_write_candidate(tokens: list[str]) -> bool:
         return _sed_is_in_place(tokens)
     if name == "awk":
         return _awk_is_in_place(tokens)
-    if name in _PY_INTERPRETER_NAMES:
+    if _is_py_interpreter_name(name):
         payload, saw_dash_c = _python_c_payload(tokens)
         if payload is not None:
             return not _python_payload_is_read_only(payload)
@@ -3079,7 +3096,7 @@ def _is_input_only_device(path: str) -> bool:
 
 
 # Shell interpreter names — a heredoc fed to one of these is read as a
-# SCRIPT, the same way `_PY_INTERPRETER_NAMES` are for python. See
+# SCRIPT, the same way `_is_py_interpreter_name()` names are for python. See
 # `_heredoc_feeding_kind`.
 _SHELL_INTERPRETER_NAMES: frozenset[str] = frozenset(["bash", "sh", "zsh"])
 
@@ -3113,7 +3130,7 @@ def _heredoc_feeding_kind(line_before_marker: str) -> Optional[str]:
     if not positions:
         return None
     name = os.path.basename(tokens[positions[-1]])
-    if name in _PY_INTERPRETER_NAMES:
+    if _is_py_interpreter_name(name):
         return "python"
     if name in _SHELL_INTERPRETER_NAMES:
         return "shell"
@@ -3200,7 +3217,24 @@ def _scan_command_segments(
     # characters — both forms land in _SHELL_SEPARATORS (":190"), which
     # _split_command_segments checks membership against, so the two extra passes
     # were dead weight with no behavioural effect. Removed.
+    # D#2483 PR-171 fix round (review regression 1): `&>` and `&>>` (bash's
+    # shorthand for redirecting stdout+stderr) must be split into their `&`
+    # and `>`/`>>` parts BEFORE the generic `[;&|]` pass below, not left to
+    # it. That generic pass only recognises the single characters `;`, `&`,
+    # `|` — it pads the bare `&` away from its neighbours but has no rule for
+    # `>`, so `&>audit.jsonl` became tokens `['echo','x','&','>audit.jsonl']`
+    # and `_split_command_segments` turned the glued `>audit.jsonl` into its
+    # own single-token pseudo-segment, invisible to the exact basename match
+    # below (`Path('>audit.jsonl').name` is the whole glued string, not
+    # `audit.jsonl`). `&>>` must be matched before `&>` or the second `>`
+    # would stay glued to the target the same way. This is deliberately
+    # scoped to the `&`-prefixed compound forms only — plain `>`/`>>` are
+    # left untouched here (see `_all_path_operands`'s own scan for those; a
+    # bare unspaced `>audit.jsonl` with no leading `&` is D#2541, a
+    # pre-existing gap this fix does not touch).
     normalised = stripped.replace("\r\n", "\n").replace("\r", "\n").replace("\n", " ; ")
+    normalised = re.sub(r"&>>", " & >> ", normalised)
+    normalised = re.sub(r"&>", " & > ", normalised)
     normalised = re.sub(r"[;&|]", lambda m: f" {m.group()} ", normalised)
     normalised = re.sub(r" +", " ", normalised).strip()
 
@@ -3247,7 +3281,13 @@ def _scan_command_segments(
             # "..."` were both refused even though neither writes a file.
             # Replaced with two narrower, still-per-segment checks that
             # together cover every real shape the old one did, minus the
-            # prose false positive:
+            # prose false positive — re-measured after the PR-171 fix round
+            # (both blocking regressions the fix round found are covered by
+            # the `&>`/`&>>` normalisation above and by
+            # `_is_py_interpreter_name()`'s version tolerance, not by this
+            # pair of checks itself). `>`/`>>` glued with no leading `&`
+            # remains a known, pre-existing gap (D#2541), unchanged by this
+            # PR either way.
             #
             # (1) A protected basename spelled as a whole token, OR as the
             #     value half of a glued `key=value` argument (`--file=
@@ -3263,8 +3303,9 @@ def _scan_command_segments(
             #     basename (the whole token, since it has no `/` or `=`) is
             #     the entire sentence, not an exact suffix name.
             #
-            # (2) For python/python3 segments only (`_PY_INTERPRETER_NAMES`,
-            #     the same gate the payload deep-scan below uses): the
+            # (2) For python/pypy interpreter segments only
+            #     (`_is_py_interpreter_name()`, the same gate the payload
+            #     deep-scan below uses): the
             #     original unanchored substring search, kept exactly as it
             #     was. This is the only layer that catches a protected
             #     basename spelled RELATIVE *inside* a `-c` payload string —
@@ -3293,7 +3334,7 @@ def _scan_command_segments(
                         )
 
             seg_name = _segment_command_name(segment)
-            if seg_name in _PY_INTERPRETER_NAMES:
+            if _is_py_interpreter_name(seg_name):
                 segment_text = " ".join(segment)
                 basename_match = _PROTECTED_BASENAME_RE.search(segment_text)
                 if basename_match:
@@ -3324,7 +3365,7 @@ def _scan_command_segments(
             # for why that's a different, narrower gate than "not proven
             # read-only" (which also fires for a genuine read like R6).
             seg_name = _segment_command_name(segment)
-            if seg_name in _PY_INTERPRETER_NAMES:
+            if _is_py_interpreter_name(seg_name):
                 payload, _saw_dash_c = _python_c_payload(segment)
                 if payload is not None and _python_payload_has_write_call(payload):
                     collapsed_payload = _COLLAPSE_MULTISLASH_RE.sub("/", payload)

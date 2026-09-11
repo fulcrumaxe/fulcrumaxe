@@ -4836,3 +4836,97 @@ class TestD2483PythonPayloadRelativeBasenameStillBlocked:
         d = classify_bash(cmd, _WT_CLAUDE)
         assert d.allow is False, f"expected BLOCK for suffix {suffix!r}, got allow=True"
         assert suffix in d.reason
+
+
+# ---------------------------------------------------------------------------
+# D#2483 PR-171 fix round -- two BASE-BLOCK-to-HEAD-ALLOW regressions the
+# code review measured in the rewrite above, plus the two shapes that must
+# keep working unchanged (D#2541's pre-existing gap, and the prose case this
+# whole Discussion exists to fix).
+# ---------------------------------------------------------------------------
+
+
+class TestD2483PR171CompoundRedirectStillBlocked:
+    """`&>`/`&>>` (bash's stdout+stderr shorthand) used to reach
+    `_classify_unenumerated_write` as a corrupted single-token pseudo-segment
+    (`>audit.jsonl`, `>>audit.jsonl` with the `>`/`>>` glued to the target),
+    because the generic `[;&|]` padding pads the bare `&` away but has no
+    rule for `>`. The exact basename match that replaced the old unanchored
+    substring scan doesn't match a glued `>`-prefixed token, so this
+    regressed from BLOCK to ALLOW. Fixed by normalising `&>`/`&>>` into their
+    padded parts before that generic pass runs."""
+
+    @pytest.mark.parametrize("suffix", list(_DIAL_PROTECTED_SUFFIXES))
+    @pytest.mark.parametrize("operator", ["&>", "&>>"])
+    def test_compound_redirect_blocked(self, suffix: str, operator: str) -> None:
+        cmd = f"echo x {operator}{suffix}"
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+        assert suffix in d.reason
+
+    def test_piped_force_redirect_unaffected(self) -> None:
+        # `>|` must keep blocking (it already did, by a different mechanism
+        # -- the `|` gets padded, leaving a clean single-token segment) --
+        # the fix above must not disturb it.
+        for cmd in (
+            f"echo x >|{_D2483_REGISTRY_BASENAME}",
+            f"echo x >| {_D2483_REGISTRY_BASENAME}",
+        ):
+            d = classify_bash(cmd, _WT_CLAUDE)
+            assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+
+    def test_spaced_plain_redirect_unaffected(self) -> None:
+        cmd = f"echo x > {_D2483_REGISTRY_BASENAME}"
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False
+
+    def test_glued_plain_redirect_still_the_preexisting_d2541_gap(self) -> None:
+        # Not this PR's regression and not this PR's fix -- `>foo` with no
+        # leading `&` is untouched by the `&>`/`&>>` normalisation above.
+        # Documented here so a future change to this gap notices this test.
+        cmd = f"echo x >{_D2483_REGISTRY_BASENAME}"
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is True
+
+
+class TestD2483PR171InterpreterVersionToleranceStillBlocked:
+    """The exact-name frozenset `_PY_INTERPRETER_NAMES` (`{"python3",
+    "python"}`) lost the segment-text write-detection layer for any other
+    real interpreter spelling -- both for the relative-path scan above and
+    for the pre-existing absolute-path deep-scan gate that shares the same
+    gate. `.venv/bin/python3.12` is this repo's own resolved interpreter, so
+    this isn't an exotic spelling. Fixed with `_is_py_interpreter_name()`, a
+    version-suffix-tolerant predicate."""
+
+    @pytest.mark.parametrize("interpreter", ["python3.11", "python3.12", "pypy3", "pypy"])
+    def test_relative_payload_write_blocked(self, interpreter: str) -> None:
+        cmd = interpreter + " -c \"open('" + _D2483_REGISTRY_BASENAME + "','a').write('x')\""
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+        assert _D2483_REGISTRY_BASENAME in d.reason
+
+    @pytest.mark.parametrize("interpreter", ["python3.11", "python3.12", "pypy3"])
+    def test_absolute_payload_write_blocked(self, interpreter: str) -> None:
+        target = f"{FIXTURE_HOME}/.autonomous-forever-state/{_D2483_REGISTRY_BASENAME}"
+        cmd = interpreter + " -c \"open('" + target + "','w').write('x')\""
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+
+    def test_unrelated_name_containing_python_not_matched(self) -> None:
+        # _is_py_interpreter_name() is anchored at both ends -- must not
+        # start matching a name that merely contains "python".
+        assert sandbox_rules._is_py_interpreter_name("python3-config") is False
+        assert sandbox_rules._is_py_interpreter_name("ipython") is False
+        assert sandbox_rules._is_py_interpreter_name("python3") is True
+        assert sandbox_rules._is_py_interpreter_name("python") is True
+
+
+class TestD2483PR171ProseStillNotAPathMention:
+    """Re-confirms the fix round didn't reopen the false positive this whole
+    Discussion exists to close -- run again here, next to the two regression
+    fixes above, rather than trusting distance in the file to prove it."""
+
+    def test_prose_mention_still_allowed(self) -> None:
+        cmd = 'gh issue comment --body "see ' + _D2483_SCRIPT_BASENAME + '"'
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is True, f"expected ALLOW, got reason={d.reason!r}"
