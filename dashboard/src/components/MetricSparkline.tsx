@@ -15,6 +15,7 @@ import {
 } from 'recharts'
 import { formatDate } from '../lib/safeDate'
 import { formatUnit } from '../lib/formatMetric'
+import { isRetiredMetric, getRetiredInfo, formatSentinelAware } from '../pages/stats/retiredMetrics'
 
 interface SeriesPoint {
   ts_iso: string
@@ -30,8 +31,10 @@ interface Props {
 }
 
 function formatValue(value: number | null, unit: string): string {
-  if (value === null) return '—'
-  if (value < 0) return 'n/a'
+  // Narrow together so TS keeps `value: number` for the rest of the
+  // function — formatSentinelAware always returns a string for these two
+  // inputs (never null), so the cast is safe.
+  if (value === null || value < 0) return formatSentinelAware(value) as string
   if (unit === 'seconds') {
     if (value >= 3600) return `${(value / 3600).toFixed(1)}h`
     if (value >= 60) return `${(value / 60).toFixed(1)}m`
@@ -74,11 +77,26 @@ export default function MetricSparkline({ label, value, unit, series, updatedAt 
   const chartData = toChartData(series)
   const hasData = chartData.length > 0
   const displayUnit = formatUnit(value, unit)
+  const retired = isRetiredMetric(label)
+  const retiredInfo = retired ? getRetiredInfo(label) : undefined
 
   return (
     <div style={styles.card} data-testid={`metric-card-${label}`}>
       <div style={styles.labelRow}>
         <span style={styles.label} title={label}>{label}</span>
+        {retired && (
+          <span
+            style={styles.retiredBadge}
+            data-testid="metric-retired-badge"
+            title={
+              retiredInfo
+                ? `Retired ${retiredInfo.retiredDate} (PR #${retiredInfo.retiredByPr}): ${retiredInfo.reason}`
+                : 'Retired'
+            }
+          >
+            retired
+          </span>
+        )}
         {updatedAt && (
           <span style={styles.age}>{formatAge(updatedAt)}</span>
         )}
@@ -138,6 +156,16 @@ const styles: Record<string, React.CSSProperties> = {
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     flexShrink: 1,
+  },
+  retiredBadge: {
+    color: '#fcd34d',
+    background: '#451a03',
+    border: '1px solid #92400e',
+    borderRadius: 3,
+    padding: '1px 6px',
+    fontSize: 10,
+    whiteSpace: 'nowrap',
+    flexShrink: 0,
   },
   age: {
     color: '#6b7280',

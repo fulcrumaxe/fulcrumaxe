@@ -21,7 +21,12 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from backend.stats.cosmetic_blocks import blocks_per_hour, total_blocks_24h
-from backend.stats.metric_order import METRIC_ORDER, sort_metrics
+from backend.stats.metric_order import (
+    METRIC_ORDER,
+    RETIRED_METRICS,
+    is_retired,
+    sort_metrics,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -412,3 +417,37 @@ class TestSortMetrics:
         assert set(names) == {"fix_cycle_count", "orphan_worktree_rate"}
         # fix_cycle_count comes before orphan_worktree_rate in METRIC_ORDER
         assert names.index("fix_cycle_count") < names.index("orphan_worktree_rate")
+
+
+# ---------------------------------------------------------------------------
+# RETIRED_METRICS / is_retired (D#2539)
+# ---------------------------------------------------------------------------
+
+class TestRetiredMetrics:
+    def test_acceptance_criteria_pass_rate_is_registered_retired(self):
+        assert is_retired("acceptance_criteria_pass_rate") is True
+        record = RETIRED_METRICS["acceptance_criteria_pass_rate"]
+        assert record["retired_by_pr"] == "134"
+        assert record["retired_date"] == "2026-09-10"
+        assert record["reason"]
+
+    def test_unretired_metric_is_not_retired(self):
+        assert is_retired("spec_to_first_pr_latency_seconds") is False
+        assert "spec_to_first_pr_latency_seconds" not in RETIRED_METRICS
+
+    def test_mutation_check_removing_entry_flips_is_retired(self):
+        # Item 6: removing the retired entry must flip is_retired() back to
+        # False for that metric — the two are directly wired, not coincidental.
+        name = "acceptance_criteria_pass_rate"
+        saved = RETIRED_METRICS.pop(name)
+        try:
+            assert is_retired(name) is False
+        finally:
+            RETIRED_METRICS[name] = saved
+        assert is_retired(name) is True
+
+    def test_retired_metric_is_absent_from_the_explicit_display_order(self):
+        # A retired metric shouldn't claim a permanent ordered slot — it's
+        # still sortable (falls through to the alphabetical tail), just not
+        # pinned in METRIC_ORDER.
+        assert "acceptance_criteria_pass_rate" not in METRIC_ORDER
