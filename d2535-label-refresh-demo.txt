@@ -1,0 +1,4 @@
+Throwaway PR for D#2535 Gate 2 verification: demonstrates that re-applying an
+already-present GitHub label produces no new `labeled` timeline event, and
+that scripts/refresh-gate-label.sh does produce one. Not intended to merge —
+safe to close and delete once the demo is captured.
