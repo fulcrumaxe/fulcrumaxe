@@ -18,6 +18,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 HOOK_LIB="$REPO_ROOT/scripts/lib/hook-event.sh"
 
+# D#2148: Test 6 (AC9) below shells out to `python3 backend/budget.py`,
+# which resolves its blackboard state via backend/state_paths.py. That
+# resolver only refuses the production dir under pytest — a bare bash
+# subprocess sails through and lands real budget spend in the real
+# ~/.autonomous-forever-state/ blackboard on every run of this suite.
+# Export a scratch state dir before any backend/*.py call happens, per the
+# tests/lib/blackboard-fixture.sh convention (CLAUDE.md, D#2283). Must be
+# called directly, not via command substitution — see that file's header.
+source "$REPO_ROOT/tests/lib/blackboard-fixture.sh"
+blackboard_scratch_state_dir || exit 1
+SCRATCH_STATE_DIR="$AUTONOMOUS_TEAM_STATE_DIR"
+
 # D#2267: this used to point HOOK_EVENT_DIR at the live
 # $REPO_ROOT/.autonomous-team/hook-events — the marker/lock files every
 # real hook_event_init call also writes into. hook_event_init already
@@ -29,7 +41,7 @@ FIXTURE_ROOT="$(mktemp -d "$REPO_ROOT/.repo-root-fixture.XXXXXX")" || {
   echo "FAIL: could not create isolated repo-root fixture" >&2
   exit 1
 }
-trap 'rm -rf "$FIXTURE_ROOT"' EXIT
+trap 'rm -rf "$FIXTURE_ROOT" "$SCRATCH_STATE_DIR"' EXIT
 HOOK_EVENTS_DIR="$FIXTURE_ROOT/.autonomous-team/hook-events"
 
 PASS=0
@@ -162,9 +174,9 @@ TMP_HOOK=$(mktemp "/tmp/test-hook-XXXXXX.sh")
 # (D#2254).
 RUN_TMP="$(mktemp -d /tmp/test_hooks_idempotency.XXXXXX)"
 # Bash traps replace rather than stack — re-declare to also clean up
-# $FIXTURE_ROOT (registered near the top of this file) instead of silently
-# dropping that cleanup.
-trap 'rm -f "$TMP_HOOK"; rm -rf "$RUN_TMP" "$FIXTURE_ROOT"' EXIT
+# $FIXTURE_ROOT and $SCRATCH_STATE_DIR (registered near the top of this
+# file) instead of silently dropping that cleanup.
+trap 'rm -f "$TMP_HOOK"; rm -rf "$RUN_TMP" "$FIXTURE_ROOT" "$SCRATCH_STATE_DIR"' EXIT
 
 echo "=== Hook Idempotency Tests ==="
 echo "HOOK_EVENTS_DIR: $HOOK_EVENTS_DIR"
