@@ -13,6 +13,7 @@ import { jsonRpc } from '../api/client'
 import MetricSparkline from '../components/MetricSparkline'
 import { LastUpdated } from '../components/LastUpdated'
 import { tileRegistry } from './stats/registry'
+import { formatMetricCoverageLabel } from './stats/perMergeMetricCatalog'
 
 // All known metric names — Phase 1 (4) + Phase 2 (3 confirmed per-merge, plus 4 pre-existing)
 // Phase 3 adds loop-health metrics; this list defines sort order for display.
@@ -136,9 +137,7 @@ export default function StatsPage() {
       <header style={styles.header}>
         <div style={styles.headerLeft}>
           <h1 style={styles.heading}>Team Stats</h1>
-          <p style={styles.subtitle}>
-            Per-merge metrics — {sorted.length} of 12 populated
-          </p>
+          <p style={styles.subtitle}>{formatMetricCoverageLabel(metrics)}</p>
         </div>
         <div style={styles.headerRight}>
           <LastUpdated fetchedAt={fetchedAt} />
