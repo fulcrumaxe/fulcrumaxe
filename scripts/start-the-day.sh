@@ -335,9 +335,20 @@ else
 fi
 
 # 2. Sandbox hook — installed AND correct schema (project-local since D#1814)
+#
+# D#2344: surface the full hook-registration audit (project AND global
+# settings, resolved paths, content hashes) instead of running it silently,
+# and use it — not a bare `grep -q '"PreToolUse"'` — to decide whether the
+# project's sandbox hook needs (re)installing. The old grep only proved the
+# string "PreToolUse" appeared somewhere in the project file; it could not
+# tell an in-repo registration from a foreign one, and never looked at the
+# global settings file at all.
 SANDBOX_REINSTALLED=false
-if ! grep -q '"PreToolUse"' "$REPO_ROOT/.claude/settings.json" 2>/dev/null; then
-  echo "  [FIX] Sandbox hook missing — installing..."
+echo "  Hook registration audit (D#2344):"
+HOOK_AUDIT_OUTPUT=$(bash scripts/audit-registered-hooks.sh 2>&1)
+echo "$HOOK_AUDIT_OUTPUT" | sed 's/^/    /'
+if ! echo "$HOOK_AUDIT_OUTPUT" | grep -q '^  project IN-REPO event=PreToolUse'; then
+  echo "  [FIX] Sandbox hook missing or not resolving in-repo — installing..."
   if bash scripts/install-sandbox-hook.sh >/dev/null 2>&1; then
     SANDBOX_REINSTALLED=true
     echo "  [OK] Sandbox hook installed"
@@ -346,7 +357,7 @@ if ! grep -q '"PreToolUse"' "$REPO_ROOT/.claude/settings.json" 2>/dev/null; then
     echo "  [WARN] install-sandbox-hook.sh failed — sandbox inactive"
   fi
 else
-  echo "  [OK] Sandbox hook entry present"
+  echo "  [OK] Sandbox hook entry present and resolves in-repo"
 fi
 # Smoke test: send a block-worthy command; hook must exit 2
 SANDBOX_TEST_RESULT=$(echo '{"tool_name":"Bash","tool_input":{"command":"git checkout main"},"cwd":"/tmp/wt-fake"}' \
