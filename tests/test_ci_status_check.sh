@@ -1073,6 +1073,21 @@ assert_contains "CS-22c: reason says the required-checks list is empty" "require
 assert_not_contains "CS-22c: never lands in STATE:pass" "STATE:pass" "$OUT"
 unset CI_STATUS_OVERRIDE_20197 CI_STATUS_HEAD_SHA_20197
 
+echo ""
+echo "=== CS-22d: duplicate required name, failing copy LAST -> the other ordering also blocks ==="
+# CS-22b already proves failure-first/success-last blocks. _bucket ranking is
+# a min() over all entries for the name, so array position shouldn't matter —
+# but that was exactly the previous code's bug (it mattered, silently). Prove
+# the reverse ordering too, so "order-independent" is a checked fact rather
+# than an implementation detail nobody is asserting on.
+DUP_ONE_FAILING_REVERSED='['"$(_gha tui success)"','"$(_gha dashboard success)"','"$(_gha ts-backend success)"','"$(_gha 'backend (import-smoke)' success)"','"$(_gha 'preflight (always-on gates)' success)"','"$(_gha 'publish denylist' success)"','"$(_gha 'PR mutation evidence' success)"','"$(_gha 'PR link policy' success 'https://x/runs/success-one')"','"$(_gha 'PR link policy' failure 'https://x/runs/failed-one')"']'
+export CI_STATUS_OVERRIDE_20198="$DUP_ONE_FAILING_REVERSED"
+export CI_STATUS_HEAD_SHA_20198="deadbeef98"
+OUT=$(_run_status 20198); RC=$?
+assert_exit_1 "CS-22d: a failing duplicate blocks with the failing copy last too" "$RC"
+assert_contains "CS-22d: FAILING names the duplicated check" "PR link policy" "$OUT"
+unset CI_STATUS_OVERRIDE_20198 CI_STATUS_HEAD_SHA_20198
+
 # -----------------------------------------------------------------------
 # Summary
 # -----------------------------------------------------------------------
