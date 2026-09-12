@@ -28,12 +28,20 @@ if [[ "$ROLE" == "executor" && "$VERDICT" == "done" && -n "${PR:-}" && -n "${DIS
         2>/dev/null || true)
 
       if [[ -n "$DRIFT_FILES" ]]; then
+        # D#2415 PR-b: DRIFT_FILES is file paths straight from the PR's own
+        # diff (PR_FILES) — externally influenceable. This comment is posted
+        # under our own bot's signature, so pr_comment_trust.py would treat
+        # any bytes echoed here as trusted authorship regardless of where
+        # they actually came from. Wrap on write; the partition can't defend
+        # against its own side.
+        source "$REPO_ROOT/scripts/lib/sanitize-echo.sh"
         BULLET_LIST=$(echo "$DRIFT_FILES" | sed 's/^/- /')
+        SAFE_BULLET_LIST=$(sanitize_echo "$BULLET_LIST")
         COMMENT_BODY="### Scope-drift warning
 
 The following files were committed to this PR but are not in the Spec's declared file list:
 
-${BULLET_LIST}
+${SAFE_BULLET_LIST}
 
 If the changes are intentional (e.g. auto-fixes, collateral cleanup), the reviewer can accept them. Otherwise consider splitting the out-of-scope work into a separate PR.
 

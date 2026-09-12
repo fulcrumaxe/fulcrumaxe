@@ -35,6 +35,7 @@ REPO_ROOT="${REPO_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 # SNAPSHOT_PATH in the environment still wins (both here and inside that module).
 SNAPSHOT_PATH="${SNAPSHOT_PATH:-$(python3 "$REPO_ROOT/backend/snapshot_path.py" 2>/dev/null)}"
 source "$SCRIPT_DIR/lib/repo-resolve.sh"
+source "$SCRIPT_DIR/lib/sanitize-echo.sh"
 # Two planes, two slugs. Commits, PRs, labels, CI and merges resolve through
 # _CODE_REPO. Discussions — the two discussions(first:50) GraphQL queries below,
 # and every Discussion URL handed to a spawned agent — resolve through
@@ -1640,8 +1641,19 @@ print('true' if entries and entries[0].get('needs_security_review', False) else 
           # phase above) rather than a new mechanism — no Discussion comment
           # (too noisy per merge event), just the PR comment + durable audit row.
           if [ "${SPAWN_AGENT:-}" != "echo" ]; then
+            # D#2415 PR-b: CI_STATUS_FAILING_CHECKS and CI_STATUS_RUN_URL come
+            # from the head's own .github/workflows/ — externally
+            # influenceable — and this lands in a PR comment our own bot
+            # signs. Wrap on write, on its own delimited block rather than
+            # forcing it mid-sentence.
+            _ci_gate_body="CI-status gate blocked this merge: ${CI_STATUS_FAIL_REASON:-required checks pending or failing}"
+            if [ -n "${CI_STATUS_FAILING_CHECKS:-}" ] || [ -n "${CI_STATUS_RUN_URL:-}" ]; then
+              _ci_gate_detail="$(sanitize_echo "failing: ${CI_STATUS_FAILING_CHECKS:-} ${CI_STATUS_RUN_URL:-}")"
+              _ci_gate_body="${_ci_gate_body}
+${_ci_gate_detail}"
+            fi
             gh pr comment "$PR_NUM" --repo "$_CODE_REPO" \
-              --body "CI-status gate blocked this merge: ${CI_STATUS_FAIL_REASON:-required checks pending or failing}${CI_STATUS_FAILING_CHECKS:+ (failing: $CI_STATUS_FAILING_CHECKS)}${CI_STATUS_RUN_URL:+ — $CI_STATUS_RUN_URL}" \
+              --body "$_ci_gate_body" \
               2>/dev/null || true
             ci_write_audit "ci_gate_block" "$PR_NUM" "${CI_STATUS_HEAD_SHA:-}" "${CI_STATUS_FAILING_CHECKS:-}" "${CI_STATUS_RUN_URL:-}" "${CI_STATUS_FAIL_REASON:-}"
           fi

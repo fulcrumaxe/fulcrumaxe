@@ -29,6 +29,7 @@ if [ -d "$REPO_ROOT/.venv/bin" ]; then
 fi
 
 source "$SCRIPT_DIR/lib/repo-resolve.sh"
+source "$SCRIPT_DIR/lib/sanitize-echo.sh"
 # Two planes. REPO is the Discussion plane and stays that way: the team-log
 # Issue (below) and the discussion URL both want it. CODE_REPO is everything
 # else this script touches — PR reads, PR comments, the gate label writes that
@@ -424,6 +425,10 @@ for pr_entry in "${NEEDS_MERGE[@]+"${NEEDS_MERGE[@]}"}"; do
         else empty end)
       ] | join("\n")
     ' 2>/dev/null || echo "- see quality_scorer output for details")
+    # D#2415 PR-b: breakdown.*.detail carries diff-derived file:line and
+    # function names — externally influenceable — and this lands in a PR
+    # comment our own bot signs. Wrap on write.
+    QG_DETAIL="$(sanitize_echo "$QG_DETAIL")"
 
     if [ "$DRY_RUN" = "false" ]; then
       # Use REST API here. Not because gh pr edit --add-label "silently no-ops
