@@ -40,6 +40,23 @@
 #
 # acceptance-passed is not here either: no gate on either path reads it. The
 # real veto is acceptance-failed, below.
+#
+# Trust model (D#2550) — stated in words, not implied
+# -----------------------------------------------------
+# Every role named in MERGE_GATE_LABEL_LANE below authenticates as the same
+# GitHub identity and runs as the same OS user. There is no credential
+# boundary between roles for this map to enforce across, so a role that
+# deliberately misreports which lane it is in is unmitigable at this trust
+# architecture — no check living purely in this repo can fix that without
+# changing how roles authenticate. The lane map that follows is a guardrail
+# against accidental drift only: a role landing on another role's label by
+# mistake, not a defense against deliberate misreport. scripts/sweep-label-lane.sh
+# is the detector this map feeds: it runs after a label has already been
+# applied, names the agent_run that was live at that moment (from the spawn
+# record, never from the label's applying identity — see that script's own
+# header for why), and reports match, mismatch, or unattributable. It never
+# blocks a merge and never applies or removes a label — detection happens
+# after the fact, enforcement does not happen at all.
 
 # NACK labels — any one present blocks the merge on both paths, regardless of
 # which pass labels are also on the PR. Fail-closed by design: these survive a
