@@ -64,6 +64,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -364,6 +365,126 @@ def resolve_allowlist(
             _write_collaborator_cache(cpath, collaborators)
 
     return collaborators | base
+
+
+# ---------------------------------------------------------------------------
+# One trust plane (D#2415) — the resolution point both pr_comment_trust.py
+# and pr_intake_gate.py must consume, instead of separately deciding "which
+# repo's collaborators decide trust" the way they did before this.
+# ---------------------------------------------------------------------------
+
+#: resolve_trust_allowlist() outcomes. "resolved" and "cached" both mean the
+#: caller has a real answer (a fresh fetch that succeeded, including a
+#: legitimate zero-collaborator result, or an unexpired cache hit);
+#: "undetermined" means the fetch failed and nothing was cached to fall back
+#: on, so *allowlist* is the fail-closed base only and the caller should say
+#: so rather than print it with the same confidence as a real answer.
+TRUST_STATUS_RESOLVED = "resolved"
+TRUST_STATUS_CACHED = "cached"
+TRUST_STATUS_UNDETERMINED = "undetermined"
+
+
+def _slug_scoped_cache_path(slug: str) -> Path:
+    """Key the collaborator cache by repo slug so one plane's cache can never
+    answer another plane's trust question.
+
+    Before this, `pr_comment_trust.py` carried its own private copy of this
+    helper (scoping its cache to the code plane it was passing) while
+    `pr_intake_gate.py` called `resolve_allowlist()` bare, landing on the one
+    unscoped cache file everything else shares. Hoisted here now that
+    `resolve_trust_allowlist()` below is the single call site both modules
+    go through — one function, one cache-path rule, instead of one module
+    scoping correctly and the other not scoping at all.
+    """
+    base = _default_cache_path()
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", slug)
+    return base.with_name(f"{base.stem}-{safe}{base.suffix}")
+
+
+def resolve_trust_plane() -> str:
+    """The repo slug whose collaborators decide whether an account's PR
+    comment, or PR authorship, may become an executor's work order.
+
+    Always the Discussion plane, never the code plane. After the repo-plane
+    cutover the code repo is public, and push there is routinely granted to
+    outside contributors who have no standing to drive our automation —
+    exactly the confused-deputy argument `_resolve_default_discussion_repo_slug`
+    above already makes for Discussions; this applies the same conclusion to
+    the second surface, PR comments and PR authorship, as one resolution
+    point rather than two call sites that happened to agree only until the
+    planes diverged.
+    """
+    return DEFAULT_DISCUSSION_REPO_SLUG
+
+
+def resolve_trust_allowlist(
+    config: Optional[dict] = None,
+    *,
+    cache_path: Optional[Path] = None,
+    collaborators_fetcher=None,
+    force_refresh: bool = False,
+) -> tuple[set, str]:
+    """resolve_allowlist(), pinned to resolve_trust_plane() and reporting a
+    status alongside the set (D#2415).
+
+    Every caller that uses this instead of resolve_allowlist() directly gets
+    two things resolve_allowlist() alone cannot give them: the trust question
+    is answered against the same plane no matter which module asks, and a
+    failed fetch is distinguishable from a genuinely empty result rather than
+    printed with the same confidence.
+
+    Returns (allowlist, status):
+      * TRUST_STATUS_CACHED    — an unexpired cache hit answered this call.
+      * TRUST_STATUS_RESOLVED  — a fresh fetch just ran and succeeded,
+                                  including a legitimate zero-collaborator
+                                  result.
+      * TRUST_STATUS_UNDETERMINED — the fetch failed and there was no cache
+                                  to fall back on. *allowlist* is still only
+                                  the fail-closed base (bot/boss/
+                                  maintainer_allowlist) — never wider — but a
+                                  trusted human's comment may be misfiled as
+                                  untrusted for this one call, and the caller
+                                  should say that rather than report a
+                                  confident "N trusted".
+    """
+    slug = resolve_trust_plane()
+    cfg = config if config is not None else _load_config()
+    boss = cfg.get("boss_github_username") or ""
+    maintainer_allowlist = set(cfg.get("maintainer_allowlist") or [])
+
+    base = {BOT_ACCOUNT} | maintainer_allowlist
+    if boss:
+        base.add(boss)
+
+    cpath = cache_path or _slug_scoped_cache_path(slug)
+
+    if not force_refresh:
+        cached = _read_collaborator_cache(cpath)
+        if cached is not None:
+            return cached | base, TRUST_STATUS_CACHED
+
+    fetcher = collaborators_fetcher or _fetch_collaborators
+    try:
+        collaborators = fetcher(slug)
+    except TypeError:
+        # Test-double fetchers commonly take no args — retry bare.
+        try:
+            collaborators = fetcher()
+        except Exception:  # noqa: BLE001 — a raise here is also a fetch failure, not a genuine empty
+            collaborators = None
+    except Exception:  # noqa: BLE001 — fail closed: no extra trust from a broken resolver
+        collaborators = None
+
+    # Same sentinel-before-coercion lesson as resolve_allowlist() above: a
+    # failed fetch must never be cached, or the next call reads back the
+    # failure instead of retrying.
+    if collaborators is None:
+        return set(base), TRUST_STATUS_UNDETERMINED
+
+    if not isinstance(collaborators, set):
+        collaborators = set(collaborators or [])
+    _write_collaborator_cache(cpath, collaborators)
+    return collaborators | base, TRUST_STATUS_RESOLVED
 
 
 # ---------------------------------------------------------------------------

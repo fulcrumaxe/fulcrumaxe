@@ -1846,3 +1846,87 @@ class TestDefaultSlugIsTheDiscussionPlane:
             {"repo": "example-org/private-discussions", "code_repo": "example-org/public-code"},
         )
         assert slug == "example-org/private-discussions"
+
+
+# ---------------------------------------------------------------------------
+# D#2415 — one trust plane, no poisoned cache, a third value.
+# ---------------------------------------------------------------------------
+
+
+class TestResolveTrustAllowlist:
+    def test_failed_fetch_and_genuine_empty_return_the_same_set_different_status(self, tmp_path, monkeypatch):
+        """Spec item 4 — the set alone cannot carry the distinction: a failed
+        fetch and a successful fetch that legitimately returns zero
+        collaborators must return the SAME set and a DIFFERENT status."""
+        monkeypatch.setattr(subprocess, "run", lambda *_a, **_kw: _SubprocessResult(1, ""))
+        failed_set, failed_status = gate.resolve_trust_allowlist(_BASE_CONFIG, cache_path=tmp_path / "cache1.json")
+
+        monkeypatch.setattr(subprocess, "run", lambda *_a, **_kw: _SubprocessResult(0, "[]"))
+        empty_set, empty_status = gate.resolve_trust_allowlist(_BASE_CONFIG, cache_path=tmp_path / "cache2.json")
+
+        assert failed_set == empty_set
+        assert failed_status == gate.TRUST_STATUS_UNDETERMINED
+        assert empty_status != gate.TRUST_STATUS_UNDETERMINED
+
+    def test_takes_no_repo_slug_parameter(self):
+        """The one thing that would let a caller re-introduce the two-plane
+        divergence this function exists to close is a caller-supplied slug —
+        so there is no such parameter to supply."""
+        import inspect
+
+        assert "repo_slug" not in inspect.signature(gate.resolve_trust_allowlist).parameters
+
+    def test_cache_hit_reports_cached_not_resolved(self, tmp_path):
+        cpath = tmp_path / "cache.json"
+        gate.resolve_trust_allowlist(_BASE_CONFIG, cache_path=cpath, collaborators_fetcher=lambda _slug: {"alice"})
+
+        def _must_not_be_called(_slug):
+            raise AssertionError("must not refetch — an unexpired cache hit should have served this")
+
+        allowlist, status = gate.resolve_trust_allowlist(
+            _BASE_CONFIG, cache_path=cpath, collaborators_fetcher=_must_not_be_called
+        )
+        assert status == gate.TRUST_STATUS_CACHED
+        assert "alice" in allowlist
+
+    def test_fresh_success_reports_resolved(self, tmp_path):
+        allowlist, status = gate.resolve_trust_allowlist(
+            _BASE_CONFIG, cache_path=tmp_path / "cache.json", collaborators_fetcher=lambda _slug: {"alice"}
+        )
+        assert status == gate.TRUST_STATUS_RESOLVED
+        assert "alice" in allowlist
+
+    def test_undetermined_still_returns_the_fail_closed_base_never_wider(self, tmp_path):
+        allowlist, status = gate.resolve_trust_allowlist(
+            _BASE_CONFIG, cache_path=tmp_path / "cache.json", collaborators_fetcher=lambda _slug: None
+        )
+        assert status == gate.TRUST_STATUS_UNDETERMINED
+        assert allowlist == {gate.BOT_ACCOUNT, "example-owner", "example-bot"}
+
+    def test_undetermined_does_not_poison_the_cache(self, tmp_path):
+        cpath = tmp_path / "cache.json"
+        gate.resolve_trust_allowlist(_BASE_CONFIG, cache_path=cpath, collaborators_fetcher=lambda _slug: None)
+        assert not cpath.exists()
+
+
+class TestSlugScopedCachePath:
+    """Hoisted from pr_comment_trust.py (D#2415) — resolve_trust_allowlist()
+    is now the one call site both pr_comment_trust.py and pr_intake_gate.py
+    go through, so the scoping it uses lives here instead of one module's
+    private copy."""
+
+    def test_scoped_paths_differ_per_slug(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(gate, "_default_cache_path", lambda: tmp_path / "cache.json")
+        a = gate._slug_scoped_cache_path("owner-one/name")
+        b = gate._slug_scoped_cache_path("owner-two/name")
+        assert a != b
+        assert "/" not in a.name
+        assert "owner-one_name" in a.name
+        assert a.parent == tmp_path
+
+    def test_resolve_trust_allowlist_defaults_to_the_scoped_path(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(gate, "_default_cache_path", lambda: tmp_path / "cache.json")
+        monkeypatch.setattr(gate, "DEFAULT_DISCUSSION_REPO_SLUG", "example-org/private-discussions")
+        gate.resolve_trust_allowlist(_BASE_CONFIG, collaborators_fetcher=lambda _slug: set())
+        expected = gate._slug_scoped_cache_path("example-org/private-discussions")
+        assert expected.exists()

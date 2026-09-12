@@ -349,7 +349,7 @@ def test_unresolvable_trust_set_blocks(monkeypatch):
     def _boom(*_args, **_kwargs):
         raise RuntimeError("collaborators API unreachable")
 
-    monkeypatch.setattr(gate, "resolve_allowlist", _boom)
+    monkeypatch.setattr(gate, "resolve_trust_allowlist", _boom)
     result = gate.check_pr(7, SLUG, gh=_gh_fake(author="team-bot"))
     assert result["blocked"] is True
     assert result["reason"] == "trust_set_unresolvable"
@@ -357,8 +357,8 @@ def test_unresolvable_trust_set_blocks(monkeypatch):
 
 
 def test_empty_trust_set_blocks_everyone():
-    """resolve_allowlist() fails closed to the bot/boss base; an empty set here
-    means nobody is trusted, and nothing should slip through it."""
+    """resolve_trust_allowlist() fails closed to the bot/boss base; an empty
+    set here means nobody is trusted, and nothing should slip through it."""
     result = gate.check_pr(7, SLUG, gh=_gh_fake(author="team-bot"), allowlist=set())
     assert result["blocked"] is True
 
