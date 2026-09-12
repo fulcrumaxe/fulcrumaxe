@@ -319,8 +319,8 @@ class TestBogusRemoteNamespaceBypass:
         """The bogus refs/remotes/pr/9999 ref must not poison trust the
         other direction either: a commit that IS reachable from a real
         configured remote must still be accepted even while the bogus ref
-        is present. Asserting both directions in one fixture is D#1984's
-        point -- a predicate that refuses everything (e.g. one that broke
+        is present. Asserting both directions in one fixture matters
+        because a predicate that refuses everything (e.g. one that broke
         and always returns False) would pass the test above vacuously.
         """
         repo_dir, parent_sha, child_sha = _make_fixture_repo(
