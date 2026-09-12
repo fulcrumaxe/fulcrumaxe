@@ -58,3 +58,4 @@ commands/
 requirements.txt
 loop-bootstrap/
 .claude-plugin/
+backend/spawn_templates/
