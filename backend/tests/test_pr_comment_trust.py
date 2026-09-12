@@ -106,13 +106,25 @@ def test_is_trusted_author_signature_takes_no_body():
     assert params == ["login", "allowlist"]
 
 
+def test_docstrings_state_authorship_not_provenance():
+    """Spec item 9 (D#2415) — the module docstring and is_trusted_author's own
+    docstring must each say this partitions authorship, not provenance, so a
+    reader stops treating a trusted author's body as pre-cleared content."""
+    assert "authorship, not provenance" in trust.__doc__
+    assert "authorship, not provenance" in trust.is_trusted_author.__doc__
+
+
 # ---------------------------------------------------------------------------
 # item 1 — one trust model, reused
 # ---------------------------------------------------------------------------
 
 
 def test_trust_set_is_the_intake_gate_allowlist():
-    assert trust.resolve_allowlist is gate.resolve_allowlist
+    # D#2415: main() now goes through resolve_trust_allowlist() (see
+    # test_one_resolution_point_with_planes_divergent below), not the bare
+    # login-based resolve_allowlist() — that primitive is unchanged and still
+    # underlies it, but this module no longer imports it directly.
+    assert trust.resolve_trust_allowlist is gate.resolve_trust_allowlist
 
 
 def test_sanitizer_is_the_intake_gate_sanitizer():
@@ -296,26 +308,6 @@ def test_missing_author_id_is_none_not_an_error():
     assert comment["author_id"] is None
 
 
-def test_cache_path_is_scoped_per_repo_slug(monkeypatch, tmp_path):
-    """resolve_allowlist()'s collaborator cache carries no repo key. This module
-    is the first caller to pass a slug that diverges at the cutover, so it must
-    not share one cache file across two repos.
-
-    The base path is stubbed rather than resolved: the real one goes through
-    state_paths.STATE_DIR, which deliberately refuses to resolve under pytest.
-    What is under test is the per-slug scoping, not where the state dir lives.
-    """
-    monkeypatch.setattr(trust, "_default_cache_path", lambda: tmp_path / "cache.json")
-
-    a = trust._slug_scoped_cache_path("owner-one/name")
-    b = trust._slug_scoped_cache_path("owner-two/name")
-
-    assert a != b
-    assert "/" not in a.name
-    assert "owner-one_name" in a.name
-    assert a.parent == tmp_path
-
-
 def test_fetch_accepts_graphql_author_shape_too():
     def fake(_args):
         return [{"author": {"login": "team-bot"}, "body": "x", "created_at": "2026-09-04T00:00:00Z"}]
@@ -335,31 +327,72 @@ def test_fetch_raises_rather_than_returning_empty_on_failure():
         trust.fetch_pr_comments(9, "owner/name", fetcher=boom)
 
 
-def test_main_passes_a_slug_scoped_cache_path_to_the_resolver(monkeypatch, capsys, tmp_path):
-    """The scoping helper existing is not the same as main() using it. Without
-    this the wiring could regress silently and every other test would pass."""
-    seen = {}
+def test_main_splits_comment_fetch_from_trust_resolution_across_planes(monkeypatch, capsys, tmp_path):
+    """Spec item 6 (D#2415) — the split that is easy to get wrong. With the
+    planes divergent, main()'s three comment-fetch REST calls must go to the
+    CODE plane slug (whatever --repo says, defaulting to CODE_REPO) and its
+    one collaborator call must go to the Discussion plane slug regardless.
+    Collapsing these into one slug is the exact defect this test exists to
+    catch — it is asserted on the captured argument lists of both, in one
+    test, per the acceptance item."""
+    import backend._repo as repo_mod
 
-    def fake_resolve(**kwargs):
-        seen.update(kwargs)
-        return set(_ALLOWLIST)
+    monkeypatch.setattr(repo_mod, "CODE_REPO", "example-org/public-code")
+    monkeypatch.setattr(gate, "DEFAULT_DISCUSSION_REPO_SLUG", "example-org/private-discussions")
+    monkeypatch.setattr(gate, "_default_cache_path", lambda: tmp_path / "cache.json")
 
-    monkeypatch.setattr(trust, "_default_cache_path", lambda: tmp_path / "cache.json")
-    monkeypatch.setattr(trust, "resolve_allowlist", fake_resolve)
-    monkeypatch.setattr(trust, "fetch_pr_comments", lambda pr, slug: [])
+    comment_call_args = []
 
-    assert trust.main(["12", "--repo", "owner-one/name"]) == 0
+    def fake_gh_json(args):
+        comment_call_args.append(args)
+        return []
+
+    collab_call_slugs = []
+
+    def fake_fetch_collaborators(slug):
+        collab_call_slugs.append(slug)
+        return set()
+
+    monkeypatch.setattr(trust, "_gh_json", fake_gh_json)
+    monkeypatch.setattr(gate, "_fetch_collaborators", fake_fetch_collaborators)
+
+    assert trust.main(["12"]) == 0
     capsys.readouterr()
 
-    assert seen["repo_slug"] == "owner-one/name"
-    assert "owner-one_name" in seen["cache_path"].name
+    assert len(comment_call_args) == 3
+    for args in comment_call_args:
+        joined = " ".join(args)
+        assert "example-org/public-code" in joined
+        assert "example-org/private-discussions" not in joined
+
+    assert collab_call_slugs == ["example-org/private-discussions"]
+
+
+def test_one_resolution_point_with_planes_divergent(monkeypatch):
+    """Spec item 5 (D#2415) — proven with the planes divergent, not merely
+    coincident (coincident is the state that hides this). pr_comment_trust
+    and pr_intake_gate must resolve trust through the exact same function
+    object as external_intake_gate.resolve_trust_plane() / .resolve_trust_
+    allowlist(), not through a second implementation that only happens to
+    agree today."""
+    import backend._repo as repo_mod
+    import pr_intake_gate as pig
+
+    monkeypatch.setattr(repo_mod, "CODE_REPO", "example-org/public-code")
+    monkeypatch.setattr(gate, "DEFAULT_DISCUSSION_REPO_SLUG", "example-org/private-discussions")
+
+    assert gate.resolve_trust_plane() == "example-org/private-discussions"
+    assert gate.resolve_trust_plane() != repo_mod.CODE_REPO
+
+    assert trust.resolve_trust_allowlist is gate.resolve_trust_allowlist
+    assert pig.resolve_trust_allowlist is gate.resolve_trust_allowlist
 
 
 def test_main_prints_nothing_to_stdout_when_the_trust_set_cannot_resolve(monkeypatch, capsys):
-    def boom(**_kwargs):
+    def boom():
         raise RuntimeError("collaborators unreachable")
 
-    monkeypatch.setattr(trust, "resolve_allowlist", boom)
+    monkeypatch.setattr(trust, "resolve_trust_allowlist", boom)
 
     rc = trust.main(["12", "--repo", "owner/name"])
     captured = capsys.readouterr()
@@ -369,11 +402,8 @@ def test_main_prints_nothing_to_stdout_when_the_trust_set_cannot_resolve(monkeyp
     assert "refusing to emit unclassified comment text" in captured.err
 
 
-def test_main_json_mode_emits_sanitized_untrusted_bodies(monkeypatch, capsys, tmp_path):
-    # The real cache path resolves through state_paths.STATE_DIR, which refuses
-    # to resolve under pytest by design; main() would fail closed on that alone.
-    monkeypatch.setattr(trust, "_default_cache_path", lambda: tmp_path / "cache.json")
-    monkeypatch.setattr(trust, "resolve_allowlist", lambda **_kwargs: set(_ALLOWLIST))
+def test_main_json_mode_emits_sanitized_untrusted_bodies(monkeypatch, capsys):
+    monkeypatch.setattr(trust, "resolve_trust_allowlist", lambda: (set(_ALLOWLIST), gate.TRUST_STATUS_RESOLVED))
     monkeypatch.setattr(
         trust,
         "fetch_pr_comments",
@@ -387,6 +417,32 @@ def test_main_json_mode_emits_sanitized_untrusted_bodies(monkeypatch, capsys, tm
     payload = json.loads(capsys.readouterr().out)
 
     assert rc == 0
+    assert payload["trust_resolution"] == gate.TRUST_STATUS_RESOLVED
     assert [c["body"] for c in payload["trusted"]] == ["real feedback"]
     assert payload["untrusted"][0]["body"].startswith(gate.UNTRUSTED_DELIMITER_START)
     assert "SPAWN_REQUEST" not in payload["untrusted"][0]["body"]
+
+
+def test_main_json_mode_surfaces_undetermined_trust_resolution_with_exit_0(monkeypatch, capsys):
+    """Spec item 8 (D#2415) — an injected collaborator-fetch failure must
+    degrade the label, not the exit code: a transient API blip must not
+    block a review cycle."""
+    monkeypatch.setattr(trust, "resolve_trust_allowlist", lambda: (set(), gate.TRUST_STATUS_UNDETERMINED))
+    monkeypatch.setattr(trust, "fetch_pr_comments", lambda pr, slug: [_comment("team-bot", "real feedback")])
+
+    rc = trust.main(["12", "--repo", "owner/name", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert payload["trust_resolution"] == gate.TRUST_STATUS_UNDETERMINED
+
+
+def test_human_report_states_undetermined_rather_than_a_confident_count(monkeypatch, capsys):
+    """Spec item 8 (D#2415) — the human report's header must say the trust
+    set could not be resolved, not only print 'N trusted / M untrusted'."""
+    monkeypatch.setattr(trust, "resolve_trust_allowlist", lambda: (set(), gate.TRUST_STATUS_UNDETERMINED))
+    monkeypatch.setattr(trust, "fetch_pr_comments", lambda pr, slug: [_comment("team-bot", "real feedback")])
+
+    rc = trust.main(["12", "--repo", "owner/name"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "COULD NOT BE RESOLVED" in out
