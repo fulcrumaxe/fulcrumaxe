@@ -405,7 +405,7 @@ def resolve_allowlist_ids(
 
     # 1. Collaborators — field-selection variant of _fetch_collaborators,
     #    own ~1h cache, zero net-new API calls relative to resolve_allowlist().
-    icpath = id_cache_path or trust_id_resolver.default_id_cache_path()
+    icpath = id_cache_path or trust_id_resolver.default_id_cache_path(repo_slug)
     collaborator_ids: Optional[set] = None
     if not force_refresh:
         collaborator_ids = trust_id_resolver.read_id_cache(icpath)

@@ -193,6 +193,66 @@ class TestIdCache:
 
 
 # ---------------------------------------------------------------------------
+# D#2432 — the ID collaborator cache must be slug-scoped. One global file
+# with no repo key hands one repo's push collaborators to the other repo's
+# trust decision once the two planes diverge. Mirrors
+# pr_comment_trust._slug_scoped_cache_path()'s shape and rationale, fixed
+# here at the shared default itself.
+# ---------------------------------------------------------------------------
+
+
+class TestSlugScopedIdCachePath:
+    def test_cache_path_is_scoped_per_repo_slug(self, monkeypatch, tmp_path):
+        """The base path is stubbed rather than resolved: the real one goes
+        through state_paths.STATE_DIR, which deliberately refuses to resolve
+        under pytest. What is under test is the per-slug scoping."""
+        monkeypatch.setattr(tir, "_state_dir_path", lambda filename: tmp_path / filename)
+
+        a = tir.default_id_cache_path("autonomous-agent-7/fulcrumaxe")
+        b = tir.default_id_cache_path("fulcrumaxe/fulcrumaxe")
+
+        assert a != b
+        assert "/" not in a.name
+        assert "autonomous-agent-7_fulcrumaxe" in a.name
+        assert a.parent == tmp_path
+
+    def test_same_slug_is_stable(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(tir, "_state_dir_path", lambda filename: tmp_path / filename)
+        assert tir.default_id_cache_path("owner/repo") == tir.default_id_cache_path("owner/repo")
+
+    def test_two_repos_stay_separate_through_the_real_read_write_path(self, monkeypatch, tmp_path):
+        """Gate 2 shape: exercises write_id_cache()/read_id_cache() through
+        the real scoped paths for two different slugs, not just the path
+        builder in isolation — head must keep their entries separate where
+        an unscoped (base) implementation would cross-contaminate."""
+        monkeypatch.setattr(tir, "_state_dir_path", lambda filename: tmp_path / filename)
+
+        path_a = tir.default_id_cache_path("autonomous-agent-7/fulcrumaxe")
+        path_b = tir.default_id_cache_path("fulcrumaxe/fulcrumaxe")
+
+        tir.write_id_cache(path_a, {"U_discussion_plane_collab"})
+        tir.write_id_cache(path_b, {"U_code_plane_collab"})
+
+        assert tir.read_id_cache(path_a) == {"U_discussion_plane_collab"}
+        assert tir.read_id_cache(path_b) == {"U_code_plane_collab"}
+
+    def test_preexisting_unscoped_cache_is_never_adopted(self, monkeypatch, tmp_path):
+        """A cache written before this fix, at the OLD unscoped path, carries
+        no record of which repo it was fetched for. Migration must fail
+        CLOSED: the new slug-scoped path starts as a genuine cache miss,
+        never a read of the old file under an assumed slug."""
+        monkeypatch.setattr(tir, "_state_dir_path", lambda filename: tmp_path / filename)
+
+        legacy_path = tmp_path / "external_intake_id_cache.json"
+        tir.write_id_cache(legacy_path, {"U_leaked_whichever_repo_wrote_last"})
+
+        scoped_path = tir.default_id_cache_path("fulcrumaxe/fulcrumaxe")
+
+        assert scoped_path != legacy_path
+        assert tir.read_id_cache(scoped_path) is None
+
+
+# ---------------------------------------------------------------------------
 # D#2423 AC-5 — fetch_collaborator_ids() is the load-bearing edit: the live
 # ID path's own fetch boundary, independent of external_intake_gate.py's
 # _fetch_collaborators(). All three failure returns must fail closed to
