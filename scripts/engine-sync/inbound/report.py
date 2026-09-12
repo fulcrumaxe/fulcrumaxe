@@ -98,9 +98,16 @@ def _resolve_code_repo() -> str:
 
 
 def _resolve_trust_allowlist():
-    from external_intake_gate import resolve_allowlist  # noqa: PLC0415
+    # D#2415 PR-a added resolve_trust_allowlist() as the one resolution point
+    # both pr_comment_trust.py and pr_intake_gate.py now go through -- pinned
+    # to resolve_trust_plane() and carrying a resolved/cached/undetermined
+    # status alongside the set. This call site predates that and still went
+    # through the bare resolve_allowlist(), which uses the unscoped cache and
+    # never surfaces the undetermined status.
+    from external_intake_gate import resolve_trust_allowlist  # noqa: PLC0415
 
-    return resolve_allowlist()
+    allowlist, _status = resolve_trust_allowlist()
+    return allowlist
 
 
 def _prs_for_commit(sha: str, repo_slug: str) -> list[int]:
