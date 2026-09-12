@@ -1076,6 +1076,11 @@ def render_body(
         "pr_number": "",
         "pr_url": "",
         "pr_branch": "",
+        # D#2563: the repo plane #pr was resolved to — {{pr_repo}} replaces a
+        # hardcoded `_require_code_repo` in code-reviewer.tmpl /
+        # security-reviewer.tmpl's PR-side `gh pr diff` command, since a PR's
+        # plane is no longer always the code repo.
+        "pr_repo": "",
         # D#1788: no supplier yet (RENDER_EMPTY_BY_DESIGN excuses these) —
         # runbook-writer / incident-commander specific, each needs its own
         # data source and its own Discussion. Defaulted to empty here so
@@ -1213,6 +1218,11 @@ def render(
         "pr_number": "",
         "pr_url": "",
         "pr_branch": "",
+        # D#2563: the repo plane #pr was resolved to — {{pr_repo}} replaces a
+        # hardcoded `_require_code_repo` in code-reviewer.tmpl /
+        # security-reviewer.tmpl's PR-side `gh pr diff` command, since a PR's
+        # plane is no longer always the code repo.
+        "pr_repo": "",
         # D#1788: no supplier yet (RENDER_EMPTY_BY_DESIGN excuses these) —
         # runbook-writer / incident-commander specific, each needs its own
         # data source and its own Discussion. Defaulted to empty here so

@@ -5,7 +5,14 @@
 #                                        [--force-no-two-gate [--bypass-reason <text>]]
 #                                        [--force-no-ci [--bypass-reason <text>]]
 #                                        [--force-no-browser-test --bypass-reason <text>]
+#                                        [--plane code|discussion]
 #
+# 00. Resolves which repo plane --pr's number lives on (D#2563): --plane pins
+#    it explicitly; omitted means probe both planes (see
+#    scripts/lib/pr-plane.sh) — exactly one match wins, both or neither is a
+#    refusal. Every PR-side call below (every gate, the CI check, the merge
+#    itself) uses the resolved slug, `_PR_REPO`. The resolved plane is passed
+#    to post-merge-hook.sh via `--plane` in HOOK_ARGS so it never re-probes.
 # 0-. Merge-gate label check (D#2455): refuses a PR carrying any label from the
 #    shared NACK set, or missing any label from the shared required-pass set —
 #    both read from scripts/lib/merge-gate-labels.sh, the same arrays
@@ -78,14 +85,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # shellcheck source=scripts/lib/repo-resolve.sh
 source "$SCRIPT_DIR/lib/repo-resolve.sh"
+# shellcheck source=scripts/lib/pr-plane.sh
+source "$SCRIPT_DIR/lib/pr-plane.sh"
 # Every gh call in this script is PR-side — labels, head SHA, base ref, the
-# merge itself, the dependents lookup, the CI check-runs — so they all take the
-# code slug. The one Discussion-side read is the HG-7 resolution below, which
-# needs both: the PR body lives in the code repo and the Discussion it names
-# lives in the Discussion repo. _DISCUSSION_REPO is legitimately empty in a
-# fork with no private twin; resolve_pr_discussion falls back to the code slug
+# merge itself, the dependents lookup, the CI check-runs — so they all take
+# _PR_REPO, the plane resolved below from --pr/--plane (D#2563). The one
+# Discussion-side read is the HG-7 resolution below, which needs both: the PR
+# body lives on the PR's plane and the Discussion it names lives in the
+# Discussion repo. _DISCUSSION_REPO is legitimately empty in a fork with no
+# private twin; resolve_pr_discussion falls back to the PR's own plane slug
 # in that case, which is what it did before there were two names for this.
-_CODE_REPO="$(_resolve_code_repo)"
 _DISCUSSION_REPO="$(_resolve_discussion_repo)"
 
 # shellcheck source=scripts/lib/two-gate-check.sh
@@ -101,6 +110,7 @@ source "$SCRIPT_DIR/lib/merge-gate-labels.sh"
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
 PR=""
+PLANE_ARG=""
 DISC=""
 FORCE_NO_TWO_GATE=false
 FORCE_NO_CI=false
@@ -110,6 +120,7 @@ BYPASS_REASON=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --pr)               PR="$2";            shift 2 ;;
+    --plane)            PLANE_ARG="$2";     shift 2 ;;
     --discussion)       DISC="$2";          shift 2 ;;
     --force-no-two-gate) FORCE_NO_TWO_GATE=true; shift 1 ;;
     --force-no-ci)      FORCE_NO_CI=true;    shift 1 ;;
@@ -117,7 +128,7 @@ while [[ $# -gt 0 ]]; do
     --bypass-reason)    BYPASS_REASON="$2"; shift 2 ;;
     *)
       echo "[merge-and-hook] unknown argument: $1" >&2
-      echo "Usage: $0 --pr <PR_NUMBER> [--discussion <DISC_NUMBER>] [--force-no-two-gate [--bypass-reason <text>]] [--force-no-ci [--bypass-reason <text>]] [--force-no-browser-test --bypass-reason <text>]" >&2
+      echo "Usage: $0 --pr <PR_NUMBER> [--discussion <DISC_NUMBER>] [--force-no-two-gate [--bypass-reason <text>]] [--force-no-ci [--bypass-reason <text>]] [--force-no-browser-test --bypass-reason <text>] [--plane code|discussion]" >&2
       exit 1
       ;;
   esac
@@ -127,6 +138,16 @@ if [[ -z "$PR" ]]; then
   echo "[merge-and-hook] --pr is required" >&2
   exit 1
 fi
+
+# ── Plane resolution (D#2563) — before any side effect ───────────────────────
+# A PR number alone is ambiguous across the two planes. Resolve once, here,
+# before every gate below (label check, freshness check, browser-test,
+# Two-Gate, mergeability, CI, the merge itself). Everything below uses
+# _PR_REPO exclusively; nothing downstream re-probes.
+if ! pr_plane_resolve "$PR" "$PLANE_ARG"; then
+  exit 1
+fi
+_PR_REPO="${PR_PLANE_REPO:?plane unresolved}"
 
 # --force-no-ci suppresses the only machine signal that anything was verified.
 # An unexplained one leaves an audit row that records the act and nothing about
@@ -185,7 +206,7 @@ LOG_FILE="$LOG_DIR/manual-merge-${PR}.log"
 # decision. The mergeability probe below already has no --force for the same
 # shape of reason. This makes the two hold-only labels un-overridable on this
 # path, which is the correct answer for two labels that mean nothing else.
-_GATE_LABELS="$(gh pr view "$PR" --repo "$_CODE_REPO" --json labels --jq '.labels[].name' 2>/dev/null || echo "")"
+_GATE_LABELS="$(gh pr view "$PR" --repo "$_PR_REPO" --json labels --jq '.labels[].name' 2>/dev/null || echo "")"
 
 _NACK_FOUND=""
 for _gate_label in "${MERGE_GATE_NACK_LABELS[@]}"; do
@@ -242,7 +263,7 @@ echo "[merge-and-hook] merge-gate labels OK for PR #$PR — no blocking label pr
 # an already-present label is a no-op and writes no new event) — is always
 # available and leaves a visible trail on the PR itself.
 _TIMELINE_RC=0
-_TIMELINE="$(gh api "repos/${_CODE_REPO}/issues/${PR}/timeline" --paginate \
+_TIMELINE="$(gh api "repos/${_PR_REPO}/issues/${PR}/timeline" --paginate \
   -q '.[] | select(.event=="labeled" or .event=="head_ref_force_pushed" or .event=="committed" or (.event // "" | startswith("base_ref_"))) | "\(.created_at // .committer.date)\t\(.event)\t\(.label.name // "")"' \
   2>/dev/null)" || _TIMELINE_RC=$?
 if [[ "$_TIMELINE_RC" -ne 0 ]]; then
@@ -301,8 +322,8 @@ if [[ ! -f "$_BROWSER_GATE_SCRIPT" ]]; then
   echo "[merge-and-hook] ERROR: $_BROWSER_GATE_SCRIPT is missing — cannot tell whether PR #$PR touches the dashboard. Refusing to merge rather than assuming it does not." >&2
   exit 1
 fi
-if bash "$_BROWSER_GATE_SCRIPT" "$PR"; then
-  _BROWSER_LABELS="$(gh pr view "$PR" --repo "$_CODE_REPO" --json labels --jq '.labels[].name' 2>/dev/null || echo "")"
+if bash "$_BROWSER_GATE_SCRIPT" "$PR" "$_PR_REPO"; then
+  _BROWSER_LABELS="$(gh pr view "$PR" --repo "$_PR_REPO" --json labels --jq '.labels[].name' 2>/dev/null || echo "")"
   if grep -qx "browser-test-passed" <<<"$_BROWSER_LABELS"; then
     echo "[merge-and-hook] PR #$PR touches dashboard/ and carries browser-test-passed — browser-test gate satisfied."
   elif [[ "$FORCE_NO_BROWSER_TEST" == "true" ]]; then
@@ -341,7 +362,7 @@ if [[ "$FORCE_NO_TWO_GATE" == "true" ]]; then
   printf '%s\n' "{\"kind\":\"manual_merge_two_gate_bypass\",\"pr\":$PR,\"user\":\"$_AUDIT_USER\",\"timestamp\":\"$_AUDIT_TS\",\"reason\":\"$_AUDIT_REASON\"}" >> "$_AUDIT_FILE"
   echo "[merge-and-hook] Audit row written: kind=manual_merge_two_gate_bypass pr=$PR" >&2
 else
-  if ! check_two_gate_markers "$PR" "$_CODE_REPO"; then
+  if ! check_two_gate_markers "$PR" "$_PR_REPO"; then
     echo "[merge-and-hook] Two-Gate check FAILED for PR #$PR: $TWO_GATE_FAIL_REASON" >&2
     echo "[merge-and-hook] Add Gate 1 and Gate 2 markers to the PR body, or use --force-no-two-gate to bypass." >&2
     exit 1
@@ -365,7 +386,7 @@ fi
 # "check not applicable", because that just moves the bypass one layer down.
 _RESOLVED_DISC="$DISC"
 if [[ -z "$_RESOLVED_DISC" ]]; then
-  _RESOLVED_DISC="$(resolve_pr_discussion "$PR" "$_CODE_REPO" "$_DISCUSSION_REPO" || true)"
+  _RESOLVED_DISC="$(resolve_pr_discussion "$PR" "$_PR_REPO" "$_DISCUSSION_REPO" || true)"
   if [[ -n "$_RESOLVED_DISC" ]]; then
     echo "[merge-and-hook] Auto-detected Discussion #$_RESOLVED_DISC from PR #$PR body for the HG-7 check." >&2
   fi
@@ -405,7 +426,7 @@ if [[ "$_EXTERNAL_FORCES_SEC" == "true" ]]; then
   else
     echo "[merge-and-hook] Could not confirm Discussion #$_RESOLVED_DISC's provenance label (rc=$_SEC_REQUIRED_RC, GitHub API fetch failed/unknown) — failing closed and treating security-review-passed as required (HG-1)." >&2
   fi
-  _PR_LABELS="$(gh pr view "$PR" --repo "$_CODE_REPO" --json labels --jq '.labels[].name' 2>/dev/null || echo "")"
+  _PR_LABELS="$(gh pr view "$PR" --repo "$_PR_REPO" --json labels --jq '.labels[].name' 2>/dev/null || echo "")"
   if ! grep -qx "security-review-passed" <<<"$_PR_LABELS"; then
     echo "[merge-and-hook] ERROR: PR #$PR traces back to Discussion #$_RESOLVED_DISC but lacks the security-review-passed label. Refusing to merge." >&2
     exit 1
@@ -427,7 +448,7 @@ fi
 # GitHub refuses the merge of a conflicting branch regardless of what this
 # script decides, so an override would buy back the 1200-second timeout and
 # nothing else. The remedy is to rebase, which is not a bypass.
-if ! ci_probe_mergeable "$PR" "$_CODE_REPO"; then
+if ! ci_probe_mergeable "$PR" "$_PR_REPO"; then
   # Name the field that ACTUALLY fired, not a guess at it. Either
   # mergeable=CONFLICTING or mergeStateStatus=DIRTY can refuse here, and the
   # DIRTY path is reached exactly when `mergeable` was UNKNOWN — so a message
@@ -436,8 +457,8 @@ if ! ci_probe_mergeable "$PR" "$_CODE_REPO"; then
   # follow the trigger so the operator can see what was read.
   echo "[merge-and-hook] ERROR: PR #$PR cannot be merged — GitHub reports it as conflicting via ${CI_MERGE_PROBE_TRIGGER:-unknown trigger} (observed mergeable=${CI_MERGE_MERGEABLE:-unknown}, mergeStateStatus=${CI_MERGE_STATE_STATUS:-unknown}). Refusing to merge, without waiting on CI." >&2
   echo "[merge-and-hook] A conflicting branch never registers a check-run, so the CI wait below would have timed out after ${CI_MAX_WAIT_SECONDS}s and blamed slow CI." >&2
-  _CONFLICT_HEAD="$(gh pr view "$PR" --repo "$_CODE_REPO" --json headRefOid --jq .headRefOid 2>/dev/null || true)"
-  ci_report_conflict "$PR" "$_CODE_REPO" "${_CONFLICT_HEAD:-}"
+  _CONFLICT_HEAD="$(gh pr view "$PR" --repo "$_PR_REPO" --json headRefOid --jq .headRefOid 2>/dev/null || true)"
+  ci_report_conflict "$PR" "$_PR_REPO" "${_CONFLICT_HEAD:-}"
   exit 1
 fi
 if [[ "$CI_MERGE_PROBE" == "unknown" ]]; then
@@ -462,7 +483,7 @@ _CI_AUDIT_WRITTEN=false
 # D#1588 intake-approved human gate has cleared. --force-no-ci has never
 # bypassed this and still does not.
 if [[ "$FORCE_NO_CI" != "true" ]]; then
-  if ! check_ci_provenance_gate "$PR" "$_CODE_REPO" "$_RESOLVED_DISC"; then
+  if ! check_ci_provenance_gate "$PR" "$_PR_REPO" "$_RESOLVED_DISC"; then
     echo "[merge-and-hook] ERROR: CI-status gate refused for PR #$PR: $CI_STATUS_FAIL_REASON" >&2
     ci_write_audit "ci_gate_block" "$PR" "" "" "" "$CI_STATUS_FAIL_REASON"
     exit 1
@@ -481,9 +502,9 @@ if [[ "$FORCE_NO_CI" != "true" ]]; then
 fi
 _CI_RC=0
 if [[ "$FORCE_NO_CI" == "true" ]]; then
-  check_ci_status "$PR" "$_CODE_REPO" || _CI_RC=$?
+  check_ci_status "$PR" "$_PR_REPO" || _CI_RC=$?
 else
-  check_ci_status "$PR" "$_CODE_REPO" --wait || _CI_RC=$?
+  check_ci_status "$PR" "$_PR_REPO" --wait || _CI_RC=$?
 fi
 
 if [[ "$FORCE_NO_CI" == "true" ]]; then
@@ -512,11 +533,11 @@ elif [[ "$_CI_RC" -ne 0 ]]; then
   # and wrong in substance, which is the misdiagnosis this whole path is about.
   # The timeout wording is deliberately NOT printed on this branch: the cause is
   # the conflict, and naming both would leave the reader to guess which.
-  if ! ci_probe_mergeable "$PR" "$_CODE_REPO"; then
+  if ! ci_probe_mergeable "$PR" "$_PR_REPO"; then
     # Same rule as the Step 0c refusal above: print the trigger, never a
     # hardcoded field name.
     echo "[merge-and-hook] ERROR: PR #$PR became conflicting while waiting on CI — GitHub now reports it as conflicting via ${CI_MERGE_PROBE_TRIGGER:-unknown trigger} (observed mergeable=${CI_MERGE_MERGEABLE:-unknown}, mergeStateStatus=${CI_MERGE_STATE_STATUS:-unknown}). Refusing to merge." >&2
-    ci_report_conflict "$PR" "$_CODE_REPO" "${CI_STATUS_HEAD_SHA:-}"
+    ci_report_conflict "$PR" "$_PR_REPO" "${CI_STATUS_HEAD_SHA:-}"
     ci_write_audit "ci_gate_block" "$PR" "$CI_STATUS_HEAD_SHA" "$CI_STATUS_FAILING_CHECKS" "$CI_STATUS_RUN_URL" "branch conflicts with its base — no check-run can register on a conflicting head"
     exit 1
   fi
@@ -535,14 +556,14 @@ fi
 # Re-read the current head immediately before merging. If it moved since the
 # CI-gate evaluation, re-run the gate against the new head rather than merging
 # a stale-green result (D#1614 AC-8).
-_CUR_HEAD="$(gh pr view "$PR" --repo "$_CODE_REPO" --json headRefOid --jq .headRefOid 2>/dev/null || echo "")"
+_CUR_HEAD="$(gh pr view "$PR" --repo "$_PR_REPO" --json headRefOid --jq .headRefOid 2>/dev/null || echo "")"
 if [[ -z "$_CUR_HEAD" ]]; then
   echo "[merge-and-hook] ERROR: could not resolve current head SHA for PR #$PR." >&2
   exit 1
 fi
 if [[ -n "$_CI_GREEN_SHA" && "$_CUR_HEAD" != "$_CI_GREEN_SHA" ]]; then
   echo "[merge-and-hook] head moved since CI check ($_CI_GREEN_SHA -> $_CUR_HEAD) — re-gating before merge." >&2
-  if ! check_ci_status "$PR" "$_CODE_REPO"; then
+  if ! check_ci_status "$PR" "$_PR_REPO"; then
     echo "[merge-and-hook] CI-status gate FAILED after re-gate for PR #$PR: $CI_STATUS_FAIL_REASON" >&2
     ci_write_audit "ci_gate_block" "$PR" "$CI_STATUS_HEAD_SHA" "$CI_STATUS_FAILING_CHECKS" "$CI_STATUS_RUN_URL" "$CI_STATUS_FAIL_REASON"
     exit 1
@@ -560,12 +581,12 @@ _MERGE_SHA="${_CI_GREEN_SHA:-$_CUR_HEAD}"
 # top of the file, not a line number that will drift on the next edit).
 _DELETE_BRANCH_MODE="delete"
 _DEP_RC=0
-pr_dependents_list "$PR" "$_CODE_REPO" || _DEP_RC=$?
+pr_dependents_list "$PR" "$_PR_REPO" || _DEP_RC=$?
 if [[ "$_DEP_RC" -ne 0 ]]; then
   echo "[merge-and-hook] pr-dependents lookup failed (${PR_DEP_REASON:-unknown reason}) — keeping branch as a precaution, merge proceeds." >&2
   _DELETE_BRANCH_MODE="keep"
 elif [[ -n "${PR_DEP_LIST:-}" ]]; then
-  pr_dependents_report "$PR" "$_CODE_REPO" >&2
+  pr_dependents_report "$PR" "$_PR_REPO" >&2
   _DELETE_BRANCH_MODE="keep"
 fi
 
@@ -580,18 +601,18 @@ for _MERGE_ATTEMPT in 1 2; do
   # D#1614 409 head-moved retry, which used to abort with exit 9 instead.
   # Do NOT replace this with `set +e`; that would disarm the rest of the file.
   _MRC=0
-  ci_merge_sha_pinned "$PR" "$_CODE_REPO" "$_MERGE_SHA" "$_DELETE_BRANCH_MODE" || _MRC=$?
+  ci_merge_sha_pinned "$PR" "$_PR_REPO" "$_MERGE_SHA" "$_DELETE_BRANCH_MODE" || _MRC=$?
   if [[ "$_MRC" -eq 0 ]]; then
     _MERGE_OK=true
     break
   elif [[ "$_MRC" -eq 9 && "$_MERGE_ATTEMPT" -eq 1 ]]; then
     echo "[merge-and-hook] merge returned a head-moved conflict — re-gating once and retrying: $CI_STATUS_FAIL_REASON" >&2
-    _MERGE_SHA="$(gh pr view "$PR" --repo "$_CODE_REPO" --json headRefOid --jq .headRefOid 2>/dev/null || echo "")"
+    _MERGE_SHA="$(gh pr view "$PR" --repo "$_PR_REPO" --json headRefOid --jq .headRefOid 2>/dev/null || echo "")"
     # rc=2 is the CI_DISABLED stand-down, not a block — the merge was already
     # allowed to proceed without a CI signal above, and a head move does not
     # turn CI back on.
     _REGATE_RC=0
-    check_ci_status "$PR" "$_CODE_REPO" || _REGATE_RC=$?
+    check_ci_status "$PR" "$_PR_REPO" || _REGATE_RC=$?
     if [[ -z "$_MERGE_SHA" || ( "$_REGATE_RC" -ne 0 && "$_REGATE_RC" -ne 2 ) ]]; then
       echo "[merge-and-hook] CI-status gate FAILED after 409 re-gate for PR #$PR: ${CI_STATUS_FAIL_REASON:-could not resolve new head}" >&2
       ci_write_audit "ci_gate_block" "$PR" "${_MERGE_SHA:-}" "$CI_STATUS_FAILING_CHECKS" "$CI_STATUS_RUN_URL" "${CI_STATUS_FAIL_REASON:-head unresolved}"
@@ -604,7 +625,7 @@ for _MERGE_ATTEMPT in 1 2; do
       # D#2339: this wording used to live inline here, and the pre-wait probe
       # in Step 0c would have been a second place to phrase the same condition.
       # One function, both callers, so an operator meets one message.
-      ci_report_conflict "$PR" "$_CODE_REPO" "$_MERGE_SHA"
+      ci_report_conflict "$PR" "$_PR_REPO" "$_MERGE_SHA"
     fi
     exit 1
   fi
@@ -622,7 +643,11 @@ echo "[merge-and-hook] PR #$PR merged."
 ci_note_merge_if_unverified "$PR" "$_MERGE_SHA" "$_CI_AUDIT_WRITTEN"
 
 # ── Step 2: Post-merge hook ───────────────────────────────────────────────────
-HOOK_ARGS=(--pr "$PR")
+# --plane carries the plane THIS invocation already resolved (D#2563) — the
+# merge just happened, so the PR number may now collide with a still-open PR
+# on the other plane, and post-merge-hook.sh must act on the plane that was
+# actually merged, not re-probe and risk landing on the wrong one.
+HOOK_ARGS=(--pr "$PR" --plane "$PR_PLANE_NAME")
 if [[ -n "$DISC" ]]; then
   HOOK_ARGS+=(--discussion "$DISC")
 fi

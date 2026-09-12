@@ -321,6 +321,10 @@ def _render_role_prompt(role: str) -> str:
         "agent_memory": "",
         "gate_context": "",
         "pr_number": "0",
+        # D#2563: code-reviewer/security-reviewer now reference {{pr_repo}}
+        # (the plane #pr was resolved to) instead of hardcoding the code
+        # plane — needs the same placeholder treatment as pr_number.
+        "pr_repo": "placeholder/placeholder",
     }
     # Add any role-specific required vars that aren't in the defaults
     for var in REQUIRED_VARS.get(role, []):

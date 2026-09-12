@@ -84,7 +84,7 @@ Identify stale wiki pages and CHANGELOG entries caused by this PR, edit them in 
    a. source scripts/lib/pr-tree.sh
       CODE_REPO="$(source scripts/lib/repo-resolve.sh && _resolve_code_repo)"; PR_SHA=$(gh pr view {pr_number} --repo "${CODE_REPO:?code plane unresolved}" --json headRefOid --jq .headRefOid)
       DEST="$(mktemp -d)/pr-{pr_number}"
-      pr_tree_provision {pr_number} "$PR_SHA" "$DEST" || { echo "FAIL: could not provision tree"; exit 1; }
+      pr_tree_provision {pr_number} "$PR_SHA" "$DEST" "code" || { echo "FAIL: could not provision tree"; exit 1; }
 
       `$DEST` shares this repo's `origin` remote, so edits and pushes made
       there land on GitHub exactly like a normal checkout — it just never

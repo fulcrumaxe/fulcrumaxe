@@ -98,7 +98,7 @@ export PRT_EXPECTED_HEAD_OVERRIDE="$PR_SHA"
 
 echo "=== pr_tree_provision — happy path (checks 1-3) ==="
 DEST="$WORK/tree"
-OUT="$(pr_tree_provision "$PR_NUMBER" "$PR_SHA" "$DEST" "$PARENT" 2>err.log)"
+OUT="$(pr_tree_provision "$PR_NUMBER" "$PR_SHA" "$DEST" "code" "$PARENT" 2>err.log)"
 RC=$?
 ERR="$(cat err.log 2>/dev/null)"; rm -f err.log
 assert_rc "provision exits 0" 0 "$RC"
@@ -126,7 +126,7 @@ assert_ok "the pushed commit landed on ORIGIN's pr-branch" \
   test "$(git -C "$ORIGIN" rev-parse refs/heads/pr-branch)" = "$(git -C "$DEST" rev-parse HEAD)"
 
 echo "=== refusing to provision over an existing path ==="
-OUT2="$(pr_tree_provision "$PR_NUMBER" "$PR_SHA" "$DEST" "$PARENT" 2>&1)"
+OUT2="$(pr_tree_provision "$PR_NUMBER" "$PR_SHA" "$DEST" "code" "$PARENT" 2>&1)"
 RC2=$?
 assert_nonzero "refuses when dest already exists" "$RC2"
 assert_contains "reason names the existing-path refusal" "refusing to provision over an existing path" "$OUT2"
@@ -135,7 +135,7 @@ assert_ok "the original tree at DEST is untouched" test "$(git -C "$DEST" rev-pa
 echo "=== unreachable sha fails cleanly and leaves nothing behind (negative case) ==="
 BOGUS_SHA="0000000000000000000000000000000000dead"
 BOGUS_DEST="$WORK/tree-bogus"
-OUT3="$(pr_tree_provision 999 "$BOGUS_SHA" "$BOGUS_DEST" "$PARENT" 2>&1)"
+OUT3="$(pr_tree_provision 999 "$BOGUS_SHA" "$BOGUS_DEST" "code" "$PARENT" 2>&1)"
 RC3=$?
 assert_nonzero "unreachable PR head fails" "$RC3"
 assert_not "no half-built tree left behind" test -e "$BOGUS_DEST"
@@ -167,7 +167,7 @@ echo "=== (D#1940 item 3) aborts non-zero, naming the plane, when the code-plane
 # PARENT's only remote is "origin" -> a local bare path with no relation to
 # the real code_repo slug, so with no override set, resolution must fail.
 UNRESOLVED_DEST="$WORK/tree-unresolved"
-OUT5="$(pr_tree_provision "$PR_NUMBER" "$PR_SHA" "$UNRESOLVED_DEST" "$PARENT" 2>&1)"
+OUT5="$(pr_tree_provision "$PR_NUMBER" "$PR_SHA" "$UNRESOLVED_DEST" "code" "$PARENT" 2>&1)"
 RC5=$?
 assert_nonzero "provision aborts when the code-plane remote is unresolvable" "$RC5"
 assert_contains "message names the code plane slug" "$REAL_CODE_REPO" "$OUT5"
@@ -248,7 +248,7 @@ COLLISION_DEST="$COLLISION_WORK/tree"
 # No CODE_PLANE_REMOTE_OVERRIDE here — real slug-matching resolution.
 # PRT_EXPECTED_HEAD_OVERRIDE stands in for the live `gh pr view` call (item
 # 5's cross-check) so this test makes no network call.
-OUT6="$(PRT_EXPECTED_HEAD_OVERRIDE="$CODE_SHA" pr_tree_provision 67 "$CODE_SHA" "$COLLISION_DEST" "$COLLISION_PARENT" 2>&1)"
+OUT6="$(PRT_EXPECTED_HEAD_OVERRIDE="$CODE_SHA" pr_tree_provision 67 "$CODE_SHA" "$COLLISION_DEST" "code" "$COLLISION_PARENT" 2>&1)"
 RC6=$?
 assert_rc "provision of colliding PR #67 exits 0" 0 "$RC6"
 assert_ok "resolved HEAD is the CODE plane's sha" \
@@ -262,13 +262,84 @@ echo "=== (D#1940 item 5) headRefOid mismatch is a hard abort ==="
 # from unreachability.
 MISMATCH_DEST="$WORK/tree-mismatch"
 OUT7="$(CODE_PLANE_REMOTE_OVERRIDE="origin" PRT_EXPECTED_HEAD_OVERRIDE="$MAIN_SHA" \
-  pr_tree_provision "$PR_NUMBER" "$PR_SHA" "$MISMATCH_DEST" "$PARENT" 2>&1)"
+  pr_tree_provision "$PR_NUMBER" "$PR_SHA" "$MISMATCH_DEST" "code" "$PARENT" 2>&1)"
 RC7=$?
 assert_nonzero "provision aborts on headRefOid mismatch" "$RC7"
 assert_contains "message shows the mismatched shas" "$MAIN_SHA" "$OUT7"
 assert_ok "the head_sha argument WAS reachable in parent (mismatch, not unreachability, caused the abort)" \
   git -C "$PARENT" rev-parse --verify --quiet "${PR_SHA}^{commit}"
 assert_not "no half-built tree left behind on a headRefOid mismatch" test -e "$MISMATCH_DEST"
+
+echo "=== (D#2563, differential) plane-qualified-ref check catches a coincidence even when the live headRefOid cross-check is defeated ==="
+# The headRefOid cross-check (D#1940 PR-a, above) is a second, independent
+# line of defense — but it depends on a live `gh pr view` call, which this
+# test overrides to MATCH the wrong sha, isolating what the plane-qualified
+# ref check (D#2563) catches on its own construction, not by luck of an
+# object store that happens to already hold the right-looking commit.
+#
+# A second, wholly independent ORIGIN/PARENT pair, so this case cannot
+# inherit any object-store coincidence from the fixtures built above.
+ORIGIN2="$WORK/origin2.git"
+PARENT2="$WORK/parent2"
+git init --quiet --bare "$ORIGIN2"
+git clone --quiet "$ORIGIN2" "$PARENT2"
+(
+  cd "$PARENT2" || exit 1
+  git config user.email "test@example.invalid"
+  git config user.name "pr-tree test"
+  echo "hub2 content" > CLAUDE.md
+  git add -A && git commit --quiet -m "first" --allow-empty
+  git push --quiet origin HEAD:refs/heads/main
+) || { echo "FATAL: could not build fixture2 main history"; exit 1; }
+
+# Commit a "coincidence" object directly into PARENT2's own object store, on
+# a throwaway local branch that is deleted (but never gc'd) so the commit
+# stays present-but-unreferenced — exactly the situation that would let a
+# reachability-only check pass without ever looking at what the fetch landed.
+(
+  cd "$PARENT2" || exit 1
+  git checkout --quiet -b coincidence
+  echo "looks like the real PR head, isn't" > decoy.txt
+  git add -A && git commit --quiet -m "coincidence"
+  git rev-parse HEAD > "$WORK/coincidence-sha.txt"
+  git checkout --quiet main
+  git branch -D coincidence --quiet
+) || { echo "FATAL: could not build coincidence commit"; exit 1; }
+COINCIDENCE_SHA="$(cat "$WORK/coincidence-sha.txt")"
+
+# The REAL PR head on ORIGIN2 is a different, unrelated commit.
+PR2_WORK="$WORK/pr2-author-clone"
+git clone --quiet "$ORIGIN2" "$PR2_WORK"
+(
+  cd "$PR2_WORK" || exit 1
+  git config user.email "pr-author@example.invalid"
+  git config user.name "pr author"
+  echo "the real pr change" >> CLAUDE.md
+  git add -A && git commit --quiet -m "real pr change"
+  git push --quiet origin HEAD:refs/heads/pr2-branch
+) || { echo "FATAL: could not build fixture2 PR branch"; exit 1; }
+PR2_REAL_SHA="$(git -C "$PR2_WORK" rev-parse HEAD)"
+PR2_NUMBER=777
+git -C "$ORIGIN2" update-ref "refs/pull/${PR2_NUMBER}/head" "$PR2_REAL_SHA"
+
+# CODE_PLANE_REMOTE_OVERRIDE="origin" so the fixture's remote resolves the
+# same way the happy-path tests above do. PRT_EXPECTED_HEAD_OVERRIDE is
+# deliberately set to COINCIDENCE_SHA — the SAME wrong value as the
+# head_sha argument below — so the live cross-check matches and cannot be
+# what catches this. Only the plane-qualified-ref check (which reads what
+# the fetch actually landed at refs/pr-tree/code/777, the real PR2_REAL_SHA)
+# can still refuse.
+AC7_DEST="$WORK/tree-ac7"
+OUT8="$(CODE_PLANE_REMOTE_OVERRIDE="origin" PRT_EXPECTED_HEAD_OVERRIDE="$COINCIDENCE_SHA" \
+  pr_tree_provision "$PR2_NUMBER" "$COINCIDENCE_SHA" "$AC7_DEST" "code" "$PARENT2" 2>&1)"
+RC8=$?
+assert_rc "D#2563: mismatched fetch-vs-claimed-head returns exactly 3, even with a matching live cross-check" 3 "$RC8"
+assert_contains "D#2563: reason names the mismatch, not a bare 'not reachable'" "does not match what the fetch landed" "$OUT8"
+assert_not "D#2563: no half-built tree left behind" test -e "$AC7_DEST"
+# The coincidence commit really was reachable in the object store all along
+# — proving this is not a false negative from a broken fixture.
+assert_ok "D#2563: the coincidence commit really is in PARENT2's object store" \
+  git -C "$PARENT2" rev-parse --verify --quiet "${COINCIDENCE_SHA}^{commit}"
 
 echo ""
 echo "=== summary: $PASS passed, $FAIL failed ==="

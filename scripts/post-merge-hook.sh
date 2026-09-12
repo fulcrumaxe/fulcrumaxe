@@ -2,7 +2,13 @@
 # post-merge-hook.sh — run after EVERY PR merge to enforce coordination discipline.
 #
 # Usage:
-#   bash scripts/post-merge-hook.sh --pr <N> [--discussion <N>] [--event-id <id>] [--resume]
+#   bash scripts/post-merge-hook.sh --pr <N> [--plane code|discussion] [--discussion <N>] [--event-id <id>] [--resume]
+#
+# --plane carries the plane merge-and-hook.sh already resolved (D#2563) — this
+# hook runs strictly after the merge, when the PR number may collide with a
+# still-open PR on the other plane, so it must never re-probe. Omitted (a
+# direct/manual invocation with no prior resolution) falls back to probing
+# both planes via scripts/lib/pr-plane.sh, same rule as merge-and-hook.sh.
 #
 # Idempotent: pass the same --event-id twice and the second call is a no-op.
 # Crash-safe: re-run with the same --event-id to resume from where it stopped.
@@ -110,6 +116,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # shellcheck source=scripts/lib/repo-resolve.sh
 source "$SCRIPT_DIR/lib/repo-resolve.sh"
+# shellcheck source=scripts/lib/pr-plane.sh
+source "$SCRIPT_DIR/lib/pr-plane.sh"
 # Two planes, because this file talks to both harder than anything else in the
 # tree. Everything that names a PR takes the code slug: `gh pr view`, `gh pr
 # list`, the `repos/<slug>/issues/<pr>/timeline` REST read, and the two python
@@ -128,7 +136,10 @@ source "$SCRIPT_DIR/lib/repo-resolve.sh"
 # than for the variable they used to be split from: their only consumers are
 # Discussion queries, so calling them _REPO_OWNER/_REPO_NAME after the split
 # would leave the wrong half of the file looking like the default.
-_CODE_REPO="$(_resolve_code_repo)"
+#
+# _PR_REPO (the PR's plane) is resolved below, after --pr/--plane are parsed
+# (D#2563) — a PR number is ambiguous across planes, so it cannot be resolved
+# before the args that disambiguate it are read.
 _DISCUSSION_REPO="$(_resolve_discussion_repo)"
 _DISCUSSION_OWNER="${_DISCUSSION_REPO%/*}"
 _DISCUSSION_NAME="${_DISCUSSION_REPO#*/}"
@@ -153,7 +164,7 @@ resolve_merged_count() {
   local disc="$1"
   local all_records record_total recorded_true title_count
 
-  all_records=$(python3 "$REPO_ROOT/backend/pr_state.py" list --discussion "$disc" --repo "$_CODE_REPO" 2>/dev/null || echo "[]")
+  all_records=$(python3 "$REPO_ROOT/backend/pr_state.py" list --discussion "$disc" --repo "$_PR_REPO" 2>/dev/null || echo "[]")
   record_total=$(echo "$all_records" | python3 -c "
 import json, sys
 try:
@@ -174,7 +185,7 @@ except Exception:
 " 2>/dev/null || echo "0")
     echo "${recorded_true:-0}"
   else
-    title_count=$(gh pr list --repo "$_CODE_REPO" \
+    title_count=$(gh pr list --repo "$_PR_REPO" \
       --state merged --json number,title \
       --jq "[.[] | select(.title | startswith(\"#${disc}:\"))] | length" \
       2>/dev/null || echo "0")
@@ -190,6 +201,7 @@ source "$SCRIPT_DIR/lib/state-dir.sh" || true
 source "$SCRIPT_DIR/lib/auto-pull-step.sh"
 
 PR=""
+PLANE_ARG=""
 DISCUSSION=""
 EVENT_ID_ARG=""
 RESUME_FLAG=""
@@ -197,12 +209,13 @@ RESUME_FLAG=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --pr)         PR="$2";         shift 2 ;;
+    --plane)      PLANE_ARG="$2";  shift 2 ;;
     --discussion) DISCUSSION="$2"; shift 2 ;;
     --event-id)   EVENT_ID_ARG="$2"; shift 2 ;;
     --resume)     RESUME_FLAG="--resume"; shift ;;
     *)
       echo "Unknown argument: $1" >&2
-      echo "Usage: $0 --pr <N> [--discussion <N>]" >&2
+      echo "Usage: $0 --pr <N> [--plane code|discussion] [--discussion <N>]" >&2
       exit 1
       ;;
   esac
@@ -212,6 +225,16 @@ if [[ -z "$PR" ]]; then
   echo "Error: --pr is required" >&2
   exit 1
 fi
+
+# ── Plane resolution (D#2563) ─────────────────────────────────────────────────
+# --plane, when passed, carries what merge-and-hook.sh already resolved — this
+# hook must never re-probe post-merge, when the PR number may now collide with
+# a still-open PR on the other plane. Omitted (a direct/manual invocation)
+# falls back to probing both planes, same rule as merge-and-hook.sh.
+if ! pr_plane_resolve "$PR" "$PLANE_ARG"; then
+  exit 1
+fi
+_PR_REPO="${PR_PLANE_REPO:?plane unresolved}"
 
 # ── Auto-detect discussions from PR body if not provided ─────────────────────
 # The extraction and per-candidate GraphQL validation live in
@@ -238,7 +261,7 @@ else
     [[ -n "$CAND" ]] || continue
     DISCUSSIONS+=("$CAND")
     echo "[post-merge-hook] Auto-detected Discussion #$CAND from PR #$PR body"
-  done < <(resolve_pr_discussion "$PR" "$_CODE_REPO" "$_DISCUSSION_REPO" --all || true)
+  done < <(resolve_pr_discussion "$PR" "$_PR_REPO" "$_DISCUSSION_REPO" --all || true)
 fi
 
 # First entry used for backward-compat single-Discussion fields
@@ -352,7 +375,7 @@ print('\n'.join(n.get('body', '') for n in nodes))
     # Title-prefix counting (resolve_merged_count's fallback) stays only for
     # a Discussion with no recorded entry at all.
     #
-    # --repo "$_CODE_REPO" (D#2379): pr_state keys on the PR number alone by
+    # --repo "$_PR_REPO" (D#2379): pr_state keys on the PR number alone by
     # default, and two repos issue PR numbers into that one key space once the
     # public repo is the code plane. Without --repo, a public PR whose number
     # matches an existing private-repo row would find it non-null here, skip
@@ -360,11 +383,11 @@ print('\n'.join(n.get('body', '') for n in nodes))
     # Discussion with a merge it never got. --repo scopes this get/init/set
     # to a key namespaced under the code plane, which a same-numbered row
     # from any other repo can never collide with.
-    EXISTING_PR_ENTRY=$(python3 "$REPO_ROOT/backend/pr_state.py" get "$PR" --repo "$_CODE_REPO" 2>/dev/null || echo "null")
+    EXISTING_PR_ENTRY=$(python3 "$REPO_ROOT/backend/pr_state.py" get "$PR" --repo "$_PR_REPO" 2>/dev/null || echo "null")
     if [[ -z "$EXISTING_PR_ENTRY" || "$EXISTING_PR_ENTRY" == "null" ]]; then
-      python3 "$REPO_ROOT/backend/pr_state.py" init "$PR" --discussion "$DISCUSSION" --repo "$_CODE_REPO" >/dev/null 2>&1 || true
+      python3 "$REPO_ROOT/backend/pr_state.py" init "$PR" --discussion "$DISCUSSION" --repo "$_PR_REPO" >/dev/null 2>&1 || true
     fi
-    python3 "$REPO_ROOT/backend/pr_state.py" set "$PR" --field "merged=true" --repo "$_CODE_REPO" >/dev/null 2>&1 || true
+    python3 "$REPO_ROOT/backend/pr_state.py" set "$PR" --field "merged=true" --repo "$_PR_REPO" >/dev/null 2>&1 || true
 
     MERGED_FOR_GUARD=$(resolve_merged_count "$DISCUSSION")
 
@@ -559,7 +582,7 @@ if ! hook_event_has_step "completion_block"; then
       DISC_CREATED_AT=$(gh api graphql \
         -f query="query { repository(owner:\"${_DISCUSSION_OWNER}\", name:\"${_DISCUSSION_NAME}\") { discussion(number:${DISCUSSION}) { createdAt } } }" \
         --jq '.data.repository.discussion.createdAt' 2>/dev/null || echo "")
-      PR_MERGED_AT=$(gh pr view "$PR" --repo "$_CODE_REPO" \
+      PR_MERGED_AT=$(gh pr view "$PR" --repo "$_PR_REPO" \
         --json mergedAt --jq '.mergedAt' 2>/dev/null || echo "")
 
       if [[ -n "$DISC_CREATED_AT" && -n "$PR_MERGED_AT" ]]; then
@@ -777,7 +800,7 @@ fi
 # Operator reads .autonomous-team/needs-tmux-reload and reloads the tmux session.
 # Auto-restart is intentionally out of scope — we only signal, not act.
 if ! hook_event_has_step "tmux_reload_flag"; then
-  CLAUDE_MD_TOUCHED=$(gh pr view "$PR" --repo "$_CODE_REPO" \
+  CLAUDE_MD_TOUCHED=$(gh pr view "$PR" --repo "$_PR_REPO" \
     --json files --jq '[.files[].path | select(. == "CLAUDE.md")] | length' \
     2>/dev/null || echo "0")
 
@@ -839,7 +862,7 @@ fi
 
 # ── 5. Browser-tour queue — enqueue a tour if this PR touched dashboard/ ────────
 if ! hook_event_has_step "browser_tour_queue"; then
-  CHANGED_DASHBOARD_FILES=$(gh pr view "$PR" --repo "$_CODE_REPO" \
+  CHANGED_DASHBOARD_FILES=$(gh pr view "$PR" --repo "$_PR_REPO" \
     --json files --jq '[.files[].path | select(startswith("dashboard/"))] | join("\n")' \
     2>/dev/null || echo "")
 
@@ -921,7 +944,7 @@ if ! hook_event_has_step "stats_metrics"; then
   fi
 
   # PR creation time for time_to_merge calculation
-  PR_CREATED_AT=$(gh pr view "$PR" --repo "$_CODE_REPO" \
+  PR_CREATED_AT=$(gh pr view "$PR" --repo "$_PR_REPO" \
     --json createdAt --jq '.createdAt' 2>/dev/null || echo "")
 
   # Count fix cycles: times code-review-needs-fix was applied before merge.
@@ -932,7 +955,7 @@ if ! hook_event_has_step "stats_metrics"; then
   # The REST issue-timeline endpoint carries the same labeled events and
   # `gh api` actually accepts it. Reserve -1 for "the call itself failed"
   # so a real zero-fix-rounds PR is never confused with a broken measurement.
-  FIX_CYCLE_COUNT=$(gh api "repos/${_CODE_REPO}/issues/${PR}/timeline" --paginate \
+  FIX_CYCLE_COUNT=$(gh api "repos/${_PR_REPO}/issues/${PR}/timeline" --paginate \
     --jq '[.[] | select(.event == "labeled" and .label.name == "code-review-needs-fix")] | length' \
     2>/dev/null)
   if ! [[ "$FIX_CYCLE_COUNT" =~ ^[0-9]+$ ]]; then
@@ -977,7 +1000,7 @@ except Exception:
   fi
 
   # pr_file_conflict_score: overlap with PRs merged in previous 6h
-  CONFLICT_SCORE=$(_PMH_PR="$PR" _PMH_REPO="$_CODE_REPO" python3 - <<'PYEOF'
+  CONFLICT_SCORE=$(_PMH_PR="$PR" _PMH_REPO="$_PR_REPO" python3 - <<'PYEOF'
 import subprocess, json, sys, datetime, os
 
 pr = os.environ.get("_PMH_PR", "")
@@ -1042,7 +1065,7 @@ PYEOF
   fi
 
   # reviewer_acceptance_latency_seconds: PR open -> first code-review-passed label
-  REVIEWER_ACCEPT_TS=$(gh api "repos/$_CODE_REPO/issues/${PR}/timeline" \
+  REVIEWER_ACCEPT_TS=$(gh api "repos/$_PR_REPO/issues/${PR}/timeline" \
     --jq '[.[] | select(.event == "labeled" and .label.name == "code-review-passed")] | first | .created_at' \
     2>/dev/null || echo "")
 

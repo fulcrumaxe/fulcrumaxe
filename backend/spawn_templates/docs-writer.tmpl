@@ -51,7 +51,7 @@ Steps:
      source scripts/lib/pr-tree.sh
      PR_SHA=$(gh pr view {{pr_number}} --repo {{CODE_REPO}} --json headRefOid --jq .headRefOid)
      DEST="$(mktemp -d)/pr-{{pr_number}}"
-     pr_tree_provision {{pr_number}} "$PR_SHA" "$DEST" || { echo "FAIL: could not provision tree for PR #{{pr_number}}"; exit 1; }
+     pr_tree_provision {{pr_number}} "$PR_SHA" "$DEST" "code" || { echo "FAIL: could not provision tree for PR #{{pr_number}}"; exit 1; }
 
    `$DEST` is a real, separate worktree sharing this repo's `origin` remote —
    edits and pushes from it land on GitHub exactly like a normal checkout, but

@@ -79,6 +79,34 @@ auto_pull_step() {
   local AUTO_PULL_BLOCKED_MARKER AUTO_PULL_BLOCKED_MODIFIED_MARKER UNMERGED_FILES UNMERGED_LIST TS
   local BUG_TITLE EXISTING_ISSUE NEW_ISSUE_URL BEHIND_COUNT STASH_NOTE
   local PULL_OUT PULL_RC RETRY_OUT RETRY_RC MSG MODIFIED AHEAD_COUNT CURRENCY_MSG
+  local GIT_DIR_PATH GIT_COMMON_DIR_PATH GIT_DIR_ABS GIT_COMMON_DIR_ABS LINKED_ERR_MSG
+
+  # D#2563 hardening: a linked worktree (git-dir != git-common-dir) must
+  # refuse this step outright, not attempt it. This hook is meant to run
+  # from the shared main checkout; run instead from an executor's own linked
+  # worktree, the dirty-tree guard below (added for the CURRENT_BRANCH != main
+  # case) only ever fails LOUDLY — but a *clean* linked worktree not on main
+  # would let `git checkout main` succeed silently and move that worktree off
+  # whatever branch it is actually on (a PR branch, mid-run). Silent success
+  # is worse than the exit 2 a dirty tree already gets, so check the tree
+  # shape itself before anything else runs.
+  GIT_DIR_PATH=$(git -C "$repo_root" rev-parse --git-dir 2>/dev/null || echo "")
+  GIT_COMMON_DIR_PATH=$(git -C "$repo_root" rev-parse --git-common-dir 2>/dev/null || echo "")
+  if [[ -n "$GIT_DIR_PATH" && -n "$GIT_COMMON_DIR_PATH" ]]; then
+    # Neither is guaranteed absolute — a plain (non-worktree) repo prints
+    # both as the same relative ".git", and only a linked worktree's
+    # --git-common-dir is reliably absolute. Normalise both the same way,
+    # relative to $repo_root, before comparing, or a plain repo's two equal
+    # relative strings can end up compared against one already-absolute one.
+    GIT_DIR_ABS=$(cd "$repo_root" 2>/dev/null && cd "$GIT_DIR_PATH" 2>/dev/null && pwd || echo "$GIT_DIR_PATH")
+    GIT_COMMON_DIR_ABS=$(cd "$repo_root" 2>/dev/null && cd "$GIT_COMMON_DIR_PATH" 2>/dev/null && pwd || echo "$GIT_COMMON_DIR_PATH")
+    if [[ "$GIT_DIR_ABS" != "$GIT_COMMON_DIR_ABS" ]]; then
+      LINKED_ERR_MSG="[$(date +%H:%M)] post-merge-hook: ERROR — repo_root ($repo_root) is a linked worktree (git-dir $GIT_DIR_ABS != git-common-dir $GIT_COMMON_DIR_ABS), not the shared main checkout. Refusing auto_pull here rather than risk a silent 'git checkout main' on a clean tree moving this worktree off whatever branch it is actually on. Run this hook from the main checkout instead."
+      auto_pull_step_teamlog "$LINKED_ERR_MSG"
+      echo "$LINKED_ERR_MSG" >&2
+      return 2
+    fi
+  fi
 
   CURRENT_BRANCH=$(git -C "$repo_root" branch --show-current 2>/dev/null || echo "")
   if [[ "$CURRENT_BRANCH" != "main" ]]; then

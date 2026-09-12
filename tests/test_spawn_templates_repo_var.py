@@ -47,16 +47,25 @@ ORIGINAL_NAME = "autonomous-forever"
 def _render_with_repo(role: str, repo: str) -> str:
     """Render a template substituting {{REPO}} with *repo* (REPO_OWNER/REPO_NAME auto-derived).
 
-    Also pins {{CODE_REPO}} to the same *repo*. Some roles' PR-scoped `gh`
-    calls render {{CODE_REPO}} rather than {{REPO}} (the two plane-aware
-    placeholders spawn_templates.py binds independently) — without pinning
-    it here too, this helper's portability check would only see whichever
-    half of a role's calls still happens to use {{REPO}}, and would miss a
-    role whose {{REPO}} usage moved entirely to {{CODE_REPO}}.
+    Also pins {{CODE_REPO}} and {{pr_repo}} to the same *repo*. Three
+    plane-aware placeholders exist and spawn_templates.py binds them
+    independently, so a helper that only pins {{REPO}} would miss a role
+    whose PR-scoped `gh` calls moved to {{CODE_REPO}}, and a helper that
+    stops at {{CODE_REPO}} would in turn miss a role whose PR-scoped calls
+    moved on again to {{pr_repo}} (D#2563: the plane PR #pr's own probe
+    resolved to, which is not always {{CODE_REPO}} — a PR can live on the
+    Discussion plane). code-reviewer.tmpl and security-reviewer.tmpl made
+    exactly that second move for their `gh pr view`/`gh pr diff`/`gh pr edit`
+    calls; security-reviewer.tmpl in particular no longer references
+    {{REPO}}, {{REPO_OWNER}}/{{REPO_NAME}}, or {{CODE_REPO}} anywhere, so
+    without pinning {{pr_repo}} here too this helper would render nothing
+    repo-shaped for it at all and this file's portability check would falsely
+    read as "broken" rather than "moved to a variable this helper didn't
+    know about yet" — measured directly: it did exactly that (D#2563).
     """
     return st.render_body(
         role,
-        vars={"REPO": repo, "CODE_REPO": repo},
+        vars={"REPO": repo, "CODE_REPO": repo, "pr_repo": repo},
         ignore_unknown=True,
     )
 

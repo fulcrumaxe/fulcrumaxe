@@ -9,9 +9,12 @@
 # provisioning mechanism that claim was missing.
 #
 #   source scripts/lib/pr-tree.sh
-#   DEST="$(pr_tree_provision "$PR_NUMBER" "$HEAD_SHA" "$dest_path")" || exit 1
+#   DEST="$(pr_tree_provision "$PR_NUMBER" "$HEAD_SHA" "$dest_path" "$PLANE")" || exit 1
 #
-# pr_tree_provision <pr_number> <head_sha> <dest> [parent_repo]
+# pr_tree_provision <pr_number> <head_sha> <dest> <plane> [parent_repo]
+#   <plane> is "code" or "discussion" (see scripts/lib/pr-plane.sh) — it
+#   selects which git remote is fetched AND which repo the cross-check below
+#   reads from. An unrecognised plane value is rejected outright.
 #   1. Fetches the PR head ref (refs/pull/<N>/head) into the parent repo's
 #      object store, so <head_sha> is reachable even when it never landed on
 #      a local branch.
@@ -51,20 +54,29 @@
 # than the branch name) is what makes this work even after the PR author has
 # deleted their branch.
 #
-# Which remote (D#1940 FM-5)
-# ---------------------------
+# Which remote, and which repo the cross-check reads (D#1940 FM-5, D#2563)
+# --------------------------------------------------------------------------
 # PR numbers are not unique across planes: the code plane and the Discussion
 # plane each number their own PRs from 1, so "PR #67" names two different
 # commits. Fetching `refs/pull/<N>/head` from the git remote literally named
-# "origin" (the Discussion plane) succeeds — exit 0 — and silently lands the
-# wrong plane's commit. This file resolves the code-plane remote via
-# scripts/lib/repo-resolve.sh's `_resolve_code_plane_remote` instead of ever
-# fetching from a hardcoded remote name, and independently re-verifies the
-# fetched head against `gh pr view --repo "$(_require_code_repo)"` before
-# handing the tree back to a caller — belt-and-braces, because objects fetched
-# under an old remote name can already sit in the parent's object store from
-# a prior era, which would otherwise let a wrong-plane head_sha resolve as
-# "reachable" even after the fetch itself is correctly pinned.
+# "origin" ALWAYS means the Discussion plane here — never guessed as a
+# fallback for "code" — and a wrong-plane fetch succeeds silently (exit 0,
+# no warning). <plane> selects the remote (via
+# scripts/lib/repo-resolve.sh's `_resolve_code_plane_remote` for "code",
+# literal "origin" for "discussion") AND the repo the belt-and-braces
+# cross-check below reads its authoritative headRefOid from — both must
+# name the plane the caller actually resolved <pr_number> against
+# (scripts/lib/pr-plane.sh), or the cross-check itself would silently defeat
+# the fix by re-asserting the wrong plane's answer.
+#
+# Why the cross-check exists at all: objects fetched under an old remote
+# naming convention can already sit in the parent's object store from a
+# prior era, which would otherwise let a wrong-plane head_sha resolve as
+# "reachable" even after the fetch itself is correctly pinned by remote. The
+# plane-qualified ref this function fetches into (refs/pr-tree/<plane>/<N>)
+# closes most of that gap by construction; the independent `gh pr view`
+# cross-check against the resolved plane's own repo is the second,
+# independent line of defense — belt-and-braces, not either/or.
 #
 # Why these trees are not registered (D#2041)
 # ---------------------------------------------
@@ -97,8 +109,44 @@ _prt_abs() { readlink -f "$1" 2>/dev/null || printf '%s\n' "$1"; }
 # shellcheck source=./repo-resolve.sh
 source "$(dirname "${BASH_SOURCE[0]}")/repo-resolve.sh"
 
-# _prt_expected_head_sha <pr_number> — the code plane's authoritative
-# headRefOid for <pr_number>, or non-zero with nothing on stdout on failure.
+# _prt_headref_lookup <repo> <pr_number> — the one call site that actually
+# talks to `gh`, kept in its own scope (same shape as scripts/lib/pr-plane.sh's
+# _prp_pr_exists) so which plane's repo string reaches it is always a
+# parameter, never a same-scope case-branch assignment straight into the
+# `gh` invocation.
+#
+# This parameter boundary is also why repo-plane-cutover-guard.py cannot
+# trace <repo> back to a CODE/DISCUSSION-classified assignment from here: the
+# call one level up (_prt_expected_head_sha's own case-branch binding) is
+# fully checkable, but a function argument is "unknown" to that detector by
+# construction — it reports NEEDS CALLER TRACE, not a defect. What actually
+# guarantees <repo> is plane-correct is the real caller graph, not the guard —
+# and that graph is documented, tree-wide, in ts-backend/PARITY-CAVEATS.md §7
+# rather than restated here, so this comment and that caveat can't drift apart
+# the way an earlier draft of this comment (which claimed two callers, both in
+# scripts/spawn-agent.sh) already had by the time it was reviewed. Per that
+# caveat, _prt_expected_head_sha is called only by pr_tree_provision, which has
+# exactly one call site in scripts/spawn-agent.sh (the --dry-run-env-dump
+# block; D#2542 removed the main-spawn-path call), passing the literal
+# $PR_PLANE_NAME that script resolves once via pr_plane_resolve() beforehand —
+# plus three docs-writer consumers the caveat also names
+# (backend/spawn_templates/docs-writer.tmpl, agents/docs-writer.md,
+# .claude/agents/docs-writer.md), none of which go through pr_plane_resolve():
+# each passes the literal plane name "code" instead, matching the
+# {{CODE_REPO}}/_resolve_code_repo call directly above it in the same snippet.
+# The docs-writer lane is code-plane-bound by construction — wiki pages are
+# synced from the code plane only — so a literal "code" here is correct, not a
+# shortcut; making it plane-generic is out of scope for this file. Re-verify
+# against the caveat (and search tree-wide, not just scripts/, since .tmpl and
+# .md consumers live outside it) before trusting a restatement of this again.
+_prt_headref_lookup() {
+  local repo="$1" pr_number="$2"
+  gh pr view "$pr_number" --repo "$repo" --json headRefOid --jq .headRefOid 2>/dev/null
+}
+
+# _prt_expected_head_sha <pr_number> <plane> — the resolved plane's
+# authoritative headRefOid for <pr_number>, or non-zero with nothing on
+# stdout on failure.
 #
 # PRT_EXPECTED_HEAD_OVERRIDE — test-only escape hatch, same convention as
 # CODE_PLANE_REMOTE_OVERRIDE: when set, its value is returned as-is and no
@@ -111,8 +159,8 @@ source "$(dirname "${BASH_SOURCE[0]}")/repo-resolve.sh"
 # under pytest), so that check would break the real consumer while adding no
 # production safety.
 _prt_expected_head_sha() {
-  local pr_number="${1:-}"
-  [ -n "$pr_number" ] || { _prt_log "usage: _prt_expected_head_sha <pr_number>"; return 3; }
+  local pr_number="${1:-}" plane="${2:-}"
+  [ -n "$pr_number" ] && [ -n "$plane" ] || { _prt_log "usage: _prt_expected_head_sha <pr_number> <plane>"; return 3; }
 
   if [ -n "${PRT_EXPECTED_HEAD_OVERRIDE:-}" ]; then
     printf '%s\n' "$PRT_EXPECTED_HEAD_OVERRIDE"
@@ -120,53 +168,93 @@ _prt_expected_head_sha() {
   fi
 
   local repo sha
-  repo="$(_require_code_repo "pr-tree provisioning")" || return 1
-  sha="$(gh pr view "$pr_number" --repo "$repo" --json headRefOid --jq .headRefOid 2>/dev/null)"
+  case "$plane" in
+    code)
+      repo="$(_require_code_repo "pr-tree provisioning")" || return 1
+      ;;
+    discussion)
+      repo="$(_resolve_discussion_repo 2>/dev/null || true)"
+      if [ -z "$repo" ]; then
+        _prt_log "could not resolve the Discussion plane — refusing the cross-check against an unresolved plane"
+        return 1
+      fi
+      ;;
+    *)
+      _prt_log "unrecognised plane '$plane' — must be 'code' or 'discussion'"
+      return 1
+      ;;
+  esac
+  sha="$(_prt_headref_lookup "$repo" "$pr_number")"
   if [ -z "$sha" ]; then
-    _prt_log "could not resolve PR #${pr_number}'s headRefOid from the code plane ($repo)"
+    _prt_log "could not resolve PR #${pr_number}'s headRefOid from the resolved ${plane} plane ($repo)"
     return 1
   fi
   printf '%s\n' "$sha"
 }
 
-# pr_tree_provision <pr_number> <head_sha> <dest> [parent_repo]
+# pr_tree_provision <pr_number> <head_sha> <dest> <plane> [parent_repo]
 pr_tree_provision() {
-  local pr_number="${1:-}" head_sha="${2:-}" dest="${3:-}"
-  local parent="${4:-${PR_TREE_PARENT:-$(_prt_repo_root)}}"
+  local pr_number="${1:-}" head_sha="${2:-}" dest="${3:-}" plane="${4:-}"
+  local parent="${5:-${PR_TREE_PARENT:-$(_prt_repo_root)}}"
 
-  if [ -z "$pr_number" ] || [ -z "$head_sha" ] || [ -z "$dest" ]; then
-    _prt_log "usage: pr_tree_provision <pr_number> <head_sha> <dest> [parent_repo]"
+  if [ -z "$pr_number" ] || [ -z "$head_sha" ] || [ -z "$dest" ] || [ -z "$plane" ]; then
+    _prt_log "usage: pr_tree_provision <pr_number> <head_sha> <dest> <plane> [parent_repo]"
     return 3
   fi
+
+  local remote
+  case "$plane" in
+    code)
+      remote="$(_resolve_code_plane_remote "$parent")" || {
+        _prt_log "could not resolve the code plane's remote in $parent"
+        return 3
+      }
+      ;;
+    discussion)
+      remote="origin"
+      ;;
+    *)
+      _prt_log "unrecognised plane '$plane' — must be 'code' or 'discussion'"
+      return 3
+      ;;
+  esac
 
   if [ -e "$dest" ]; then
     _prt_log "refusing to provision over an existing path: $dest"
     return 3
   fi
 
-  local code_remote
-  code_remote="$(_resolve_code_plane_remote "$parent")" || {
-    _prt_log "could not resolve the code-plane git remote in $parent — refusing to fetch against an unresolved plane"
-    return 3
-  }
-
-  if ! git -C "$parent" fetch --quiet "$code_remote" "refs/pull/${pr_number}/head" 2>/dev/null; then
-    _prt_log "fetch of refs/pull/${pr_number}/head failed against $parent's $code_remote remote"
+  # Plane-qualified ref, not a bare local branch: two different PRs sharing
+  # the same number on different planes must never land in the same ref.
+  local qualified_ref="refs/pr-tree/${plane}/${pr_number}"
+  if ! git -C "$parent" fetch --quiet "$remote" "refs/pull/${pr_number}/head:${qualified_ref}" 2>/dev/null; then
+    _prt_log "fetch of refs/pull/${pr_number}/head from remote '$remote' (plane=$plane) into $qualified_ref failed against $parent"
     return 3
   fi
 
-  if ! git -C "$parent" rev-parse --verify --quiet "${head_sha}^{commit}" >/dev/null 2>&1; then
-    _prt_log "PR #${pr_number} head $head_sha is not reachable in $parent after fetch"
+  # Verify against the ref the fetch just wrote — never the object store's
+  # prior contents (D#1940 FM-5, D#2563): a commit already reachable in
+  # $parent for any other reason must never let this pass.
+  local fetched
+  fetched="$(git -C "$parent" rev-parse --verify --quiet "$qualified_ref" 2>/dev/null)"
+  if [ -z "$fetched" ] || [ "$fetched" != "$head_sha" ]; then
+    _prt_log "PR #${pr_number} head ${head_sha} does not match what the fetch landed at ${qualified_ref} (got: ${fetched:-nothing}) — refusing"
     return 3
   fi
 
+  # Belt-and-braces (D#1940 FM-5): independently re-verify the caller-supplied
+  # head_sha against a live headRefOid lookup on the resolved plane's own
+  # repo. Objects fetched under an old remote naming convention could already
+  # sit in the parent's object store from a prior era; this second,
+  # independent line of defense catches that even if the plane-qualified-ref
+  # check above were ever bypassed.
   local expected_sha
-  expected_sha="$(_prt_expected_head_sha "$pr_number")" || {
-    _prt_log "could not verify PR #${pr_number}'s head_sha argument against the code plane — refusing to trust an unverified sha"
+  expected_sha="$(_prt_expected_head_sha "$pr_number" "$plane")" || {
+    _prt_log "could not verify PR #${pr_number}'s head_sha argument against the resolved ${plane} plane — refusing to trust an unverified sha"
     return 3
   }
   if [ "$expected_sha" != "$head_sha" ]; then
-    _prt_log "PR #${pr_number} head_sha argument ($head_sha) does not match the code plane's headRefOid ($expected_sha) — refusing; the caller likely resolved this sha against the wrong repo plane"
+    _prt_log "PR #${pr_number} head_sha argument ($head_sha) does not match the ${plane} plane's headRefOid ($expected_sha) — refusing; the caller likely resolved this sha against the wrong repo plane"
     return 3
   fi
 
@@ -191,7 +279,7 @@ pr_tree_provision() {
 
   local origin_url
   origin_url="$(git -C "$dest" remote get-url origin 2>/dev/null)"
-  _prt_log "provisioned $dest at $head_sha (PR #$pr_number, origin=$origin_url)"
+  _prt_log "provisioned $dest at $head_sha (PR #$pr_number, plane=$plane, remote=$remote, origin=$origin_url)"
   printf '%s\n' "$(_prt_abs "$dest")"
   return 0
 }
