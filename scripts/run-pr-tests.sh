@@ -84,7 +84,12 @@ fi
 
 # Determine repo root — support being called from any cwd
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# RUN_PR_TESTS_TREE_ROOT decouples which tree the suites run against from
+# which copy of this script is executing (D#2560 item 1) — a caller can run
+# this script from an operator-side location while pointing the suites at a
+# separately-provisioned PR-head tree. Unset (the default) is
+# byte-identical to prior behaviour: this script's own parent dir.
+REPO_ROOT="$(cd "${RUN_PR_TESTS_TREE_ROOT:-$SCRIPT_DIR/..}" && pwd)"
 # shellcheck source=scripts/lib/repo-resolve.sh
 source "$SCRIPT_DIR/lib/repo-resolve.sh"
 # shellcheck source=scripts/lib/worktree-ground-check.sh
