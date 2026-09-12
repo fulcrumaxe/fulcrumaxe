@@ -7,10 +7,21 @@
 # caller writing its own `[[ -f ]]`.
 #
 # Two harnesses:
-#   A. The resolver's three states, each a separate synthetic case.
+#   A. The resolver's three states, each a separate synthetic case, plus
+#      the two edges a review round found: an IDENTITIES marker line must
+#      match EXACTLY (not as a substring of a longer prose line), and a
+#      NO_IDENTITIES=declared value must trim leading whitespace too, not
+#      just trailing.
 #   B. scripts/check-forbidden-identifiers.sh, invoked directly with the
 #      rules source genuinely absent, proving it fails loudly rather than
 #      silently — never a clean exit on a source it could not resolve.
+#      Includes the specific regression a review round found: deleting
+#      scripts/lib/identifier-rules-resolve.sh out from under this script
+#      must still hard-fail at the state check itself, not fall through to
+#      the vacuous-pass guard further down because an undefined function
+#      and a silently-failed `source` (no `set -e` here) left $RULES_STATE
+#      empty, which an `if == missing` would never catch but a `case` with
+#      a hard-fail default does.
 #
 # Run: bash tests/test_identifier_rules_resolve.sh
 # Expects: all assertions pass, exit 0
@@ -100,6 +111,24 @@ read_state "$(cat "$SCRATCH/a5.out")"
 assert_eq "multi-candidate search skips an absent first candidate" "present" "$STATE"
 assert_eq "multi-candidate search resolves the second, existing candidate" "$R5/second.txt" "$RPATH"
 
+R6="$SCRATCH/a-marker-prefix-not-exact"
+mkdir -p "$R6"
+# A line that STARTS WITH the marker but continues with prose must not
+# resolve "present" -- parse_block's own exact-equality test on the same
+# marker would find no block here, and the resolver must not be the
+# looser of the two.
+echo "=== IDENTITIES_START === (this line explains the marker, it is not one)" > "$R6/rules.txt"
+_resolve_identifier_rules_state "$R6/rules.txt" > "$SCRATCH/a6.out"
+read_state "$(cat "$SCRATCH/a6.out")"
+assert_eq "a marker-prefixed prose line does not count as the marker itself" "missing" "$STATE"
+
+R7="$SCRATCH/a-leading-space-declaration"
+mkdir -p "$R7"
+printf 'NO_IDENTITIES= declared\n' > "$R7/rules.txt"
+_resolve_identifier_rules_state "$R7/rules.txt" > "$SCRATCH/a7.out"
+read_state "$(cat "$SCRATCH/a7.out")"
+assert_eq "a declaration value with a leading space still trims to 'declared'" "declared-none" "$STATE"
+
 echo "=== B. check-forbidden-identifiers.sh fails loudly with the rules source absent ==="
 
 B1="$SCRATCH/b1"
@@ -110,6 +139,29 @@ cp "$RESOLVER" "$B1/scripts/lib/"
 OUT="$(bash "$B1/scripts/check-forbidden-identifiers.sh" --list-patterns 2>&1)"; RC=$?
 assert_rc_nonzero "check-forbidden-identifiers.sh fails loudly on absent rules" "$RC" "$OUT"
 assert_contains "it names the missing source" "not found or undeclared" "$OUT"
+
+# The specific regression: the resolver library is genuinely gone (not
+# just the rules file), so `source` fails with no `set -e` to stop the
+# script, the resolver function is undefined, and $RULES_STATE comes back
+# empty from the failed command substitution. Must still hard-fail AT THE
+# STATE CHECK -- never fall through to the vacuous-pass guard ~300 lines
+# further down and be rescued by that instead.
+B2="$SCRATCH/b2"
+mkdir -p "$B2/scripts/lib" "$B2/open-source"
+cp "$REPO_ROOT/scripts/check-forbidden-identifiers.sh" "$B2/scripts/"
+cp "$REPO_ROOT/scripts/lib/identity-resolve.sh" "$B2/scripts/lib/"
+# Deliberately NOT copying identifier-rules-resolve.sh here.
+{
+  echo "=== IDENTITIES_START ==="
+  echo "OLD_OWNER=zzsynthowner"
+  echo "=== IDENTITIES_END ==="
+  echo "=== FORBIDDEN_PATTERNS_START ==="
+  echo "zzsynthpattern"
+  echo "=== FORBIDDEN_PATTERNS_END ==="
+} > "$B2/open-source/IDENTIFIER-RULES.txt"
+OUT="$(bash "$B2/scripts/check-forbidden-identifiers.sh" --list-patterns 2>&1)"; RC=$?
+assert_rc_nonzero "deleting the resolver library itself still hard-fails (not rescued downstream)" "$RC" "$OUT"
+assert_contains "the failure is reported at the state check, naming the unrecognized state" "unrecognized state" "$OUT"
 
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="

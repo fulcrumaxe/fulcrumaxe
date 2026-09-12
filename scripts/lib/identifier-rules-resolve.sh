@@ -82,7 +82,15 @@ _resolve_identifier_rules_state() {
     return 0
   fi
 
-  if grep -q '^=== IDENTITIES_START ===' "$rules_file"; then
+  # Exact equality on the trimmed line, matching parse_block's own marker
+  # test in check-forbidden-identifiers.sh and identifier-gate.sh — never a
+  # substring/prefix match. A prefix match here would resolve "present" for
+  # a line that starts with the marker and continues with prose (the rules
+  # file's own header text explaining the marker, for instance), while
+  # parse_block finds no block there at all — the resolver would be the
+  # looser of the two, silently, which is exactly the class of bug D#1844
+  # fixed once already for this same marker-matching shape.
+  if grep -qE '^[[:space:]]*=== IDENTITIES_START ===[[:space:]]*$' "$rules_file"; then
     IDENTIFIER_RULES_RESOLVED_PATH="$rules_file"
     printf 'present\t%s\n' "$rules_file"
     return 0
@@ -90,6 +98,10 @@ _resolve_identifier_rules_state() {
 
   local declared
   declared="$(sed -n 's/^[[:space:]]*NO_IDENTITIES=\(.*\)$/\1/p' "$rules_file" | head -1)"
+  # Trim BOTH ends. Trailing-only trimming let a value with a leading space
+  # ("NO_IDENTITIES= declared") fail the equality check below even though
+  # it is a well-formed declaration.
+  declared="${declared#"${declared%%[![:space:]]*}"}"
   declared="${declared%"${declared##*[![:space:]]}"}"
   if [[ "$declared" == "declared" ]]; then
     IDENTIFIER_RULES_RESOLVED_PATH="$rules_file"
