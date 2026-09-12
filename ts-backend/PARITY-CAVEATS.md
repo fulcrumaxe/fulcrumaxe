@@ -3,11 +3,26 @@
 Known, intentional, or unavoidable divergences from the Python backend.
 Future reviewers: do not re-chase these — they are documented here on purpose.
 
+Every entry now carries a **Reachability** line (D#2540 item 10): whether a
+dashboard user can actually observe the divergence through the live backend
+toggle (`dashboard/src/components/BackendTargetIndicator.tsx`), or whether it
+is internal/orchestration-only. A cosmetic difference and one that answers
+about the wrong project read identically as "a line in this file" without
+that distinction — which is exactly how the stats.dora project-scoping gap
+(the former caveat #8, closed by D#2540) sat here for a cycle. All seven
+entries below were also re-verified against current code-plane `main` for
+this pass (item 11); each is still accurate except #7, corrected below.
+
 ---
 
 ## 1. Auth: bare `Authorization: Bearer ` header (empty token)
 
 **Status:** Unavoidable framework-level divergence. Both implementations DENY.
+
+**Reachability:** Every RPC/REST request goes through this auth path, but
+this specific edge case — an empty `Bearer` value — requires a malformed
+client. The dashboard's own client always sends a well-formed token; nothing
+in the dashboard UI (backend toggle included) can trigger this branch.
 
 Python distinguishes two cases for a `Bearer` header:
 - `Authorization: Bearer <token>` (non-empty) → 403 Forbidden (wrong token)
@@ -26,6 +41,9 @@ Changing this would require intercepting raw header bytes before Hono normalizat
 
 **Status:** Intentional canonical form. Spec-decided.
 
+**Reachability:** Reachable. `generated_at`/`checked_at` render directly on
+dashboard stat tiles, on both backends the toggle can select.
+
 TS handlers normalize all generated timestamps (e.g. `generated_at`, `checked_at`) to
 second-granularity ISO-8601 UTC: `2026-05-23T14:00:00Z`.
 
@@ -39,6 +57,10 @@ on sub-second precision; normalizing is strictly cleaner.
 ## 3. /events event-type coverage
 
 **Status:** Known limitation. Deferred to P5b (externalize the event bus).
+
+**Reachability:** Reachable. `dashboard/src/hooks/useWebSocket.ts` consumes
+`/events`; a dashboard user on the TS backend sees fewer event types than on
+Python for the same activity.
 
 TS `/events` sources events from the persisted `agent-feed.jsonl` file. In practice the feed
 contains primarily `AgentOutputEvent` entries written by the post-agent hook.
@@ -58,6 +80,11 @@ contains them.
 
 **Status:** RESOLVED — D#1437 faithful-mirror fix (2026-05-23).
 
+**Reachability:** Internal/orchestration-only. No `dashboard/src` file calls
+`budget-init`/`session_ceiling`; it is reached by scripts and orchestration
+code, not by anything the backend toggle changes what a dashboard user sees.
+Moot either way now that it is resolved.
+
 The TS-only 400 guard for non-positive ceiling has been removed.
 `ts-backend/src/routes/budget-init.ts` now mirrors Python exactly:
 any numeric ceiling value (positive, zero, or negative) is accepted and written,
@@ -73,6 +100,15 @@ parity harness tests run against both Python and TS on temp blackboard dirs).
 ## 5. stats.dora: gh-dependent fields in degraded mode
 
 **Status:** Known, documented degraded-mode values. Not a parity break.
+
+**Reachability:** Reachable — this is the same handler the former caveat #8
+(stats.dora project-scoping, closed by D#2540) was about. Two caveats on one
+user-reachable handler was itself worth stating explicitly, which is why
+this note exists: this caveat is about `gh` CLI availability/auth in the
+serving environment, orthogonal to project scoping (now correctly resolved
+per request). Both can be true of the same response at once — a
+project-scoped call can still degrade to `-1.0`/`"n/a"` if `gh` itself is
+unavailable, exactly as an unscoped call already could.
 
 `stats.dora.lead_time_minutes_p50` and `stats.dora.change_failure_rate_pct` both
 depend on the `gh` CLI being authenticated in the environment (same constraint as
@@ -92,6 +128,10 @@ These are the documented Python fallback values, not a divergence. In an environ
 ## 6. Discussion status: TS has neither the anchored read nor `BLOCKED-BY:`
 
 **Status:** Known divergence, TS side is behind. Python is authoritative.
+
+**Reachability:** Internal/orchestration-only. This is spawn/loop-gating
+logic, not a dashboard-rendered value — the backend toggle does not change
+what a dashboard user sees here because nothing here reaches the dashboard.
 
 `ts-backend` is additive and does not spawn work — the live selector and spawn gate are the
 shell + Python path. Two status-parsing fixes have landed on the Python side and are not
@@ -117,52 +157,38 @@ authoritative, and must land before parity is signed off on the spawn path.
 
 **Status:** Known divergence, TS side is behind. Deferred, not fixed here (D#2222).
 
-`scripts/spawn-agent.sh` (bash, live) provisions a PR-amend worktree via `scripts/lib/pr-tree.sh`
-when `--pr` is set, and — as of D#2222 — tags a spawn with `worktree_unprovisioned` /
-`worktree_unprovisioned_reason` so `backend/prompt_builder.py` can render one of three distinct
-messages: the honest "the Agent tool provisions this" note for a canonical fresh spawn, a hard-fail
-for a real `pr_tree_provision` failure, and a hard-fail for a `--pr` head-sha resolution failure
-(this last one matters specifically because proceeding in the wrong tree during a PR amend is
-silent data corruption, not a loud error).
+**Reachability:** Internal/orchestration-only. Spawn plumbing, no dashboard
+surface — the backend toggle is irrelevant here.
 
-`ts-backend/src/spawn/spawn-agent.ts` has none of this ported: `assemblePrompt()` sets
-`worktree_path` from `args.worktreePath` alone (`--pr` never provisions a tree) and never sets
-`worktree_unprovisioned`, so a worktree-isolated TS-lane spawn with no `--worktree-path` renders
-no worktree block at all — silently, which is a third failure mode neither the old nor the new
-bash behavior has.
+**Corrected 2026-09-12 (D#2540 item 11) — the bash side moved, this caveat had not.**
+The previous text of this caveat said `scripts/spawn-agent.sh` provisions a PR-amend
+worktree via `scripts/lib/pr-tree.sh` main-flow whenever `--pr` is set. That stopped being
+true when D#2542 landed (PR #177, merged 2026-09-11T12:00:55Z): measured on current
+code-plane `main`, `pr_tree_provision` now appears exactly **once** in
+`scripts/spawn-agent.sh`, at `:242`, inside the `--dry-run-env-dump` block only — never on
+the main spawn path. A `--pr` worktree spawn is no longer auto-provisioned a tree to
+describe; instead it renders a "resolve your own root" prompt block tagged with one of
+three reasons — `pr_amend` (`:1008`, `:1012`), `pr_resolution_failed` (the `--pr` head-sha
+lookup itself failed), or `agent_tool_provisions` (`:1034`, the canonical
+`--isolation worktree` fresh-spawn case with no `--pr` at all) — so
+`backend/prompt_builder.py` can explain how to reach the PR's head content from
+whatever tree the Agent tool's own `isolation="worktree"` actually provisions. Bash's
+reasoning: nothing ever ran in the auto-provisioned tree (the CC lane never `cd`s there),
+so provisioning one purely to describe it was waste. `scripts/lib/pr-tree.sh` itself is
+unchanged — it still backs `scripts/lib/pr-dependents.sh` and
+`backend/spawn_templates/docs-writer.tmpl`.
+
+The substance of this caveat is unchanged even though its bash-side description was
+stale: `ts-backend/src/spawn/spawn-agent.ts`'s `assemblePrompt()` still sets
+`worktree_path` from `args.worktreePath` alone and never sets `worktree_unprovisioned` /
+`worktree_unprovisioned_reason`, so a worktree-isolated TS-lane spawn with no
+`--worktree-path` still renders no worktree block at all — silently. That gap is real on
+both the old and the corrected bash behavior; only the bash side's own shape (what it
+does instead of provisioning) had drifted out from under this file's description.
 
 Not fixed here because this lane is not live (no real spawn is dispatched through it today —
-see caveat 6). If/when it goes live, both `pr-tree.sh` provisioning and the three-way reason
-distinction need to be ported alongside it; parity should not be assumed just because the
-payload shape (`worktree_path`) matches.
-
----
-
-## 8. stats.dora: TS still ignores `project`
-
-**Status:** Known divergence, TS side is behind. Python is authoritative (D#2518).
-
-Python's `stats.dora` handler (`backend/rpc/stats_dora.py`) was `UNSCOPABLE` — every value it
-read (`analytics_engineer._RELEASES_DIR`, `kpi_engine.REGISTRY`, both `Path(__file__)` module
-constants, and `analytics_engineer`'s module-level `REPO`) was bound to the serving checkout at
-import, so a `project` param reached nothing. D#2518 de-anchors all three: `compute_snapshot()`
-now takes an explicit `project_root` (releases + registry.json resolve under it) and `repo`
-(resolved per request via `backend/project_repo_slug.py`), and the handler declines with
-`UnresolvableProjectError` — distinguishable from an empty response — when a named project
-declares no repo, rather than answer with the serving checkout's numbers under that project's
-name. `stats.dora` is reclassified `SCOPED` in `backend/rpc_project_scope.py`.
-
-`ts-backend/src/rpc/stats-dora.ts`'s `handleDora()` still takes `_params` and ignores it (see
-the function's own docstring: "reserved for future project-scoping, same as Python" — that
-comment is now stale on the Python side). A `project` param sent to the TS native handler still
-returns the serving checkout's DORA/KPI numbers unconditionally; it does not decline.
-
-Not fixed here: `rpc_project_scope.py`'s classification registry and `dispatch_scoped()` have no
-TS twin (`ts-backend` handlers do their own per-handler project-param handling — see caveat 6's
-"batch 2 methods" precedent — there is no equivalent central registry to update), and porting
-`compute_snapshot()`'s three-anchor de-anchoring plus `project_repo_slug.ts`-equivalent
-resolution is a second PR's worth of work, not a same-diff addition to a Python-only fix.
-`tests/rpc-stats-dora.test.ts` only exercises `handleDora({})` (no project param) today, so this
-gap is not caught by the existing suite. If/when `stats.dora` needs real per-project scoping in
-the TS lane, port `project_root` / `repo` resolution and the decline path alongside it; parity
-should not be assumed just because the response shape matches.
+see caveat 6). If/when it goes live, both the current bash reason-classification (`pr_amend` /
+`pr_resolution_failed` / `agent_tool_provisions`) and the self-resolve prompt block need to be
+ported alongside it; parity should not be assumed just because the payload shape
+(`worktree_path`) matches, and this description needs re-checking against the bash side again
+before that happens — this is the second time it has drifted.
