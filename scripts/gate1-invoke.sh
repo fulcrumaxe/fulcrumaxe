@@ -33,12 +33,19 @@
 # Env:
 #   GATE1_RUNNER_UID  Optional. Read from the process environment only —
 #                     never derived from anything under --tree. When set,
-#                     the suites are invoked via `sudo -u "$GATE1_RUNNER_UID"`.
-#                     If that user does not exist on this host, this script
-#                     exits non-zero and runs NO suite at all — it never
-#                     falls back to same-uid silently. When unset (today's
-#                     default on this host), the suites run same-uid and
-#                     that is reported honestly on stderr as
+#                     the suites are invoked via
+#                     `sudo -u "$GATE1_RUNNER_UID" --preserve-env=RUN_PR_TESTS_TREE_ROOT
+#                      bash "$RUNNER" "$PR_NUMBER"` — the authorised command
+#                     is the runner script itself, not `env` or anything
+#                     else; the tree root reaches it via sudo's own
+#                     env-preservation, which requires the target uid's
+#                     sudoers policy to `env_keep` that one variable name
+#                     (see wiki/Gate-1-Containment-Runbook.md). If that user
+#                     does not exist on this host, this script exits
+#                     non-zero and runs NO suite at all — it never falls
+#                     back to same-uid silently. When unset (today's default
+#                     on this host), the suites run same-uid and that is
+#                     reported honestly on stderr as
 #                     "gate1_containment=NONE (same-uid)".
 #
 # Output:
@@ -81,6 +88,14 @@ if [ -z "$PR_NUMBER" ] || [ -z "$TREE_ROOT" ]; then
   exit 1
 fi
 
+# --pr must be a bare number: quoting elsewhere prevents shell injection, but
+# a value starting with "-" would still reach `gh pr view` inside
+# run-pr-tests.sh as a flag rather than an argument.
+if ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
+  echo "gate1-invoke: --pr must be a positive integer, got: $PR_NUMBER" >&2
+  exit 1
+fi
+
 if [ ! -d "$TREE_ROOT" ]; then
   echo "gate1-invoke: --tree $TREE_ROOT does not exist or is not a directory" >&2
   exit 1
@@ -114,4 +129,14 @@ if ! id -u "$RUNNER_UID" >/dev/null 2>&1; then
 fi
 
 echo "gate1_containment=UID($RUNNER_UID)" >&2
-exec sudo -u "$RUNNER_UID" env RUN_PR_TESTS_TREE_ROOT="$TREE_ROOT" bash "$RUNNER" "$PR_NUMBER"
+# Exported (not passed via `env VAR=val ...`) so the command sudo is asked to
+# authorise is exactly `bash "$RUNNER" "$PR_NUMBER"` — a fixed, literal
+# sudoers Cmnd target. Routing the tree root through `env` instead would put
+# `/usr/bin/env` itself in the Cmnd, and a Cmnd that permits `env` with
+# arbitrary arguments permits arbitrary execution as that user (see the
+# runbook). `--preserve-env` only lets this one named variable survive
+# sudo's env_reset; it still requires the target's sudoers policy to
+# `env_keep` (or SETENV) that exact name — see
+# wiki/Gate-1-Containment-Runbook.md.
+export RUN_PR_TESTS_TREE_ROOT="$TREE_ROOT"
+exec sudo -u "$RUNNER_UID" --preserve-env=RUN_PR_TESTS_TREE_ROOT bash "$RUNNER" "$PR_NUMBER"

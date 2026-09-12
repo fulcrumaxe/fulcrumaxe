@@ -321,7 +321,10 @@ if [ -x "$OP_ROOT/scripts/gate1-invoke.sh" ]; then
   TESTS_JSON=$(bash "$OP_ROOT/scripts/gate1-invoke.sh" --pr $PR_NUMBER --tree "$(pwd)")
 else
   # Missing wrapper degrades to the bare runner — it must never break the
-  # review lane outright.
+  # review lane outright. Announce it on stderr so a fallback run is
+  # distinguishable in the review log from a real wrapper run, not silently
+  # indistinguishable from one.
+  echo "gate1_wrapper=MISSING -- falling back to bare run-pr-tests.sh (runner-copy/tree separation not in effect for this run)" >&2
   TESTS_JSON=$(bash scripts/run-pr-tests.sh $PR_NUMBER)
 fi
 ```

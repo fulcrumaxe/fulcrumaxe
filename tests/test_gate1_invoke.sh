@@ -16,6 +16,9 @@
 #             still runs the suite; GATE1_RUNNER_UID set to an absent user
 #             exits non-zero and runs NO suite (fail closed, never a silent
 #             same-uid fallback).
+#   pr-validation (security review, non-blocking hardening item) — a --pr
+#             value that isn't a bare positive integer is rejected before it
+#             can reach `gh pr view` as a flag.
 #   item 10 — a missing wrapper must degrade to the bare runner, not to a
 #             hard failure. Exercises the exact fallback shape prescribed to
 #             callers (an `if [ -x gate1-invoke.sh ]` guard) against a
@@ -143,12 +146,37 @@ else
   pass "item5-absent-uid-no-suite-ran"
 fi
 
-# Static check on item 5's own hard rule: the value must come from the
-# process environment only, never from anything under the tree root.
-if grep -n 'GATE1_RUNNER_UID' "$GATE1_INVOKE_SRC" | grep -qi 'TREE_ROOT\|HEAD\|\$2'; then
-  fail "item5-uid-never-derived-from-tree" "a GATE1_RUNNER_UID line references the tree root"
+# Static check on item 5's own hard rule: the line that actually RESOLVES
+# the identity value (assigns it to RUNNER_UID) must come from the process
+# environment only, never from anything under the tree root. Scoped to that
+# one assignment line rather than every line mentioning the env var name —
+# a doc comment naming both GATE1_RUNNER_UID and RUN_PR_TESTS_TREE_ROOT in
+# the same sentence (e.g. describing what sudo preserves) is not a
+# derivation and must not fail this check.
+RESOLUTION_LINE=$(grep -n 'RUNNER_UID=.*GATE1_RUNNER_UID' "$GATE1_INVOKE_SRC")
+if [ -z "$RESOLUTION_LINE" ]; then
+  fail "item5-uid-never-derived-from-tree" "no line assigns RUNNER_UID from \$GATE1_RUNNER_UID at all"
+elif echo "$RESOLUTION_LINE" | grep -qi 'TREE_ROOT\|HEAD\|\$2'; then
+  fail "item5-uid-never-derived-from-tree" "the RUNNER_UID resolution line references the tree root: $RESOLUTION_LINE"
 else
   pass "item5-uid-never-derived-from-tree"
+fi
+
+# ── pr-validation: a --pr value that could be mistaken for a flag is rejected ──
+
+OUT_PRVAL=$(bash "$OP_DIR/scripts/gate1-invoke.sh" --pr -123 --tree "$HEAD_DIR" 2>&1)
+RC_PRVAL=$?
+
+if [ "$RC_PRVAL" -ne 0 ]; then
+  pass "prval-rejects-non-numeric-exit"
+else
+  fail "prval-rejects-non-numeric-exit" "expected non-zero exit for --pr -123, got 0"
+fi
+
+if echo "$OUT_PRVAL" | grep -q "OPERATOR_COPY_RAN"; then
+  fail "prval-rejects-before-running-suite" "the runner executed despite an invalid --pr value: $OUT_PRVAL"
+else
+  pass "prval-rejects-before-running-suite"
 fi
 
 # ── item 10: a missing wrapper degrades to the bare runner, not a hard failure ──
