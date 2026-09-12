@@ -68,6 +68,16 @@
 #   bash scripts/run-pr-tests.sh 371
 #   TESTS_JSON=$(bash scripts/run-pr-tests.sh 371)
 #   EXIT_CODE=$?
+#
+# Optional flags (D#2566 PR-1), all unset by default and byte-identical to
+# the above when omitted:
+#   --pr-head-sha SHA           skip the `gh pr view` tree-guard lookup
+#   --changed-files-from FILE   skip the `gh pr diff` changed-file lookup;
+#                                read FILE (one path per line) instead
+#   --manifest-out PATH         also write the final JSON manifest to PATH,
+#                                independent of stdout
+#   bash scripts/run-pr-tests.sh 371 --pr-head-sha abc...123 \
+#     --changed-files-from /tmp/files.txt --manifest-out /tmp/manifest.json
 
 set -euo pipefail
 
@@ -76,11 +86,73 @@ _json_str() {
   printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'
 }
 
-PR_NUMBER="${1:-}"
+# PR_NUMBER is the sole positional argument. Three optional flags (D#2566
+# PR-1) let a caller that already knows the answer skip this script's own
+# `gh` calls entirely — the caller-imposed design a contained uid needs,
+# since a contained uid holds no `gh` credential:
+#   --pr-head-sha SHA            skip the `gh pr view` tree-guard lookup
+#   --changed-files-from FILE    skip the `gh pr diff` / `gh pr view --json
+#                                 files` changed-file lookup; read FILE
+#                                 (one path per line) instead
+#   --manifest-out PATH          also write the final JSON manifest to PATH,
+#                                 independent of stdout (D#2566 item 3) —
+#                                 stdout keeps carrying exactly what it
+#                                 always has, unchanged
+# None of these flags is required by any existing caller, and leaving all
+# three unset is byte-identical to prior behaviour.
+PR_NUMBER=""
+PR_HEAD_SHA_ARG=""
+CHANGED_FILES_FROM=""
+MANIFEST_OUT=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --pr-head-sha)
+      PR_HEAD_SHA_ARG="${2:-}"
+      shift 2
+      ;;
+    --changed-files-from)
+      CHANGED_FILES_FROM="${2:-}"
+      shift 2
+      ;;
+    --manifest-out)
+      MANIFEST_OUT="${2:-}"
+      shift 2
+      ;;
+    -*)
+      echo "run-pr-tests: unknown option: $1" >&2
+      exit 1
+      ;;
+    *)
+      if [ -z "$PR_NUMBER" ]; then
+        PR_NUMBER="$1"
+      else
+        echo "run-pr-tests: unexpected extra argument: $1" >&2
+        exit 1
+      fi
+      shift
+      ;;
+  esac
+done
+
 if [ -z "$PR_NUMBER" ]; then
-  echo "Usage: $0 PR_NUMBER" >&2
+  echo "Usage: $0 PR_NUMBER [--pr-head-sha SHA] [--changed-files-from FILE] [--manifest-out PATH]" >&2
   exit 1
 fi
+
+# _emit_manifest_out JSON — writes JSON to $MANIFEST_OUT (atomically, via a
+# same-directory temp file) when set; a no-op otherwise. Called alongside
+# every stdout manifest emission below so a caller never has to parse the
+# manifest back out of a stream head-authored suite output can also write
+# to (D#2566 item 3). Defined early so it is available before the
+# termination trap (which also emits a manifest) is armed.
+_emit_manifest_out() {
+  [ -n "$MANIFEST_OUT" ] || return 0
+  local out_dir tmp
+  out_dir="$(dirname "$MANIFEST_OUT")"
+  tmp="$(mktemp "${out_dir}/.manifest.XXXXXX" 2>/dev/null)" || tmp="$(mktemp)"
+  printf '%s\n' "$1" > "$tmp"
+  mv -f "$tmp" "$MANIFEST_OUT"
+}
 
 # Determine repo root — support being called from any cwd
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -101,9 +173,17 @@ REPO="$(_require_code_repo "run-pr-tests")" || exit 1
 # Tree guard (D#2365): before doing any routing work, confirm this tree
 # actually contains the PR being asked about. Placed before the changed-file
 # fetch so a refusal costs one `gh` call, not a full routing pass.
-PR_HEAD_SHA="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid --jq '.headRefOid' 2>/dev/null || true)"
+# --pr-head-sha (D#2566) bypasses the `gh pr view` call entirely when the
+# caller already resolved it — the guard itself (below) is unchanged either
+# way, so a wrong caller-supplied sha still refuses exactly as a wrong
+# gh-resolved one would.
+if [ -n "$PR_HEAD_SHA_ARG" ]; then
+  PR_HEAD_SHA="$PR_HEAD_SHA_ARG"
+else
+  PR_HEAD_SHA="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid --jq '.headRefOid' 2>/dev/null || true)"
+fi
 if [ -z "$PR_HEAD_SHA" ]; then
-  echo "[run-pr-tests] could not resolve PR #$PR_NUMBER's head sha (gh pr view --repo $REPO --json headRefOid) -- refusing to guess which tree to test" >&2
+  echo "[run-pr-tests] could not resolve PR #$PR_NUMBER's head sha (gh pr view --repo $REPO --json headRefOid, or pass --pr-head-sha) -- refusing to guess which tree to test" >&2
   exit 6
 fi
 TREE_HEAD_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)"
@@ -181,15 +261,28 @@ _bash_suite_denylist_reason() {
   return 1
 }
 
-# Collect changed files in the PR
-CHANGED_FILES=$(gh pr diff "$PR_NUMBER" --repo "$REPO" --name-only 2>/dev/null || true)
-if [ -z "$CHANGED_FILES" ]; then
-  # Try fetching via REST if diff --name-only fails (e.g. closed PR)
-  CHANGED_FILES=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json files --jq '[.files[].path] | .[]' 2>/dev/null || true)
+# Collect changed files in the PR. --changed-files-from (D#2566) bypasses
+# both `gh` calls when the caller already resolved the list — this is the
+# other half of "the contained uid needs no credential": paired with
+# --pr-head-sha above, this script makes zero `gh` invocations.
+if [ -n "$CHANGED_FILES_FROM" ]; then
+  if [ ! -f "$CHANGED_FILES_FROM" ]; then
+    echo "[run-pr-tests] --changed-files-from $CHANGED_FILES_FROM does not exist" >&2
+    exit 1
+  fi
+  CHANGED_FILES="$(cat "$CHANGED_FILES_FROM")"
+else
+  CHANGED_FILES=$(gh pr diff "$PR_NUMBER" --repo "$REPO" --name-only 2>/dev/null || true)
+  if [ -z "$CHANGED_FILES" ]; then
+    # Try fetching via REST if diff --name-only fails (e.g. closed PR)
+    CHANGED_FILES=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json files --jq '[.files[].path] | .[]' 2>/dev/null || true)
+  fi
 fi
 
 if [ -z "$CHANGED_FILES" ]; then
-  echo "{\"routing\":[],\"tests_run\":[],\"measured_tree\":$MEASURED_TREE_JSON}"
+  _EARLY_MANIFEST="{\"routing\":[],\"tests_run\":[],\"measured_tree\":$MEASURED_TREE_JSON}"
+  echo "$_EARLY_MANIFEST"
+  _emit_manifest_out "$_EARLY_MANIFEST"
   exit 0
 fi
 
@@ -404,7 +497,10 @@ _emit_partial_manifest() {
   if [ ${#RESULTS[@]} -gt 0 ]; then
     _joined=$(IFS=,; echo "${RESULTS[*]}")
   fi
-  printf '{"routing":%s,"tests_run":[%s],"partial":true,"measured_tree":%s}\n' "$ROUTING_JSON" "$_joined" "$MEASURED_TREE_JSON"
+  local _partial_json
+  _partial_json=$(printf '{"routing":%s,"tests_run":[%s],"partial":true,"measured_tree":%s}' "$ROUTING_JSON" "$_joined" "$MEASURED_TREE_JSON")
+  printf '%s\n' "$_partial_json"
+  _emit_manifest_out "$_partial_json"
   exit 124
 }
 trap _emit_partial_manifest TERM INT
@@ -664,10 +760,12 @@ fi
 trap - TERM INT
 _MANIFEST_EMITTED=true
 if [ ${#RESULTS[@]} -eq 0 ]; then
-  echo "{\"routing\":$ROUTING_JSON,\"tests_run\":[],\"measured_tree\":$MEASURED_TREE_JSON}"
+  _FINAL_MANIFEST="{\"routing\":$ROUTING_JSON,\"tests_run\":[],\"measured_tree\":$MEASURED_TREE_JSON}"
 else
   JOINED=$(IFS=,; echo "${RESULTS[*]}")
-  echo "{\"routing\":$ROUTING_JSON,\"tests_run\":[$JOINED],\"measured_tree\":$MEASURED_TREE_JSON}"
+  _FINAL_MANIFEST="{\"routing\":$ROUTING_JSON,\"tests_run\":[$JOINED],\"measured_tree\":$MEASURED_TREE_JSON}"
 fi
+echo "$_FINAL_MANIFEST"
+_emit_manifest_out "$_FINAL_MANIFEST"
 
 exit $AGGREGATE_EXIT
