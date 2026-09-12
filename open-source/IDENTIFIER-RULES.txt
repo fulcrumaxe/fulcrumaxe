@@ -43,8 +43,21 @@
 # instead of skipping.
 NO_IDENTITIES=declared
 
+# This file carries no IDENTITIES block (see above), so the first
+# FORBIDDEN_PATTERNS entry below is a {SELF_LOGIN} token rather than a
+# literal: it resolves at runtime, per scripts/lib/identity-resolve.sh, to
+# whoever is actually running the tooling rather than shipping this
+# project's own identity to every adopter. This bare key is that token's own
+# declaration, mirroring NO_IDENTITIES=declared above: it tells
+# scripts/check-forbidden-identifiers.sh that an unresolved {SELF_LOGIN} is
+# a legitimate, expected state here — a clone with nothing configured yet —
+# rather than a malformed file. Do not remove this line: without it, an
+# unresolved {SELF_LOGIN} is treated as rot and the scan hard-fails instead
+# of degrading to the two patterns that do not need it.
+SELF_LOGIN=undeclared
+
 === FORBIDDEN_PATTERNS_START ===
-john[p]roblems
+{SELF_LOGIN}
 [Jj][Pp][Oo][Ss]
 claw[c]ode
 === FORBIDDEN_PATTERNS_END ===
