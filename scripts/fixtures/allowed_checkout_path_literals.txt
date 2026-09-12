@@ -136,3 +136,18 @@
 #     pins the same value. The three shell test files in this class are not
 #     here: they pin a literal that hooks/subagent_stop_dial_audit.py still
 #     hardcodes, so they drain with that hook, not before it.
+#
+# Reopened 2026-09-12 for D#2576 acceptance item 5: one entry added below,
+# the first since the 2026-08-19 drain. wiki/Gate-1-Containment-Runbook.md's
+# 0711 trap has to name the exact permission mode measured on the operator's
+# own host (.git at 0775, group-writable) so the step reads as a demonstrated
+# fact rather than a hypothesized one -- that is the entire reason the trap
+# is worth writing down at all. This is not the "subject IS the literal"
+# case the 2026-08-19 drain resolved by respelling the guard's own pattern in
+# regex form (that trick applies when the text is describing this guard's
+# PATTERN; here the text is quoting an unrelated, real measurement of a real
+# permission bit, and respelling the checkout path would misquote the
+# measurement, not just obscure it). Substituting a placeholder path here
+# would satisfy this guard while removing the evidence the runbook step
+# exists to convey, which is a worse outcome than a guard entry.
+wiki/Gate-1-Containment-Runbook.md:524319e7aa35:verbatim quotation of a host permission measurement (D#2576 item 5) -- the runbook's 0711 trap depends on naming the actual measured checkout path and mode so the step reads as demonstrated rather than hypothesized; a placeholder path would remove the evidence the line exists to state
