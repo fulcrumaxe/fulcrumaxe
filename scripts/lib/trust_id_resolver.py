@@ -72,6 +72,7 @@ CLI:
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import time
@@ -229,8 +230,40 @@ def _state_dir_path(filename: str) -> Path:
         return _REPO_ROOT / ".autonomous-team" / f".{filename}"
 
 
-def default_id_cache_path() -> Path:
-    return _state_dir_path("external_intake_id_cache.json")
+def _slug_scoped_path(base: Path, repo_slug: str) -> Path:
+    """Suffix *base* with a sanitized *repo_slug* — same shape as
+    pr_comment_trust._slug_scoped_cache_path(), which scopes the sibling
+    LOGIN cache for exactly this reason: an unscoped cache hands one repo's
+    push collaborators to the other repo's trust decision, whichever wrote
+    last inside the 1h TTL (D#2432, the ID-cache instance of the defect
+    pr_comment_trust.py already closed for the login cache).
+    """
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", repo_slug)
+    return base.with_name(f"{base.stem}-{safe}{base.suffix}")
+
+
+def default_id_cache_path(repo_slug: str) -> Path:
+    """Slug-scoped path for the collaborator-ID cache (D#2432).
+
+    *repo_slug* is required — there is no unscoped fallback and no
+    migration of any pre-existing unscoped ``external_intake_id_cache.json``
+    into a scoped path. A cache written before this fix carries no record
+    of which repo it was fetched for, so adopting it under the assumption
+    it belonged to *repo_slug* would be exactly the cross-repo trust leak
+    this function exists to close. The old unscoped file is simply never
+    read again; every slug starts with a real cache miss (a safe fail-closed
+    state — read_id_cache() treats a miss as "re-fetch", not "trust
+    nothing") and self-heals on the next successful fetch.
+
+    Fixed here, at the shared default itself, rather than at each caller
+    (contrast pr_comment_trust._slug_scoped_cache_path(), which scopes at
+    the caller because it did not want to touch this module's default out
+    from under a concurrent effort) — every current caller of this function
+    already carries repo_slug in scope (resolve_allowlist_ids()), so there
+    is no caller left that has no slug to scope by.
+    """
+    base = _state_dir_path("external_intake_id_cache.json")
+    return _slug_scoped_path(base, repo_slug)
 
 
 def default_trust_store_path() -> Path:
