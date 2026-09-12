@@ -52,20 +52,23 @@ permission cannot label their own PR — this check is what makes that a
 property of the gate rather than a property of GitHub's current permission
 model.
 
-WHICH REPO'S COLLABORATORS DECIDE TRUST
----------------------------------------
+WHICH REPO'S COLLABORATORS DECIDE TRUST (D#2415)
+--------------------------------------------------
 The PR lives on the CODE plane; the trust set is resolved from the
-**Discussion** plane, which is `resolve_allowlist()`'s default. That is
-deliberate and is `external_intake_gate._resolve_default_discussion_repo_slug`'s
-own argument applied here: after the cutover the code repo is public, and push
-on a public repo is routinely granted to outside contributors who have no
+**Discussion** plane, via `external_intake_gate.resolve_trust_allowlist()` /
+`resolve_trust_plane()`. That is deliberate and is
+`external_intake_gate._resolve_default_discussion_repo_slug`'s own argument
+applied here: after the cutover the code repo is public, and push on a
+public repo is routinely granted to outside contributors who have no
 standing to drive our automation. "May drive automation" must mean the same
 set of people on both surfaces, so it is keyed to the plane we administer.
 
-Note for reviewers: `pr_comment_trust.py` resolves the same set against
-CODE_REPO instead. The two are the same repo today and diverge only after the
-cutover. Flagged, not silently changed — it is #2375's call site, not this
-one's.
+`pr_comment_trust.py` used to resolve this same question against CODE_REPO
+instead — flagged here rather than silently changed, since a security-
+relevant change to another module's trust boundary deserves its own review.
+Both modules now call the same `resolve_trust_allowlist()`, so there is one
+resolution point instead of two call sites that only happened to agree
+before the planes diverged.
 
 FAIL CLOSED
 -----------
@@ -131,7 +134,7 @@ from external_intake_gate import (  # noqa: E402
     INTAKE_APPROVED_LABEL,
     PROVENANCE_EXTERNAL,
     PROVENANCE_INTERNAL,
-    resolve_allowlist,
+    resolve_trust_allowlist,
     should_block_spawn,
 )
 from pr_comment_trust import is_trusted_author  # noqa: E402
@@ -498,7 +501,16 @@ def check_pr(
     """
     slug = repo_slug or _default_code_repo()
     try:
-        trust = allowlist if allowlist is not None else resolve_allowlist()
+        if allowlist is not None:
+            trust = allowlist
+        else:
+            # resolve_trust_allowlist() always resolves the Discussion plane
+            # (D#2415) — never *slug*, which is the code plane this PR lives
+            # on. The status half of the return is not consulted here: an
+            # undetermined resolution still yields the fail-closed base, and
+            # that base is what a broken fetch should grant, not a reason to
+            # additionally distrust an otherwise-readable PR.
+            trust, _trust_status = resolve_trust_allowlist()
     except Exception as exc:  # noqa: BLE001 — fail closed
         return {
             "pr": pr,
