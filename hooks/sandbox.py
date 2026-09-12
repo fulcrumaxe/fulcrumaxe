@@ -264,6 +264,29 @@ def _write_gh_api_mutation_block_event(
         pass
 
 
+def _resolve_role(worktree_id: str | None) -> tuple[str | None, str | None]:
+    """Resolve the acting role for an audit row, honestly (D#2550).
+
+    Returns (role, role_source). `role` is either a real role name or None —
+    never an opaque worktree id wearing a "role" label. `role_source` is set
+    whenever `role` is None, naming why resolution did not happen.
+
+    There is no live join available to this hook today. The one honest
+    binding — the spawner recording which role owns a given worktree
+    directory name, so it could be looked up here — is not written anywhere
+    in the tree; establishing it means touching the spawner
+    (scripts/spawn-agent.sh), which is out of scope for this fix. `WORKTREE_ID`
+    is deliberately not read as a substitute: it is an env var the acting
+    shell exports, so it is self-asserted — that was the original defect, not
+    a fix for it. Nothing in the live spawn pipeline sets it either way.
+
+    A resolution failure here must degrade to `role: null`, never to a block —
+    this function only feeds a log line, and over-blocking on a log field
+    would be strictly worse than the mislabel it replaces.
+    """
+    return None, "no_spawner_binding: worktree_id -> agent_run.role join not established (D#2550)"
+
+
 def _write_gh_api_mutation_allow_event(
     cwd: str,
     worktree_id: str | None,
@@ -271,15 +294,22 @@ def _write_gh_api_mutation_allow_event(
 ) -> None:
     """Write a structured audit row when an allowlisted GraphQL mutation is permitted.
 
-    kind: "sandbox_allow_graphql_mutation" — cwd + mutation_names + role.
+    kind: "sandbox_allow_graphql_mutation" — cwd + mutation_names + worktree_id + role.
     Written to both the daily hook-events file and <state_dir>/audit.jsonl.
     Never raises.
+
+    `role` is a log field, never a decision input (D#2550) — nothing here or
+    downstream enforces on it. It used to alias the acting agent's opaque
+    worktree id (e.g. "agent-<hex>") as though it were a role, which named no
+    role at all. `worktree_id` now carries that value honestly under its own
+    name, and `role` is either a real role name (from a future resolvable
+    binding) or `null` with a `role_source` explaining why — see
+    _resolve_role() above.
     """
     try:
         import datetime
 
-        # Derive role from WORKTREE_ID env var (e.g. "executor-1148-p0-xyz")
-        role = os.environ.get("WORKTREE_ID", worktree_id or "unknown")
+        role, role_source = _resolve_role(worktree_id)
 
         entry = {
             "ts": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -288,8 +318,11 @@ def _write_gh_api_mutation_allow_event(
             "decision": "allow",
             "cwd": cwd,
             "mutation_names": mutation_names,
+            "worktree_id": worktree_id,
             "role": role,
         }
+        if role is None:
+            entry["role_source"] = role_source
         line = _telemetry_line(entry)
 
         # Write to daily hook-events file (consistent with other sandbox events)

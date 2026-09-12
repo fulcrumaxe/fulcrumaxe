@@ -433,6 +433,9 @@ fi
 # stderr but do NOT abort the hook.  Absent field or missing file → no-op.
 if ! hook_event_has_step "post_agent_cleanup"; then
   _PAC_WORKTREE=""
+  # $WORKTREE_ID here is a path-construction input (worktree dir name), never
+  # a role — a dead fallback outside tests; nothing in the live spawn
+  # pipeline sets it (D#2550).
   if [[ -n "${WORKTREE_ID:-}" ]]; then
     _PAC_WORKTREE="$REPO_ROOT/.claude/worktrees/$WORKTREE_ID"
   fi
@@ -473,6 +476,9 @@ fi
 # ── 6b. Worktree registry status transition ──────────────────────────────────
 # If the agent ran in a worktree, update its registry status on graceful exit.
 if ! hook_event_has_step "worktree_registry"; then
+  # $WORKTREE_ID is used below only as the registry's lookup key (a worktree
+  # dir name), never as a role — a dead fallback outside tests; nothing in
+  # the live spawn pipeline sets it (D#2550).
   WORKTREE_ID="${WORKTREE_ID:-}"
   if [[ -n "$WORKTREE_ID" && -f "$SCRIPT_DIR/lib/worktree-registry.sh" ]]; then
     # shellcheck source=scripts/lib/worktree-registry.sh
@@ -508,6 +514,9 @@ fi
 # leaked fleet-cap slot (unregister below becomes a no-op), not a blocked agent.
 # PYTHONPATH="$REPO_ROOT" — see D#2314 S3 note in pre-spawn-check.sh; this
 # script never cds either, so -m needs it set explicitly.
+# $WORKTREE_ID below is used only as a fallback fleet-slot key (a worktree dir
+# name), never as a role — a dead fallback outside tests; nothing in the live
+# spawn pipeline sets it (D#2550).
 _FC_PROJECT=$(PYTHONPATH="$REPO_ROOT" python3 -m backend.fleet.project_name "$REPO_ROOT" 2>/dev/null || true)
 if [[ -n "${TASK_EVENT_ID:-}" ]]; then
   _FC_AGENT_ID="$TASK_EVENT_ID"
