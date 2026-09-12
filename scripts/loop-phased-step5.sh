@@ -1328,16 +1328,56 @@ print(entries[0].get('fix_cycle_count', 0) if entries else 0)
           else
             _log "D#$DISC_NUM PR#$PR_NUM: phase=code_review, phased_code_review=true — spawning code-reviewer directly"
 
-            # Route Gate 1 through the caller-side wrapper (D#2560 PR-A) so
-            # the reviewer runs the operator's copy of run-pr-tests.sh
-            # against its own head worktree, not the head's own copy of the
-            # runner. OP_ROOT is resolved via git plumbing rather than a
-            # relative path, since the reviewer's cwd is its own worktree —
-            # a relative scripts/gate1-invoke.sh there would resolve to the
-            # head's own copy, defeating the wrapper before it even runs.
-            # Falls back to the bare runner (item 10) if the wrapper is
-            # absent, so a missing wrapper degrades Gate 1, never breaks it.
-            CR_TASK="Review PR #${PR_NUM} for Discussion #${DISC_NUM}. Run Gate 1 through the wrapper: OP_ROOT=\$(dirname \"\$(git rev-parse --git-common-dir)\"); if [ -x \"\$OP_ROOT/scripts/gate1-invoke.sh\" ]; then bash \"\$OP_ROOT/scripts/gate1-invoke.sh\" --pr ${PR_NUM} --tree \"\$(pwd)\"; else echo \"gate1_wrapper=MISSING -- falling back to bare run-pr-tests.sh (runner-copy/tree separation not in effect for this run)\" >&2; bash scripts/run-pr-tests.sh \"${PR_NUM}\"; fi"
+            # Run Gate 1 through the caller-side wrapper as a program call
+            # FROM STEP5 ITSELF (D#2566 PR-1), not as prose inside the
+            # reviewer's prompt. A prompt string cannot establish
+            # caller-imposition — the property this whole Discussion is
+            # about — because it depends on an LLM agent choosing to run
+            # the command faithfully; a direct invocation here does not.
+            # pr-tree.sh provisions a throwaway worktree at the PR's head
+            # (never registered, swept later like any other unregistered
+            # worktree — see that file's own header) purely so this
+            # deterministic script has a real tree to hand gate1-invoke.sh;
+            # skipped in test mode (SPAWN_AGENT=echo), matching every other
+            # real-gh-call block in this file.
+            GATE1_RECEIPT_LINE="Gate 1 receipt: not produced this round (see step5 log)."
+            if [ "${SPAWN_AGENT:-}" != "echo" ]; then
+              GATE1_SHA="$(_pr_head_sha "$PR_NUM")"
+              if [ -n "$GATE1_SHA" ]; then
+                GATE1_TREE="$(mktemp -u -d)"
+                GATE1_LOG="$(mktemp)"
+                # Dedicated channel for the receipt path (D#2566 review
+                # fix) — never grep it out of stdout or a captured stderr
+                # log, either of which can also carry head-authored suite
+                # output; the whole reason --manifest-out exists is that
+                # such a stream is not a place to trust a machine-read
+                # value.
+                GATE1_RECEIPT_PATH_OUT="$(mktemp -u)"
+                # shellcheck source=scripts/lib/pr-tree.sh
+                if source "$SCRIPT_DIR/lib/pr-tree.sh" \
+                    && pr_tree_provision "$PR_NUM" "$GATE1_SHA" "$GATE1_TREE" code \
+                      >>"$GATE1_LOG" 2>&1; then
+                  bash "$REPO_ROOT/scripts/gate1-invoke.sh" --pr "$PR_NUM" --tree "$GATE1_TREE" \
+                    --receipt-path-out "$GATE1_RECEIPT_PATH_OUT" \
+                    >>"$GATE1_LOG" 2>&1 || true
+                  git worktree remove --force "$GATE1_TREE" 2>/dev/null || true
+                  GATE1_RECEIPT_PATH=""
+                  [ -f "$GATE1_RECEIPT_PATH_OUT" ] && GATE1_RECEIPT_PATH="$(cat "$GATE1_RECEIPT_PATH_OUT")"
+                  if [ -n "$GATE1_RECEIPT_PATH" ]; then
+                    GATE1_RECEIPT_LINE="Gate 1 receipt: ${GATE1_RECEIPT_PATH}"
+                    _log "D#$DISC_NUM PR#$PR_NUM: gate1-invoke wrote $GATE1_RECEIPT_PATH"
+                    rm -f "$GATE1_LOG" "$GATE1_RECEIPT_PATH_OUT" 2>/dev/null || true
+                  else
+                    _log "D#$DISC_NUM PR#$PR_NUM: gate1-invoke ran but produced no receipt — see $GATE1_LOG"
+                  fi
+                else
+                  rm -rf "$GATE1_TREE" 2>/dev/null || true
+                  _log "D#$DISC_NUM PR#$PR_NUM: gate1-invoke skipped — pr-tree provisioning failed, see $GATE1_LOG"
+                fi
+              fi
+            fi
+
+            CR_TASK="Review PR #${PR_NUM} for Discussion #${DISC_NUM}. ${GATE1_RECEIPT_LINE}"
             CR_TASK="$CR_TASK Discussion: https://github.com/${_DISCUSSION_REPO}/discussions/${DISC_NUM}"
             CR_TASK="$CR_TASK PR: https://github.com/${_CODE_REPO}/pull/${PR_NUM}"
 
