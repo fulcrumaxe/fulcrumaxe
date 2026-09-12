@@ -882,6 +882,104 @@ assert_allowed "D#2248: quoted URL & inside a gh api call is not mistaken for ba
   "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"gh api \\\"repos/o/r/issues?a=1&b=2\\\"\"},\"cwd\":\"$WT_CLAUDE\"}"
 
 # ---------------------------------------------------------------------------
+# D#2550 — the sandbox_allow_graphql_mutation audit row stops calling a
+# worktree id a "role". Drives the real hook on a live tool call (an
+# allowlisted GraphQL mutation from a worktree cwd) and reads the row it
+# actually appended, per D#2149: a unit test over the writer function alone
+# is not acceptable evidence here.
+# ---------------------------------------------------------------------------
+
+# A production-shaped worktree dir name (agent-<hex>), not the "testid123"
+# shape the rest of this suite uses — the pre-fix defect (aliasing the
+# worktree id as role) only shows up under the real shape the harness
+# actually assigns.
+WT_D2550="$MAIN_REPO/.claude/worktrees/agent-deadbeef01234567"
+D2550_CMD="gh api graphql -f query='mutation { addDiscussionComment(input:{body:1}) { comment { id } } }'"
+D2550_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$D2550_CMD\"},\"cwd\":\"$WT_D2550\"}"
+D2550_BLOCKS_FILE="$MAIN_REPO/.autonomous-team/hook-events/blocks-$(date +%F).jsonl"
+
+assert_allowed "D#2550: allowlisted GraphQL mutation from a worktree stays allowed" "$D2550_JSON"
+
+D2550_ROW=$(grep "sandbox_allow_graphql_mutation" "$D2550_BLOCKS_FILE" 2>/dev/null | tail -1 || true)
+
+if [[ -z "$D2550_ROW" ]]; then
+  echo "FAIL: D#2550 — no sandbox_allow_graphql_mutation row found in $D2550_BLOCKS_FILE"
+  FAIL=$((FAIL + 1))
+else
+  # 1. role must never be the opaque worktree id (the original defect).
+  if echo "$D2550_ROW" | python3 -c "
+import json, sys, re
+row = json.loads(sys.stdin.readline())
+role = row.get('role')
+assert not (isinstance(role, str) and re.match(r'^agent-[0-9a-f]+\$', role)), f'role still an opaque worktree id: {role!r}'
+"; then
+    echo "PASS: D#2550 AC2 — role is not an opaque worktree id (^agent-[0-9a-f]+\$)"
+    PASS=$((PASS + 1))
+  else
+    echo "FAIL: D#2550 AC2 — role matched the opaque worktree-id shape"
+    echo "      row: $D2550_ROW"
+    FAIL=$((FAIL + 1))
+  fi
+
+  # 2. role is either a real role name (from _KNOWN_ROLES — backend/
+  #    agent_run_tracker.py; duplicated here since the fixture only copies
+  #    hooks/*.py) or null with worktree_id + role_source. The pre-fix
+  #    defect aliased the worktree id itself as role, which is neither.
+  if echo "$D2550_ROW" | python3 -c "
+import json, sys
+_KNOWN_ROLES = {
+    'executor', 'code-reviewer', 'security-reviewer', 'project-manager',
+    'acceptance-tester', 'browser-tester', 'mission-analyst',
+    'technical-architect', 'product-owner', 'cost-analyst',
+    'performance-expert', 'security-expert', 'run-analyst',
+    'feedback-scanner', 'quality-sweep', 'visual-verifier', 'docs-writer',
+    'incident-commander', 'release-manager', 'researcher',
+}
+row = json.loads(sys.stdin.readline())
+role = row.get('role')
+if role is None:
+    assert 'worktree_id' in row and row['worktree_id'], 'role is null but worktree_id missing/empty'
+    assert isinstance(row.get('role_source'), str) and row['role_source'], 'role is null but role_source missing'
+else:
+    assert role in _KNOWN_ROLES, f'role {role!r} is neither null nor a known role name — looks like an aliased worktree id'
+"; then
+    echo "PASS: D#2550 AC1 — role is null+worktree_id+role_source, or a real role name"
+    PASS=$((PASS + 1))
+  else
+    echo "FAIL: D#2550 AC1 — row shape does not match either honest outcome"
+    echo "      row: $D2550_ROW"
+    FAIL=$((FAIL + 1))
+  fi
+fi
+
+# 3. Countable: zero rows anywhere in today's blocks-*.jsonl have a role
+#    matching the opaque worktree-id shape (AC2's file-wide scan).
+D2550_BAD_ROLE_COUNT=$(grep -h '"kind": "sandbox_allow_graphql_mutation"' "$MAIN_REPO"/.autonomous-team/hook-events/blocks-*.jsonl 2>/dev/null \
+  | python3 -c "
+import json, re, sys
+n = 0
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        row = json.loads(line)
+    except Exception:
+        continue
+    role = row.get('role')
+    if isinstance(role, str) and re.match(r'^agent-[0-9a-f]+\$', role):
+        n += 1
+print(n)
+")
+if [[ "$D2550_BAD_ROLE_COUNT" == "0" ]]; then
+  echo "PASS: D#2550 AC2 — zero sandbox_allow_graphql_mutation rows with an opaque worktree-id role"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL: D#2550 AC2 — $D2550_BAD_ROLE_COUNT row(s) still carry an opaque worktree-id role"
+  FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 
