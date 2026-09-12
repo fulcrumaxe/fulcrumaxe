@@ -65,6 +65,11 @@ _PR_GATE_REASON=""
 # drift apart from each other. Empty when not blocked.
 _PR_GATE_HINT=""
 
+# D#2434 AC-7: cross_repository for the most recent pr_pickup_blocked call,
+# carried through from the same check-pr JSON pr_pickup_blocked already
+# fetched — never a second API call just for this.
+_PR_GATE_CROSS_REPO="false"
+
 # Log through the caller's log() when it has one, so gate decisions land in the
 # same iteration log as everything else.
 _ppg_log() {
@@ -111,6 +116,7 @@ pr_pickup_blocked() {
   local pr="$1"
   _PR_GATE_REASON=""
   _PR_GATE_HINT=""
+  _PR_GATE_CROSS_REPO="false"
 
   local -a _ppg_check_pr_cmd=(python3 "$_PR_PICKUP_GATE_LIB_DIR/pr_intake_gate.py" check-pr "$pr")
   if [ -n "$_PR_PICKUP_GATE_REPO" ]; then
@@ -135,18 +141,23 @@ pr_pickup_blocked() {
   # consecutive tabs (an empty middle field, e.g. blocked=false with no
   # reason) silently merge and shift every field after it. Newlines don't
   # collapse under mapfile, so an empty reason/hint stays its own line.
+  #
+  # D#2434 AC-7: a 4th field, cross_repository, rides the same jq call — it
+  # was already fetching this JSON, so reading one more field costs nothing.
   local blocked
   local -a _ppg_fields
   mapfile -t _ppg_fields < <(printf '%s' "$gate_json" \
-    | jq -r '(if has("blocked") then .blocked else true end), (.reason // ""), (.hint // "")' 2>/dev/null)
-  if [ "${#_ppg_fields[@]}" -eq 3 ]; then
+    | jq -r '(if has("blocked") then .blocked else true end), (.reason // ""), (.hint // ""), (if .cross_repository then "true" else "false" end)' 2>/dev/null)
+  if [ "${#_ppg_fields[@]}" -eq 4 ]; then
     blocked="${_ppg_fields[0]}"
     _PR_GATE_REASON="${_ppg_fields[1]}"
     _PR_GATE_HINT="${_ppg_fields[2]}"
+    _PR_GATE_CROSS_REPO="${_ppg_fields[3]}"
   else
     blocked="true"
     _PR_GATE_REASON="gate_check_failed"
     _PR_GATE_HINT=""
+    _PR_GATE_CROSS_REPO="false"
   fi
   if [ -z "$_PR_GATE_HINT" ]; then
     _PR_GATE_HINT="awaiting intake-approved from a maintainer"
@@ -187,6 +198,11 @@ classify_open_prs() {
       _ppg_log "  PR #$pr_num gated: not picked up ($_PR_GATE_REASON) — $(_ppg_gate_hint "$_PR_GATE_REASON" "$pr_num")"
       continue
     fi
+
+    # D#2434 — registration only: say so out loud when the diff touches a
+    # path an agent may read as instructions. Advisory; never changes which
+    # array pr_num lands in below (AC-12).
+    bash "$_PR_PICKUP_GATE_LIB_DIR/../pr-instruction-path-notice.sh" "$pr_num" "$_PR_GATE_CROSS_REPO" >/dev/null 2>&1 || true
 
     has_code_review=$(echo "$labels_json" | jq -r 'map(select(.name == "code-review-passed")) | length' 2>/dev/null || echo 0)
     has_needs_fix=$(echo "$labels_json" | jq -r 'map(select(.name | test("needs-fix|code-review-needs-fix"))) | length' 2>/dev/null || echo 0)

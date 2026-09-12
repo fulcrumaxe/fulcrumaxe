@@ -213,6 +213,27 @@ def _gh(args: list) -> str:
     return proc.stdout
 
 
+def _cross_repository_from_payload(raw: dict) -> bool:
+    """True when *raw* (the `repos/{slug}/pulls/{pr}` REST object) shows a
+    head repo different from its base repo — D#2434 AC-7's expiry tripwire.
+
+    This reads two more fields off the payload `fetch_pr_meta` already
+    fetched; it does not trigger a second call. Fail closed: a head repo we
+    cannot read (missing, or not a dict with `full_name`) is treated as
+    cross-repository — an unreadable head is not evidence of a same-repo PR,
+    and the whole point of the tripwire is to never silently read as "no".
+    """
+    head = raw.get("head") if isinstance(raw.get("head"), dict) else {}
+    base = raw.get("base") if isinstance(raw.get("base"), dict) else {}
+    head_repo = head.get("repo") if isinstance(head, dict) else None
+    base_repo = base.get("repo") if isinstance(base, dict) else None
+    head_name = head_repo.get("full_name") if isinstance(head_repo, dict) else None
+    base_name = base_repo.get("full_name") if isinstance(base_repo, dict) else None
+    if not isinstance(head_name, str) or not head_name:
+        return True
+    return head_name != base_name
+
+
 def fetch_pr_meta(pr: int, repo_slug: str, *, gh=None) -> dict:
     """Live author + labels + head SHA for *pr*, in one API call.
 
@@ -225,6 +246,10 @@ def fetch_pr_meta(pr: int, repo_slug: str, *, gh=None) -> dict:
     response already fetched here, so this costs zero net-new API calls. It
     is `None` when absent or not a string, never coerced to any other value;
     callers must treat that as "no fingerprint available", not as a match.
+
+    ``cross_repository`` (D#2434 AC-7) rides the same response too — see
+    `_cross_repository_from_payload`. It is a signal only: nothing here or
+    in `check_pr` lets it influence `blocked`.
     """
     call = gh or _gh
     try:
@@ -236,6 +261,7 @@ def fetch_pr_meta(pr: int, repo_slug: str, *, gh=None) -> dict:
             "labels": [],
             "head_sha": None,
             "fetch_ok": False,
+            "cross_repository": True,
             "error": str(exc)[:200],
         }
 
@@ -256,6 +282,7 @@ def fetch_pr_meta(pr: int, repo_slug: str, *, gh=None) -> dict:
         "labels": labels,
         "head_sha": head_sha,
         "fetch_ok": True,
+        "cross_repository": _cross_repository_from_payload(raw),
     }
 
 
@@ -482,6 +509,7 @@ def check_pr(
             "reason": "trust_set_unresolvable",
             "hint": _gate_hint("trust_set_unresolvable", pr),
             "security_required": True,
+            "cross_repository": True,
             "error": str(exc)[:200],
         }
 
@@ -496,6 +524,7 @@ def check_pr(
             "reason": REASON_PR_UNREADABLE,
             "hint": _gate_hint(REASON_PR_UNREADABLE, pr),
             "security_required": True,
+            "cross_repository": meta.get("cross_repository", True),
             "error": meta.get("error", ""),
         }
 
@@ -590,6 +619,9 @@ def check_pr(
         # AC-9: unchanged by any outcome above — merge-side protection stays
         # keyed on provenance alone.
         "security_required": provenance == PROVENANCE_EXTERNAL,
+        # D#2434 AC-7 — signal only, never consulted above: it must not
+        # change `blocked`, `reason`, `hint` or `security_required`.
+        "cross_repository": meta.get("cross_repository", False),
     }
 
 

@@ -53,7 +53,8 @@ HEAD_D = "d" * 40
 
 
 def _gh_fake(*, author="drive-by", labels=(), events=None, fail_pr=False, fail_events=False,
-             head_sha=HEAD_A, pr=7, record_calls=None, commit_dates=None):
+             head_sha=HEAD_A, pr=7, record_calls=None, commit_dates=None,
+             head_repo=None, base_repo=None):
     """A stand-in for the `gh` runner. Returns JSON strings; raises where the
     real one would raise, so fail-closed paths are exercised rather than
     described.
@@ -70,6 +71,11 @@ def _gh_fake(*, author="drive-by", labels=(), events=None, fail_pr=False, fail_e
     back on page 1 and nothing on later pages — unchanged behaviour. A test
     that cares about paging (D#2433) passes a longer *events* list and lets
     this slice it for real.
+
+    ``head_repo``/``base_repo`` (D#2434 AC-7) are each a `full_name` string
+    or ``None``. Omitted (the default, for every pre-existing caller) means
+    no `head.repo`/`base.repo` key at all — `cross_repository` then reads
+    fail-closed (True), exactly as it did before this parameter existed.
     """
     all_events = list(events or [])
 
@@ -84,6 +90,10 @@ def _gh_fake(*, author="drive-by", labels=(), events=None, fail_pr=False, fail_e
             body = {"user": user, "labels": [{"name": n} for n in labels]}
             if head_sha is not None:
                 body["head"] = {"sha": head_sha}
+            if head_repo is not None:
+                body.setdefault("head", {})["repo"] = {"full_name": head_repo}
+            if base_repo is not None:
+                body["base"] = {"repo": {"full_name": base_repo}}
             if commit_dates is not None and "head" in body:
                 # Attacker-controlled fields. Present only so a test can prove
                 # nothing reads them (D#2421 PR 3 AC-7).
@@ -1178,3 +1188,74 @@ def test_2433_audit_write_failure_is_not_fatal_to_the_refusal(tmp_path, monkeypa
     )
     assert r["blocked"] is True
     assert r["reason"] == gate.REASON_TIMELINE_TOO_LARGE
+
+
+# ---------------------------------------------------------------------------
+# AC-7 (D#2434) — the expiry tripwire rides the call fetch_pr_meta already
+# makes. cross_repository must be correct in all three payload shapes, must
+# cost no second `gh` call, and must never influence blocked/reason/hint/
+# security_required.
+# ---------------------------------------------------------------------------
+
+
+def test_ac7_cross_repository_true_when_head_repo_differs_from_base():
+    calls = []
+    gh = _gh_fake(author="team-bot", head_repo="stranger/fork", base_repo=SLUG, record_calls=calls)
+    meta = gate.fetch_pr_meta(7, SLUG, gh=gh)
+    assert meta["cross_repository"] is True
+    assert len(calls) == 1, "cross_repository must ride the existing call, not add one"
+
+
+def test_ac7_cross_repository_false_when_head_repo_matches_base():
+    calls = []
+    gh = _gh_fake(author="team-bot", head_repo=SLUG, base_repo=SLUG, record_calls=calls)
+    meta = gate.fetch_pr_meta(7, SLUG, gh=gh)
+    assert meta["cross_repository"] is False
+    assert len(calls) == 1
+
+
+def test_ac7_cross_repository_fails_closed_when_head_repo_unreadable():
+    """No head_repo/base_repo at all — every pre-existing `_gh_fake` call
+    site is this shape, and it must fail closed rather than read as
+    same-repo."""
+    meta = gate.fetch_pr_meta(7, SLUG, gh=_gh_fake(author="team-bot"))
+    assert meta["cross_repository"] is True
+
+
+def test_ac7_cross_repository_fails_closed_when_pr_itself_is_unreadable():
+    result = gate.check_pr(7, SLUG, gh=_gh_fake(author="team-bot", fail_pr=True), allowlist=TRUST)
+    assert result["blocked"] is True
+    assert result["cross_repository"] is True
+
+
+def test_ac7_cross_repository_never_influences_the_verdict():
+    """Same author, same labels, only cross_repository differs — the verdict
+    must be identical either way. It is a signal, not a gate (AC-7's last
+    bullet)."""
+    same = gate.check_pr(
+        7, SLUG,
+        gh=_gh_fake(author="example-owner", head_repo=SLUG, base_repo=SLUG),
+        allowlist={"example-owner"},
+    )
+    cross = gate.check_pr(
+        7, SLUG,
+        gh=_gh_fake(author="example-owner", head_repo="stranger/fork", base_repo=SLUG),
+        allowlist={"example-owner"},
+    )
+
+    assert same["cross_repository"] is False
+    assert cross["cross_repository"] is True
+    for key in ("blocked", "reason", "provenance", "hint", "security_required"):
+        assert same[key] == cross[key], f"cross_repository leaked into {key!r}"
+
+
+def test_ac7_check_pr_surfaces_cross_repository_on_the_happy_path():
+    """check_pr's normal (not-blocked, not-fetch-failed) return also carries
+    the field — surfaced through check_pr's dict per the Implementation
+    Notes, not just fetch_pr_meta's."""
+    result = gate.check_pr(
+        7, SLUG,
+        gh=_gh_fake(author="example-owner", head_repo="stranger/fork", base_repo=SLUG),
+        allowlist={"example-owner"},
+    )
+    assert result["cross_repository"] is True
