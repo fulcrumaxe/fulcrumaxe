@@ -71,7 +71,7 @@
     "scripts/check-pr-cli-touched.sh": "b2adaab3117c87821730b6c7abeecd1199369b477466a8aaf320bbec2950d0c3",
     "scripts/check-pr-dashboard-touched.sh": "380e0581e9c8341a3f0a262ddfc13efd081fa6cf889463578cc2070ba890ec05",
     "scripts/check-prompt-drift.sh": "a3979c568a39494bd19fa5bcdb74174b3575f022365b41de9584824ecea7c189",
-    "scripts/check-subsystems-index.sh": "37598386180eb6f73b4ea22c79c45591cf70d79504ead1689cc8a8d1732a7568",
+    "scripts/check-subsystems-index.sh": "eff4fac10503678dd3eaf4f8a79598c45fa15eb24787d5b400c19d7bca76a9c6",
     "scripts/check-tests-fixed-tmp-paths.sh": "637c5778c2899e458512c57cf3c9b8cd6b3dd7e3ae297da490af2678fc9e889e",
     "scripts/check-tests-leave-tree-clean.sh": "222b9c93f156b463ee4d0256df1a22f0f953d69cf824dcb96005a3f705d8156c",
     "scripts/check-tui-anti-patterns.sh": "64bf4c4eaf91acede40e75271f70522a58b5f72ce5c4799bba9ed3905fbd90ec",

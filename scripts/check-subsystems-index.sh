@@ -41,14 +41,25 @@ if [ ! -f "$INDEX" ]; then
 fi
 
 # Build sorted list of backend module filenames (basename only, e.g. budget.py)
+#
+# Both `2>/dev/null` on xargs and `|| true` on the assignment are load-bearing,
+# not decoration. GNU findutils xargs invokes basename once even on completely
+# empty stdin (no backend/*.py at all), which errors ("missing operand") and
+# exits non-zero; grep -v also exits non-zero whenever it selects zero lines,
+# which happens whenever every remaining module got excluded. Either one, under
+# `pipefail`, makes this whole pipeline's exit status non-zero — and under
+# `set -e`, a failing `VAR=$(...)` assignment kills the script right here,
+# before the `[ -z "$MODULES" ]` check below ever runs. `|| true` is what lets
+# that check actually run instead of being dead code that happens to exit 1 by
+# accident, for the wrong reason, with the wrong message (or none at all).
 MODULES=$(
   ls "$REPO_ROOT"/backend/*.py 2>/dev/null \
-  | xargs -n1 basename \
+  | xargs -n1 basename 2>/dev/null \
   | grep -v '^__init__\.py$' \
   | grep -v '^test_' \
   | grep -v '^conftest\.py$' \
   | sort
-)
+) || true
 
 if [ -z "$MODULES" ]; then
   # This branch only fires when the gate's own trigger (a changed backend/*.py

@@ -141,6 +141,14 @@ cat > "$F5/wiki/Subsystems-Index.md" <<'EOF'
 EOF
 run_check "$F5"
 assert_eq "case5 exit code is 1" "$RC" "1"
+# Exit code alone doesn't prove the deliberate branch ran — the unpatched
+# module-discovery pipeline crashes to exit 1 on its own (xargs invoking
+# basename on empty stdin, or grep -v selecting zero lines), via pipefail +
+# set -e, before the `[ -z "$MODULES" ]` check is ever reached. Assert the
+# message text so a regression that re-breaks reachability (e.g. dropping
+# the `|| true`) shows up here instead of hiding behind a coincidentally
+# correct exit code.
+assert_contains "case5 stderr names the broken-glob failure" "No backend/*.py modules found" "$ERR"
 
 echo ""
 echo "== summary =="
