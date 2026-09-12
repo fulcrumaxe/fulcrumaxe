@@ -1328,7 +1328,16 @@ print(entries[0].get('fix_cycle_count', 0) if entries else 0)
           else
             _log "D#$DISC_NUM PR#$PR_NUM: phase=code_review, phased_code_review=true — spawning code-reviewer directly"
 
-            CR_TASK="Review PR #${PR_NUM} for Discussion #${DISC_NUM}. Run bash scripts/run-pr-tests.sh ${PR_NUM}."
+            # Route Gate 1 through the caller-side wrapper (D#2560 PR-A) so
+            # the reviewer runs the operator's copy of run-pr-tests.sh
+            # against its own head worktree, not the head's own copy of the
+            # runner. OP_ROOT is resolved via git plumbing rather than a
+            # relative path, since the reviewer's cwd is its own worktree —
+            # a relative scripts/gate1-invoke.sh there would resolve to the
+            # head's own copy, defeating the wrapper before it even runs.
+            # Falls back to the bare runner (item 10) if the wrapper is
+            # absent, so a missing wrapper degrades Gate 1, never breaks it.
+            CR_TASK="Review PR #${PR_NUM} for Discussion #${DISC_NUM}. Run Gate 1 through the wrapper: OP_ROOT=\$(dirname \"\$(git rev-parse --git-common-dir)\"); if [ -x \"\$OP_ROOT/scripts/gate1-invoke.sh\" ]; then bash \"\$OP_ROOT/scripts/gate1-invoke.sh\" --pr ${PR_NUM} --tree \"\$(pwd)\"; else echo \"gate1_wrapper=MISSING -- falling back to bare run-pr-tests.sh (runner-copy/tree separation not in effect for this run)\" >&2; bash scripts/run-pr-tests.sh \"${PR_NUM}\"; fi"
             CR_TASK="$CR_TASK Discussion: https://github.com/${_DISCUSSION_REPO}/discussions/${DISC_NUM}"
             CR_TASK="$CR_TASK PR: https://github.com/${_CODE_REPO}/pull/${PR_NUM}"
 

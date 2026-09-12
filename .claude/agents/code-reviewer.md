@@ -307,11 +307,32 @@ Behavior:
 
 ## Test Execution Gate
 
-Code-reviewer must execute tests, not just read them:
+Code-reviewer must execute tests, not just read them. Run Gate 1 through the
+caller-side wrapper, `scripts/gate1-invoke.sh`, rather than invoking
+`scripts/run-pr-tests.sh` directly. This separates which *copy* of the
+runner executes (the operator's) from which *tree* it runs against (your own
+review worktree) — resolve the operator checkout via git plumbing, since
+your cwd is a worktree and a relative `scripts/gate1-invoke.sh` there would
+resolve to the PR head's own copy of that file instead:
 
 ```bash
-bash scripts/run-pr-tests.sh $PR_NUMBER
+OP_ROOT="$(dirname "$(git rev-parse --git-common-dir)")"
+if [ -x "$OP_ROOT/scripts/gate1-invoke.sh" ]; then
+  TESTS_JSON=$(bash "$OP_ROOT/scripts/gate1-invoke.sh" --pr $PR_NUMBER --tree "$(pwd)")
+else
+  # Missing wrapper degrades to the bare runner — it must never break the
+  # review lane outright. Announce it on stderr so a fallback run is
+  # distinguishable in the review log from a real wrapper run, not silently
+  # indistinguishable from one.
+  echo "gate1_wrapper=MISSING -- falling back to bare run-pr-tests.sh (runner-copy/tree separation not in effect for this run)" >&2
+  TESTS_JSON=$(bash scripts/run-pr-tests.sh $PR_NUMBER)
+fi
 ```
+
+This provides no additional security by itself — Gate 1 still runs the PR
+head as the same uid as everything else on this host. It only makes the
+runner-copy/tree-root separation available for a real containment mechanism
+to attach to later.
 
 Result is included in AGENT_OUTPUT as `tests_run: [{command, exit_code, duration_seconds}, ...]`.
 - Any failing test suite → verdict `needs-fix`, not `pass`.
