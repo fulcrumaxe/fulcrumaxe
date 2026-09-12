@@ -40,11 +40,19 @@ fi
 # bare name "origin", which is the Discussion plane. PR numbers collide
 # across the two planes, and a wrong-plane fetch succeeds silently (D#1940
 # FM-5): the wrong commit, exit 0, no warning.
+#
+# {{pr_repo}} below is #{{pr_number}}'s own resolved plane, which may be the
+# Discussion plane. If it is, this fetch step is against the WRONG remote —
+# that gap is real and pre-existing; fixing the fetch side is out of scope
+# for the PR that introduced {{pr_repo}} (D#2563 fixed the `gh pr` calls, not
+# this git-fetch strategy). Until it is: if the local fetch below fails for a
+# PR whose {{pr_repo}} names the Discussion plane, that mismatch is why —
+# trust `gh pr diff` (see below) over this section's local fetch instead.
 CODE_REMOTE=$(_resolve_code_plane_remote) || exit 1
 
 # Get the PR's branch name and authoritative head sha
-BRANCH=$(gh pr view {{pr_number}} --repo {{CODE_REPO}} --json headRefName --jq .headRefName)
-HEAD_SHA=$(gh pr view {{pr_number}} --repo {{CODE_REPO}} --json headRefOid --jq .headRefOid)
+BRANCH=$(gh pr view {{pr_number}} --repo {{pr_repo}} --json headRefName --jq .headRefName)
+HEAD_SHA=$(gh pr view {{pr_number}} --repo {{pr_repo}} --json headRefOid --jq .headRefOid)
 # Fetch fresh, from the code plane — the PR branch AND main, so a
 # differential has both ends (D#1940 FM-3/FM-4).
 git fetch --quiet "$CODE_REMOTE" "$BRANCH"
@@ -79,7 +87,7 @@ review, and a tree that can't resolve the code plane's `main` as a comparison ba
 independent ways a tree can be incapable of the result you're about to report. It is not a
 substitute for the head-sha check above; run both.
 
-`gh pr diff {{pr_number}} --repo "$(_require_code_repo)"` is GitHub's own authoritative
+`gh pr diff {{pr_number}} --repo "{{pr_repo}}"` is GitHub's own authoritative
 diff. If a local diff (two-dot, three-dot, or otherwise) ever disagrees with it, `gh pr diff`
 wins — treat the disagreement itself as a signal your local tree is stale, not as two valid
 answers to pick between.
@@ -99,8 +107,8 @@ Review checklist:
      chrome.storage, __proto__, server.py, *.env*, auth/, secret/, credential/, token/, manifest*.json
 
 6. Surgical-changes check (Working Principle #3):
-   - Count total diff lines (additions + deletions): `gh pr diff {{pr_number}} --repo {{CODE_REPO}} | grep "^[+-]" | grep -v "^---\|^+++" | wc -l`
-   - List files touched: `gh pr diff {{pr_number}} --repo {{CODE_REPO}} --name-only`
+   - Count total diff lines (additions + deletions): `gh pr diff {{pr_number}} --repo {{pr_repo}} | grep "^[+-]" | grep -v "^---\|^+++" | wc -l`
+   - List files touched: `gh pr diff {{pr_number}} --repo {{pr_repo}} --name-only`
    - For each file touched, ask: does this file trace directly to the spec's stated scope?
    - Any line or file that does NOT trace to the spec → call out as severity "suggestion" in AGENT_OUTPUT issues.
    - If >300 diff lines OR >5 files unrelated to the immediate ask → severity "error", verdict "needs-fix".
@@ -163,8 +171,8 @@ Label API: use `gh pr edit --add-label` / `--remove-label` — this is the confi
 spelling from a worktree-isolated context (measured directly on D#2045/D#2139). Re-read the
 label afterwards with an independent `gh pr view --json labels` call — don't trust the exit
 code alone.
-  Apply label:  gh pr edit {pr_number} --repo {{CODE_REPO}} --add-label code-review-passed
-  Remove label: gh pr edit {pr_number} --repo {{CODE_REPO}} --remove-label code-review-needs-fix
+  Apply label:  gh pr edit {pr_number} --repo {{pr_repo}} --add-label code-review-passed
+  Remove label: gh pr edit {pr_number} --repo {{pr_repo}} --remove-label code-review-needs-fix
 
 - Apply label 'code-review-passed' only when all tests passed (TEST_EXIT=0) and review passes.
 - Apply label 'code-review-needs-fix' with inline PR comments if tests fail or changes are required.
@@ -207,7 +215,7 @@ sys.path.insert(0, '.')
 from backend.spec_external_docs import check_imports_have_docs
 
 diff = subprocess.check_output(
-    ['gh', 'pr', 'diff', '{{pr_number}}', '--repo', '{{CODE_REPO}}'],
+    ['gh', 'pr', 'diff', '{{pr_number}}', '--repo', '{{pr_repo}}'],
     text=True
 )
 result = subprocess.run(

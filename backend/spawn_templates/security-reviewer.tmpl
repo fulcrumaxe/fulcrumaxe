@@ -26,11 +26,17 @@ fi
 
 # Resolve the CODE plane's git remote — the bare name "origin" is the
 # Discussion plane and must never be used to pull a PR branch.
+#
+# {{pr_repo}} below is #{{pr_number}}'s own resolved plane, which may be the
+# Discussion plane — if so, this fetch is against the wrong remote (a
+# pre-existing gap; fixing the fetch side is out of scope here, D#2563 only
+# fixed the `gh pr` calls). Prefer `gh pr diff` (see below) over this
+# section's local fetch when they disagree.
 CODE_REMOTE=$(_resolve_code_plane_remote) || exit 1
 
 # Get the PR's branch name and authoritative head sha
-BRANCH=$(gh pr view {{pr_number}} --repo {{CODE_REPO}} --json headRefName --jq .headRefName)
-HEAD_SHA=$(gh pr view {{pr_number}} --repo {{CODE_REPO}} --json headRefOid --jq .headRefOid)
+BRANCH=$(gh pr view {{pr_number}} --repo {{pr_repo}} --json headRefName --jq .headRefName)
+HEAD_SHA=$(gh pr view {{pr_number}} --repo {{pr_repo}} --json headRefOid --jq .headRefOid)
 # Fetch fresh, from the code plane — the PR branch AND main, so a
 # differential has both ends (D#1940 FM-3/FM-4).
 git fetch --quiet "$CODE_REMOTE" "$BRANCH"
@@ -53,7 +59,7 @@ source scripts/lib/tree-capability.sh
 tree_capability_assert "$SCRATCH_DIR" "$FETCHED_SHA" || { echo "FAIL: tree is not capable of a trustworthy result (D#1940 FM-1..FM-4)"; exit 1; }
 ```
 
-`gh pr diff {{pr_number}} --repo "$(_require_code_repo)"` is GitHub's own authoritative
+`gh pr diff {{pr_number}} --repo "{{pr_repo}}"` is GitHub's own authoritative
 diff — when it disagrees with a local diff, it wins; treat the disagreement as your local
 tree being stale, not as two valid answers.
 
@@ -81,8 +87,8 @@ Label API: use `gh pr edit --add-label` / `--remove-label` — this is the confi
 spelling from a worktree-isolated context (measured directly on D#2045/D#2139). Re-read the
 label afterwards with an independent `gh pr view --json labels` call — don't trust the exit
 code alone.
-  Apply label:  gh pr edit {pr_number} --repo {{CODE_REPO}} --add-label security-review-passed
-  Remove label: gh pr edit {pr_number} --repo {{CODE_REPO}} --remove-label security-needs-fix
+  Apply label:  gh pr edit {pr_number} --repo {{pr_repo}} --add-label security-review-passed
+  Remove label: gh pr edit {pr_number} --repo {{pr_repo}} --remove-label security-needs-fix
 
 - Apply label 'security-review-passed' if no issues found.
 - Apply label 'security-needs-fix' with detailed inline PR comments if issues exist

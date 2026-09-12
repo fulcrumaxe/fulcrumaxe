@@ -62,11 +62,16 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/lib/repo-resolve.sh"
-# Three consumers, all PR-side: the open-PR file-scope conflict scan, and the
-# two `repos/<slug>/pulls/<n>` head-sha lookups that call the resolver inline
-# rather than reading this variable. Nothing here reads a Discussion through
-# either spelling — grep for `_resolve_repo` as well as `_REPO` before
-# concluding a call site does not exist.
+# Sole remaining consumer: the open-PR file-scope conflict scan, which is a
+# fleet-wide scan across every open PR on the code plane, not scoped to any
+# one --pr's own plane — it stays hardcoded to the code plane by design
+# (out of scope for D#2563). The two `repos/<slug>/pulls/<n>` head-sha
+# lookups that used to call this resolver inline now go through _PR_REPO,
+# resolved further down from --pr/--pr-plane once those are parsed (D#2563)
+# — a PR number is ambiguous across planes, so it cannot be resolved before
+# the args that disambiguate it are read. Nothing here reads a Discussion
+# through either spelling — grep for `_resolve_repo` as well as `_REPO`
+# before concluding a call site does not exist.
 _CODE_REPO="$(_resolve_code_repo)"
 
 # ── GH_TOKEN: prefer installation token (15k/hr) over user PAT (5k/hr) ───────
@@ -88,6 +93,7 @@ TOUCHPOINTS=""
 DRY_RUN_ENV_DUMP=""
 NO_REGISTER=""
 PR_ARG=""
+PR_PLANE_ARG=""
 OPERATION_CLASS=""
 # SDK_LANE: set to 1 by --sdk-lane flag or SDK_LANE=1 env var.
 # When set, "sdk_eligible":true is added to the SpawnSpec JSON sent to dispatch.py.
@@ -112,11 +118,12 @@ while [[ $# -gt 0 ]]; do
     --dry-run-env-dump)  DRY_RUN_ENV_DUMP=1;     shift   ;;
     --no-register)       NO_REGISTER=1;          shift   ;;
     --pr)                PR_ARG="$2";            shift 2 ;;
+    --pr-plane)          PR_PLANE_ARG="$2";      shift 2 ;;
     --operation-class)   OPERATION_CLASS="$2";   shift 2 ;;
     --sdk-lane)          SDK_LANE=1;             shift   ;;
     *)
       echo "Unknown argument: $1" >&2
-      echo "Usage: $0 --role <role> --discussion <N> --task-prompt <text> [--isolation worktree] [--worktree-path <path>] [--security-trigger] [--touchpoints <comma-separated-paths>] [--override-cap] [--dry-run-env-dump] [--no-register] [--pr <N>] [--operation-class <class>] [--sdk-lane]" >&2
+      echo "Usage: $0 --role <role> --discussion <N> --task-prompt <text> [--isolation worktree] [--worktree-path <path>] [--security-trigger] [--touchpoints <comma-separated-paths>] [--override-cap] [--dry-run-env-dump] [--no-register] [--pr <N>] [--pr-plane code|discussion] [--operation-class <class>] [--sdk-lane]" >&2
       exit 1
       ;;
   esac
@@ -153,6 +160,25 @@ if [[ -n "$WORKTREE_PATH_ARG" && -z "$PR_ARG" ]]; then
   echo "and pass isolation:\"worktree\" on the Agent() call itself; see" >&2
   echo "scripts/lib/team-lead-prompts.sh for the canonical shape." >&2
   exit 1
+fi
+
+# ── PR plane resolution (D#2563) ──────────────────────────────────────────────
+# --pr names a PR number that may live on either plane. Resolve once here so
+# every downstream PR-side call in this file — the dry-run-env-dump lane, the
+# prior-test-run lane, and the env exported to the spawned prompt — uses the
+# same resolved slug (_PR_REPO) instead of each guessing _resolve_code_repo
+# on its own. --pr-plane pins it explicitly; omitted means probe both planes
+# (scripts/lib/pr-plane.sh) — never guess.
+_PR_REPO=""
+if [[ -n "$PR_ARG" ]]; then
+  # shellcheck source=scripts/lib/pr-plane.sh
+  source "$SCRIPT_DIR/lib/pr-plane.sh"
+  if ! pr_plane_resolve "$PR_ARG" "$PR_PLANE_ARG"; then
+    echo "Spawn blocked: could not resolve which plane PR #${PR_ARG} lives on (see pr_plane_resolve error above)." >&2
+    exit 1
+  fi
+  _PR_REPO="${PR_PLANE_REPO:?plane unresolved}"
+  export _PR_REPO
 fi
 
 # ── env-scrub: build unset list (D#886, narrowed D#1956) ─────────────────────
@@ -232,14 +258,14 @@ unset _v
 # spawn. Any other flag combination is byte-identical to before.
 if [[ -n "$DRY_RUN_ENV_DUMP" ]]; then
   if [[ -n "$PR_ARG" && "$ISOLATION" == "worktree" ]]; then
-    _DRP_INFO=$(gh api "repos/$(_resolve_code_repo)/pulls/${PR_ARG}" --jq '[.head.sha, .head.ref] | @tsv' 2>/dev/null || true)
+    _DRP_INFO=$(gh api "repos/${_PR_REPO}/pulls/${PR_ARG}" --jq '[.head.sha, .head.ref] | @tsv' 2>/dev/null || true)
     _DRP_SHA=$(printf '%s' "$_DRP_INFO" | cut -f1)
     if [[ -n "$_DRP_SHA" ]]; then
       # shellcheck source=scripts/lib/pr-tree.sh
       source "$SCRIPT_DIR/lib/pr-tree.sh"
       _DRP_EVENT_ID="${ROLE:-agent}-${DISCUSSION:-nod}-$(date +%s)-dryrun"
       _DRP_DEST="$REPO_ROOT/.claude/worktrees/pr-${PR_ARG}-${ROLE:-agent}-${_DRP_EVENT_ID}"
-      if worktree_path=$(pr_tree_provision "$PR_ARG" "$_DRP_SHA" "$_DRP_DEST" 2>&1); then
+      if worktree_path=$(pr_tree_provision "$PR_ARG" "$_DRP_SHA" "$_DRP_DEST" "$PR_PLANE_NAME" 2>&1); then
         export worktree_path
       else
         echo "WARN: dry-run pr-tree provisioning failed: $worktree_path" >&2
@@ -887,7 +913,7 @@ PR_BRANCH=""
 _PA_SHA_FULL=""
 if [[ -n "$PR_ARG" ]]; then
   _PA_ERR=$(mktemp)
-  _PA_INFO=$(gh api "repos/$(_resolve_code_repo)/pulls/${PR_ARG}" --jq '[.head.sha, .head.ref] | @tsv' 2>"$_PA_ERR" || true)
+  _PA_INFO=$(gh api "repos/${_PR_REPO}/pulls/${PR_ARG}" --jq '[.head.sha, .head.ref] | @tsv' 2>"$_PA_ERR" || true)
   _PA_API_FAILED=""
   if [[ -z "$_PA_INFO" ]]; then
     _PA_API_FAILED=1
@@ -1067,6 +1093,7 @@ SPAWN_PROMPT_JSON=$(
   _DIAL_STATE="${_DIAL_STATE_LINE:-}" \
   _PR="${PR_ARG:-}" \
   _PR_BRANCH="${PR_BRANCH:-}" \
+  _PR_REPO="${_PR_REPO:-}" \
   PYTHONPATH="$REPO_ROOT" python3 -m backend.spawn_payload 2>"$_PAYLOAD_ERR"
 )
 _PAYLOAD_EXIT=$?

@@ -341,6 +341,7 @@ def _load_template_body(
     discussion: int | None = None,
     pr: int | None = None,
     pr_branch: str = "",
+    pr_repo: str = "",
 ) -> tuple[str, dict]:
     """Load the rendered template body for *role* using spawn_templates.render_body().
 
@@ -367,6 +368,7 @@ def _load_template_body(
         template_vars["pr_number"] = str(pr)
         template_vars["pr_branch"] = pr_branch
         template_vars["pr_url"] = _pr_url(pr)
+        template_vars["pr_repo"] = pr_repo
 
     body, manifest = render_body(
         role,
@@ -418,6 +420,9 @@ class SpawnPrompt:
     # without one gets a loud SpawnVarContractError, not a blank slot.
     pr: int | None = None
     pr_branch: str = ""
+    # D#2563: the repo plane #pr was resolved to — threaded into {{pr_repo}}
+    # the same way pr_branch feeds {{pr_branch}} above.
+    pr_repo: str = ""
 
     # ---- additional fields from PSC / template loading ----
 
@@ -510,6 +515,7 @@ class SpawnPrompt:
                 discussion=self.discussion,
                 pr=self.pr,
                 pr_branch=self.pr_branch,
+                pr_repo=self.pr_repo,
             )
             # Thread the manifest through: use loaded value when caller didn't supply one.
             # This preserves the old bash behaviour where PROMPT_MANIFEST came from
@@ -709,6 +715,7 @@ def _main_render(argv: list[str]) -> int:
     pr_raw = data.get("pr")
     pr = int(pr_raw) if pr_raw is not None else None
     pr_branch = data.get("pr_branch", "")
+    pr_repo = data.get("pr_repo", "")
 
     sp = SpawnPrompt(
         role=role,
@@ -730,6 +737,7 @@ def _main_render(argv: list[str]) -> int:
         dial_state_at_spawn=dial_state_at_spawn,
         pr=pr,
         pr_branch=pr_branch,
+        pr_repo=pr_repo,
     )
 
     # D#1788: a contract violation (a template references a variable with no

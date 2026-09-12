@@ -33,6 +33,9 @@ _STUB_VARS = {
     # Extra vars required by secondary roles (docs-writer, incident-commander, etc.)
     "pr_branch": "feature/stub-branch",
     "pr_url": "https://github.com/autonomous-agent-7/autonomous-forever/pull/55",
+    # D#2563: the repo plane #pr was resolved to — code-reviewer.tmpl /
+    # security-reviewer.tmpl's `gh pr` commands reference {{pr_repo}}.
+    "pr_repo": "autonomous-agent-7/autonomous-forever",
     "trigger_type": "circuit_breaker",
     "evidence_json": "{}",
     "release_id": "v0.0.1",
@@ -439,15 +442,23 @@ def test_security_reviewer_render_contains_stale_worktree_guidance() -> None:
 
 def test_review_role_headref_lookup_scoped_to_code_repo() -> None:
     """The BRANCH/HEAD_SHA/PR_SHA lookups added for D#1940 FM-5 must resolve
-    against CODE_REPO (the code plane), never REPO (the Discussion plane).
+    against the PR's own repo, never blindly against REPO (the Discussion
+    plane) or (for code-reviewer/security-reviewer) an unconditional
+    CODE_REPO.
 
     Those lookups feed the new headRefOid cross-check, which compares their
-    result against a fetch that is now pinned to the code plane. If the
-    lookup itself still points at the Discussion plane, the cross-check
-    compares two different repos' PR state and aborts every real review —
-    reproduced live on PR #74 (code plane), where it resolved the Discussion
-    plane's unrelated PR #74 and exited 1. Reverting {{CODE_REPO}} back to
-    {{REPO}} on any of these lines must turn this test red.
+    result against a fetch that is now pinned to a resolved plane. If the
+    lookup itself still points unconditionally at the Discussion plane, the
+    cross-check compares two different repos' PR state and aborts every real
+    review — reproduced live on PR #74 (code plane), where it resolved the
+    Discussion plane's unrelated PR #74 and exited 1.
+
+    D#2563: code-reviewer and security-reviewer no longer hardcode the code
+    plane at all — a PR number is not always on the code plane, so both now
+    resolve against {{pr_repo}} (whatever plane #pr's own probe/--plane
+    resolved to). acceptance-tester is untouched by D#2563 and still hardcodes
+    CODE_REPO; reverting either reviewer template's {{pr_repo}} back to
+    {{CODE_REPO}} or {{REPO}} must turn this test red.
     """
     assert _REPO != _CODE_REPO, (
         "fixture invalid: _REPO and _CODE_REPO must differ in this checkout "
@@ -458,7 +469,23 @@ def test_review_role_headref_lookup_scoped_to_code_repo() -> None:
         "other, or the substring checks below are unreliable"
     )
 
-    for role in ("code-reviewer", "security-reviewer", "acceptance-tester"):
+    pr_repo = _STUB_VARS["pr_repo"]
+    assert pr_repo not in (_REPO, _CODE_REPO), (
+        "fixture invalid: _STUB_VARS['pr_repo'] must differ from both _REPO and "
+        "_CODE_REPO, or the substring checks below cannot discriminate a "
+        "still-hardcoded lookup from a correctly plane-scoped one"
+    )
+
+    # code-reviewer/security-reviewer resolve against the PR's own plane
+    # ({{pr_repo}}); acceptance-tester (untouched by D#2563) still hardcodes
+    # CODE_REPO.
+    expected_scope = {
+        "code-reviewer": pr_repo,
+        "security-reviewer": pr_repo,
+        "acceptance-tester": _CODE_REPO,
+    }
+
+    for role, scope in expected_scope.items():
         result = render(role, _STUB_VARS)
         headref_lines = [
             line for line in result.splitlines()
@@ -469,13 +496,12 @@ def test_review_role_headref_lookup_scoped_to_code_repo() -> None:
             "the D#1940 FM-5 cross-check lookup is missing entirely."
         )
         for line in headref_lines:
-            assert _CODE_REPO in line, (
-                f"render('{role}') headRef lookup does not scope to CODE_REPO "
-                f"({_CODE_REPO!r}): {line!r}"
+            assert scope in line, (
+                f"render('{role}') headRef lookup does not scope to {scope!r}: {line!r}"
             )
             assert _REPO not in line, (
                 f"render('{role}') headRef lookup scopes to the Discussion plane "
-                f"({_REPO!r}) instead of the code plane: {line!r}"
+                f"({_REPO!r}) instead of {scope!r}: {line!r}"
             )
 
 

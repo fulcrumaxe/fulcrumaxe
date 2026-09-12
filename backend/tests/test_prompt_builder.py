@@ -649,6 +649,7 @@ class TestPrPlumbingThroughRealTemplate:
             role="code-reviewer",
             discussion=1761,
             pr=1786,
+            pr_repo="autonomous-agent-7/fulcrumaxe",
             task_prompt="review it",
             hook_event_id="code-reviewer-1761-1",
         )

@@ -86,7 +86,7 @@ class TestBuildPayloadOtherFields:
         )
         assert payload["gate_line"] == "[Control plane gates: lint_must_pass=True]"
 
-    def test_all_eighteen_keys_present(self):
+    def test_all_nineteen_keys_present(self):
         payload = build_payload({"_ROLE": "executor"})
         expected_keys = {
             "role",
@@ -107,6 +107,8 @@ class TestBuildPayloadOtherFields:
             "dial_state_at_spawn",
             "pr",
             "pr_branch",
+            # D#2563: the repo plane #pr was resolved to.
+            "pr_repo",
         }
         assert set(payload.keys()) == expected_keys
 

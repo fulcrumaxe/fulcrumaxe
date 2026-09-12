@@ -201,6 +201,7 @@ RUN_TS_BACKEND=false
 RUN_ORPHAN_TRIAGE=false
 RUN_TUI_ANTI_PATTERNS=false
 RUN_POST_MERGE_HOOK=false
+RUN_PR_PLANE=false
 
 # Parallel to the loop below: which suite (if any) claimed ROUTING_FILES[i].
 # Manifest field only (D#2132) — not a routing-logic change. Unmatched
@@ -254,6 +255,19 @@ while IFS= read -r f; do
     scripts/post-merge-hook.sh|scripts/lib/auto-pull-step.sh|scripts/lib/auto-pull-recover.sh|tests/test_post_merge_hook_pull.sh|tests/test_post_merge_hook_wiring.sh|tests/test_no_heredoc_hook_copies.sh|tests/test_auto_pull_recover.sh|tests/test_post_merge_hook_unmerged_paths.sh|tests/test_post_merge_hook_ac_rate.sh)
       RUN_POST_MERGE_HOOK=true
       [ -z "$suite" ] && suite="post-merge-hook"
+      ;;
+  esac
+
+  # D#2563: the plane-resolution module and every PR-side caller it touched.
+  # Same reasoning as RUN_POST_MERGE_HOOK just above — a source file in this
+  # set changing ALONE (no test file in the same diff) used to claim no
+  # suite at all and run zero bash tests for it; that's how a broken fixture
+  # in tests/test_pr_plane.sh reached a PR with a green-sounding Gate 1
+  # number nobody's tooling would have re-run.
+  case "$f" in
+    scripts/lib/pr-plane.sh|scripts/lib/pr-tree.sh|scripts/merge-and-hook.sh|scripts/post-merge-hook.sh|scripts/lib/auto-pull-step.sh|scripts/spawn-agent.sh|scripts/check-pr-dashboard-touched.sh|tests/test_pr_plane.sh|tests/test_pr_tree_provisioning.sh|tests/test_merge_and_hook.sh|tests/test_post_merge_hook_browser_queue.sh)
+      RUN_PR_PLANE=true
+      [ -z "$suite" ] && suite="pr-plane"
       ;;
   esac
 
@@ -607,6 +621,32 @@ if [ "${RUN_POST_MERGE_HOOK:-false}" = "true" ] && [ -f "$REPO_ROOT/tests/test_p
   RUN_SUITE_TIMEOUT_SECONDS="${RUN_PR_TESTS_BASH_TIMEOUT:-120}" \
     run_suite "post-merge-hook:ac-rate" "bash tests/test_post_merge_hook_ac_rate.sh" \
     "$REPO_ROOT" bash tests/test_post_merge_hook_ac_rate.sh
+fi
+
+# D#2563 plane-resolution suites. Same "only registry that runs them when
+# just a script source file changed" role as RUN_POST_MERGE_HOOK above. When
+# the changed file is one of the tests themselves, the generic tests/*.sh
+# rule already ran it and _RAN_COMMANDS dedup makes the matching call here a
+# no-op.
+if [ "${RUN_PR_PLANE:-false}" = "true" ] && [ -f "$REPO_ROOT/tests/test_pr_plane.sh" ]; then
+  RUN_SUITE_TIMEOUT_SECONDS="${RUN_PR_TESTS_BASH_TIMEOUT:-120}" \
+    run_suite "pr-plane:resolver" "bash tests/test_pr_plane.sh" \
+    "$REPO_ROOT" bash tests/test_pr_plane.sh
+fi
+if [ "${RUN_PR_PLANE:-false}" = "true" ] && [ -f "$REPO_ROOT/tests/test_pr_tree_provisioning.sh" ]; then
+  RUN_SUITE_TIMEOUT_SECONDS="${RUN_PR_TESTS_BASH_TIMEOUT:-120}" \
+    run_suite "pr-plane:tree-provisioning" "bash tests/test_pr_tree_provisioning.sh" \
+    "$REPO_ROOT" bash tests/test_pr_tree_provisioning.sh
+fi
+if [ "${RUN_PR_PLANE:-false}" = "true" ] && [ -f "$REPO_ROOT/tests/test_merge_and_hook.sh" ]; then
+  RUN_SUITE_TIMEOUT_SECONDS="${RUN_PR_TESTS_BASH_TIMEOUT:-120}" \
+    run_suite "pr-plane:merge-and-hook" "bash tests/test_merge_and_hook.sh" \
+    "$REPO_ROOT" bash tests/test_merge_and_hook.sh
+fi
+if [ "${RUN_PR_PLANE:-false}" = "true" ] && [ -f "$REPO_ROOT/tests/test_post_merge_hook_browser_queue.sh" ]; then
+  RUN_SUITE_TIMEOUT_SECONDS="${RUN_PR_TESTS_BASH_TIMEOUT:-120}" \
+    run_suite "pr-plane:post-merge-hook-browser-queue" "bash tests/test_post_merge_hook_browser_queue.sh" \
+    "$REPO_ROOT" bash tests/test_post_merge_hook_browser_queue.sh
 fi
 
 # TUI anti-pattern pre-merge gate — blocks on error-severity findings

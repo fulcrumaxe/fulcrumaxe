@@ -113,6 +113,12 @@ def build_payload(env: Mapping[str, str]) -> dict:
         "dial_state_at_spawn":   env.get("_DIAL_STATE", ""),
         "pr":                    int(pr_raw) if pr_raw else None,
         "pr_branch":             env.get("_PR_BRANCH", ""),
+        # D#2563: the repo plane PR #<pr> was resolved to (spawn-agent.sh's
+        # --pr-plane / probe-both-planes resolution) — mirrors pr_branch
+        # above, same reasoning: a PR-scoped role template needs to know
+        # which repo to run `gh pr diff --repo` against, and that is no
+        # longer always the code plane.
+        "pr_repo":               env.get("_PR_REPO", ""),
     }
 
 
