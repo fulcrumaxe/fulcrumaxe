@@ -231,13 +231,22 @@ def fetcher(pr_states=None, disc_bodies=None, counter=None):
     return _f
 
 
-@pytest.mark.parametrize("state,cleared", [("MERGED", True), ("CLOSED", True), ("OPEN", False)])
+@pytest.mark.parametrize("state,cleared", [("MERGED", True), ("CLOSED", False), ("OPEN", False)])
 def test_pr_ref_resolution(state, cleared):
+    """CLOSED no longer clears a PR ref (D#2554) — only MERGED does. On the
+    public code plane, CLOSED is the only PR state an outsider can reach on a
+    repo they cannot merge into, so treating it as clearing would let an
+    open-then-self-close at a predicted number clear a ref.
+    """
     r = BlockerResolver(fetcher=fetcher(pr_states={1771: state}))
     outstanding = r.unresolved(["#1771"])
     assert (outstanding == []) is cleared
     if not cleared:
-        assert "OPEN" in outstanding[0][1]
+        assert state in outstanding[0][1]
+        if state == "CLOSED":
+            # Directs the operator to edit the STATUS line rather than wait —
+            # a closed-unmerged PR will never clear on its own.
+            assert "STATUS line" in outstanding[0][1]
 
 
 @pytest.mark.parametrize(
