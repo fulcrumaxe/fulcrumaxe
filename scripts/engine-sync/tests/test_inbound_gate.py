@@ -166,6 +166,14 @@ def test_sensitive_prefixes_cover_named_examples():
     # its own entry, which is exactly what a prefix-only fix would miss.
     assert gate.is_sensitive("loop-bootstrap/scripts/generate.sh", prefixes)
     assert gate.is_sensitive("loop-bootstrap/bootstrap.sh", prefixes)
+    # backend/spawn_templates/ -- the 24 role .tmpl files plus the 9 shared
+    # fragments/ they include are role definitions exactly like
+    # .claude/agents/*.md, just rendered under backend/ instead. "backend/"
+    # itself stays reviewed-non-sensitive (see _REVIEWED_NON_SENSITIVE_PATTERNS
+    # below) -- only this one subtree needed its own entry.
+    assert gate.is_sensitive("backend/spawn_templates/executor.tmpl", prefixes)
+    assert gate.is_sensitive("backend/spawn_templates/fragments/two-gate-protocol.md", prefixes)
+    assert not gate.is_sensitive("backend/spawn_templates.md", prefixes)  # prefix, not substring
 
 
 # The full real export surface, and which of it is a reviewed decision.
@@ -242,6 +250,8 @@ def test_every_export_surface_entry_has_a_recorded_sensitivity_decision():
         "hooks/sandbox.py",
         "scripts/spawn-agent.sh",
         "CLAUDE.md",
+        "backend/spawn_templates/executor.tmpl",
+        "backend/spawn_templates/fragments/two-gate-protocol.md",
     ],
 )
 def test_sensitive_paths_need_approval_but_are_valid_by_allowlist(remote_path):
