@@ -27,6 +27,19 @@
  *   velocity_all_time_per_day — .autonomous-team/registry.json discussions[].{status,closed_at}
  *   cycle_time_median_hours   — same registry.json (DONE items, created_at→closed_at)
  *
+ * Project scoping (D#2540, porting D#2518)
+ * -----------------------------------------
+ * `handleDora()` now honors a `project` param, matching
+ * backend/rpc/stats_dora.py: the repo slug is resolved per request via
+ * config/project-repo-slug.ts's resolveProjectRepoSlug(), and releases/
+ * registry.json are read from that project's own checkout root
+ * (resolveProjectRoot()) instead of this serving checkout's. When a named
+ * project declares no repo, the handler declines
+ * (UnresolvableProjectError) rather than answering with the serving
+ * checkout's numbers under that project's name. A call with no `project`
+ * is unaffected — the module-scope AF_CODE_REPO / AF_REPO defaults below
+ * still apply.
+ *
  * Read-only: no writes, no spawns.
  */
 
@@ -34,6 +47,11 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { resolveCodeRepo, resolveRepo } from "../config/repo.js";
+import {
+  resolveProjectRepoSlug,
+  resolveProjectRoot,
+  UnresolvableProjectError,
+} from "../config/project-repo-slug.js";
 
 // ---------------------------------------------------------------------------
 // Shared path helpers (mirrors misc-batch5.ts / stats-batch3.ts convention)
@@ -158,9 +176,11 @@ function loadRecentReleases(
 /**
  * Compute p50 lead time in minutes from merged PRs in the 7-day window.
  * Shells `gh pr list` (same argv as handleWeeklyVelocity in stats-batch3.ts).
+ * `repo` defaults to AF_CODE_REPO (this checkout's own code plane) — a
+ * project-scoped call passes its own resolved slug instead.
  * Returns -1.0 on gh failure or no samples.
  */
-function computeLeadTimeP50(cutoffTs: number): number {
+function computeLeadTimeP50(cutoffTs: number, repo: string = AF_CODE_REPO): number {
   let stdout: string;
   try {
     stdout = execFileSync(
@@ -169,7 +189,7 @@ function computeLeadTimeP50(cutoffTs: number): number {
         "pr",
         "list",
         "--repo",
-        AF_CODE_REPO,
+        repo,
         "--state",
         "merged",
         "--json",
@@ -217,17 +237,21 @@ function computeLeadTimeP50(cutoffTs: number): number {
 
 /**
  * Compute change_failure_rate_pct as a string.
+ * `repo` defaults to AF_REPO (this checkout's own discussion plane) — a
+ * project-scoped call passes its own resolved slug instead (an adopter
+ * project has one repo for both PRs and Discussions, unlike this engine's
+ * own code/discussion plane split).
  * Returns "n/a" on no releases, gh error, or exception.
  * Returns "0.0" when no bug discussions found.
  * Returns str(round(failed/len(releases)*100, 1)) otherwise.
  */
-function computeCfr(releases: Array<Record<string, unknown>>): string {
+function computeCfr(releases: Array<Record<string, unknown>>, queryRepo: string = AF_REPO): string {
   if (releases.length === 0) return "n/a";
 
   // Fetch bug discussions via gh api graphql
   let stdout: string;
   try {
-    const queryArg = `query=query{repository(owner:"${AF_REPO.split("/")[0]}",name:"${AF_REPO.split("/")[1]}"){discussions(first:100,categoryId:null,filterBy:{labels:[]}){nodes{title createdAt}}}}`;
+    const queryArg = `query=query{repository(owner:"${queryRepo.split("/")[0]}",name:"${queryRepo.split("/")[1]}"){discussions(first:100,categoryId:null,filterBy:{labels:[]}){nodes{title createdAt}}}}`;
     stdout = execFileSync(
       "gh",
       ["api", "graphql", "-f", queryArg],
@@ -343,8 +367,8 @@ function computeCycleTimeMedianHours(
 // 6. Load registry.json — mirrors kpi_engine.load_registry()
 // ---------------------------------------------------------------------------
 
-function loadRegistry(): Array<Record<string, unknown>> {
-  const registryPath = join(autonomousTeamDir(), "registry.json");
+function loadRegistry(teamDir: string = autonomousTeamDir()): Array<Record<string, unknown>> {
+  const registryPath = join(teamDir, "registry.json");
   if (!existsSync(registryPath)) return [];
   try {
     const data = JSON.parse(readFileSync(registryPath, "utf-8")) as Record<
@@ -367,13 +391,41 @@ function loadRegistry(): Array<Record<string, unknown>> {
 /**
  * stats.dora — return DORA + KPI snapshot for the dashboard.
  *
- * params is accepted and ignored. Python's twin (backend/rpc/stats_dora.py)
- * now honors a `project` param (D#2518) — this TS handler does not yet;
- * see PARITY-CAVEATS.md #8.
+ * Params: {"project": str} (omit or None for the serving checkout).
+ *
+ * A named project's repo slug and checkout root are resolved per request
+ * (D#2540, porting D#2518) — the module-scope AF_CODE_REPO/AF_REPO bindings
+ * below only ever apply to the no-project (serving-checkout) case. When a
+ * named project resolves to no repo, this throws UnresolvableProjectError
+ * (rpc_code -32001) rather than reporting the serving checkout's DORA/CFR
+ * numbers under that project's name — distinguishable from a genuinely
+ * empty response for a resolvable-but-dataless project. Mirrors
+ * backend/rpc/stats_dora.py's handle() exactly.
  */
 export async function handleDora(
-  _params: Record<string, unknown>
+  params: Record<string, unknown>
 ): Promise<unknown> {
+  const rawProject = params?.["project"];
+  const project = typeof rawProject === "string" && rawProject ? rawProject : null;
+
+  // Decline happens outside the try/catch below, same as Python: a project
+  // that fails to resolve must propagate as an error, never collapse into
+  // the generic {applicable: false} fallback that swallows compute errors.
+  let scopedRepo: string | null = null;
+  let projectRoot: string | null = null;
+  if (project) {
+    scopedRepo = resolveProjectRepoSlug(project);
+    if (scopedRepo === null) {
+      throw new UnresolvableProjectError(
+        `stats.dora: project ${JSON.stringify(project)} resolves to no GitHub repo ` +
+          "slug (no 'repo' field in its dashboard-runtime.json or project.json) -- " +
+          "declining rather than reporting the serving checkout's DORA/CFR numbers " +
+          "under this project's name"
+      );
+    }
+    projectRoot = resolveProjectRoot(project);
+  }
+
   try {
     const nowMs = Date.now();
     const nowTs = nowMs / 1000;
@@ -382,8 +434,13 @@ export async function handleDora(
     // UTC today as "YYYY-MM-DD"
     const windowStart = new Date(nowMs).toISOString().slice(0, 10);
 
-    // Releases dir
-    const releasesDir = join(autonomousTeamDir(), "releases");
+    // Releases dir — the named project's own .autonomous-team/ when scoped,
+    // else this serving checkout's (existing behaviour).
+    const effectiveTeamDir =
+      projectRoot !== null ? join(projectRoot, ".autonomous-team") : autonomousTeamDir();
+    const releasesDir = join(effectiveTeamDir, "releases");
+    const leadTimeRepo = scopedRepo ?? AF_CODE_REPO;
+    const cfrRepo = scopedRepo ?? AF_REPO;
 
     // --- 1. Deploy frequency ---
     let deployFreq: number;
@@ -397,7 +454,7 @@ export async function handleDora(
     // --- 2. Lead time p50 (async-compatible: gh blocks but we run it sync) ---
     let leadTime: number;
     try {
-      leadTime = computeLeadTimeP50(cutoffTs);
+      leadTime = computeLeadTimeP50(cutoffTs, leadTimeRepo);
     } catch {
       leadTime = -1.0;
     }
@@ -406,13 +463,13 @@ export async function handleDora(
     let cfr: string;
     try {
       const recentReleases = loadRecentReleases(releasesDir, cutoffTs);
-      cfr = computeCfr(recentReleases);
+      cfr = computeCfr(recentReleases, cfrRepo);
     } catch {
       cfr = "n/a";
     }
 
     // --- 4 + 5. Velocity + cycle time from registry ---
-    const discussions = loadRegistry();
+    const discussions = loadRegistry(effectiveTeamDir);
     const velocity = computeVelocity(discussions);
     const cycleTimeMedian = computeCycleTimeMedianHours(discussions);
 
