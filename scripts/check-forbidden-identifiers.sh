@@ -70,10 +70,12 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-RULES_FILE="$REPO_ROOT/open-source/IDENTIFIER-RULES.txt"
 
 # shellcheck source=scripts/lib/identity-resolve.sh
 source "$SCRIPT_DIR/lib/identity-resolve.sh"
+# shellcheck source=scripts/lib/identifier-rules-resolve.sh
+source "$SCRIPT_DIR/lib/identifier-rules-resolve.sh"
+RULES_FILE_CANDIDATE="$REPO_ROOT/open-source/IDENTIFIER-RULES.txt"
 
 BASE_REF=""
 LIST_ONLY=0
@@ -102,10 +104,31 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ ! -f "$RULES_FILE" ]]; then
-  echo "error: rules file not found: $RULES_FILE" >&2
-  exit 2
-fi
+# D#2399: resolve through the shared state resolver instead of a bare
+# [[ -f ]]. "missing" covers both no-file-at-all and a file that says
+# nothing about itself; "present" and "declared-none" both proceed here,
+# since this script's question (FORBIDDEN_PATTERNS) is independent of the
+# IDENTITIES block that "declared-none" answers for repo-target-gate.sh.
+#
+# A `case` with a hard-fail default, not an `if == missing`: an `if` only
+# stops on the one value it names, so anything else -- including an EMPTY
+# $RULES_STATE, which is exactly what a silently-failed `source` above
+# leaves it as under `set -u` with no `-e` -- falls through and proceeds.
+# That is a two-state check wearing a three-state label. Every branch not
+# named below is refused, not just the one this script happens to expect.
+IFS=$'\t' read -r RULES_STATE RULES_FILE <<< "$(_resolve_identifier_rules_state "$RULES_FILE_CANDIDATE")"
+case "$RULES_STATE" in
+  present|declared-none)
+    ;;
+  missing)
+    echo "error: rules file not found or undeclared: $RULES_FILE_CANDIDATE" >&2
+    exit 2
+    ;;
+  *)
+    echo "error: identifier-rules-resolve.sh returned an unrecognized state '$RULES_STATE' for $RULES_FILE_CANDIDATE -- refusing to proceed with an unverified rules source" >&2
+    exit 2
+    ;;
+esac
 
 # Paths that never reach a public push, so a hit inside them is not a leak
 # and scanning them produces only false blocks.
