@@ -176,11 +176,17 @@ function loadRecentReleases(
 /**
  * Compute p50 lead time in minutes from merged PRs in the 7-day window.
  * Shells `gh pr list` (same argv as handleWeeklyVelocity in stats-batch3.ts).
- * `repo` defaults to AF_CODE_REPO (this checkout's own code plane) — a
- * project-scoped call passes its own resolved slug instead.
+ * `repoOverride` lets a project-scoped call pass its own resolved slug;
+ * absent that, this resolves the code plane itself (via `resolveCodeRepo()`,
+ * same value AF_CODE_REPO holds) rather than through a parameter default —
+ * a defaulted parameter is invisible to the repo-plane detector's
+ * assignment-only taint tracker (scripts/audit_repo_plane.py), which only
+ * recognizes a resolver call on the right-hand side of a `const`/`let`/`var`
+ * (D#2540 fix round).
  * Returns -1.0 on gh failure or no samples.
  */
-function computeLeadTimeP50(cutoffTs: number, repo: string = AF_CODE_REPO): number {
+function computeLeadTimeP50(cutoffTs: number, repoOverride?: string): number {
+  const repo = repoOverride ?? resolveCodeRepo();
   let stdout: string;
   try {
     stdout = execFileSync(
