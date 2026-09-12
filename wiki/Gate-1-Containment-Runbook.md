@@ -15,8 +15,11 @@ of the capabilities below as `NOT-DENIED` and an overall verdict of
 actual host-level identity boundary, performed once by an operator on the
 machine itself, outside the repo and outside CI.
 
-This runbook describes that gesture. Performing it is what moves the
-verifier's verdict from `UNCONTAINED` to `CONTAINED`.
+This runbook describes that gesture. Performing the steps below is
+necessary for the verifier to move off `UNCONTAINED` — it is not
+sufficient by itself. Reaching `CONTAINED` also requires a separate
+network-denial decision this runbook does not make; see "Verifying it
+worked" below.
 
 ## The four capabilities
 
@@ -35,7 +38,9 @@ Gate-1 pass/fail signal actually needs:
   worried about.
 - **operator-checkout-write** — whether the process can write into the
   operator's own checkout, `.git` included.
-- **network** — whether the process can reach the public internet.
+- **network** — whether the process can reach the public internet. Nothing
+  in the numbered gesture below changes this; see "Verifying it worked" for
+  what that means for the verdict.
 
 ## Why environment scrubbing does not help
 
@@ -120,14 +125,71 @@ capabilities above is a different uid.
    so there is never a window where the boundary exists but the directory
    is still open.
 
-4. **Point `GATE1_RUNNER_UID` at the new user.** `scripts/gate1-invoke.sh`
+4. **Grant the runner uid read and traverse access to the checkout — and
+   only that.** The `state-dir` and `operator-checkout-write` probes in
+   `gate1-verify-containment.sh` cannot run at all unless the runner uid can
+   first reach the files they inspect. That requires exactly three things,
+   together:
+   - **(a) `x` (traverse) permission on every ancestor directory of the
+     checkout** — most immediately the operator's own home directory.
+   - **(b) read on the checkout tree, and execute on
+     `scripts/run-pr-tests.sh`** — the file Gate 1 exists to run.
+   - **(c) no write anywhere under the checkout, `.git` included, and no
+     read on `$AUTONOMOUS_TEAM_STATE_DIR`** — the two things this gesture
+     exists to deny.
+
+   **The collision this step exists to name:** a `0700` operator home
+   denies (a). And (a) is the *precondition* the `state-dir` and
+   `operator-checkout-write` probes need before they can run at all —
+   without it, both print `INDETERMINATE`, which is not the same reading as
+   `DENIED`. Granting (a) and (b) without disturbing (c) is the actual
+   problem this step solves; nothing else in this gesture (user creation,
+   the sudo rule, `GATE1_RUNNER_UID`) touches it.
+
+   **Three ways to grant (a) and (b) while holding (c) — priced, not
+   chosen. This repo does not pick one: each trades differently against
+   whatever else `0700` is protecting on this host, and that tradeoff
+   belongs to the operator who owns the host.**
+
+   - **ACL on the checkout path.** `setfacl` granting the runner uid `r-x`
+     on the home directory and read+execute through the checkout, leaving
+     `0700` intact everywhere else on the home. Narrowest change. Gives up:
+     an access grant `ls -l` does not show — easy to forget is there, and
+     easy to lose silently on a restore that does not preserve extended
+     attributes.
+   - **`/home/OPERATOR` to `0711` with a group-readable checkout.** Standard
+     permission bits, visible in `ls -l`. Gives up: the posture of the
+     *entire* home directory changes, not just the one path the runner
+     needs — every other directory under it becomes traversable too (each
+     still gated by its own mode, but the ancestor block is gone for all of
+     them, not just this checkout).
+     **The trap measured on this host:** the obvious way to make the
+     checkout group-readable is to add the runner uid to the checkout's
+     owning group. `/home/jp/fulcrumaxe/.git` is `0775 jp:users` —
+     **group-writable**. Adding the runner to `users` grants it group
+     *write* on `.git`, which flips `operator-checkout-write` from `DENIED`
+     to `NOT-DENIED` — the step meant to enable containment would silently
+     defeat it. If this shape is chosen, the runner needs a group that has
+     read on the checkout without inheriting `users`' write bit on `.git` —
+     a dedicated group, or an ACL entry scoped to read only, not plain
+     membership in the checkout's existing owning group.
+   - **Relocate the checkout outside the operator's home entirely.**
+     Cleanest boundary — there is no ancestor-directory problem left to
+     solve. Gives up: the most disruption of the three, since every path
+     the operator, CI, and every other tool on this host uses to reach the
+     checkout changes.
+
+   Apply whichever shape the operator picks before continuing. This
+   runbook does not recommend one.
+
+5. **Point `GATE1_RUNNER_UID` at the new user.** `scripts/gate1-invoke.sh`
    reads this from the process environment: when set, it runs the suite
    via `sudo -u "$GATE1_RUNNER_UID"` and, if that user does not exist,
    refuses to run anything at all rather than silently falling back to
    same-uid. Set it in whatever environment invokes Gate 1 (the review
    lane's spawn environment, or an operator's own shell for a manual run).
 
-5. **Re-run the verifier as the new user, with both targets pinned to their
+6. **Re-run the verifier as the new user, with both targets pinned to their
    real absolute operator-side paths.** Running as a different uid changes
    `$HOME`, and the state-dir probe's default resolves against `$HOME` — so
    an unpinned run under the new user's own home checks a directory that
@@ -141,28 +203,38 @@ capabilities above is a different uid.
      bash /home/OPERATOR/CHECKOUT/scripts/gate1-verify-containment.sh
    ```
    (Substitute this host's real operator home and checkout path for the
-   `/home/OPERATOR/...` placeholders above.) Confirm all four capabilities read
-   `DENIED` and the verdict reads `CONTAINED`. If instead you see
-   `INDETERMINATE` on any line, that probe never actually ran — fix
-   whichever precondition it names (a missing `gh`/`curl` binary as the new
-   user, or one of the two paths above not pointing at the real operator
-   location) and re-run; do **not** treat `INDETERMINATE` as good enough.
-   Only a run with zero `INDETERMINATE` lines and all four `DENIED` is
-   evidence containment is live. Paste that output into the tracking
-   Discussion so the record shows containment is live, not merely built.
+   `/home/OPERATOR/...` placeholders above.) With only step 4's access fix
+   applied — no network-denial decision made — expect exactly three probes
+   to read `DENIED` (`gh-credential`, `state-dir`, `operator-checkout-write`)
+   and `network` to still read `NOT-DENIED`, because nothing in this
+   gesture touches the network; the verdict at that point is
+   `UNCONTAINED`, not `CONTAINED`. That is the correct and expected outcome
+   of this gesture alone — see "Verifying it worked" below for why
+   `CONTAINED` needs one more decision this runbook does not make. If
+   instead you see `INDETERMINATE` on any line, that probe never actually
+   ran — fix whichever precondition it names (a missing `gh`/`curl` binary
+   as the new user, or one of the two paths above not pointing at the real
+   operator location) and re-run; do not treat `INDETERMINATE` as good
+   enough, and do not mistake three `DENIED` plus `UNCONTAINED` for
+   `INDETERMINATE` either — they are different states with different
+   causes. Paste that output into the tracking Discussion so the record
+   shows exactly which containment state is live.
 
 ## Do not automate this
 
 This gesture requires editing the host's NixOS configuration, `sudoers`,
-and running `chmod` against a directory outside the repository. None of it
-runs in CI, and none of it is something an executor, reviewer, or any other
-automated role should attempt:
+and running `chmod`/an access-control change against paths outside the
+repository. None of it runs in CI, and none of it is something an executor,
+reviewer, or any other automated role should attempt:
 
 - **No executor may create a system user, edit NixOS configuration, edit
-  `sudoers`, or `chmod` `~/.autonomous-forever-state`.** These are host
-  changes with no automated rollback and no sandboxing — exactly the class
-  of action that needs a human to read this runbook and decide, not an
-  agent executing it unattended.
+  `sudoers`, or change permissions on `~/.autonomous-forever-state` or the
+  operator's home directory.** These are host changes with no automated
+  rollback and no sandboxing — exactly the class of action that needs a
+  human to read this runbook and decide, not an agent executing it
+  unattended. That includes picking one of the three access shapes in step
+  4 above — the choice is the operator's, not an executor's, and not this
+  runbook's.
 - **This is a host-provisioning gesture requiring boss approval**, not a
   merge in this repository. There is nothing to review as a PR — the
   before/after state lives on the host, not in git history.
@@ -184,10 +256,20 @@ reading the result correctly:
   missing fixed; it must never be read as, or mistaken for, `DENIED`.
 
 Before this gesture: all four probes read `NOT-DENIED`, verdict
-`UNCONTAINED`. After (run as step 5 above, with both paths pinned): all
-four should read `DENIED`, verdict `CONTAINED`. A verdict of
-`INDETERMINATE` (forced whenever any single probe is `INDETERMINATE`, by
-design — an unrun probe must never look like a passing one) means the run
-itself is inconclusive, not that containment succeeded or failed. The
-script's exit code is always `0` regardless of verdict — it reports, it
-does not gate — so read the printed lines, not the exit status.
+`UNCONTAINED`. After the access fix in step 4 above alone (run as step 6,
+with both paths pinned): three probes — `gh-credential`, `state-dir`,
+`operator-checkout-write` — read `DENIED`, and `network` still reads
+`NOT-DENIED`, because nothing in the numbered gesture above denies the
+network. The verdict at that point is `UNCONTAINED`, not `CONTAINED` —
+reaching `CONTAINED` requires all four `DENIED`, and this runbook does not
+include a network-denial step. Getting there needs a further, separate
+decision that denies the network at this uid; this runbook does not name
+or choose one. Until that decision is made and applied, three `DENIED`
+plus `network=NOT-DENIED` plus `UNCONTAINED` is the correct and expected
+result of the access fix alone — it is not a sign the gesture failed. A
+verdict of `INDETERMINATE` (forced whenever any single probe is
+`INDETERMINATE`, by design — an unrun probe must never look like a passing
+one) means the run itself is inconclusive, not that containment succeeded
+or failed. The script's exit code is always `0` regardless of verdict — it
+reports, it does not gate — so read the printed lines, not the exit
+status.
