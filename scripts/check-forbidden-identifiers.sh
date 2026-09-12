@@ -70,10 +70,16 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-RULES_FILE="$REPO_ROOT/open-source/IDENTIFIER-RULES.txt"
 
 # shellcheck source=scripts/lib/identity-resolve.sh
 source "$SCRIPT_DIR/lib/identity-resolve.sh"
+# shellcheck source=scripts/lib/identifier-rules-resolve.sh
+source "$SCRIPT_DIR/lib/identifier-rules-resolve.sh"
+# IDENTIFIER_RULES_FILE_OVERRIDE: test/build hook only (D#2399). Lets a
+# caller point this script at an arbitrary rules file -- e.g. a blob
+# extracted from another tree -- without touching REPO_ROOT. Unset in every
+# normal invocation, where this is exactly the path it always was.
+RULES_FILE_CANDIDATE="${IDENTIFIER_RULES_FILE_OVERRIDE:-$REPO_ROOT/open-source/IDENTIFIER-RULES.txt}"
 
 BASE_REF=""
 LIST_ONLY=0
@@ -102,8 +108,14 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ ! -f "$RULES_FILE" ]]; then
-  echo "error: rules file not found: $RULES_FILE" >&2
+# D#2399: resolve through the shared state resolver instead of a bare
+# [[ -f ]]. "missing" covers both no-file-at-all and a file that says
+# nothing about itself; "present" and "declared-none" both proceed here,
+# since this script's question (FORBIDDEN_PATTERNS) is independent of the
+# IDENTITIES block that "declared-none" answers for repo-target-gate.sh.
+IFS=$'\t' read -r RULES_STATE RULES_FILE <<< "$(_resolve_identifier_rules_state "$RULES_FILE_CANDIDATE")"
+if [[ "$RULES_STATE" == "missing" ]]; then
+  echo "error: rules file not found or undeclared: $RULES_FILE_CANDIDATE" >&2
   exit 2
 fi
 
