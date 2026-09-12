@@ -4,8 +4,9 @@
 # Lists all backend/*.py modules (excluding __init__.py, test_*.py, conftest.py)
 # and checks that each one is referenced in wiki/Subsystems-Index.md.
 #
-# Exit 0 — all modules present in the index.
-# Exit 1 — one or more modules are missing; names are printed to stderr.
+# Exit 0 — all modules present in the index, or nothing to check in this tree.
+# Exit 1 — modules are missing from an existing index, or zero backend
+#          modules were found (a broken glob, not a legitimate pass).
 #
 # Usage:
 #   bash scripts/check-subsystems-index.sh
@@ -24,13 +25,19 @@ INDEX="$REPO_ROOT/wiki/Subsystems-Index.md"
 # (the actual regression this script exists to catch, on the team's own
 # checkout where wiki/ is present).
 if [ ! -d "$REPO_ROOT/wiki" ]; then
-  echo "[SKIP] wiki/ not present in this tree (not shipped in the open-source export) — nothing to check."
+  echo "[SKIP] wiki/ absent in this tree — not shipped in the open-source export (D#1858). Nothing to check."
   exit 0
 fi
 
+# wiki/ can carry files unrelated to this index (an operator runbook, say)
+# without carrying the index itself. The index is a local-operator artifact
+# (gitignored on the engine plane, untracked on the code plane, synced out by
+# scripts/sync-wiki.sh) and has never existed in any CI checkout of either
+# plane — an absent index here is not staleness, it's the same "nothing to
+# check" state as wiki/ being absent, one directory level down.
 if [ ! -f "$INDEX" ]; then
-  echo "[FAIL] wiki/Subsystems-Index.md does not exist." >&2
-  exit 1
+  echo "[SKIP] wiki/ present but wiki/Subsystems-Index.md absent — the index isn't present in any CI checkout of either plane. Nothing to check."
+  exit 0
 fi
 
 # Build sorted list of backend module filenames (basename only, e.g. budget.py)
@@ -44,8 +51,12 @@ MODULES=$(
 )
 
 if [ -z "$MODULES" ]; then
-  echo "[WARN] No backend/*.py modules found — nothing to check."
-  exit 0
+  # This branch only fires when the gate's own trigger (a changed backend/*.py
+  # file) has already guaranteed at least one exists — reaching it means the
+  # glob is broken. Discovering zero files is a failure, not a pass (same
+  # principle scripts/ci/guard-registry-check.py applies to its own glob).
+  echo "[FAIL] No backend/*.py modules found — the glob is broken." >&2
+  exit 1
 fi
 
 # Build sorted list of modules mentioned in the index.
