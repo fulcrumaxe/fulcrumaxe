@@ -114,11 +114,26 @@ Review checklist:
    `needs-fix` and note that `run.mjs` must be updated (or already was, but the spec failed to
    load for another reason).
 
-   Run the test runner helper (auto-detects suites from the PR diff):
-     TESTS_JSON=$(bash scripts/run-pr-tests.sh {{pr_number}})
+   Run the test runner helper (auto-detects suites from the PR diff) through
+   the caller-side wrapper, `scripts/gate1-invoke.sh`, so the runner copy
+   that executes is the operator's and not the PR head's. Your cwd is your
+   own review worktree, so resolve the operator checkout via git plumbing
+   rather than a relative path — a relative `scripts/gate1-invoke.sh` there
+   would resolve to the head's own copy of the file instead:
+     OP_ROOT=$(dirname "$(git rev-parse --git-common-dir)")
+     if [ -x "$OP_ROOT/scripts/gate1-invoke.sh" ]; then
+       TESTS_JSON=$(bash "$OP_ROOT/scripts/gate1-invoke.sh" --pr {{pr_number}} --tree "$(pwd)")
+     else
+       TESTS_JSON=$(bash scripts/run-pr-tests.sh {{pr_number}})
+     fi
      TEST_EXIT=$?
 
-   If scripts/run-pr-tests.sh is unavailable, run suites manually based on diff files:
+   This wrapper provides no additional security by itself — Gate 1 still
+   runs the PR head as the same uid as everything else. It only separates
+   which copy of the runner executes from which tree it runs against, which
+   a real containment mechanism can later attach to.
+
+   If neither scripts/gate1-invoke.sh nor scripts/run-pr-tests.sh is available, run suites manually based on diff files:
      - PR touches backend/** or tests/**:
          TEST_DIRS=""; [ -d tests ] && TEST_DIRS="tests/"; [ -d backend/tests ] && TEST_DIRS="$TEST_DIRS backend/tests/"
          python3 -m pytest $TEST_DIRS -x -q
