@@ -35,9 +35,13 @@
 #                     never derived from anything under --tree. When set,
 #                     the suites are invoked via
 #                     `sudo -u "$GATE1_RUNNER_UID" --preserve-env=RUN_PR_TESTS_TREE_ROOT
-#                      bash "$RUNNER" "$PR_NUMBER"` — the authorised command
-#                     is the runner script itself, not `env` or anything
-#                     else; the tree root reaches it via sudo's own
+#                      "$RUNNER" "$PR_NUMBER"` — the authorised command is
+#                     the runner script's own path, invoked directly rather
+#                     than via `bash "$RUNNER"` (a sudoers Cmnd naming a
+#                     specific bash binary can break when that binary
+#                     resolves to a different path than the one the rule
+#                     was written against); not `env` or anything else
+#                     either — the tree root reaches it via sudo's own
 #                     env-preservation, which requires the target uid's
 #                     sudoers policy to `env_keep` that one variable name
 #                     (see wiki/Gate-1-Containment-Runbook.md). If that user
@@ -116,7 +120,7 @@ RUNNER_UID="${GATE1_RUNNER_UID:-}"
 
 if [ -z "$RUNNER_UID" ]; then
   echo "gate1_containment=NONE (same-uid)" >&2
-  RUN_PR_TESTS_TREE_ROOT="$TREE_ROOT" exec bash "$RUNNER" "$PR_NUMBER"
+  RUN_PR_TESTS_TREE_ROOT="$TREE_ROOT" exec "$RUNNER" "$PR_NUMBER"
 fi
 
 # GATE1_RUNNER_UID set: fail closed if the named user is absent on this host.
@@ -130,13 +134,24 @@ fi
 
 echo "gate1_containment=UID($RUNNER_UID)" >&2
 # Exported (not passed via `env VAR=val ...`) so the command sudo is asked to
-# authorise is exactly `bash "$RUNNER" "$PR_NUMBER"` — a fixed, literal
-# sudoers Cmnd target. Routing the tree root through `env` instead would put
+# authorise is exactly `"$RUNNER" "$PR_NUMBER"` — a fixed, literal sudoers
+# Cmnd target. Routing the tree root through `env` instead would put
 # `/usr/bin/env` itself in the Cmnd, and a Cmnd that permits `env` with
 # arbitrary arguments permits arbitrary execution as that user (see the
 # runbook). `--preserve-env` only lets this one named variable survive
 # sudo's env_reset; it still requires the target's sudoers policy to
 # `env_keep` (or SETENV) that exact name — see
 # wiki/Gate-1-Containment-Runbook.md.
+#
+# $RUNNER is invoked directly, NOT via `bash "$RUNNER"`: run-pr-tests.sh is
+# mode 755 with its own `#!/usr/bin/env bash` shebang, and sudo matches its
+# Cmnd against the argv it is directly asked to run, not against whatever
+# the kernel resolves the shebang's interpreter to. Naming `bash` in both
+# the invocation and the sudoers Cmnd binds the rule to one specific bash
+# binary's resolved path — which can differ between the interactive shell's
+# PATH and the review lane's, even on the same host, when the two resolve
+# `bash` through different symlinks. Invoking the script's own path removes
+# that binary entirely from what sudo needs to match, so the rule only ever
+# needs to name the script.
 export RUN_PR_TESTS_TREE_ROOT="$TREE_ROOT"
-exec sudo -u "$RUNNER_UID" --preserve-env=RUN_PR_TESTS_TREE_ROOT bash "$RUNNER" "$PR_NUMBER"
+exec sudo -u "$RUNNER_UID" --preserve-env=RUN_PR_TESTS_TREE_ROOT "$RUNNER" "$PR_NUMBER"

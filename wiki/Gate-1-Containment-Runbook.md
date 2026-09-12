@@ -61,12 +61,12 @@ capabilities above is a different uid.
    - Its own home directory, separate from the operator's.
 
 2. **Scope a `sudo` rule to the command `gate1-invoke.sh` actually runs —
-   not to `gate1-invoke.sh` itself.** `gate1-invoke.sh` does not sudo
-   itself; it execs:
+   not to `gate1-invoke.sh` itself, and not to any `bash` binary.**
+   `gate1-invoke.sh` does not sudo itself; it execs:
    ```
-   sudo -u "$GATE1_RUNNER_UID" --preserve-env=RUN_PR_TESTS_TREE_ROOT bash "$RUNNER" "$PR_NUMBER"
+   sudo -u "$GATE1_RUNNER_UID" --preserve-env=RUN_PR_TESTS_TREE_ROOT "$RUNNER" "$PR_NUMBER"
    ```
-   The command sudo is asked to authorise is `bash <operator-checkout>/scripts/run-pr-tests.sh <PR_NUMBER>`
+   The command sudo is asked to authorise is `<operator-checkout>/scripts/run-pr-tests.sh <PR_NUMBER>`
    — a `sudoers.d` rule written against `.../gate1-invoke.sh` will never
    match this, sudo will refuse, and the predictable 2am repair is to widen
    the rule until it works. **Widening the rule defeats the entire point of
@@ -74,11 +74,25 @@ capabilities above is a different uid.
    Write the literal command, e.g.:
    ```
    # /etc/sudoers.d/gate1-runner (adjust the path to this checkout)
-   %gate1_callers ALL=(gate-runner) NOPASSWD: /run/current-system/sw/bin/bash /home/OPERATOR/CHECKOUT/scripts/run-pr-tests.sh *
+   %gate1_callers ALL=(gate-runner) NOPASSWD: /home/OPERATOR/CHECKOUT/scripts/run-pr-tests.sh *
    Defaults:%gate1_callers env_keep += "RUN_PR_TESTS_TREE_ROOT"
    ```
-   Two things this recipe is deliberately careful about — do not "fix" either
-   away under time pressure:
+   Three things this recipe is deliberately careful about — do not "fix" any
+   of them away under time pressure:
+   - **Do not name a `bash` binary in the `Cmnd`, and do not invoke the
+     runner through one.** `run-pr-tests.sh` is mode `755` with its own
+     `#!/usr/bin/env bash` shebang, so `gate1-invoke.sh` execs the script's
+     own path directly rather than `bash <script>` — and the rule above
+     names only that same script path. Naming a specific `bash` binary
+     instead (e.g. `/run/current-system/sw/bin/bash`) binds the rule to
+     wherever that symlink happens to resolve *today*; it can point to a
+     different store path than the one the process invoking `sudo` resolves
+     `bash` to (interactive shell vs. review-lane spawn environment, or
+     simply after the next `nixpkgs` rebuild), and when the two disagree
+     sudo refuses — again inviting the same "just widen it" repair. Pinning
+     the script's own path instead of an interpreter removes that seam
+     entirely: the script's path inside the checkout doesn't move on a
+     rebuild the way a `/run/current-system/...` symlink does.
    - **Never put `/usr/bin/env` (or any `env` invocation) in the `Cmnd`.** A
      rule that permits `env` with arbitrary arguments permits arbitrary
      execution as the target user — `env` will run anything it's told to.
