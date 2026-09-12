@@ -34,6 +34,7 @@ set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCAN_SRC="$REPO_ROOT/scripts/check-forbidden-identifiers.sh"
+ID_RESOLVE_SRC="$REPO_ROOT/scripts/lib/identity-resolve.sh"
 REAL_RULES="$REPO_ROOT/open-source/IDENTIFIER-RULES.txt"
 
 PASS=0
@@ -84,8 +85,9 @@ trap 'rm -rf "$SCRATCH"' EXIT
 # one.
 make_repo() {
   local root="$SCRATCH/$1"
-  mkdir -p "$root/scripts" "$root/open-source" "$root/src"
+  mkdir -p "$root/scripts/lib" "$root/open-source" "$root/src"
   cp "$SCAN_SRC" "$root/scripts/check-forbidden-identifiers.sh"
+  cp "$ID_RESOLVE_SRC" "$root/scripts/lib/identity-resolve.sh"
   printf 'baseline\n' > "$root/src/app.txt"
   git -C "$root" init -q
   git -C "$root" config user.email "test@example.invalid"
@@ -363,12 +365,26 @@ else
   assert_rc "real rules, nothing added -> rc 0" 0 "$RC" "$OUT"
 
   for p in "${REAL_FORBIDDEN[@]}"; do
-    PLANT="$(literal_for "$p")"
+    if [[ "$p" == "{SELF_LOGIN}" ]]; then
+      # This one resolves at runtime rather than being a literal in the
+      # file (this Discussion), so it needs something to resolve to before
+      # planting the matching text — the same differential AC1 proves.
+      PROBE="zzselflogintest$$"
+      git -C "$R" config fulcrumaxe.selfLogin "$PROBE"
+      PLANT="$PROBE"
+    else
+      PLANT="$(literal_for "$p")"
+    fi
     printf 'planted: %s\n' "$PLANT" > "$R/src/app.txt"
     OUT="$(run_scan "$R" "$BASE")"; RC=$?
     assert_rc "real rules, real identifier planted -> rc 1" 1 "$RC" "$OUT"
     assert_contains "names src/app.txt and a line number" "src/app.txt:1" "$OUT"
     assert_contains "says the identifier was added" "forbidden identifier added" "$OUT"
+    if [[ "$p" == "{SELF_LOGIN}" ]]; then
+      assert_not_contains "the resolved login is redacted from the FAIL output" "$PROBE" "$OUT"
+      assert_contains "the FAIL output names the token instead" "{SELF_LOGIN}" "$OUT"
+      git -C "$R" config --unset fulcrumaxe.selfLogin
+    fi
     printf 'baseline\n' > "$R/src/app.txt"
   done
 fi
@@ -505,6 +521,118 @@ BASE="$(commit_baseline "$R")"
 printf 'ordinary text: coldstart, serve_forever, forever young, claw machines\n' >> "$R/src/app.txt"
 OUT="$(run_scan "$R" "$BASE")"; RC=$?
 assert_rc "unrelated prose near the patterns does not false-positive -> rc 0" 0 "$RC" "$OUT"
+
+echo "=== G. SELF_LOGIN resolves at runtime instead of shipping as a literal ==="
+# Synthetic rules carrying a {SELF_LOGIN} token, shaped like the converted
+# public file: no IDENTITIES block, a SELF_LOGIN=undeclared bare key
+# (declared=1) or without it (declared=0).
+write_selflogin_rules() {
+  local root="$1" declared="$2"
+  {
+    [[ "$declared" -eq 1 ]] && echo "SELF_LOGIN=undeclared"
+    echo "=== FORBIDDEN_PATTERNS_START ==="
+    echo "{SELF_LOGIN}"
+    echo "zzothername"
+    echo "=== FORBIDDEN_PATTERNS_END ==="
+    echo "=== ALLOWLIST_START ==="
+    echo "=== ALLOWLIST_END ==="
+  } > "$root/open-source/IDENTIFIER-RULES.txt"
+}
+
+R="$(make_repo selflogin_config)"
+write_selflogin_rules "$R" 1
+BASE="$(commit_baseline "$R")"
+mkdir -p "$R/.autonomous-team"
+printf '{"boss_github_username": "zzconfiglogin"}\n' > "$R/.autonomous-team/config.json"
+printf 'zzconfiglogin\n' >> "$R/src/app.txt"
+OUT="$(run_scan "$R" "$BASE")"; RC=$?
+assert_rc "config.json boss_github_username resolves and blocks -> rc 1" 1 "$RC" "$OUT"
+assert_contains "FAIL names the token, not the raw login" "{SELF_LOGIN}" "$OUT"
+assert_not_contains "the raw login is redacted out of the FAIL output" "zzconfiglogin" "$OUT"
+
+R="$(make_repo selflogin_precedence)"
+write_selflogin_rules "$R" 1
+BASE="$(commit_baseline "$R")"
+mkdir -p "$R/.autonomous-team"
+printf '{"boss_github_username": "zzconfigwins"}\n' > "$R/.autonomous-team/config.json"
+git -C "$R" config fulcrumaxe.selfLogin "zzgitloses"
+printf 'zzgitloses\n' >> "$R/src/app.txt"
+OUT="$(run_scan "$R" "$BASE")"; RC=$?
+assert_rc "config.json outranks git config (D1 order) -> rc 0 for the git-config value" 0 "$RC" "$OUT"
+printf 'baseline\n' > "$R/src/app.txt"
+printf 'zzconfigwins\n' >> "$R/src/app.txt"
+OUT="$(run_scan "$R" "$BASE")"; RC=$?
+assert_rc "config.json's own value is the one enforced -> rc 1" 1 "$RC" "$OUT"
+
+R="$(make_repo selflogin_gitconfig)"
+write_selflogin_rules "$R" 1
+BASE="$(commit_baseline "$R")"
+git -C "$R" config fulcrumaxe.selfLogin "zzgitlogin"
+printf 'zzgitlogin\n' >> "$R/src/app.txt"
+OUT="$(run_scan "$R" "$BASE")"; RC=$?
+assert_rc "git config fulcrumaxe.selfLogin resolves (adopter path, no config.json) -> rc 1" 1 "$RC" "$OUT"
+
+R="$(make_repo selflogin_badgrammar)"
+write_selflogin_rules "$R" 1
+BASE="$(commit_baseline "$R")"
+git -C "$R" config fulcrumaxe.selfLogin "github-actions[bot]"
+printf 'github-actionsb\n' >> "$R/src/app.txt"
+OUT="$(run_scan "$R" "$BASE")"; RC=$?
+assert_rc "a bracket-bearing bot login fails the grammar and degrades instead of enforcing -> rc 0" 0 "$RC" "$OUT"
+assert_contains "the degrade notice names boss_github_username" "boss_github_username" "$OUT"
+assert_contains "the degrade notice names the git config fallback" "fulcrumaxe.selfLogin" "$OUT"
+
+R="$(make_repo selflogin_declared)"
+write_selflogin_rules "$R" 1
+BASE="$(commit_baseline "$R")"
+OUT="$(run_scan "$R" "$BASE")"; RC=$?
+assert_rc "SELF_LOGIN=undeclared + nothing configured -> rc 0" 0 "$RC" "$OUT"
+assert_contains "the unresolved token is dropped from the enforced/total counts" "patterns=1/1" "$OUT"
+NOTICE_COUNT="$(grep -c '^NOTE:' <<<"$OUT")"
+if [[ "$NOTICE_COUNT" -eq 1 ]]; then
+  ok "exactly one degrade notice, never per-hit noise"
+else
+  bad "exactly one degrade notice" "got $NOTICE_COUNT: $OUT"
+fi
+
+R="$(make_repo selflogin_undeclared_missing)"
+write_selflogin_rules "$R" 0
+BASE="$(commit_baseline "$R")"
+OUT="$(run_scan "$R" "$BASE")"; RC=$?
+assert_rc "no SELF_LOGIN=undeclared line + nothing configured -> rc 1 (fail closed, not a silent skip)" 1 "$RC" "$OUT"
+assert_not_contains "does not report PASS" "PASS (" "$OUT"
+
+R="$(make_repo selflogin_listpatterns)"
+write_selflogin_rules "$R" 1
+BASE="$(commit_baseline "$R")"
+git -C "$R" config fulcrumaxe.selfLogin "zzlistlogin"
+LISTOUT="$(bash "$R/scripts/check-forbidden-identifiers.sh" --list-patterns 2>&1)"
+assert_contains "--list-patterns emits {SELF_LOGIN} unfilled" "{SELF_LOGIN}" "$LISTOUT"
+assert_not_contains "--list-patterns never carries a resolved login" "zzlistlogin" "$LISTOUT"
+
+echo "=== G. D3: an empty IDENTITIES value is a parse error, not an enforce-everything hit ==="
+R="$(make_repo emptyvalue)"
+{
+  echo "=== IDENTITIES_START ==="
+  echo "EMPTY_TOKEN="
+  echo "=== IDENTITIES_END ==="
+  echo "=== FORBIDDEN_PATTERNS_START ==="
+  echo "{EMPTY_TOKEN}"
+  echo "=== FORBIDDEN_PATTERNS_END ==="
+  echo "=== ALLOWLIST_START ==="
+  echo "=== ALLOWLIST_END ==="
+} > "$R/open-source/IDENTIFIER-RULES.txt"
+BASE="$(commit_baseline "$R")"
+printf 'line one\nline two\nline three\n' > "$R/src/app.txt"
+OUT="$(run_scan "$R" "$BASE")"; RC=$?
+assert_rc "empty IDENTITIES value -> rc 1" 1 "$RC" "$OUT"
+HIT_LINE_COUNT="$(grep -c 'forbidden identifier added at' <<<"$OUT")"
+if [[ "$HIT_LINE_COUNT" -eq 0 ]]; then
+  ok "zero over-block hits, not one per added line"
+else
+  bad "zero over-block hits" "got $HIT_LINE_COUNT: $OUT"
+fi
+assert_contains "one parse error naming the offending key" "IDENTITIES entry for 'EMPTY_TOKEN' has an empty value" "$OUT"
 
 echo
 echo "passed=$PASS failed=$FAIL"

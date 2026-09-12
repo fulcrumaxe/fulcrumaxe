@@ -72,6 +72,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 RULES_FILE="$REPO_ROOT/open-source/IDENTIFIER-RULES.txt"
 
+# shellcheck source=scripts/lib/identity-resolve.sh
+source "$SCRIPT_DIR/lib/identity-resolve.sh"
+
 BASE_REF=""
 LIST_ONLY=0
 while [[ $# -gt 0 ]]; do
@@ -177,12 +180,28 @@ HITS=0
 
 # --- IDENTITIES ---
 declare -A IDENTITIES
+# Keys that parsed as a well-formed key=value pair but whose value was
+# empty, so they were refused below rather than stored. Tracked so the
+# unresolved-{TOKEN} check on FORBIDDEN_PATTERNS (further down) does not
+# report the same defect a second time for the pattern that used the key.
+declare -A BAD_IDENTITY_KEYS
 while IFS= read -r t; do
   key="${t%%=*}"
   value="${t#*=}"
   if [[ -z "$key" || "$key" == "$t" ]]; then
     echo "FAIL: malformed IDENTITIES entry (need key=value): $t"
     HITS=$((HITS + 1))
+    continue
+  fi
+  if [[ -z "$value" ]]; then
+    # An empty value substitutes to nothing, and `grep -nE -- ""` matches
+    # EVERY line — the empty-key guard above (D#1844) never covered this,
+    # because it only tested the key. That turns one malformed entry into
+    # the worst possible over-block instead of the parse failure it should
+    # be (fail-closed, not fail-open onto everything).
+    echo "FAIL: IDENTITIES entry for '$key' has an empty value — refusing to substitute it into a pattern (an empty pattern would match every line): $t"
+    HITS=$((HITS + 1))
+    BAD_IDENTITY_KEYS["$key"]=1
     continue
   fi
   IDENTITIES["$key"]="$value"
@@ -196,12 +215,79 @@ fill_tokens() {
   printf '%s' "$text"
 }
 
+# redact_self_login <text> — scrub the resolved {SELF_LOGIN} value out of
+# text about to reach stdout/stderr. Scoped to SELF_LOGIN only: every other
+# {TOKEN} here keeps printing its filled value in FAIL output exactly as
+# before (that is what proves a hit at all, and this repo's own engine-side
+# IDENTITIES entries never reach a public log the way a code-plane run's
+# resolved SELF_LOGIN does). The FAIL emit below and the grep-stderr
+# passthrough both print the FILLED pattern, and preflight-common.sh's
+# run_always_gates() feeds that text straight into CI logs on the public
+# code plane — without this, a failing run would republish the login this
+# gate exists to keep off it, moving the disclosure from the file into logs
+# instead of closing it.
+redact_self_login() {
+  local text="$1"
+  if [[ -n "${IDENTITIES[SELF_LOGIN]:-}" ]]; then
+    text="${text//${IDENTITIES[SELF_LOGIN]}/\{SELF_LOGIN\}}"
+  fi
+  printf '%s' "$text"
+}
+
+# --- SELF_LOGIN: resolve at runtime, per identity-resolve.sh, and inject it
+# into IDENTITIES so the substitution above does the work unchanged.
+#
+# --list-patterns is the one exception (D4): it must never fill or resolve
+# {SELF_LOGIN}, so that stream can never carry a resolved login regardless
+# of what this checkout could resolve it to. Every other {TOKEN} keeps
+# filling in --list-patterns exactly as before — this repo's own
+# engine-side IDENTITIES entries are what build-public-seed.sh's leak check
+# depends on seeing filled.
+SELF_LOGIN_RESOLVED=""
+if [[ "$LIST_ONLY" -eq 0 ]] && SELF_LOGIN_RESOLVED="$(resolve_self_login)"; then
+  IDENTITIES["SELF_LOGIN"]="$SELF_LOGIN_RESOLVED"
+fi
+
+# A bare top-level `SELF_LOGIN=undeclared` line, matched the same
+# structure-blind way repo-target-gate.sh reads `NO_IDENTITIES=declared` —
+# not inside any === ..._START/END === block, so parse_block never sees it.
+# Its presence means: "this file's {SELF_LOGIN} is expected to resolve at
+# runtime, and failing to resolve here is a legitimate, declared state
+# rather than rot." Absence means an unresolved {SELF_LOGIN} is a hard
+# failure like any other malformed file.
+SELF_LOGIN_DECLARED="$(sed -n 's/^[[:space:]]*SELF_LOGIN=\(.*\)$/\1/p' "$RULES_FILE" | head -1)"
+SELF_LOGIN_DECLARED="$(trim "$SELF_LOGIN_DECLARED")"
+SELF_LOGIN_DEGRADED=0
+
 # --- FORBIDDEN_PATTERNS (raw + filled, kept index-aligned) ---
 RAW_PATTERNS=()
 ALL_PATTERNS=()
 while IFS= read -r t; do
   filled="$(fill_tokens "$t")"
   if [[ "$filled" == *"{"*"}"* ]]; then
+    if [[ "$t" == "{SELF_LOGIN}" ]]; then
+      if [[ "$LIST_ONLY" -eq 1 ]]; then
+        # D4: list mode always emits the token literally, resolvable or not.
+        RAW_PATTERNS+=("$t")
+        ALL_PATTERNS+=("$t")
+        continue
+      fi
+      if [[ "$SELF_LOGIN_DECLARED" == "undeclared" ]]; then
+        SELF_LOGIN_DEGRADED=1
+        continue
+      fi
+      echo "FAIL: {SELF_LOGIN} did not resolve, and this rules file does not declare SELF_LOGIN=undeclared — set \"boss_github_username\" in .autonomous-team/config.json, or run: git config fulcrumaxe.selfLogin <your-github-login>"
+      HITS=$((HITS + 1))
+      continue
+    fi
+    already_reported=0
+    for bad_key in "${!BAD_IDENTITY_KEYS[@]}"; do
+      if [[ "$filled" == *"{$bad_key}"* ]]; then
+        already_reported=1
+        break
+      fi
+    done
+    [[ "$already_reported" -eq 1 ]] && continue
     echo "FAIL: forbidden pattern still contains an unresolved {TOKEN} after substitution — refusing to run it as a regex: $filled"
     HITS=$((HITS + 1))
     continue
@@ -481,8 +567,12 @@ if [[ "$ADDED_LINES" -gt 0 ]]; then
     grep -nE -- "$pattern" "$CONTENT_FILE" >"$GREP_OUT" 2>"$GREP_ERR"
     grep_rc=$?
     if [[ "$grep_rc" -ge 2 ]]; then
-      echo "FAIL: pattern errored during scan (grep exit $grep_rc), treating as a hard failure rather than a silent skip: $pattern"
-      [[ -s "$GREP_ERR" ]] && sed 's/^/       grep stderr: /' "$GREP_ERR"
+      echo "FAIL: pattern errored during scan (grep exit $grep_rc), treating as a hard failure rather than a silent skip: $(redact_self_login "$pattern")"
+      if [[ -s "$GREP_ERR" ]]; then
+        while IFS= read -r errline; do
+          echo "       grep stderr: $(redact_self_login "$errline")"
+        done < "$GREP_ERR"
+      fi
       HITS=$((HITS + 1))
       continue
     fi
@@ -495,10 +585,14 @@ if [[ "$ADDED_LINES" -gt 0 ]]; then
       if [[ -n "${ALLOWLIST_KEY[$hit_path:$hit_line]+x}" ]]; then
         continue
       fi
-      echo "FAIL: forbidden identifier added at $hit_path:$hit_line [pattern: $pattern]"
+      echo "FAIL: forbidden identifier added at $hit_path:$hit_line [pattern: $(redact_self_login "$pattern")]"
       HITS=$((HITS + 1))
     done < "$GREP_OUT"
   done
+fi
+
+if [[ "$SELF_LOGIN_DEGRADED" -eq 1 ]]; then
+  echo "NOTE: {SELF_LOGIN} is not configured for this checkout, so this scan enforces only the patterns that do not depend on it. Set \"boss_github_username\" in .autonomous-team/config.json, or run: git config fulcrumaxe.selfLogin <your-github-login>"
 fi
 
 if [[ "$HITS" -gt 0 ]]; then
