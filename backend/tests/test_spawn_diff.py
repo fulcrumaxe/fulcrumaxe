@@ -1,6 +1,7 @@
 """Tests for backend/spawn_diff.py."""
 
 import json
+import re
 import subprocess
 import sys
 import textwrap
@@ -68,10 +69,15 @@ def _make_fixture_repo(tmp_path: Path, mark_trusted: bool = True):
     """Build a throwaway git repo with two commits differing only in a
     .tmpl file. Returns (repo_dir, parent_sha, child_sha).
 
-    When mark_trusted, a fake refs/remotes/origin/main is pointed at the
-    child commit so both commits pass the ref-trust gate without needing
-    --allow-untrusted-ref -- used by tests that are about fidelity, not
-    about the gate itself.
+    When mark_trusted, a REAL "origin" remote is configured (git remote add,
+    with a URL that resolves to one of our own repo slugs) and its
+    refs/remotes/origin/main is pointed at the child commit, so both commits
+    pass the ref-trust gate without needing --allow-untrusted-ref -- used by
+    tests that are about fidelity/process-boundary/etc, not about the gate
+    itself. A real `git remote add` (not just a bare `update-ref`) matters:
+    the gate now only trusts refs under a remote it can find in `git remote`
+    whose URL is one of ours -- see TestBogusRemoteNamespaceBypass for the
+    fixture that deliberately does NOT do this.
     """
     repo_dir = tmp_path / "fixture-repo"
     repo_dir.mkdir()
@@ -96,6 +102,10 @@ def _make_fixture_repo(tmp_path: Path, mark_trusted: bool = True):
     child_sha = _run_git(repo_dir, "rev-parse", "HEAD")
 
     if mark_trusted:
+        _run_git(
+            repo_dir, "remote", "add", "origin",
+            f"https://github.com/{spawn_diff._GH_REPO}.git",
+        )
         _run_git(repo_dir, "update-ref", "refs/remotes/origin/main", child_sha)
 
     return repo_dir, parent_sha, child_sha
@@ -170,7 +180,10 @@ class TestLoadContext:
 
 
 # ---------------------------------------------------------------------------
-# Item 6: credential-scrubbed subprocess environment
+# Item 6: subprocess env drops GH_TOKEN/GITHUB_TOKEN/AUTONOMOUS_TEAM_STATE_DIR.
+# Not a containment claim -- on this host the gh/git credential lives in the
+# system keyring, reachable by uid regardless of this scrub -- just a cheap
+# removal of a trivially-inherited path. See the module docstring.
 # ---------------------------------------------------------------------------
 
 
@@ -262,6 +275,95 @@ class TestRefTrustGate:
         captured = capsys.readouterr()
         assert "WARNING" in captured.err
         assert child_sha in captured.err
+
+
+# ---------------------------------------------------------------------------
+# Regression: a bare `refs/remotes/<name>/...` ref must not grant trust
+# unless <name> is an ACTUAL configured `git remote` whose URL is one of
+# ours. This is the exact bypass a reviewer demonstrated live: take a sha
+# the gate had just refused, `git update-ref refs/remotes/pr/9999 <sha>`,
+# and re-run with no override -- the old implementation (which globbed
+# every ref under refs/remotes/** with no check on what remote, if any,
+# was actually behind that namespace) returned exit 0 and executed it.
+# `refs/remotes/pr/*` is exactly the shape `gh pr checkout`-style tooling
+# leaves behind when someone fetches a PR head just to look at it, which
+# is precisely the workflow this gate exists to make safe -- so this is
+# the most valuable test in the file: it is the one that would have caught
+# the predicate that passed every other test here.
+# ---------------------------------------------------------------------------
+
+
+class TestBogusRemoteNamespaceBypass:
+    def test_hand_planted_ref_does_not_grant_trust(self, tmp_path):
+        """Watch this fail first: on the pre-fix globbing predicate, this
+        assertion is False (trusted) and the SystemExit never raises. Only
+        after scoping the gate to actual configured remotes does this pass.
+        """
+        repo_dir, parent_sha, child_sha = _make_fixture_repo(
+            tmp_path, mark_trusted=False
+        )
+        # No `git remote` is configured in this fixture at all. Plant a ref
+        # that merely LOOKS like a remote-tracking ref.
+        _run_git(repo_dir, "update-ref", "refs/remotes/pr/9999", child_sha)
+
+        with patch.object(spawn_diff, "_REPO_ROOT", repo_dir):
+            assert spawn_diff._is_trusted_ref(child_sha) is False
+            with pytest.raises(SystemExit) as exc_info:
+                spawn_diff._render_for_ref(
+                    child_sha, "executor", {}, "bypass-attempt",
+                    allow_untrusted_ref=False,
+                )
+        assert exc_info.value.code == 3
+
+    def test_hand_planted_ref_coexists_with_a_real_trusted_one(self, tmp_path):
+        """The bogus refs/remotes/pr/9999 ref must not poison trust the
+        other direction either: a commit that IS reachable from a real
+        configured remote must still be accepted even while the bogus ref
+        is present. Asserting both directions in one fixture is D#1984's
+        point -- a predicate that refuses everything (e.g. one that broke
+        and always returns False) would pass the test above vacuously.
+        """
+        repo_dir, parent_sha, child_sha = _make_fixture_repo(
+            tmp_path, mark_trusted=False
+        )
+        _run_git(repo_dir, "update-ref", "refs/remotes/pr/9999", child_sha)
+
+        # Now configure a REAL remote whose URL is one of ours, and give it
+        # a real remote-tracking ref reaching the same commit.
+        _run_git(
+            repo_dir, "remote", "add", "origin",
+            f"https://github.com/{spawn_diff._GH_REPO}.git",
+        )
+        _run_git(repo_dir, "update-ref", "refs/remotes/origin/main", child_sha)
+
+        with patch.object(spawn_diff, "_REPO_ROOT", repo_dir):
+            assert spawn_diff._is_trusted_ref(child_sha) is True
+            result = spawn_diff._render_for_ref(
+                child_sha, "executor", {}, "still-trusted",
+                allow_untrusted_ref=False,
+            )
+        assert "VERSION=child" in result
+
+    def test_configured_remote_pointing_elsewhere_is_not_ours(self, tmp_path):
+        """A remote that IS real (git remote add succeeded) but whose URL
+        is not one of our own repos must not be trusted either -- the fix
+        is "per our own configured remote", not "per any configured
+        remote".
+        """
+        repo_dir, parent_sha, child_sha = _make_fixture_repo(
+            tmp_path, mark_trusted=False
+        )
+        _run_git(
+            repo_dir, "remote", "add", "someone-elses-fork",
+            "https://github.com/not-us/not-our-repo.git",
+        )
+        _run_git(
+            repo_dir, "update-ref", "refs/remotes/someone-elses-fork/main",
+            child_sha,
+        )
+
+        with patch.object(spawn_diff, "_REPO_ROOT", repo_dir):
+            assert spawn_diff._is_trusted_ref(child_sha) is False
 
 
 # ---------------------------------------------------------------------------
@@ -519,6 +621,80 @@ class TestNoInProcessExecution:
 # ---------------------------------------------------------------------------
 
 
+# A line "mentions" spawn_diff if the bare substring is anywhere in it --
+# that also matches a comment or a piece of prose describing the module
+# (e.g. `backend/spawn_diff.py writes its temp file under ...` inside an
+# unrelated script's comment, which is a real false positive this test hit
+# once already). A line "calls" spawn_diff only if it is not a comment AND
+# it looks like either an import statement or an actual invocation (a CLI
+# command line, or a quoted path handed to a subprocess call).
+_CALLER_SHAPE_RE = re.compile(
+    r"""
+    \bfrom\s+backend\.spawn_diff\s+import\b
+  | \bfrom\s+backend\s+import\s+spawn_diff\b
+  | \bimport\s+backend\.spawn_diff\b
+  | \bimport\s+spawn_diff\b
+  | \bpython3?\s+(?:-m\s+)?(?:backend[./])?spawn_diff(?:\.py)?\b
+  | ["']backend/spawn_diff\.py["']
+    """,
+    re.VERBOSE,
+)
+_COMMENT_LINE_PREFIXES = ("#", "//", "*", "<!--")
+
+
+def _looks_like_spawn_diff_caller(line: str) -> bool:
+    """True if *line* looks like it actually invokes spawn_diff, as opposed
+    to merely mentioning it in a comment or in running prose.
+    """
+    if line.strip().startswith(_COMMENT_LINE_PREFIXES):
+        return False
+    return bool(_CALLER_SHAPE_RE.search(line))
+
+
+class TestCallerShapePredicate:
+    """Unit tests for the predicate itself, isolated from the real repo
+    scan below -- this is what proves the predicate detects invocations
+    rather than text, independent of what happens to be in the tree today.
+    """
+
+    def test_rejects_the_comment_that_caused_a_real_false_positive(self):
+        # Verbatim shape of the line that tripped this test once already
+        # (a comment in an unrelated script describing old spawn_diff.py
+        # behaviour, not a caller of it).
+        line = (
+            "# be inside it. Measured case: `backend/spawn_diff.py` writes "
+            "its temporary"
+        )
+        assert _looks_like_spawn_diff_caller(line) is False
+
+    def test_rejects_bare_prose_mention(self):
+        assert _looks_like_spawn_diff_caller(
+            "See backend/spawn_diff.py for details."
+        ) is False
+
+    def test_accepts_python_import(self):
+        assert _looks_like_spawn_diff_caller(
+            "from backend.spawn_diff import main"
+        ) is True
+        assert _looks_like_spawn_diff_caller(
+            "    from backend import spawn_diff"
+        ) is True
+        assert _looks_like_spawn_diff_caller("import backend.spawn_diff") is True
+
+    def test_accepts_shell_invocation(self):
+        assert _looks_like_spawn_diff_caller(
+            "python3 backend/spawn_diff.py --role executor --base main --head HEAD"
+        ) is True
+        assert _looks_like_spawn_diff_caller(
+            "python3 -m backend.spawn_diff --role executor"
+        ) is True
+
+    def test_accepts_quoted_subprocess_argv_entry(self):
+        assert _looks_like_spawn_diff_caller(
+            '    subprocess.run(["python3", "backend/spawn_diff.py", "--role", role])'
+        ) is True
+
+
 class TestNoAutomatedCallers:
     _ALLOWED_PREFIXES = (
         "backend/spawn_diff.py",
@@ -529,16 +705,22 @@ class TestNoAutomatedCallers:
 
     def test_spawn_diff_has_no_unexpected_callers(self):
         result = subprocess.run(
-            ["git", "-C", str(_REPO_ROOT), "grep", "-l", "spawn_diff"],
+            ["git", "-C", str(_REPO_ROOT), "grep", "-n", "spawn_diff"],
             capture_output=True, text=True,
         )
         # git grep exits 1 when there are no matches at all -- that is a pass.
         assert result.returncode in (0, 1), f"git grep failed: {result.stderr}"
-        matches = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-        unexpected = [
-            m for m in matches
-            if not any(m == p or m.startswith(p) for p in self._ALLOWED_PREFIXES)
-        ]
+        unexpected = []
+        for raw in result.stdout.splitlines():
+            if not raw.strip():
+                continue
+            # git grep -n output: <path>:<lineno>:<text>
+            path, _, remainder = raw.partition(":")
+            _lineno, _, text = remainder.partition(":")
+            if any(path == p or path.startswith(p) for p in self._ALLOWED_PREFIXES):
+                continue
+            if _looks_like_spawn_diff_caller(text):
+                unexpected.append(raw)
         assert not unexpected, f"unexpected spawn_diff caller(s): {unexpected}"
 
 

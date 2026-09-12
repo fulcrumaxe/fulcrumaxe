@@ -18,10 +18,16 @@ Each non-disk ref is rendered by checking it out into a detached git worktree
 imported or exec'd inside this interpreter.
 
 Before any of that happens, the ref is resolved to a commit sha and gated: a sha
-that is not an ancestor of one of our own remote-tracking branches (i.e. it did
-not get there by us pushing or merging it) is refused by default. Use
---allow-untrusted-ref to override; doing so prints a warning naming exactly what
-is about to execute.
+is trusted only if it is an ancestor of a branch tracked from one of OUR OWN
+configured git remotes -- a remote whose own URL resolves to one of our
+repos, not merely a ref that lives under a `refs/remotes/<name>/...` path.
+That distinction matters: `refs/remotes/` can hold refs with no configured
+remote behind them at all (anyone can `git update-ref refs/remotes/pr/9999
+<sha>` by hand -- exactly what fetching a PR head to look at it produces),
+and a sha did not get there by us pushing or merging it just because some
+ref, anywhere, happens to point at it. A sha that fails this is refused by
+default. Use --allow-untrusted-ref to override; doing so prints a warning
+naming exactly what is about to execute.
 
 This containment is a process boundary, not a sandbox: the subprocess still runs
 as the operator's own uid, on the operator's own filesystem and network. On this
@@ -54,8 +60,9 @@ Exit codes:
     1  missing/invalid arguments, unknown role, or unresolvable git ref
     2  rendering error: the ref's own render CLI is missing/failed, or the
        worktree could not be created — never a fallback to in-process import
-    3  ref refused by the trust gate (not an ancestor of any of our own
-       remote-tracking branches); pass --allow-untrusted-ref to override
+    3  ref refused by the trust gate (not an ancestor of a branch tracked
+       from one of our own configured remotes); pass --allow-untrusted-ref
+       to override
 """
 
 import argparse
@@ -74,7 +81,23 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from backend.spawn_templates import KNOWN_ROLES  # noqa: E402
-from backend._repo import REPO as _GH_REPO  # noqa: E402
+from backend._repo import (  # noqa: E402
+    REPO as _GH_REPO,
+    CODE_REPO as _CODE_REPO_SLUG,
+    DISCUSSION_REPO as _DISCUSSION_REPO_SLUG,
+)
+from backend._repo_remote import _slug_from_url  # noqa: E402
+
+# Repos whose URL makes a git remote "ours" for the ref-trust gate below.
+# Deliberately NOT "any configured remote" -- a remote can be configured
+# pointing at somebody else's fork -- and deliberately NOT "any
+# refs/remotes/* namespace" -- that includes names with no `git remote`
+# behind them at all (e.g. a hand-planted `refs/remotes/pr/<n>`, which is
+# exactly the shape a reviewer creates when fetching a PR head to look at
+# it, and exactly what must NOT be trusted).
+_OUR_REPO_SLUGS = frozenset(
+    slug for slug in (_GH_REPO, _CODE_REPO_SLUG, _DISCUSSION_REPO_SLUG) if slug
+)
 
 # Minimal fixture context used when no --context-file is provided.
 # Includes pr_number so code-reviewer and security-reviewer templates render.
@@ -141,7 +164,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "Override the ref-trust gate and execute a ref's own "
             "backend/spawn_templates.py even though it is not reachable from "
-            "any of our own remote-tracking branches. Prints a warning first."
+            "a branch tracked from one of our own configured remotes. "
+            "Prints a warning first."
         ),
     )
     return parser.parse_args(argv)
@@ -192,33 +216,78 @@ def _resolve_sha(ref: str) -> str:
     return result.stdout.strip()
 
 
+def _our_remote_names() -> list[str]:
+    """Names of configured git remotes (from `git remote`, i.e. backed by an
+    actual remote.<name>.url in this repo's config) whose URL resolves to one
+    of our own repos (_OUR_REPO_SLUGS).
+
+    Deliberately does NOT trust every name that merely appears as a
+    `refs/remotes/<name>/...` prefix -- that namespace can hold refs with no
+    configured remote behind them at all (anyone can `git update-ref
+    refs/remotes/pr/9999 <sha>` by hand), and it can hold a remote that IS
+    configured but points at someone else's fork. Both are excluded here:
+    the first because it never appears in `git remote`'s output, the second
+    because its URL won't be in _OUR_REPO_SLUGS.
+    """
+    remotes_result = subprocess.run(
+        ["git", "-C", str(_REPO_ROOT), "remote"], capture_output=True, text=True,
+    )
+    if remotes_result.returncode != 0:
+        return []
+    trusted_names = []
+    for name in remotes_result.stdout.splitlines():
+        name = name.strip()
+        if not name:
+            continue
+        url_result = subprocess.run(
+            ["git", "-C", str(_REPO_ROOT), "remote", "get-url", name],
+            capture_output=True, text=True,
+        )
+        if url_result.returncode != 0:
+            continue
+        slug = _slug_from_url(url_result.stdout.strip())
+        if slug is not None and slug in _OUR_REPO_SLUGS:
+            trusted_names.append(name)
+    return trusted_names
+
+
 def _is_trusted_ref(sha: str) -> bool:
-    """True if `sha` is an ancestor of at least one of our own remote-tracking
-    branches (git merge-base --is-ancestor).
+    """True if `sha` is an ancestor of a branch tracked from one of OUR OWN
+    remotes -- a configured `git remote` whose URL resolves to one of
+    _OUR_REPO_SLUGS -- via `git merge-base --is-ancestor`.
 
     This is the ref gate. An ad-hoc fetch of someone else's PR ref -- a fork
     head a reviewer pulled down just to look at -- is not reachable from any
-    ref we already trust, so it is refused. A commit already on one of our
-    remotes (merged, or pushed by us) is.
+    branch tracked from one of our own remotes, so it is refused, EVEN IF
+    someone has hand-planted a ref that merely looks like a remote-tracking
+    ref (e.g. `refs/remotes/pr/9999`) pointing at it: that namespace has no
+    `git remote` behind it, so it is never consulted at all. A commit
+    already on a branch we actually track from our own remote (merged, or
+    pushed by us) is trusted.
     """
-    remotes_cmd = [
-        "git", "-C", str(_REPO_ROOT), "for-each-ref",
-        "--format=%(refname)", "refs/remotes",
-    ]
-    remotes_result = subprocess.run(remotes_cmd, capture_output=True, text=True)
-    if remotes_result.returncode != 0:
-        return False
-    for remote_ref in remotes_result.stdout.splitlines():
-        remote_ref = remote_ref.strip()
-        if not remote_ref or remote_ref.endswith("/HEAD"):
+    for remote_name in _our_remote_names():
+        refs_result = subprocess.run(
+            [
+                "git", "-C", str(_REPO_ROOT), "for-each-ref",
+                "--format=%(refname)", f"refs/remotes/{remote_name}",
+            ],
+            capture_output=True, text=True,
+        )
+        if refs_result.returncode != 0:
             continue
-        check_cmd = [
-            "git", "-C", str(_REPO_ROOT), "merge-base", "--is-ancestor",
-            sha, remote_ref,
-        ]
-        check_result = subprocess.run(check_cmd, capture_output=True, text=True)
-        if check_result.returncode == 0:
-            return True
+        for remote_ref in refs_result.stdout.splitlines():
+            remote_ref = remote_ref.strip()
+            if not remote_ref or remote_ref.endswith("/HEAD"):
+                continue
+            check_result = subprocess.run(
+                [
+                    "git", "-C", str(_REPO_ROOT), "merge-base", "--is-ancestor",
+                    sha, remote_ref,
+                ],
+                capture_output=True, text=True,
+            )
+            if check_result.returncode == 0:
+                return True
     return False
 
 
@@ -342,9 +411,9 @@ def _render_for_ref(
         if not allow_untrusted_ref:
             print(
                 f"ERROR: ref '{ref}' (resolved to {sha}) is not reachable from "
-                "any of our own remote-tracking branches -- refusing to execute "
-                "its backend/spawn_templates.py. Pass --allow-untrusted-ref to "
-                "override.",
+                "a branch tracked from one of our own configured remotes -- "
+                "refusing to execute its backend/spawn_templates.py. Pass "
+                "--allow-untrusted-ref to override.",
                 file=sys.stderr,
             )
             sys.exit(3)
