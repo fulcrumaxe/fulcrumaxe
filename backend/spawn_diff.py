@@ -29,6 +29,15 @@ ref, anywhere, happens to point at it. A sha that fails this is refused by
 default. Use --allow-untrusted-ref to override; doing so prints a warning
 naming exactly what is about to execute.
 
+Known residual, deliberately out of scope here: this only checks WHICH
+namespace a ref lives under, not whether that namespace's contents actually
+came from the remote it claims to. A ref hand-planted *inside* a genuinely
+configured, genuinely-ours remote's own namespace (e.g.
+`refs/remotes/origin/pr9999`, as opposed to a namespace with no remote
+behind it at all) still grants trust and still executes. Closing that
+requires verifying refs against the remote over the network, not a longer
+list of namespaces to distrust -- left for whoever picks that up next.
+
 This containment is a process boundary, not a sandbox: the subprocess still runs
 as the operator's own uid, on the operator's own filesystem and network. On this
 host the `gh`/git credential lives in the system keyring (reached via the same
