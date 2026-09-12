@@ -120,14 +120,25 @@ source "$(dirname "${BASH_SOURCE[0]}")/repo-resolve.sh"
 # call one level up (_prt_expected_head_sha's own case-branch binding) is
 # fully checkable, but a function argument is "unknown" to that detector by
 # construction — it reports NEEDS CALLER TRACE, not a defect. What actually
-# guarantees <repo> is plane-correct is the real caller graph, not the guard:
-# _prt_expected_head_sha is called only by pr_tree_provision (below), which
-# in turn is called from exactly two places, both in scripts/spawn-agent.sh
-# (the DRY_RUN_ENV_DUMP provisioning path and the worktree-isolation spawn
-# path) — and both pass the literal $PR_PLANE_NAME that scripts/spawn-agent.sh
-# resolved once via pr_plane_resolve() before either call site is reached.
-# Trust this call chain by reading those two call sites, not by re-deriving
-# it from this function's own body.
+# guarantees <repo> is plane-correct is the real caller graph, not the guard —
+# and that graph is documented, tree-wide, in ts-backend/PARITY-CAVEATS.md §7
+# rather than restated here, so this comment and that caveat can't drift apart
+# the way an earlier draft of this comment (which claimed two callers, both in
+# scripts/spawn-agent.sh) already had by the time it was reviewed. Per that
+# caveat, _prt_expected_head_sha is called only by pr_tree_provision, which has
+# exactly one call site in scripts/spawn-agent.sh (the --dry-run-env-dump
+# block; D#2542 removed the main-spawn-path call), passing the literal
+# $PR_PLANE_NAME that script resolves once via pr_plane_resolve() beforehand —
+# plus three docs-writer consumers the caveat also names
+# (backend/spawn_templates/docs-writer.tmpl, agents/docs-writer.md,
+# .claude/agents/docs-writer.md), none of which go through pr_plane_resolve():
+# each passes the literal plane name "code" instead, matching the
+# {{CODE_REPO}}/_resolve_code_repo call directly above it in the same snippet.
+# The docs-writer lane is code-plane-bound by construction — wiki pages are
+# synced from the code plane only — so a literal "code" here is correct, not a
+# shortcut; making it plane-generic is out of scope for this file. Re-verify
+# against the caveat (and search tree-wide, not just scripts/, since .tmpl and
+# .md consumers live outside it) before trusting a restatement of this again.
 _prt_headref_lookup() {
   local repo="$1" pr_number="$2"
   gh pr view "$pr_number" --repo "$repo" --json headRefOid --jq .headRefOid 2>/dev/null
