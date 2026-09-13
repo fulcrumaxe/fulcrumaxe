@@ -591,6 +591,9 @@ if ! hook_event_has_step "reap_worktrees"; then
   hook_event_mark_step "reap_worktrees"
 fi
 
+# ── 6g. Envelope fabrication detector (D#1791) ────────────────────────────────
+if ! hook_event_has_step "envelope_check"; then [ -f "$SCRIPT_DIR/hooks/post-agent.d/envelope-check.sh" ] && source "$SCRIPT_DIR/hooks/post-agent.d/envelope-check.sh" 2>/dev/null; hook_event_mark_step "envelope_check"; fi
+
 # ── 7. Log to team-log — TERSE one-liner (no tokens, no files) ───────────────
 if ! hook_event_has_step "team_log"; then
   # Terse format: [HH:MM] role: verdict D#N PR#M
