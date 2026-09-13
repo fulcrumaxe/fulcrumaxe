@@ -1352,8 +1352,15 @@ print(entries[0].get('fix_cycle_count', 0) if entries else 0)
                 # log, either of which can also carry head-authored suite
                 # output; the whole reason --manifest-out exists is that
                 # such a stream is not a place to trust a machine-read
-                # value.
-                GATE1_RECEIPT_PATH_OUT="$(mktemp -u)"
+                # value. D#2592: the channel is a directory this process
+                # actually CREATES (mktemp -d, mode 0700), not one it only
+                # names (mktemp -u) — no other local uid can create an entry
+                # at a path under it. (The worktree path two lines up stays
+                # named-not-created on purpose: gate-runner has to read that
+                # tree via sudo -u, and a 0700 dir owned by the invoker would
+                # make it unreadable and break Gate 1 outright.)
+                GATE1_RECEIPT_DIR="$(mktemp -d)"
+                GATE1_RECEIPT_PATH_OUT="$GATE1_RECEIPT_DIR/receipt-path-out"
                 # shellcheck source=scripts/lib/pr-tree.sh
                 if source "$SCRIPT_DIR/lib/pr-tree.sh" \
                     && pr_tree_provision "$PR_NUM" "$GATE1_SHA" "$GATE1_TREE" code \
@@ -1365,9 +1372,19 @@ print(entries[0].get('fix_cycle_count', 0) if entries else 0)
                   GATE1_RECEIPT_PATH=""
                   [ -f "$GATE1_RECEIPT_PATH_OUT" ] && GATE1_RECEIPT_PATH="$(cat "$GATE1_RECEIPT_PATH_OUT")"
                   if [ -n "$GATE1_RECEIPT_PATH" ]; then
-                    GATE1_RECEIPT_LINE="Gate 1 receipt: ${GATE1_RECEIPT_PATH}"
                     _log "D#$DISC_NUM PR#$PR_NUM: gate1-invoke wrote $GATE1_RECEIPT_PATH"
-                    rm -f "$GATE1_LOG" "$GATE1_RECEIPT_PATH_OUT" 2>/dev/null || true
+                    GATE1_RECEIPT_SANITIZED="$(sanitize_echo "$GATE1_RECEIPT_PATH")"
+                    # sanitize_echo always returns 0 and fails closed to
+                    # empty output (D#2582) — the only usable signal is
+                    # whether the output is empty, never $?. Falling back to
+                    # the existing sentence keeps an empty sanitize result
+                    # from turning into a receipt line with its payload
+                    # missing.
+                    if [ -n "$GATE1_RECEIPT_SANITIZED" ]; then
+                      GATE1_RECEIPT_LINE="Gate 1 receipt: ${GATE1_RECEIPT_SANITIZED}"
+                    fi
+                    rm -f "$GATE1_LOG" 2>/dev/null || true
+                    rm -rf "$GATE1_RECEIPT_DIR" 2>/dev/null || true
                   else
                     _log "D#$DISC_NUM PR#$PR_NUM: gate1-invoke ran but produced no receipt — see $GATE1_LOG"
                   fi

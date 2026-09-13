@@ -66,6 +66,9 @@
 #                               contended stream is exactly the shape
 #                               --manifest-out exists to avoid for the
 #                               manifest itself (security review, D#2566).
+#                               Written via a same-directory temp file plus
+#                               `mv -f`, never a raw `>` redirect onto PATH
+#                               (D#2592) — see _gate1_write_receipt_path_out.
 #                               Left untouched when omitted, or when no
 #                               receipt was written.
 #
@@ -327,6 +330,23 @@ _gate1_strip_gh_from_path() {
   printf '%s' "$out"
 }
 
+# _gate1_write_receipt_path_out VALUE DEST — write VALUE to DEST via a
+# same-directory temp file plus `mv -f`, matching _emit_manifest_out in
+# scripts/run-pr-tests.sh:148-155. `mv -f` (rename(2)) replaces whatever
+# entry sits at DEST — including a pre-placed symlink — instead of
+# following it the way a raw `>` redirect would (D#2592). This is a
+# property of the wrapper itself, protecting any caller's DEST; it does not
+# by itself stop another uid from creating that entry in the first place —
+# the loop-phased-step5.sh caller does that separately, by keeping DEST
+# inside a directory only it can write into.
+_gate1_write_receipt_path_out() {
+  local value="$1" dest="$2" out_dir tmp
+  out_dir="$(dirname "$dest")"
+  tmp="$(mktemp "${out_dir}/.receipt-path-out.XXXXXX" 2>/dev/null)" || tmp="$(mktemp)"
+  printf '%s\n' "$value" > "$tmp"
+  mv -f "$tmp" "$dest"
+}
+
 set +e
 if [ -z "$RUNNER_UID" ]; then
   echo "gate1_containment=NONE (same-uid)" >&2
@@ -375,7 +395,7 @@ if [ -f "$MANIFEST_PATH" ]; then
     # dedicated channel rather than an incidental one (security review,
     # D#2566).
     if [ -n "$RECEIPT_PATH_OUT_ARG" ]; then
-      printf '%s\n' "$RECEIPT_PATH" > "$RECEIPT_PATH_OUT_ARG"
+      _gate1_write_receipt_path_out "$RECEIPT_PATH" "$RECEIPT_PATH_OUT_ARG"
     fi
   else
     echo "gate1-invoke: receipt write failed — see the reason above on stderr (runner exit was $rc; this does not change that exit code)" >&2
