@@ -296,7 +296,7 @@
     "scripts/sync-wiki.sh": "e8a26355675e18c4c1d6d19c9db6c155efc361c9b360c7687ddb00f493887489",
     "scripts/tail-agents.sh": "2482a6d9f713bf4158118a1782698fa4c8ab118edaa4f6dd834856a2f53fc7b8",
     "scripts/team-lead-iteration.sh": "6ccc9f179de0c45228a40ca82945b085e0d88264acad958a66c6d113b5138c44",
-    "scripts/telemetry-erase.sh": "b1eeed3952555acb59ac9fc982692eeee779878ff412887eea4217afdd5ce5b1",
+    "scripts/telemetry-erase.sh": "0bd3186eadb34f191dfe17d5d028cd12ef9de33368ed2f0dc8e10bc44302ab93",
     "scripts/test-auto-plan.sh": "0a2db7ca2f0c0210887989d3dbd4f34b16238f1124505abb1891def1f6a49f3e",
     "scripts/test-post-merge-hook-autoclose.sh": "191a7e1ff321865b0b66dbdb31ca10f16d6ee4723d1ed86362c34222e03b5ba0",
     "scripts/test-spawn-agent-exit-trap.sh": "50eea1c4bdc58c50f408a5fc0c0d842d137877e00c138a25f60094e0ecaadc44",
