@@ -91,3 +91,29 @@ def redact_spawn_tags(text: str) -> str:
     if not isinstance(text, str):
         text = str(text)
     return _TAGGED_ID.sub(REDACTED, text)
+
+
+REDACTED_INSTALL_ID = "[redacted-install-id]"
+
+
+def redact_literal(text: str, secret: str | None) -> str:
+    """Return *text* with every occurrence of the exact string *secret*
+    replaced by a non-extractable placeholder (D#2565).
+
+    Unlike :func:`redact_spawn_tags`, this does not match by shape — it
+    matches *secret* verbatim, wherever it appears. Written for the
+    telemetry install id: a ``[0-9a-f]{32}`` shape regex would also redact
+    an unrelated MD5 digest sitting next to it in the same log line, which
+    a literal-value match does not.
+
+    This module stays dependency-free by design (see the module docstring),
+    so it does not read the id itself from the state dir — a caller that
+    already knows the secret value passes it in. *secret* of ``None`` or
+    ``""`` is a no-op: *text* comes back byte-identical. A non-str *text* is
+    coerced, exactly like :func:`redact_spawn_tags`. Never raises.
+    """
+    if not isinstance(text, str):
+        text = str(text)
+    if not secret:
+        return text
+    return text.replace(secret, REDACTED_INSTALL_ID)

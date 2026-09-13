@@ -612,6 +612,51 @@ is what closes the hole on every exit path, clean or crashed.
 
 ---
 
+## Telemetry Report (opt-in, off by default)
+
+An adopter can opt in to sending a small daily counter report to
+fulcrumaxe.dev. The switch is `gates.telemetry_report`, a boolean in
+`backend/control_plane.py`, default `false`. At `false` the feature makes no
+network call of any kind, including DNS — nothing resolves a hostname before
+the gate check (`scripts/lib/telemetry.sh`'s gate check is its first
+statement).
+
+**Data sent is pseudonymous** — tied to a stable per-install id that is
+directly correlatable against this install's public repo activity (PR and
+Discussion counts are separately observable on GitHub for a public code
+plane), not a one-time token with no lookup path back to a specific machine.
+Describe it that way in any user-facing text.
+
+Fields sent, exactly — no more:
+`install`, `version`, `os`, `window_hours`, `counts.spawns`,
+`counts.prs_merged`, `counts.gate_pass`, `counts.sent_back`. No `failures`
+map, no repository name or URL, no file paths, no branch names, no
+Discussion or PR content, no usernames, no tokens, no IP address.
+
+Opt in with:
+
+    python3 backend/telemetry_install_id.py --opt-in
+
+This mints the per-install id (32 random hex characters, outside the repo,
+under `backend.state_paths.STATE_DIR`, never derived from hostname, repo
+slug, MAC address, or `git config user.email`) and prints the field list
+above, the disclosure page (https://fulcrumaxe.dev/telemetry.html), and the
+erase command below — before the first report ever goes out. The id itself
+is never printed, logged, or written to `audit.jsonl`.
+
+**The order matters: erase first, then delete the state file — never the
+other way round.** To stop reporting and remove every row already sent:
+
+    bash scripts/telemetry-erase.sh
+
+The script reads the id itself and issues the `DELETE`, so the id never
+reaches scrollback or a clipboard. Deleting the state file (or the id file
+inside it) before running this forfeits erasure of rows already sent
+permanently — the id is gone locally, but the rows persist server-side under
+an id nobody can reproduce anymore.
+
+---
+
 ## Project Context
 
 **autonomous-forever** — A self-evolving autonomous development team that builds and improves itself.
