@@ -59,7 +59,8 @@ Schema (also created by ``_ensure_schema``)::
         total_turns            INTEGER,
         routed_via             TEXT,
         auto_routed            BOOLEAN,
-        end_source             TEXT
+        end_source             TEXT,
+        tool_uses              INTEGER
     );
     CREATE INDEX idx_agent_run_role_start ON agent_run(role, start_ts);
     CREATE INDEX idx_agent_run_pr ON agent_run(pr);
@@ -201,7 +202,8 @@ def _ensure_schema(conn: Any) -> None:
             total_turns            INTEGER,
             routed_via             TEXT,
             auto_routed            BOOLEAN,
-            end_source             TEXT
+            end_source             TEXT,
+            tool_uses              INTEGER
         )
     """)
     # Backward-compat column migrations.
@@ -237,6 +239,11 @@ def _ensure_schema(conn: Any) -> None:
                 "UPDATE agent_run SET end_source = 'reconciled' "
                 "WHERE verdict = 'reconciled-stale' AND end_source IS NULL"
             )
+        if "tool_uses" not in cols:
+            conn.execute("ALTER TABLE agent_run ADD COLUMN tool_uses INTEGER")
+            # No backfill (D#1791) — deliberately, unlike end_source above.
+            # Historical rows predate this column and were never measured;
+            # NULL is the honest value for them, never a guessed 0.
     except Exception:  # noqa: BLE001
         pass  # migration is best-effort; table may not exist yet on first call
     conn.execute(
@@ -344,6 +351,7 @@ def complete_run(
     role: str | None = None,
     discussion: int | None = None,
     start_ts: datetime | None = None,
+    tool_uses: int | None = None,
 ) -> None:
     """UPSERT an agent_run row with completion data.
 
@@ -398,6 +406,11 @@ def complete_run(
                            is None and the INSERT branch fires, duration_s is written as NULL —
                            never 0 — because a 0s duration would read as a measurement instead of
                            "we don't know" (item 12).
+    tool_uses:             Tri-state (D#1791): the number of tool_use content blocks observed in
+                           the subagent's own transcript (non-negative int, 0 included), or None
+                           when that transcript was absent or unreadable. None is written as SQL
+                           NULL, never coerced to 0 — see scripts/lib/subagent_payload.py's
+                           count_tool_uses() for why the two must never be conflated.
     """
     # Validate all token fields before touching the DB.
     input_tok = _validate_token_count(input_tok, "input_tok")
@@ -407,6 +420,7 @@ def complete_run(
     cache_creation_tokens = _validate_token_count(cache_creation_tokens, "cache_creation_tokens")
     first_write_turn = _validate_token_count(first_write_turn, "first_write_turn")
     total_turns = _validate_token_count(total_turns, "total_turns")
+    tool_uses = _validate_token_count(tool_uses, "tool_uses")
 
     try:
         import duckdb  # noqa: PLC0415
@@ -509,13 +523,13 @@ def complete_run(
                      input_tok, output_tok, cache_read, cache_write,
                      cache_creation_tokens, blocked_reason, event_id,
                      first_write_turn, total_turns, routed_via, auto_routed,
-                     end_source)
+                     end_source, tool_uses)
                 VALUES (?, ?, ?, ?,
                         ?, ?, ?, ?,
                         ?, ?, ?, ?,
                         ?, ?, ?,
                         ?, ?, ?, ?,
-                        ?)
+                        ?, ?)
                 ON CONFLICT (agent_id) DO UPDATE SET
                     end_ts                = excluded.end_ts,
                     end_source            = excluded.end_source,
@@ -536,7 +550,9 @@ def complete_run(
                     routed_via            = COALESCE(excluded.routed_via,
                                                      agent_run.routed_via),
                     auto_routed           = COALESCE(excluded.auto_routed,
-                                                     agent_run.auto_routed)
+                                                     agent_run.auto_routed),
+                    tool_uses             = COALESCE(excluded.tool_uses,
+                                                     agent_run.tool_uses)
                 """,
                 [
                     agent_id,
@@ -559,6 +575,7 @@ def complete_run(
                     routed_via,
                     auto_routed,
                     "observed",  # complete_run always represents an observed completion (D#2479)
+                    tool_uses,
                 ],
             )
         finally:
@@ -1224,6 +1241,12 @@ def _build_parser() -> argparse.ArgumentParser:
     c.add_argument("--first-write-turn", type=int, default=None)
     c.add_argument("--total-turns", type=int, default=None)
     c.add_argument(
+        "--tool-uses", type=int, default=None,
+        help="Tri-state (D#1791): number of tool_use blocks observed in the "
+             "subagent's own transcript. Omit (never pass 0) when unknown — "
+             "the column is written NULL, not 0, in that case.",
+    )
+    c.add_argument(
         "--role", default=None,
         help="Real role for this run (D#2316 PR-b), used only when no start_run() "
              "row exists yet. Ignored (never clobbers) when a row already exists.",
@@ -1339,6 +1362,7 @@ def main(argv: list[str] | None = None) -> int:
             role=args.role,
             discussion=args.discussion,
             start_ts=cli_start_ts,
+            tool_uses=args.tool_uses,
         )
         return 0
 

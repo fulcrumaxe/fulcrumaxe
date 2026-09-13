@@ -49,6 +49,7 @@ CACHE_READ_TOKENS=0
 CACHE_WRITE_TOKENS=0
 CACHE_CREATION_TOKENS=0
 FIRST_WRITE_TURN=""
+TOOL_USES=""
 PR=""
 MODEL="claude-sonnet-4-20250514"
 FILES=""
@@ -70,6 +71,7 @@ while [[ $# -gt 0 ]]; do
     --cache-write-tokens)     CACHE_WRITE_TOKENS="$2";     shift 2 ;;
     --cache-creation-tokens)  CACHE_CREATION_TOKENS="$2";  shift 2 ;;
     --first-write-turn)       FIRST_WRITE_TURN="$2";       shift 2 ;;
+    --tool-uses)              TOOL_USES="$2";              shift 2 ;;
     --pr)                 PR="$2";                 shift 2 ;;
     --model)              MODEL="$2";              shift 2 ;;
     --files)              FILES="$2";              shift 2 ;;
@@ -333,6 +335,10 @@ if ! hook_event_has_step "complete_run"; then
   [[ -n "${BLOCKED_REASON:-}"  ]]                          && _CR_ARGS+=(--blocked-reason "$BLOCKED_REASON")
   [[ -n "${MODEL:-}"           ]]                          && _CR_ARGS+=(--model "$MODEL")
   [[ -n "${FIRST_WRITE_TURN:-}" ]]                         && _CR_ARGS+=(--first-write-turn "$FIRST_WRITE_TURN")
+  # Tri-state (D#1791): forward --tool-uses only when non-empty. An unset/
+  # empty TOOL_USES means "not observed" and must reach complete_run() as
+  # the Python default None (SQL NULL), never as a passed 0.
+  [[ -n "${TOOL_USES:-}" ]]                                && _CR_ARGS+=(--tool-uses "$TOOL_USES")
 
   # No longer discarding stderr here: complete_run's own orphan warning (D#1812)
   # and any other diagnostic it logs need to actually reach the hook's stderr

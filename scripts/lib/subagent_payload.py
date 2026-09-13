@@ -85,6 +85,7 @@ DEFAULTS = {
     "first_write_turn": None,
     "parse_ok": False,
     "own_transcript_path": "",
+    "tool_uses": None,
 }
 
 
@@ -159,6 +160,22 @@ def _sum_usage(path):
     return totals if any(totals.values()) else None
 
 
+def _prefer_exact_match(names, agent_id):
+    """Order candidate task-file names so an exact match for `agent_id` (or
+    `agent_id` immediately followed by a file extension, e.g. "<id>.jsonl")
+    sorts before a mere prefix match like "<id>-extra.jsonl" (D#1791
+    security review). Plain lexicographic sort put a hyphenated sibling
+    before the exact file — '-' (0x2D) sorts before '.' (0x2E) in ASCII —
+    so a counter whose entire job is measuring ONE specific agent could
+    silently pick a different agent's file. Not reachable on this host
+    today (the tasks_dir candidate directory does not exist in production),
+    but cheap to make exact now rather than a nuisance to diagnose later."""
+    def _rank(n):
+        exact = n == agent_id or n.startswith(agent_id + ".")
+        return (0 if exact else 1, n)
+    return sorted(names, key=_rank)
+
+
 def find_own_usage(transcript_path, agent_id, session_id, repo_root):
     """Locate and sum usage from the subagent's OWN transcript — never the
     parent's. Returns a usage dict (see _sum_usage) or None. `agent_id`
@@ -176,7 +193,8 @@ def find_own_usage(transcript_path, agent_id, session_id, repo_root):
             if not os.path.isdir(tasks_dir):
                 continue
             try:
-                names = sorted(n for n in os.listdir(tasks_dir) if n.startswith(agent_id))
+                names = _prefer_exact_match(
+                    [n for n in os.listdir(tasks_dir) if n.startswith(agent_id)], agent_id)
             except OSError:
                 names = []
             for name in names:
@@ -225,7 +243,8 @@ def find_own_transcript(transcript_path, agent_id, session_id, repo_root):
             if not os.path.isdir(tasks_dir):
                 continue
             try:
-                names = sorted(n for n in os.listdir(tasks_dir) if n.startswith(agent_id))
+                names = _prefer_exact_match(
+                    [n for n in os.listdir(tasks_dir) if n.startswith(agent_id)], agent_id)
             except OSError:
                 names = []
             for name in names:
@@ -245,6 +264,88 @@ def find_own_transcript(transcript_path, agent_id, session_id, repo_root):
                 return candidate
 
     return ""
+
+
+def count_tool_uses(path):
+    """Count assistant `tool_use` content blocks in a transcript-shaped JSONL
+    file (D#1791). Tri-state, and deliberately NOT built on top of
+    `_sum_usage`: that function's `None` already conflates "every value
+    summed to zero" with "the file was unreadable" (see its docstring above),
+    and keying a fabrication check on that return value would fail open on
+    exactly the case the check exists to catch — a genuinely-zero-tool run
+    would look identical to an unreadable transcript.
+
+    Returns:
+      - a non-negative int (0 included) when the file exists, opened, and at
+        least one line's shape was RECOGNIZED — meaning a role could be
+        resolved from it, whether that role was "assistant" (and contributed
+        to the count) or something else (a normal, uncounted line). This is
+        the "observed" case.
+      - None when the path is empty, the file does not exist or cannot be
+        opened, every line failed to parse as JSON, or every line that DID
+        parse as JSON had a shape this function does not recognize (line is
+        a dict but has neither the nested `message.role`/`message.content`
+        shape nor a flat `role`/`content` shape). That last case is a
+        deliberate choice (D#1791 security review): a schema drift that
+        moves these keys elsewhere would otherwise leave every line "parsed"
+        but every role empty, producing a silent, confident `0` for a run
+        that was actually never measured — failing toward the *accusatory*
+        direction (an honest agent reading as "made zero tool calls") is
+        exactly the failure mode this tri-state exists to avoid. So a
+        recognized-but-empty-content line (real "user"/"assistant" shape, no
+        content array) still counts as observed — only a wholly unrecognized
+        shape does not. None must never be treated as 0 by a caller; that
+        conflation is the exact bug this function exists to avoid (see
+        find_own_transcript's docstring for the same distinction applied to
+        path resolution).
+    """
+    if not path:
+        return None
+    count = 0
+    parsed_any = False
+    try:
+        with open(path, "r") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(obj, dict):
+                    # Valid JSON, wrong shape (null / a bare number / a list
+                    # / a string). D#1791 security review: obj.get(...)
+                    # below would raise AttributeError on any of these,
+                    # which — unlike every other path in this function —
+                    # was NOT swallowed anywhere, so one such line took out
+                    # resolve()'s entire payload (role/verdict/tokens, not
+                    # just tool_uses). Skip, and do not count it toward
+                    # parsed_any either: it is exactly the "valid JSON, no
+                    # recognizable role" case the schema-drift note above
+                    # treats as unrecognized, not as an observed empty turn.
+                    continue
+                if obj.get("type") in ("message", "user", "assistant") and isinstance(obj.get("message"), dict):
+                    msg = obj["message"]
+                    role = msg.get("role", "")
+                    content = msg.get("content", "")
+                else:
+                    role = obj.get("role", "")
+                    content = obj.get("content", "")
+                if role:
+                    # A role was resolved (whether "assistant" or not) — the
+                    # line's shape is recognized, so this transcript counts
+                    # as genuinely observed even if it turns out to hold
+                    # zero tool_use blocks.
+                    parsed_any = True
+                if role != "assistant" or not isinstance(content, list):
+                    continue
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_use":
+                        count += 1
+    except (OSError, IOError):
+        return None
+    return count if parsed_any else None
 
 
 def scan_transcript(transcript_path):
@@ -314,6 +415,11 @@ def resolve(payload, repo_root=""):
     session_id = _valid(out["session_id"], SESSION_ID_RE)
 
     out["own_transcript_path"] = find_own_transcript(transcript_path, agent_id, session_id, repo_root)
+    # Tri-state (D#1791): None means "own transcript absent or unreadable",
+    # never "zero tool calls" — count_tool_uses("") already returns None, so
+    # this line alone is what keeps criterion 4 (own_transcript_path=="" ->
+    # tool_uses is empty/NULL, never 0) true.
+    out["tool_uses"] = count_tool_uses(out["own_transcript_path"])
 
     # lam_present is presence of the KEY in the payload, not "did it parse".
     # This is the item-5 guard: a subagent whose last_assistant_message is
