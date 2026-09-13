@@ -200,6 +200,92 @@ else
   fail "genuine-four-way-denial-reaches-contained" "expected CONTAINED when gh/curl fail and both dirs are unreadable, got: $OUT_5"
 fi
 
+# ── test 6: transient curl exits are INDETERMINATE, never DENIED ─────────
+# A curl that fails for a transport-layer reason must never be
+# indistinguishable from a genuine firewall denial (D#2584). Fixture: gh
+# stubbed to fail with exit 1 (a genuine failure, same as test 5) and both
+# directory targets genuinely unreadable/unwritable via chmod 000 (also
+# same as test 5) — so gh-credential/state-dir/operator-checkout-write are
+# real DENIEDs here, and only the network probe's curl exit code varies.
+# This is a distinct case from test 5, which uses curl exit 1 (not a
+# transport-failure code — "unsupported protocol", curl's own client-side
+# misuse code) on purpose — test 5 stays untouched.
+#
+# Covers 5 (couldn't resolve proxy), 6 (DNS), 7 (connection refused), 16
+# (HTTP/2 framing), 18 (partial transfer), 28 (timeout), 35 (TLS connect
+# error), 52 (empty reply), 55/56 (send/recv error), 60 (SSL cert
+# verification failure), 77 (SSL CA cert unreadable), and 92 (HTTP/2
+# stream) — curl's transport-failure codes for a plain https GET with no
+# --fail. Originally only 6/7/28 were covered; a security-review pass on
+# PR #209 measured that the uncovered complement (5/16/18/35/52/55/56/92)
+# still read DENIED and still reached CONTAINED — the same defect,
+# unfixed for those codes. SNI/DPI-based egress filtering and a `reject
+# with tcp reset` against an established connection surface as exactly
+# those codes (35, 56), not 7 or 28, so the gap fired on the configuration
+# this script exists to verify. 60 and 77 were added afterward on the same
+# reasoning even though they don't fire under that specific configuration
+# — a TLS-inspecting egress proxy surfaces as 60.
+
+for TRANSIENT_RC in 5 6 7 16 18 28 35 52 55 56 60 77 92; do
+  DENY_BIN_6="$FIXTURE/deny-bin-transient-$TRANSIENT_RC"
+  mkdir -p "$DENY_BIN_6"
+  cat > "$DENY_BIN_6/gh" <<'STUB'
+#!/usr/bin/env bash
+exit 1
+STUB
+  chmod +x "$DENY_BIN_6/gh"
+  cat > "$DENY_BIN_6/curl" <<STUB
+#!/usr/bin/env bash
+exit $TRANSIENT_RC
+STUB
+  chmod +x "$DENY_BIN_6/curl"
+
+  DENY_STATE_DIR_6="$FIXTURE/deny-state-transient-$TRANSIENT_RC"
+  mkdir -p "$DENY_STATE_DIR_6"
+  chmod 000 "$DENY_STATE_DIR_6"
+
+  DENY_CHECKOUT_DIR_6="$FIXTURE/deny-checkout-transient-$TRANSIENT_RC"
+  mkdir -p "$DENY_CHECKOUT_DIR_6/.git"
+  chmod 000 "$DENY_CHECKOUT_DIR_6/.git"
+
+  OUT_6=$(PATH="$DENY_BIN_6:$PATH" \
+    GATE1_VERIFY_STATE_DIR="$DENY_STATE_DIR_6" \
+    GATE1_VERIFY_CHECKOUT_DIR="$DENY_CHECKOUT_DIR_6" \
+    bash "$VERIFIER_SRC" 2>&1)
+
+  chmod 755 "$DENY_STATE_DIR_6" "$DENY_CHECKOUT_DIR_6/.git"
+
+  if echo "$OUT_6" | grep -q "gate1_probe network=INDETERMINATE"; then
+    pass "transient-curl-exit-$TRANSIENT_RC-is-indeterminate"
+  else
+    fail "transient-curl-exit-$TRANSIENT_RC-is-indeterminate" "expected network=INDETERMINATE for curl exit $TRANSIENT_RC, got: $OUT_6"
+  fi
+
+  if echo "$OUT_6" | grep -q "gate1_probe network=DENIED"; then
+    fail "transient-curl-exit-$TRANSIENT_RC-never-denied" "curl exit $TRANSIENT_RC (transient) reported network=DENIED — the exact D#2584 defect: a transient fault reads as a firewall"
+  else
+    pass "transient-curl-exit-$TRANSIENT_RC-never-denied"
+  fi
+
+  if echo "$OUT_6" | grep -q "gate1_containment_verdict=INDETERMINATE"; then
+    pass "transient-curl-exit-$TRANSIENT_RC-verdict-indeterminate"
+  else
+    fail "transient-curl-exit-$TRANSIENT_RC-verdict-indeterminate" "expected overall verdict INDETERMINATE for curl exit $TRANSIENT_RC, got: $OUT_6"
+  fi
+
+  if echo "$OUT_6" | grep -q "gate1_containment_verdict=CONTAINED"; then
+    fail "transient-curl-exit-$TRANSIENT_RC-never-contained" "curl exit $TRANSIENT_RC (transient) plus three genuine denials still reached CONTAINED — the exact D#2584 defect"
+  else
+    pass "transient-curl-exit-$TRANSIENT_RC-never-contained"
+  fi
+
+  if echo "$OUT_6" | grep -q "network=INDETERMINATE (curl exit $TRANSIENT_RC)"; then
+    pass "transient-curl-exit-$TRANSIENT_RC-annotated"
+  else
+    fail "transient-curl-exit-$TRANSIENT_RC-annotated" "expected the probe line to name the observed exit code, got: $OUT_6"
+  fi
+done
+
 # ── Teardown ─────────────────────────────────────────────────────────────
 
 chmod -R u+rwx "$FIXTURE" 2>/dev/null || true
