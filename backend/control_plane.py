@@ -123,6 +123,13 @@ _DEFAULT_GATES: dict[str, bool | str] = {
     # Posts one-line summary to team log; names non-default classes (level!=ceiling or directives).
     # Default false — opt-in; enable when overnight dial drift visibility is needed.
     "dial_state_summary": False,
+    # Telemetry-report gate (D#2565): opt-in daily counter report to
+    # fulcrumaxe.dev. Deliberately a boolean, not a dial — dial_registry's
+    # set_dial() and check() both reject level < 1, so a ceiling-1 dial has
+    # no off state, which is unrepresentable for a feature whose core
+    # promise is off-by-default. Default False — at False, no network call
+    # of any kind (including DNS) is made; see scripts/lib/telemetry.sh.
+    "telemetry_report": False,
 }
 
 _DEFAULT_SETTINGS: dict = {

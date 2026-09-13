@@ -795,6 +795,12 @@ else
   echo "  (no plan file — skipping staleness check)"
 fi
 
+# Opt-in telemetry report (D#2565) — off by default, and silent either way:
+# the gate check inside is the first statement, so this costs nothing when
+# gates.telemetry_report is false, and a failed send here must never break
+# the ritual's exit code.
+bash "$REPO_ROOT/scripts/lib/telemetry.sh" || true
+
 echo ""
 echo "==============================================================="
 echo "Ready to drive. User redirects only."
