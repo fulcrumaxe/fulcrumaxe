@@ -151,6 +151,23 @@ class TestInstallId:
         second = telemetry_install_id.ensure_id()
         assert first == second
 
+    def test_malformed_id_file_treated_as_absent(self, monkeypatch, tmp_path):
+        # A clobbered or truncated write should not flow into the erase
+        # wrapper's DELETE body (or, in PR-b, the report payload) just
+        # because a file happens to exist at the expected path.
+        monkeypatch.setenv("AUTONOMOUS_TEAM_STATE_DIR", str(tmp_path))
+        id_path = tmp_path / telemetry_install_id.ID_FILENAME
+        id_path.write_text("not-a-real-id\n", encoding="utf-8")
+
+        assert telemetry_install_id.read_id() is None
+
+    def test_too_short_id_file_treated_as_absent(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("AUTONOMOUS_TEAM_STATE_DIR", str(tmp_path))
+        id_path = tmp_path / telemetry_install_id.ID_FILENAME
+        id_path.write_text("deadbeef\n", encoding="utf-8")
+
+        assert telemetry_install_id.read_id() is None
+
 
 # ---------------------------------------------------------------------------
 # AC-8 (redaction half) — literal-value redaction, not shape-based

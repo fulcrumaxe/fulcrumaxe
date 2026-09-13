@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import secrets
 import sys
 from pathlib import Path
@@ -41,6 +42,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from backend import control_plane, state_paths  # noqa: E402
 
 ID_FILENAME = "telemetry-install-id"
+
+_ID_RE = re.compile(r"[0-9a-f]{32}")
 
 DISCLOSURE_URL = "https://fulcrumaxe.dev/telemetry.html"
 ERASE_COMMAND = "bash scripts/telemetry-erase.sh"
@@ -67,16 +70,25 @@ def _id_path() -> Path:
 
 
 def read_id() -> str | None:
-    """Pure read. Returns the id if the file exists, else ``None``.
+    """Pure read. Returns the id if the file exists AND matches the expected
+    shape, else ``None``.
 
     Never creates the file. Safe to call any number of times at any gate
     state (AC-6) -- this function does not itself look at the gate at all.
+
+    A shape mismatch (truncated write, a clobbered or hand-edited file) is
+    treated as absent rather than passed through: this value flows straight
+    into the erase wrapper's DELETE body and, in PR-b, the report payload,
+    so a malformed value should skip the day exactly like a missing file
+    does (AC-7's guard), not get sent anywhere.
     """
     try:
         value = _id_path().read_text(encoding="utf-8").strip()
     except OSError:
         return None
-    return value or None
+    if not _ID_RE.fullmatch(value):
+        return None
+    return value
 
 
 def ensure_id() -> str:

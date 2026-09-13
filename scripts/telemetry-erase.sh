@@ -27,8 +27,11 @@ if [ -z "$INSTALL_ID" ]; then
   exit 0
 fi
 
-# Never print the literal id — a short, redacted stand-in only.
-REDACTED="${INSTALL_ID:0:4}...${INSTALL_ID: -4}"
+# Never print the literal id — a short, redacted stand-in only. Kept to 2+2
+# characters (16 bits) rather than 4+4: enough for an operator to eyeball
+# "yes, that's the run I meant", but 4+4 (32 bits) was flagged as usable for
+# cross-log correlation even though it can't reproduce the real id.
+REDACTED="${INSTALL_ID:0:2}...${INSTALL_ID: -2}"
 
 if [ "$DRY_RUN" = true ]; then
   echo "Would issue: DELETE /api/telemetry  host=fulcrumaxe.dev  install=${REDACTED}"
