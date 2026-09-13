@@ -352,6 +352,19 @@ if [[ "$FORCE_NO_TWO_GATE" == "true" ]]; then
     echo "[merge-and-hook] Bypass reason: $BYPASS_REASON" >&2
   fi
 
+  # D#2566 PR-2: record what was actually bypassed, not just that a bypass
+  # happened. This does not gate anything here — FORCE_NO_TWO_GATE already
+  # decided to proceed — it only makes the audit row honest about whether a
+  # receipt existed. gate1_receipt_check is available here because this
+  # script sources two-gate-check.sh above, which sources it in turn.
+  gate1_receipt_check "$PR" "$_PR_REPO" >/dev/null 2>&1 || true
+  _GATE1_RECEIPT_STATE="${GATE1_RECEIPT_CHECK_STATE:-unknown}"
+  if [[ "$_GATE1_RECEIPT_STATE" == "absent" ]]; then
+    _GATE1_RECEIPT_ABSENT=true
+  else
+    _GATE1_RECEIPT_ABSENT=false
+  fi
+
   # Write audit row to <state_dir>/audit.jsonl
   _AUDIT_DIR="${AUTONOMOUS_TEAM_STATE_DIR:-$HOME/.autonomous-forever-state}"
   _AUDIT_FILE="$_AUDIT_DIR/audit.jsonl"
@@ -359,8 +372,8 @@ if [[ "$FORCE_NO_TWO_GATE" == "true" ]]; then
   _AUDIT_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date +%Y-%m-%dT%H:%M:%SZ)"
   _AUDIT_REASON="${BYPASS_REASON:-}"
   mkdir -p "$_AUDIT_DIR"
-  printf '%s\n' "{\"kind\":\"manual_merge_two_gate_bypass\",\"pr\":$PR,\"user\":\"$_AUDIT_USER\",\"timestamp\":\"$_AUDIT_TS\",\"reason\":\"$_AUDIT_REASON\"}" >> "$_AUDIT_FILE"
-  echo "[merge-and-hook] Audit row written: kind=manual_merge_two_gate_bypass pr=$PR" >&2
+  printf '%s\n' "{\"kind\":\"manual_merge_two_gate_bypass\",\"pr\":$PR,\"user\":\"$_AUDIT_USER\",\"timestamp\":\"$_AUDIT_TS\",\"reason\":\"$_AUDIT_REASON\",\"gate1_receipt_absent\":$_GATE1_RECEIPT_ABSENT,\"gate1_receipt_state\":\"$_GATE1_RECEIPT_STATE\"}" >> "$_AUDIT_FILE"
+  echo "[merge-and-hook] Audit row written: kind=manual_merge_two_gate_bypass pr=$PR gate1_receipt_state=$_GATE1_RECEIPT_STATE" >&2
 else
   if ! check_two_gate_markers "$PR" "$_PR_REPO"; then
     echo "[merge-and-hook] Two-Gate check FAILED for PR #$PR: $TWO_GATE_FAIL_REASON" >&2

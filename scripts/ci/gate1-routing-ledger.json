@@ -1,0 +1,4 @@
+{
+  "note": "Unrouted-path exemptions for Gate 1 (D#2566 PR-2). A path listed here, whose changed-file routing shows suite:null, is accepted as a legitimate Gate 1 N/A instead of rejected as `unrouted` -- but ONLY when every changed file in the PR routes null; a PR that also ran a real suite for some other file never consults this ledger at all. scripts/lib/gate1-receipt-check.sh fails closed (state=unrouted) on any null-routed path not listed here. A `.py` path is NEVER eligible for this ledger, full stop, regardless of what's written below -- run-pr-tests.sh's pytest arm does not match every .py path (e.g. scripts/lib/*.py), and those are exactly the modules most likely to be the trust boundary (D#2577). Every reason has to be checkable by a reviewer -- 'not testable' is not a reason. Reconciled by scripts/ci/gate1-routing-ledger-check.py.",
+  "ledger": {}
+}

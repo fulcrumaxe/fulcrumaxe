@@ -24,6 +24,14 @@
 # Example:
 #   TWO_GATE_PR_BODY_99999="Gate 1: PASS\nGate 2: PASS"
 #   check_two_gate_markers 99999 "owner/repo"
+#
+# D#2566 PR-2: prose markers alone are no longer sufficient for Gate 1 — a
+# caller-authored receipt must exist, name this PR's current head, and
+# authorize. Registration only: gate1_receipt_check (below) is called
+# after the marker checks below pass, and the marker regexes themselves
+# are untouched by this change (D#2566 item 25).
+# shellcheck source=./gate1-receipt-check.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gate1-receipt-check.sh"
 
 TWO_GATE_FAIL_REASON=""
 
@@ -136,6 +144,17 @@ check_two_gate_markers() {
         return 1
       fi
     fi
+  fi
+
+  # D#2566 PR-2: the prose markers above are necessary but no longer
+  # sufficient. Gate 1 also needs a caller-authored receipt that names
+  # this PR's current head and authorizes — see gate1-receipt-check.sh's
+  # own header for the full decision table. An absent, malformed, or
+  # unauthorizing receipt fails here even though the marker text itself
+  # was fine.
+  if ! gate1_receipt_check "$pr" "$repo"; then
+    TWO_GATE_FAIL_REASON="$GATE1_RECEIPT_CHECK_REASON"
+    return 1
   fi
 
   return 0

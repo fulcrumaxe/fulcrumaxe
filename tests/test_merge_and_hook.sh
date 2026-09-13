@@ -22,6 +22,11 @@ CI_STATUS_LIB="$REPO_ROOT/scripts/lib/ci-status-check.sh"
 PR_DEPENDENTS_LIB="$REPO_ROOT/scripts/lib/pr-dependents.sh"
 DASHBOARD_TOUCHED_SCRIPT="$REPO_ROOT/scripts/check-pr-dashboard-touched.sh"
 MERGE_GATE_LABELS_LIB="$REPO_ROOT/scripts/lib/merge-gate-labels.sh"
+# D#2566 PR-2: two-gate-check.sh now sources gate1-receipt-check.sh relative
+# to its OWN copied location, so this fixture's copy needs it right there
+# too, or every test below crashes at sourcing before any gate runs.
+GATE1_RECEIPT_CHECK_LIB="$REPO_ROOT/scripts/lib/gate1-receipt-check.sh"
+GATE1_RECEIPT_LIB="$REPO_ROOT/scripts/lib/gate1-receipt.sh"
 
 # D#2455: the label set under test is read from the shared definition at
 # runtime, never restated. Every case below iterates these arrays, so adding a
@@ -291,6 +296,12 @@ PYEOF
   # a test that restated the labels would pass against a wrapper reading a
   # different list, which is the defect this gate exists to close.
   cp "$MERGE_GATE_LABELS_LIB" "$tmpdir/scripts/lib/merge-gate-labels.sh"
+  # D#2566 PR-2: two-gate-check.sh sources gate1-receipt-check.sh relative to
+  # its own copied path, and that in turn sources gate1-receipt.sh the same
+  # way — both have to sit right beside it here too, or sourcing itself
+  # fails (under set -e) before any gate in merge-and-hook.sh ever runs.
+  cp "$GATE1_RECEIPT_CHECK_LIB" "$tmpdir/scripts/lib/gate1-receipt-check.sh"
+  cp "$GATE1_RECEIPT_LIB" "$tmpdir/scripts/lib/gate1-receipt.sh"
   # D#2332: the browser-test gate shells out to this, so it has to exist beside
   # the copied merge-and-hook.sh. It resolves the code repo through the copied
   # repo-resolve.sh, which finds no config.json under tmpdir and falls through
@@ -325,6 +336,57 @@ run_script() {
     if [[ "$_prev" == "--pr" ]]; then _pr_num="$_arg"; fi
     _prev="$_arg"
   done
+  # D#2566 PR-2: check_two_gate_markers now also needs a receipt to
+  # authorize, not just prose markers. Every pre-existing test here was
+  # written before that requirement existed and drives the two-gate step
+  # with only a PR body — so unless a test overrides
+  # GATE1_RECEIPT_HEAD_SHA_OVERRIDE / GATE1_RECEIPT_JSON_OVERRIDE itself, a
+  # default, universally-authorizing receipt (empty routing, so it can never
+  # trip the unrouted/N-A classification either way) is supplied for
+  # whichever --pr number this call is testing. This is test-mode-only
+  # plumbing (GATE1_RECEIPT_HEAD_SHA_<PR> / GATE1_RECEIPT_JSON_<PR>,
+  # gate1-receipt-check.sh's own override convention) — no test here
+  # exercises receipt content itself; that is tests/test_gate1_receipt_check.sh's
+  # job.
+  #
+  # GATE1_TEST_MODE=absent is a THIRD state, not "override empty means
+  # default": a test that wants to prove item 13 (absent receipt rejects)
+  # through THIS entry point needs a way to say "inject nothing" that is
+  # distinguishable from "didn't ask, give me the default" — treating
+  # empty as "use the default" is the same fail-open shape the two
+  # blocking findings on gate1-receipt-check.sh itself were about
+  # (routing coerced falsy to `[]`; partial accepted anything as "not
+  # true"), one layer out in this harness (security review, this PR).
+  local _g1_test_mode="${GATE1_TEST_MODE:-default}"
+  local -a _g1_env_args=()
+  if [[ "$_g1_test_mode" != "absent" ]]; then
+    local _g1_sha="${GATE1_RECEIPT_HEAD_SHA_OVERRIDE:-deadbeefdeadbeefdeadbeefdeadbeefdeadbeef}"
+    local _g1_json="${GATE1_RECEIPT_JSON_OVERRIDE:-}"
+    if [[ -z "$_g1_json" ]]; then
+      _g1_json=$(python3 -c "
+import json, sys
+pr, sha, repo = sys.argv[1:4]
+print(json.dumps({
+    'schema': 1,
+    'caller': {
+        'pr': int(pr) if pr.isdigit() else 0, 'repo': repo, 'pr_head_sha': sha,
+        'tree_root': '/tmp/g1-fixture-tree', 'gate1_runner_copy': '/tmp/g1-fixture-op/run-pr-tests.sh',
+        'gate1_containment': 'NONE (same-uid)',
+        'containment_probes': {'gh-credential': 'NOT-DENIED', 'state-dir': 'NOT-DENIED', 'operator-checkout-write': 'NOT-DENIED', 'network': 'NOT-DENIED'},
+        'containment_verdict': 'UNCONTAINED',
+        'env': {'AUTONOMOUS_TEAM_REPO': repo, 'AUTONOMOUS_TEAM_STATE_DIR': '/tmp/x', 'seed_files': {'.autonomous-team/config.json': False, '.autonomous-team/project.json': False}},
+        'written_at': '2026-01-01T00:00:00Z', 'receipt_path': '/tmp/g1-fixture-receipt.json',
+    },
+    'head_reported': {'routing': [], 'tests_run': [], 'partial': False, 'measured_tree': {}},
+}))
+" "$_pr_num" "$_g1_sha" "${AUTONOMOUS_TEAM_REPO:-autonomous-agent-7/fulcrumaxe}")
+    fi
+    _g1_env_args=("GATE1_RECEIPT_HEAD_SHA_${_pr_num}=${_g1_sha}" "GATE1_RECEIPT_JSON_${_pr_num}=${_g1_json}")
+  fi
+  # In absent mode, _g1_env_args stays empty — no GATE1_RECEIPT_JSON_<PR>
+  # is passed at all, so gate1-receipt-check.sh's real (empty, per-test
+  # $tmpdir/state) lookup finds nothing and reports `absent` honestly.
+
   # Inject stub bin dir first in PATH so gh/python3 are overridden
   # D#1944: the CI gate now reads the CI_DISABLED repo variable first. Pin it
   # through the test seam so no test reaches the network — HTTP_404 means
@@ -343,6 +405,7 @@ run_script() {
     PR_DEPENDENTS_TEST_MODE="${PR_DEPENDENTS_TEST_MODE:-1}" \
     "PR_DEP_HEADREF_${_pr_num}=${PR_DEP_HEADREF_OVERRIDE:-test-branch-$_pr_num}" \
     PR_DEP_OPEN_LIST_JSON="${PR_DEP_OPEN_LIST_JSON:-[]}" \
+    "${_g1_env_args[@]}" \
     bash "$tmpdir/scripts/merge-and-hook.sh" "$@" 2>&1
 }
 
@@ -460,6 +523,32 @@ else
 fi
 unset TWO_GATE_PR_BODY_999
 rm -rf "$T_TG5"
+
+# ── Test TG-6 (D#2566 item 13/23): valid markers, NO receipt — merge refused ──
+# GATE1_TEST_MODE=absent is the sentinel added above precisely so this is
+# expressible: "no receipt" must be distinguishable from "didn't ask," or
+# the always-authorizing default silently answers for every test here,
+# including this one. This demonstrates item 13 through THIS entry point
+# (merge-and-hook.sh, not just tests/test_two_gate_check.sh's TG-14 at
+# library level) — item 23 requires both.
+echo "Test TG-6: valid Two-Gate markers, no receipt at all — merge refused"
+T_TG6=$(mktemp -d)
+setup_stubs "$T_TG6" 0
+export TWO_GATE_PR_BODY_999="## Verification\nGate 1: PASS\nGate 2: PASS"
+# STUB_HEAD_SHA's own default ("deadbeefcafe0000") is 16 hex chars, not the
+# 40 a real `gh pr view --json headRefOid` always returns — fine for every
+# other test here (they take the GATE1_RECEIPT_JSON_<PR> mock path, which
+# never reaches gate1-receipt-check.sh's own sha-format check), but this
+# test deliberately takes the real lookup path, so it needs a sha shaped
+# like the real thing to demonstrate the RIGHT rejection reason.
+OUT_TG6=$(STUB_HEAD_SHA="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" GATE1_TEST_MODE=absent run_script "$T_TG6" --pr 999 2>&1)
+RC_TG6=$?
+assert_exit "TG-6: exits 1 — markers alone no longer authorize" 1 "$RC_TG6"
+assert_contains "TG-6: Two-Gate check FAILED is reported" "Two-Gate check FAILED" "$OUT_TG6"
+assert_contains "TG-6: reason names the absent receipt" "receipt absent" "$OUT_TG6"
+assert_not_contains "TG-6: gh pr merge NOT called" "GH_ARGS:" "$OUT_TG6"
+unset TWO_GATE_PR_BODY_999
+rm -rf "$T_TG6"
 
 # ── Test HG7-1: no --discussion flag, but PR body has a resolvable Closes D#N,
 #    Discussion is provenance:external, security-review-passed ABSENT — merge

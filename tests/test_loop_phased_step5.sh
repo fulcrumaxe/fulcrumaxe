@@ -43,6 +43,66 @@ export CI_STATUS_TEST_MODE=1
 export CI_STATUS_TEST_AUDIT_FILE="$(mktemp -t loop-phased-step5-tests.XXXXXX)"
 trap 'rm -f "$CI_STATUS_TEST_AUDIT_FILE"' EXIT
 
+# D#2566 PR-2: check_two_gate_markers (called from the code_review phase
+# below) now also needs a caller-authored receipt to authorize, not just a
+# TWO_GATE_PR_BODY_<PR> mock. gate1_receipt_check cross-checks
+# caller.pr/caller.repo against the exact PR/repo it was called with, so
+# the receipt cannot be one shared constant — _gate1_fixture_json builds
+# one matched to whichever PR is under test, with empty routing so it can
+# never trip the unrouted/N-A classification either.
+#
+# GATE1_TEST_MODE controls what a `_g1_receipt_env <PR>` call below
+# injects, mirroring the caller-imposed-shape discipline this file's own
+# gate is about: it is a three-way sentinel, not "the value or a default
+# for anything falsy" (that fallback shape is exactly what let head-
+# influenced fields slip past gate1-receipt-check.sh's own routing/partial
+# checks — the same defect, one layer out, security review on this PR):
+#   default (unset)  inject a universally-authorizing receipt (below)
+#   absent           inject NOTHING — no GATE1_RECEIPT_JSON_<PR> at all,
+#                     so the real (empty, per-test) state-dir lookup finds
+#                     nothing and the checker's own `absent` state fires —
+#                     this is how item 13 gets demonstrated through this
+#                     entry point, not just at library level (item 23)
+GATE1_TEST_SHA="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+# _gate1_fixture_json PR REPO — the default authorizing receipt for PR/REPO.
+_gate1_fixture_json() {
+  local pr="$1" repo="$2"
+  python3 -c "
+import json, sys
+pr, repo, sha = sys.argv[1:4]
+print(json.dumps({
+    'schema': 1,
+    'caller': {
+        'pr': int(pr), 'repo': repo, 'pr_head_sha': sha,
+        'tree_root': '/tmp/g1-fixture-tree', 'gate1_runner_copy': '/tmp/g1-fixture-op/run-pr-tests.sh',
+        'gate1_containment': 'NONE (same-uid)',
+        'containment_probes': {'gh-credential': 'NOT-DENIED', 'state-dir': 'NOT-DENIED', 'operator-checkout-write': 'NOT-DENIED', 'network': 'NOT-DENIED'},
+        'containment_verdict': 'UNCONTAINED',
+        'env': {'AUTONOMOUS_TEAM_REPO': repo, 'AUTONOMOUS_TEAM_STATE_DIR': '/tmp/x', 'seed_files': {'.autonomous-team/config.json': False, '.autonomous-team/project.json': False}},
+        'written_at': '2026-01-01T00:00:00Z', 'receipt_path': '/tmp/g1-fixture-receipt.json',
+    },
+    'head_reported': {'routing': [], 'tests_run': [], 'partial': False, 'measured_tree': {}},
+}))
+" "$pr" "$repo" "$GATE1_TEST_SHA"
+}
+
+# _gate1_export_receipt PR — exports GATE1_RECEIPT_HEAD_SHA_<PR> and, unless
+# GATE1_TEST_MODE=absent, GATE1_RECEIPT_JSON_<PR> into THIS shell, so the
+# subsequent `bash "$SCRIPT"` call (not run with `env -i`) inherits them
+# ambiently — called right before each invocation below, per PR. In
+# absent mode, explicitly unsets GATE1_RECEIPT_JSON_<PR> so a value
+# exported by an earlier call in this same process can never leak forward.
+_gate1_export_receipt() {
+  local pr="$1" repo="${AUTONOMOUS_TEAM_REPO:-fulcrumaxe/fulcrumaxe}"
+  export "GATE1_RECEIPT_HEAD_SHA_${pr}=${GATE1_TEST_SHA}"
+  if [[ "${GATE1_TEST_MODE:-default}" == "absent" ]]; then
+    unset "GATE1_RECEIPT_JSON_${pr}"
+  else
+    export "GATE1_RECEIPT_JSON_${pr}=$(_gate1_fixture_json "$pr" "$repo")"
+  fi
+}
+
 # Injection-exploit marker files (Tests 18 & 20 below) live under one
 # mktemp'd dir rather than fixed /tmp/exploit-marker{,-replay} names — a
 # concurrently-running copy of this suite touching the same fixed name would
@@ -364,6 +424,7 @@ _write_snapshot_spec_ready "$SNAP_T6" 55501
 # Create pr_state entry in code_review phase, fix_cycle_count=0
 _write_pr_state_entry 70100 55501 "code_review"
 
+_gate1_export_receipt 70100
 OUTPUT_T6=$(AF_CONTROL_PLANE_CONFIG="$CFG_T6" SNAPSHOT_PATH="$SNAP_T6" \
   SPAWN_AGENT=echo REPO_ROOT="$REAL_REPO_ROOT" \
   TWO_GATE_PR_BODY_70100="## Verification\nGate 1: PASS\nGate 2: PASS" \
@@ -376,6 +437,42 @@ assert_not_contains "impl-coordinator NOT spawned when sub-gate on" "impl-coordi
 
 _remove_pr_state_entry 70100
 rm -f "$CFG_T6" "$SNAP_T6"
+
+# -----------------------------------------------------------------------
+# Test 6b (D#2566 item 13/23): valid markers, NO receipt — code-reviewer
+# must NOT be spawned. GATE1_TEST_MODE=absent is the sentinel that makes
+# "no receipt" distinguishable from "use the default" — the previous
+# fixture seam here treated an empty override as "inject the always-
+# authorizing default," which is exactly the fail-open shape the two
+# blocking findings on gate1-receipt-check.sh itself were about, one
+# layer out (security review, this PR). This is item 13 demonstrated
+# through THIS entry point, not just at library level via
+# tests/test_two_gate_check.sh's TG-14 (item 23 requires both).
+# -----------------------------------------------------------------------
+echo ""
+echo "=== Test 6b: code_review phase, valid markers, receipt absent — code-reviewer NOT spawned ==="
+CFG_T6B=$(_make_config_file)
+_set_gate_true "$CFG_T6B" phased_orchestration
+_set_gate_true "$CFG_T6B" phased_code_review
+SNAP_T6B=$(mktemp --suffix='.json')
+_write_snapshot_spec_ready "$SNAP_T6B" 55599
+_write_pr_state_entry 70199 55599 "code_review"
+
+GATE1_TEST_MODE=absent _gate1_export_receipt 70199
+OUTPUT_T6B=$(AF_CONTROL_PLANE_CONFIG="$CFG_T6B" SNAPSHOT_PATH="$SNAP_T6B" \
+  SPAWN_AGENT=echo REPO_ROOT="$REAL_REPO_ROOT" \
+  TWO_GATE_PR_BODY_70199="## Verification\nGate 1: PASS\nGate 2: PASS" \
+  bash "$SCRIPT" 2>&1)
+RC_T6B=$?
+
+assert_exit_0 "Test 6b: exit code 0 (refusal is not a crash)" "$RC_T6B"
+assert_not_contains "Test 6b: code-reviewer NOT spawned without a receipt" "code-reviewer" "$OUTPUT_T6B"
+assert_contains "Test 6b: two-gate check FAILED is logged" "two-gate check FAILED" "$OUTPUT_T6B"
+assert_contains "Test 6b: reason names the absent receipt" "receipt absent" "$OUTPUT_T6B"
+
+_remove_pr_state_entry 70199
+rm -f "$CFG_T6B" "$SNAP_T6B"
+unset GATE1_RECEIPT_JSON_70199 GATE1_RECEIPT_HEAD_SHA_70199
 
 # -----------------------------------------------------------------------
 # Test 7: code_review phase, phased_code_review=true, fix_cycle_count=3 — escalation
@@ -415,6 +512,7 @@ entry = {
 json.dump(entry, open('$BB_DIR_T7/80100.json', 'w'), indent=2)
 "
 
+_gate1_export_receipt 80100
 OUTPUT_T7=$(AF_CONTROL_PLANE_CONFIG="$CFG_T7" SNAPSHOT_PATH="$SNAP_T7" \
   SPAWN_AGENT=echo REPO_ROOT="$REAL_REPO_ROOT" \
   TWO_GATE_PR_BODY_80100="## Verification\nGate 1: PASS\nGate 2: PASS" \
@@ -466,6 +564,7 @@ entry = {
 json.dump(entry, open('$BB_DIR_T8/90100.json', 'w'), indent=2)
 "
 
+_gate1_export_receipt 90100
 OUTPUT_T8=$(AF_CONTROL_PLANE_CONFIG="$CFG_T8" SNAPSHOT_PATH="$SNAP_T8" \
   SPAWN_AGENT=echo REPO_ROOT="$REAL_REPO_ROOT" \
   TWO_GATE_PR_BODY_90100="## Verification\nGate 1: PASS\nGate 2: PASS" \
@@ -1345,6 +1444,7 @@ assert_not_contains "executor prompt does not point at a pull request" \
 
 # Code-reviewer spawn: both halves present, each pointing at its own object.
 _write_pr_state_entry 70127 55527 "code_review"
+_gate1_export_receipt 70127
 OUTPUT_T27B=$(AF_CONTROL_PLANE_CONFIG="$CFG_T27" SNAPSHOT_PATH="$SNAP_T27" \
   SPAWN_AGENT=echo REPO_ROOT="$REAL_REPO_ROOT" \
   DISCUSSING_MOCK='[]' \
