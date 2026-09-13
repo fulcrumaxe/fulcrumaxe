@@ -151,7 +151,7 @@
     "scripts/env-bootstrap.sh": "6b46737bf71dfc7d6716316772e78309aeefb05656be98a4a7180cac3e03cd90",
     "scripts/gate-check.sh": "61b9ab5805bdb23f4ce7ba3faa34642c4d6b807184c61285273c370fce2328db",
     "scripts/gate1-invoke.sh": "327d7598d10a95c499a512917bcfc4d6d6075c40d692de85a7dcdf85e3c5219d",
-    "scripts/gate1-verify-containment.sh": "b55130a30a49d29a55db036fad675fd4a3375d90e099b353978ae4befcfcdf38",
+    "scripts/gate1-verify-containment.sh": "0ea653993c2806137758edea453c4c07d1d48b041dac9baa07407cf67637049e",
     "scripts/gh-api-dial.sh": "f4948d3ad7735cd281b168334f899551741a045dfc05965a053f640c00a960b0",
     "scripts/hooks/post-agent.d/anomaly-check.sh": "f8b3a2dfb838e8a5da1fec0c6fe54e9bcb51df241134ccceaebd000921c075d2",
     "scripts/hooks/post-agent.d/cost-summary.sh": "51e3c16efeb26e7310f7b0bc9dceb6d10367511c61fe218ac80091a943371f9c",
