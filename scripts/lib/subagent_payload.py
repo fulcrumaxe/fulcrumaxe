@@ -86,6 +86,8 @@ DEFAULTS = {
     "parse_ok": False,
     "own_transcript_path": "",
     "tool_uses": None,
+    "sources_count": 0,
+    "claimed_artifact": "",
 }
 
 
@@ -395,6 +397,33 @@ def scan_transcript(transcript_path):
     return last_text, last_usage, first_write_turn
 
 
+def extract_source_signals(envelope, repo_root):
+    """Compute ``sources_count`` / ``claimed_artifact`` from a PARSED
+    envelope dict, using `backend.envelope_check`'s own
+    `extract_sources_count` / `extract_claimed_artifact` (D#1791 PR 3) — the
+    same functions the detector itself calls, so this module's notion of
+    "claimed" can never drift from what the detector recognises, and so
+    this is never a second, independently-maintained parser of the same
+    JSON. Deliberately does NOT scan `envelope`'s raw source text for a
+    permalink; both extractors only ever look at parsed dict fields (see
+    their own docstrings), never surrounding prose.
+
+    Returns (0, "") — the same values a legitimate envelope with no
+    `sources` field would produce — when `envelope` isn't a dict, or when
+    the import fails for any reason (e.g. `repo_root` empty in a test that
+    calls `resolve()` without it). Never raises: this module's contract is
+    that a missing/garbage input degrades to defaults, not an exception."""
+    if not isinstance(envelope, dict):
+        return 0, ""
+    try:
+        if repo_root and repo_root not in sys.path:
+            sys.path.insert(0, repo_root)
+        from backend.envelope_check import extract_claimed_artifact, extract_sources_count
+        return extract_sources_count(envelope), extract_claimed_artifact(envelope) or ""
+    except Exception:
+        return 0, ""
+
+
 def resolve(payload, repo_root=""):
     """Resolve one SubagentStop payload into the fields the hook needs.
     Never raises; always returns a complete dict (defaults on any garbage
@@ -468,6 +497,8 @@ def resolve(payload, repo_root=""):
         env_tokens = {}
         if agent_type:
             out["role"] = agent_type
+
+    out["sources_count"], out["claimed_artifact"] = extract_source_signals(envelope, repo_root)
 
     own_usage = find_own_usage(transcript_path, agent_id, session_id, repo_root)
     if own_usage:

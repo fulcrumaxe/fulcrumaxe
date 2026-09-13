@@ -50,6 +50,7 @@ CACHE_WRITE_TOKENS=0
 CACHE_CREATION_TOKENS=0
 FIRST_WRITE_TURN=""
 TOOL_USES=""
+SOURCES_COUNT=""; CLAIMED_ARTIFACT=""
 PR=""
 MODEL="claude-sonnet-4-20250514"
 FILES=""
@@ -72,6 +73,8 @@ while [[ $# -gt 0 ]]; do
     --cache-creation-tokens)  CACHE_CREATION_TOKENS="$2";  shift 2 ;;
     --first-write-turn)       FIRST_WRITE_TURN="$2";       shift 2 ;;
     --tool-uses)              TOOL_USES="$2";              shift 2 ;;
+    --sources-count)          SOURCES_COUNT="$2";          shift 2 ;;
+    --claimed-artifact)       CLAIMED_ARTIFACT="$2";       shift 2 ;;
     --pr)                 PR="$2";                 shift 2 ;;
     --model)              MODEL="$2";              shift 2 ;;
     --files)              FILES="$2";              shift 2 ;;

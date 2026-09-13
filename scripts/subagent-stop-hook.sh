@@ -76,7 +76,7 @@ fi
 # (e.g. python3 missing) the field list degrades to sixteen empty strings,
 # which downstream still resolves to the same role=unknown/verdict=unknown
 # skip path this script has always had for unreadable input.
-FIELD_LIST="session_id transcript_path agent_id role verdict discussion pr files self_observed input_tokens output_tokens cache_read_tokens cache_write_tokens cache_creation_tokens first_write_turn parse_ok own_transcript_path tool_uses"
+FIELD_LIST="session_id transcript_path agent_id role verdict discussion pr files self_observed input_tokens output_tokens cache_read_tokens cache_write_tokens cache_creation_tokens first_write_turn parse_ok own_transcript_path tool_uses sources_count claimed_artifact"
 FLAT=$(python3 "$SCRIPT_DIR/lib/subagent_payload.py" "$REPO_ROOT" <<< "$STDIN_JSON" 2>/dev/null | python3 -c "
 import json, sys
 try:
@@ -112,13 +112,14 @@ def fmt(k):
 print('\x1f'.join(fmt(k) for k in fields))
 " "$FIELD_LIST" 2>/dev/null)
 if [[ -z "$FLAT" ]]; then
-  # Eighteen empty fields — same count as FIELD_LIST — so `read` below never
+  # Twenty empty fields — same count as FIELD_LIST — so `read` below never
   # runs short and leaves a trailing variable unset under `set -u`.
-  FLAT=$(printf '\x1f%.0s' $(seq 1 17))
+  FLAT=$(printf '\x1f%.0s' $(seq 1 19))
 fi
 IFS=$'\x1f' read -r SESSION_ID TRANSCRIPT_PATH AGENT_ID ROLE VERDICT DISCUSSION PR FILES \
   SELF_OBSERVED INPUT_TOKENS OUTPUT_TOKENS CACHE_READ_TOKENS CACHE_WRITE_TOKENS \
-  CACHE_CREATION_TOKENS FIRST_WRITE_TURN PARSE_OK OWN_TRANSCRIPT_PATH TOOL_USES <<< "$FLAT"
+  CACHE_CREATION_TOKENS FIRST_WRITE_TURN PARSE_OK OWN_TRANSCRIPT_PATH TOOL_USES \
+  SOURCES_COUNT CLAIMED_ARTIFACT <<< "$FLAT"
 SESSION_ID="${SESSION_ID:-unknown}"
 ROLE="${ROLE:-unknown}"
 VERDICT="${VERDICT:-unknown}"
@@ -288,6 +289,19 @@ POST_HOOK_ARGS=(
 # and agent_run.tool_uses is written NULL, not 0. A resolved "0" is
 # non-empty and IS forwarded, exactly like FIRST_WRITE_TURN above.
 [[ -n "$TOOL_USES" ]] && POST_HOOK_ARGS+=(--tool-uses "$TOOL_USES")
+# D#1791 PR 3: the wiring gap PR 2 shipped disclosed but left open — the
+# default SubagentStop path never passed anything for the envelope
+# fabrication detector's sources_count/claimed_artifact to see, so
+# check_impossible_sources always evaluated sources_count=0 here regardless
+# of what the envelope actually claimed. SOURCES_COUNT/CLAIMED_ARTIFACT are
+# subagent_payload.py's own extraction (backend.envelope_check's
+# extract_sources_count/extract_claimed_artifact run on the PARSED
+# envelope), not raw prose, and always forwarded — SOURCES_COUNT is never
+# empty except in the total-parse-failure fallback (matching FILES/PR/etc
+# above) — 0 is the correct, forwarded value for "no sources" on every
+# real resolve(). An empty CLAIMED_ARTIFACT correctly means "none claimed".
+[[ -n "$SOURCES_COUNT" ]] && POST_HOOK_ARGS+=(--sources-count "$SOURCES_COUNT")
+[[ -n "$CLAIMED_ARTIFACT" ]] && POST_HOOK_ARGS+=(--claimed-artifact "$CLAIMED_ARTIFACT")
 
 # SUBAGENT_STOP_DRY_RUN=1 — test mode: write resolved args JSON to
 # SUBAGENT_STOP_ARGS_FILE instead of calling post-agent-hook.sh.
