@@ -757,6 +757,143 @@ def test_hook_script_never_touches_agent_run_verdict(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# D#1791 PR 3: the default SubagentStop path now threads precomputed
+# SOURCES_COUNT / CLAIMED_ARTIFACT ambient vars (subagent_payload.py's own
+# extract_sources_count / extract_claimed_artifact, run on the parsed
+# envelope) instead of leaving this hook to re-derive them from CONTENT,
+# which the default path never populated. These pin that the hook prefers
+# the precomputed signals when present, and that the CONTENT-parsing
+# fallback PR 2 shipped is unchanged for a caller that doesn't set them.
+# ---------------------------------------------------------------------------
+
+
+def test_hook_prefers_precomputed_sources_count_over_content(tmp_path):
+    """SOURCES_COUNT set in the environment (the default path once PR 3 is
+    wired in) must be trusted directly rather than re-derived from CONTENT
+    — set CONTENT to something that would resolve to a DIFFERENT count if
+    re-parsed, and confirm the finding matches SOURCES_COUNT instead."""
+    state_dir = tmp_path / "state"
+    stub, marker = _write_stub_team_log(tmp_path)
+
+    hook_script = REPO_ROOT / "scripts" / "hooks" / "post-agent.d" / "envelope-check.sh"
+    env = dict(os.environ)
+    env.update(
+        {
+            "TOOL_USES": "0",
+            "SOURCES_COUNT": "5",
+            "CLAIMED_ARTIFACT": "",
+            # CONTENT carries a DIFFERENT (empty) sources array — if this
+            # were re-parsed instead of trusting SOURCES_COUNT, no finding
+            # would be recorded.
+            "CONTENT": (
+                "<!-- AGENT_OUTPUT -->\n```json\n"
+                + json.dumps({"agent": "researcher", "verdict": "pass", "sources": []})
+                + "\n```\n<!-- /AGENT_OUTPUT -->\n"
+            ),
+            "ROLE": "researcher",
+            "DISCUSSION": "1791",
+            "PR": "",
+            "AUTONOMOUS_TEAM_STATE_DIR": str(state_dir),
+            "ENVELOPE_CHECK_TEAM_LOG_SCRIPT": str(stub),
+        }
+    )
+    result = subprocess.run(["bash", str(hook_script)], env=env, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+
+    audit_lines = (state_dir / "audit.jsonl").read_text().splitlines()
+    rows = [json.loads(line) for line in audit_lines if line.strip()]
+    assert any(
+        r["kind"] == "envelope_fabrication_finding" and r["finding"] == "impossible_sources_without_tool_calls"
+        for r in rows
+    ), "SOURCES_COUNT=5 (ambient) must produce a finding even though CONTENT alone would not"
+    assert marker.exists()
+
+
+def test_hook_falls_back_to_content_when_no_precomputed_signals(tmp_path):
+    """When SOURCES_COUNT / CLAIMED_ARTIFACT are absent from the
+    environment entirely (not merely empty), the hook must fall back to
+    parsing CONTENT exactly as PR 2 shipped — this is what keeps every
+    existing PR 2 test (which never sets these two vars) passing unchanged."""
+    state_dir = tmp_path / "state"
+    stub, marker = _write_stub_team_log(tmp_path)
+
+    hook_script = REPO_ROOT / "scripts" / "hooks" / "post-agent.d" / "envelope-check.sh"
+    env = dict(os.environ)
+    env.pop("SOURCES_COUNT", None)
+    env.pop("CLAIMED_ARTIFACT", None)
+    env.update(
+        {
+            "TOOL_USES": "0",
+            "CONTENT": (
+                "<!-- AGENT_OUTPUT -->\n```json\n"
+                + json.dumps({"agent": "researcher", "verdict": "pass", "sources": [{"url": "https://x.invalid"}]})
+                + "\n```\n<!-- /AGENT_OUTPUT -->\n"
+            ),
+            "ROLE": "researcher",
+            "DISCUSSION": "1791",
+            "PR": "",
+            "AUTONOMOUS_TEAM_STATE_DIR": str(state_dir),
+            "ENVELOPE_CHECK_TEAM_LOG_SCRIPT": str(stub),
+        }
+    )
+    result = subprocess.run(["bash", str(hook_script)], env=env, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+
+    audit_lines = (state_dir / "audit.jsonl").read_text().splitlines()
+    rows = [json.loads(line) for line in audit_lines if line.strip()]
+    assert any(
+        r["kind"] == "envelope_fabrication_finding" and r["finding"] == "impossible_sources_without_tool_calls"
+        for r in rows
+    ), "with no SOURCES_COUNT set at all, the hook must still derive the finding from CONTENT"
+    assert marker.exists()
+
+
+def test_hook_precomputed_claimed_artifact_is_used_over_content(monkeypatch, tmp_path):
+    """CLAIMED_ARTIFACT set in the environment must reach
+    resolve_claimed_artifact even when CONTENT carries no artifact at
+    all — proving the artifact-check half of the precomputed-signals path,
+    not just the sources-count half. Uses ENVELOPE_CHECK_GITHUB_API_BASE
+    pointed at an unroutable host (the same seam
+    test_claimed_artifact_unreachable_is_unverified uses) so this never
+    depends on live network access; the finding must be "unverified", not
+    silence, which is only possible if resolve_claimed_artifact actually
+    ran."""
+    state_dir = tmp_path / "state"
+    stub, marker = _write_stub_team_log(tmp_path)
+
+    hook_script = REPO_ROOT / "scripts" / "hooks" / "post-agent.d" / "envelope-check.sh"
+    env = dict(os.environ)
+    env.update(
+        {
+            "TOOL_USES": "5",
+            "SOURCES_COUNT": "0",
+            "CLAIMED_ARTIFACT": _D1790_URL_UNRESOLVED,
+            "CONTENT": (
+                "<!-- AGENT_OUTPUT -->\n```json\n"
+                + json.dumps({"agent": "researcher", "verdict": "pass", "sources": []})
+                + "\n```\n<!-- /AGENT_OUTPUT -->\n"
+            ),
+            "ROLE": "researcher",
+            "DISCUSSION": "1791",
+            "PR": "",
+            "AUTONOMOUS_TEAM_STATE_DIR": str(state_dir),
+            "ENVELOPE_CHECK_TEAM_LOG_SCRIPT": str(stub),
+            "ENVELOPE_CHECK_GITHUB_API_BASE": "http://192.0.2.1",
+            "ENVELOPE_CHECK_HTTP_TIMEOUT": "2",
+        }
+    )
+    result = subprocess.run(["bash", str(hook_script)], env=env, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+
+    audit_lines = (state_dir / "audit.jsonl").read_text().splitlines()
+    rows = [json.loads(line) for line in audit_lines if line.strip()]
+    assert any(
+        r["kind"] == "envelope_fabrication_finding" and r["finding"] == "unverified" for r in rows
+    ), "CLAIMED_ARTIFACT (ambient) must reach resolve_claimed_artifact, not be ignored in favor of CONTENT"
+    assert marker.exists()
+
+
+# ---------------------------------------------------------------------------
 # Non-synthetic replay: the real 2026-09-12 captured fabrications
 # ---------------------------------------------------------------------------
 
