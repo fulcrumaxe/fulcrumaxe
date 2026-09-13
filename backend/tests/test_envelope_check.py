@@ -562,9 +562,63 @@ def test_extract_functions_only_see_the_parsed_dict():
     assert envelope_check.extract_claimed_artifact(env_with_artifact) == _D1790_URL_UNRESOLVED
 
 
+def test_extract_claimed_artifact_finds_it_nested():
+    """False-negative direction: extract_claimed_artifact scans the whole
+    serialized envelope, so a permalink buried in a nested field — inside
+    issues[], inside a sources[] entry's own url, or several levels down —
+    must still be found. The tightened regex (fix for the false-positive
+    over-broad-prose-scan direction) must not have also narrowed this."""
+    top_level = {"agent": "researcher", "artifact_url": _D1790_URL_UNRESOLVED}
+    assert envelope_check.extract_claimed_artifact(top_level) == _D1790_URL_UNRESOLVED
+
+    nested_in_issues = {
+        "agent": "code-reviewer",
+        "issues": [
+            {"file": "foo.py", "note": "see prior discussion"},
+            {"file": "bar.py", "note": f"already raised at {_D1790_URL_UNRESOLVED}"},
+        ],
+    }
+    assert envelope_check.extract_claimed_artifact(nested_in_issues) == _D1790_URL_UNRESOLVED
+
+    nested_in_sources = {
+        "agent": "researcher",
+        "sources": [
+            {"url": "https://example.invalid/doc", "claim": "unrelated"},
+            {"url": _D1790_URL_UNRESOLVED, "claim": "posted this"},
+        ],
+    }
+    assert envelope_check.extract_claimed_artifact(nested_in_sources) == _D1790_URL_UNRESOLVED
+
+
 def test_hook_ignores_permalink_mentioned_only_in_prose(tmp_path):
     """A permalink appearing in the surrounding prose, outside the parsed
-    AGENT_OUTPUT JSON block, must never be treated as a claimed artifact."""
+    AGENT_OUTPUT JSON block, must never be treated as a claimed artifact —
+    checked against all three sinks, including the network one. A test that
+    only checks the audit-row and team-log sinks would still pass if a
+    prose-only mention triggered a network call that happened to resolve
+    cleanly; this counts requests against a real local server instead of
+    trusting that the other two sinks being empty implies no call was made."""
+    import http.server
+    import threading
+
+    hits = {"count": 0}
+
+    class _CountingHandler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802
+            hits["count"] += 1
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"data": null}')
+
+        def log_message(self, *_args):
+            return
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), _CountingHandler)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
     state_dir = tmp_path / "state"
     stub, marker = _write_stub_team_log(tmp_path)
 
@@ -586,11 +640,17 @@ def test_hook_ignores_permalink_mentioned_only_in_prose(tmp_path):
             "PR": "",
             "AUTONOMOUS_TEAM_STATE_DIR": str(state_dir),
             "ENVELOPE_CHECK_TEAM_LOG_SCRIPT": str(stub),
+            "ENVELOPE_CHECK_GITHUB_API_BASE": f"http://127.0.0.1:{port}",
         }
     )
-    result = subprocess.run(["bash", str(hook_script)], env=env, capture_output=True, text=True, timeout=30)
+    try:
+        result = subprocess.run(["bash", str(hook_script)], env=env, capture_output=True, text=True, timeout=30)
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
     assert result.returncode == 0, f"stderr={result.stderr!r}"
 
+    assert hits["count"] == 0, "a prose-only mention must never reach the network, even if it would have resolved cleanly"
     assert not marker.exists(), "a prose-only mention must never trigger a team-log write"
     assert not (state_dir / "audit.jsonl").exists(), "a prose-only mention must never trigger an audit row"
 
