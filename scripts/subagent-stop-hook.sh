@@ -76,7 +76,7 @@ fi
 # (e.g. python3 missing) the field list degrades to sixteen empty strings,
 # which downstream still resolves to the same role=unknown/verdict=unknown
 # skip path this script has always had for unreadable input.
-FIELD_LIST="session_id transcript_path agent_id role verdict discussion pr files self_observed input_tokens output_tokens cache_read_tokens cache_write_tokens cache_creation_tokens first_write_turn parse_ok own_transcript_path"
+FIELD_LIST="session_id transcript_path agent_id role verdict discussion pr files self_observed input_tokens output_tokens cache_read_tokens cache_write_tokens cache_creation_tokens first_write_turn parse_ok own_transcript_path tool_uses"
 FLAT=$(python3 "$SCRIPT_DIR/lib/subagent_payload.py" "$REPO_ROOT" <<< "$STDIN_JSON" 2>/dev/null | python3 -c "
 import json, sys
 try:
@@ -84,23 +84,41 @@ try:
 except Exception:
     d = {}
 fields = sys.argv[1].split()
+def _strip_ctrl(s):
+    # D#1791 security review: strip the \x1f record delimiter and both
+    # newline forms from every field before joining. An agent controls
+    # several of these values (files_touched, discussion, pr, ...) via its
+    # own AGENT_OUTPUT envelope. Left unstripped, an embedded newline makes
+    # the downstream read (a single-line here-string consumer) truncate the
+    # record -- every field after the one containing it silently goes empty,
+    # so a security-relevant field placed late in this list (like tool_uses)
+    # reads as unknown instead of its real value. An embedded \x1f is worse:
+    # it inserts an extra field boundary, shifting every following field by
+    # one position, and the shifted-in garbage reaching an int-typed CLI
+    # flag downstream aborts that call entirely. This \x1f-join-plus-read
+    # transport predates tool_uses; sanitizing here (once, for every field)
+    # is what keeps the next field added to FIELD_LIST from inheriting the
+    # same hole.
+    return s.replace('\x1f', '').replace('\n', '').replace('\r', '')
 def fmt(k):
     v = d.get(k)
     if k in ('self_observed', 'parse_ok'):
-        return 'true' if v else 'false'
-    if k == 'first_write_turn':
-        return '' if v is None else str(int(v))
-    return '' if v is None else str(v)
+        raw = 'true' if v else 'false'
+    elif k in ('first_write_turn', 'tool_uses'):
+        raw = '' if v is None else str(int(v))
+    else:
+        raw = '' if v is None else str(v)
+    return _strip_ctrl(raw)
 print('\x1f'.join(fmt(k) for k in fields))
 " "$FIELD_LIST" 2>/dev/null)
 if [[ -z "$FLAT" ]]; then
-  # Seventeen empty fields — same count as FIELD_LIST — so `read` below never
+  # Eighteen empty fields — same count as FIELD_LIST — so `read` below never
   # runs short and leaves a trailing variable unset under `set -u`.
-  FLAT=$(printf '\x1f%.0s' $(seq 1 16))
+  FLAT=$(printf '\x1f%.0s' $(seq 1 17))
 fi
 IFS=$'\x1f' read -r SESSION_ID TRANSCRIPT_PATH AGENT_ID ROLE VERDICT DISCUSSION PR FILES \
   SELF_OBSERVED INPUT_TOKENS OUTPUT_TOKENS CACHE_READ_TOKENS CACHE_WRITE_TOKENS \
-  CACHE_CREATION_TOKENS FIRST_WRITE_TURN PARSE_OK OWN_TRANSCRIPT_PATH <<< "$FLAT"
+  CACHE_CREATION_TOKENS FIRST_WRITE_TURN PARSE_OK OWN_TRANSCRIPT_PATH TOOL_USES <<< "$FLAT"
 SESSION_ID="${SESSION_ID:-unknown}"
 ROLE="${ROLE:-unknown}"
 VERDICT="${VERDICT:-unknown}"
@@ -264,6 +282,12 @@ POST_HOOK_ARGS=(
 [[ -n "$PR"              ]] && POST_HOOK_ARGS+=(--pr "$PR")
 [[ -n "$FILES"           ]] && POST_HOOK_ARGS+=(--files "$FILES")
 [[ -n "$FIRST_WRITE_TURN" ]] && POST_HOOK_ARGS+=(--first-write-turn "$FIRST_WRITE_TURN")
+# Tri-state (D#1791): TOOL_USES is empty string when subagent_payload.py
+# resolved tool_uses to None (own transcript absent/unreadable) — never pass
+# --tool-uses in that case, so post-agent-hook.sh's own default stays empty
+# and agent_run.tool_uses is written NULL, not 0. A resolved "0" is
+# non-empty and IS forwarded, exactly like FIRST_WRITE_TURN above.
+[[ -n "$TOOL_USES" ]] && POST_HOOK_ARGS+=(--tool-uses "$TOOL_USES")
 
 # SUBAGENT_STOP_DRY_RUN=1 — test mode: write resolved args JSON to
 # SUBAGENT_STOP_ARGS_FILE instead of calling post-agent-hook.sh.
