@@ -194,6 +194,7 @@
     "scripts/lib/identifier-rules-resolve.sh": "d4671e55afed76585596aa45d517e0cc77f12a632b1646797d9797a0ddef54ed",
     "scripts/lib/identity-resolve.sh": "e3bee8f212c062a026860ae81346ed508d88490e23812809f7ae44a48e2f8330",
     "scripts/lib/merge-gate-labels.sh": "01d95e18816a4369ef8c402e8bdd9b00485f3eb38f1a2e14ae4ec9141fddfe41",
+    "scripts/lib/muse-spawn-prompt.sh": "9fc4f7baf435078a9a40323cd17895033071981a31a17e765ce45ccff622b0f0",
     "scripts/lib/orphan-triage.sh": "54a23fa6aee1efb4e0966b2434d6441c16de49a50e4d4ae9691b323d60835bf9",
     "scripts/lib/panel-helpers.sh": "bc3a1ba54f789016023b960ec1b135482cea4c0155e3ae541cfdd09fe48ec986",
     "scripts/lib/panel-quorum.sh": "ccac1f47d0b28677a98f6f52b7ea3f8ffe511998be7d2502fd6f307e82a4007f",
