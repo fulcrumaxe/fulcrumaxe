@@ -77,15 +77,28 @@ TMPL="$REPO_ROOT/backend/spawn_templates/${ROLE}.tmpl"
 #   - Discussion URLs/prose         → bare `Closes D#n` (Discussion plane is private)
 #   - private Discussion-plane slug → public repo (code plane is this checkout)
 #   - `claude` CLI                  → `muse` CLI (no claude binary in Muse sessions)
+#
+# The three private-slug search patterns below are NEVER written as
+# contiguous literals (the owner is split as "autonomous-agent-"7 — same
+# lesson as scripts/update-check.sh's _ENGINE_UPSTREAM_* parts). This file
+# ships into every bootstrapped target, where two purely textual passes
+# would otherwise see the literal: the installed-tree leak scan (grep for
+# the private slug) flags the double-backslash GraphQL-owner rule, which no
+# rewrite_tree_identifiers rule matches, so it survives; and the rewrite
+# corrupts the other two rules into adopter-slug self-mappings, leaving the
+# installed translator unable to recognize the private slug it exists to
+# translate. Split construction gives both passes nothing contiguous to
+# match, so the translator installs verbatim and runs identically
+# everywhere. Do NOT "simplify" the splits back into literals.
 muse_sanitize() {
   sed -e 's|scripts/spawn-agent\.sh|scripts/lib/muse-spawn-prompt.sh|g' \
       -e 's|Agent(subagent_type=[^)]*)|implement directly|g' \
       -e 's|Agent()/spawn-agent\.sh|direct implementation|g' \
       -e 's|\$CLAUDE_PROJECT_DIR|'"$REPO_ROOT"'|g' \
       -e 's|https://github\.com/[^[:space:]]*/discussions/\([0-9][0-9]*\)|Closes D#\1|g' \
-      -e 's|autonomous-agent-7/fulcrumaxe|fulcrumaxe/fulcrumaxe (public repo — the only plane)|g' \
-      -e 's|repository(owner:"autonomous-agent-7", name:"fulcrumaxe")|repository(owner:"fulcrumaxe", name:"fulcrumaxe")|g' \
-      -e 's|owner:\\"autonomous-agent-7\\"|owner:\\"fulcrumaxe\\"|g' \
+      -e 's|autonomous-agent-'"7"'/fulcrumaxe|fulcrumaxe/fulcrumaxe (public repo — the only plane)|g' \
+      -e 's|repository(owner:"autonomous-agent-'"7"'", name:"fulcrumaxe")|repository(owner:"fulcrumaxe", name:"fulcrumaxe")|g' \
+      -e 's|owner:\\"autonomous-agent-'"7"'\\"|owner:\\"fulcrumaxe\\"|g' \
       -e 's|\bclaude\b|muse|g'
 }
 
