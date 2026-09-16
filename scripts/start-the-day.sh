@@ -13,6 +13,9 @@
 # Usage:
 #   bash scripts/start-the-day.sh
 #   bash scripts/start-the-day.sh --no-sweeps  # skip slow checks (run-analyst)
+#   bash scripts/start-the-day.sh --muse [--no-sweeps]  # Muse Code: stay on
+#     current branch, fetch-only (no HEAD restore, no pull), skip Claude-CLI
+#     checks. Main behavior without --muse is unchanged.
 
 set -uo pipefail
 
@@ -39,9 +42,11 @@ CODE_REPO="$(_require_code_repo "start-the-day")" || exit 1
 source "$SCRIPT_DIR/lib/state-dir.sh"
 
 SKIP_SWEEPS=false
+MUSE_MODE=false
 for arg in "$@"; do
   case "$arg" in
     --no-sweeps) SKIP_SWEEPS=true ;;
+    --muse) MUSE_MODE=true ;;
   esac
 done
 
@@ -60,6 +65,7 @@ assert_gh_can_see_repo "$REPO" || exit 1
 echo "==============================================================="
 echo "Team Lead — Start the Day"
 echo "Date: $(date '+%Y-%m-%d %H:%M %Z')"
+[[ "$MUSE_MODE" == "true" ]] && echo "Mode: muse (stay on branch, fetch-only, Claude-CLI checks skipped)"
 echo "==============================================================="
 
 # ── 0. Loop run-readiness check ──────────────────────────────────────────────
@@ -210,6 +216,21 @@ _SYNC_MAIN_ROOT="$(_resolve_main_repo_root)"
 _SYNC_AMBIENT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
 : "${_SYNC_AMBIENT_ROOT:=$REPO_ROOT}"
 
+if [[ "$MUSE_MODE" == "true" ]]; then
+  # Muse mode: the operator works on a branch (e.g. `muse`), possibly from a
+  # linked worktree. Never restore HEAD and never pull — a pull of
+  # origin/main here would merge main into Muse work, and a HEAD restore
+  # would yank the operator off their branch. Fetch and report instead.
+  _MUSE_BRANCH="$(git -C "$_SYNC_AMBIENT_ROOT" branch --show-current 2>/dev/null || echo detached)"
+  echo "  [muse] on '${_MUSE_BRANCH}' — leaving HEAD alone (no restore, no pull)"
+  if git -C "$_SYNC_AMBIENT_ROOT" fetch origin main 2>&1 | tail -3; then
+    _MUSE_COUNTS="$(git -C "$_SYNC_AMBIENT_ROOT" rev-list --left-right --count HEAD...origin/main 2>/dev/null || echo unknown)"
+    echo "  [muse] HEAD vs origin/main (ahead behind): ${_MUSE_COUNTS}"
+  else
+    echo "  [muse] fetch origin main failed — continuing with local state"
+  fi
+  echo "  HEAD: $(git -C "$_SYNC_AMBIENT_ROOT" rev-parse --short HEAD) — $(git -C "$_SYNC_AMBIENT_ROOT" log -1 --format=%s)"
+else
 if [[ "$_SYNC_AMBIENT_ROOT" != "$_SYNC_MAIN_ROOT" ]]; then
   echo "  🔴 REFUSING: this checkout ($_SYNC_AMBIENT_ROOT) looks like a linked"
   echo "     worktree, not the main checkout ($_SYNC_MAIN_ROOT). Syncing here"
@@ -274,6 +295,7 @@ if [[ -f "$_APB_MARKER" ]]; then
   rm -f "$_APB_MARKER"
   echo "  [FIX] Cleared auto-pull-blocked marker (unmerged paths resolved)"
 fi
+fi # end muse-mode else (main path above unchanged)
 
 # ── 1b. Working-tree vs origin/main content divergence (D#1763) ─────────────
 # Runs after the sync block above so origin/main is fresh. This catches what
@@ -451,7 +473,10 @@ fi
 # it is a normal, common state (nothing in bootstrap installs it), so an
 # absent entry is a skip, not a warning; a present-but-misconfigured entry is
 # still a warning worth fixing.
-if claude mcp list 2>/dev/null | grep -q "chrome-devtools"; then
+# (Claude CLI only — skipped in muse mode, which has no `claude` CLI)
+if [[ "$MUSE_MODE" == "true" ]]; then
+  echo "  [muse] browser-tooling check skipped (no Claude CLI here)"
+elif claude mcp list 2>/dev/null | grep -q "chrome-devtools"; then
   if claude mcp list 2>/dev/null | grep "chrome-devtools" | grep -q "\-\-headless"; then
     echo "  [OK] chrome-devtools MCP has --headless"
   else

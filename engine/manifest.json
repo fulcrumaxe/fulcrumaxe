@@ -283,7 +283,7 @@
     "scripts/spawn-run-analyst-if-stale.sh": "1aed689f7a3757a31f85b3faa2ccd2add9a363f6164b98e1b107a4a2b5e4ffef",
     "scripts/start-dashboard.sh": "000591c4e5f68d592e1078598001c486e527946c57befbde0d47f3b71a28c35c",
     "scripts/start-live-analyst.sh": "a66a56dff5f6697490c153b8b6921351517714b193176d03e7ccb5b84e74759d",
-    "scripts/start-the-day.sh": "a7ddd8098fea39ff153396b4386a6a6d1e9925954ae2bc394a8b06da136b8c6a",
+    "scripts/start-the-day.sh": "4a4666c54792f54687bde73347db493e69c85f47841a00d1bbb91166291c75c2",
     "scripts/start-tui.sh": "d53fad29f11f1e6eb48fd7e2723f88567cc4bd96f364910d20a074c03b3c1c8c",
     "scripts/stop-dashboard.sh": "312565c19237cc59b567f0343788d13ccfceda587cfb39d07a83b61863071790",
     "scripts/stop-live-analyst.sh": "48f856beecf2fcee73c94db9849eb55b838cf3c63a275a9f2e5db0651592f73f",
