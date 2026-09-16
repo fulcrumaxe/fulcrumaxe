@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "name": "fulcrumaxe",
+  "version": "0.1.0",
+  "description": "The fulcrumaxe autonomous development team as a native Muse plugin: start-the-day, coldstart, and update skills.",
+  "compat": {
+    "source": "native",
+    "manifestDir": ".muse-plugin"
+  },
+  "capabilities": {
+    "skills": [
+      {
+        "id": "start-the-day",
+        "path": ".agents/skills/start-the-day/SKILL.md",
+        "description": "Morning ritual for Muse — verify state, run sweeps, and drive today's existing plan.",
+        "enabledDefault": true
+      },
+      {
+        "id": "coldstart",
+        "path": ".agents/skills/coldstart/SKILL.md",
+        "description": "Onboard a target repo to the autonomous team from Muse — populate it, then provision it, in that order.",
+        "enabledDefault": true
+      },
+      {
+        "id": "update",
+        "path": ".agents/skills/update/SKILL.md",
+        "description": "Check whether this install is behind its upstream engine repo, and bring it current from Muse.",
+        "enabledDefault": true
+      }
+    ],
+    "commands": [],
+    "hooks": []
+  }
+}
