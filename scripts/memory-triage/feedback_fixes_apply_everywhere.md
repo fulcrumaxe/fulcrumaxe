@@ -2,7 +2,6 @@
 name: Fixes and improvements apply to all subsystems — not just the one that broke
 description: When fixing a pattern (verification, data quality, rendering), apply the same fix to Python API, SaaS product, TUI, and dashboard — not just the subsystem where the bug was found
 type: feedback
-originSessionId: 85514482-6eda-41bb-baf3-45fb37863d1a
 tier: transferable
 ---
 When a bug pattern is found in one subsystem, the fix should be applied across all subsystems that have the same pattern.

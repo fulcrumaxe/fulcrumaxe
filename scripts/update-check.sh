@@ -53,7 +53,21 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STAMP_FILE="$REPO_ROOT/.autonomous-team/engine-install.json"
-DEFAULT_ENGINE_REPO="${LOOP_BOOTSTRAP_ENGINE_REPO:-autonomous-agent-7/fulcrumaxe}"
+# The public engine repo (fulcrumaxe/fulcrumaxe) is deliberately NOT written
+# as a contiguous literal here (D#2598 fix-round item 2): this file ships
+# into every bootstrapped target and then goes through
+# loop-bootstrap/bootstrap.sh's rewrite_tree_identifiers, which rewrites
+# every project-identity slug it finds — including this project's own — to
+# the adopter's --repo. An adopter's update check must always keep
+# targeting the ENGINE's real upstream, never their own fork. Building the
+# value from two separately-declared parts keeps the 22-character substring
+# "fulcrumaxe/fulcrumaxe" out of this file's own text, so the identity
+# rewrite has nothing contiguous here to match. This also used to default
+# to the Discussion-plane slug (autonomous-agent-7/fulcrumaxe) instead of
+# the actual public engine repo — fixed alongside the sed-proofing.
+_ENGINE_UPSTREAM_OWNER="fulcrumaxe"
+_ENGINE_UPSTREAM_NAME="fulcrumaxe"
+DEFAULT_ENGINE_REPO="${LOOP_BOOTSTRAP_ENGINE_REPO:-${_ENGINE_UPSTREAM_OWNER}/${_ENGINE_UPSTREAM_NAME}}"
 
 usage() {
   cat <<'EOF'

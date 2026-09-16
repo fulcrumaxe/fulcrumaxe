@@ -1,0 +1,9 @@
+{
+  "entries": [
+    {
+      "pair": "scripts:start-dashboard.sh",
+      "date": "2026-09-16",
+      "reason": "deliberate project-agnostic variant (D#2598): the live scripts/start-dashboard.sh starts backend/api.py, backend/server.py and the dashboard/ Vite frontend directly, but dashboard/ is not part of BOOTSTRAP_PATHS and never ships to a bootstrapped adopter. The loop-bootstrap copy instead reads AF_ROOT and delegates to a real fulcrumaxe checkout for the actual dashboard code."
+    }
+  ]
+}

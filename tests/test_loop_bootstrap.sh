@@ -42,6 +42,106 @@ assert_dir() {
 }
 
 echo ""
+echo "--- memory_is_tier_transferable: matches only inside frontmatter (D#2598 fix-round item 3) ---"
+# A bare `grep -q '^tier: transferable$' "$f"` matches that string ANYWHERE
+# in the file, including a memory's own BODY prose — e.g. a note that
+# happens to quote or discuss another file's tier value. Extract the real
+# function from bootstrap.sh (not a hand-duplicated copy, so this test
+# cannot silently drift from the implementation) and prove it looks only at
+# the frontmatter block.
+MEMTIER_FN_SRC=$(sed -n '/^memory_is_tier_transferable() {/,/^}/p' "$BOOTSTRAP")
+if [[ -z "$MEMTIER_FN_SRC" ]]; then
+  fail "could not extract memory_is_tier_transferable() from $BOOTSTRAP — has it been renamed?"
+else
+  eval "$MEMTIER_FN_SRC"
+
+  MEMTIER_TMP="$RUN_TMP/memtier-fixtures"
+  mkdir -p "$MEMTIER_TMP"
+
+  # Fixture A: tier:hardwire-candidate in frontmatter, but the BODY prose
+  # happens to contain the literal line "tier: transferable" (quoting or
+  # discussing some other file). Must NOT be treated as transferable.
+  cat > "$MEMTIER_TMP/fixture-body-mention.md" <<'EOF'
+---
+name: fixture-body-mention
+tier: hardwire-candidate
+---
+This note is not itself transferable. For contrast, another memory in this
+corpus carries this exact line in ITS frontmatter:
+tier: transferable
+That line above is body prose, not frontmatter, and must not count.
+EOF
+  if memory_is_tier_transferable "$MEMTIER_TMP/fixture-body-mention.md"; then
+    fail "body-only 'tier: transferable' mention was wrongly treated as frontmatter tier:transferable"
+  else
+    pass "body-only 'tier: transferable' mention correctly NOT treated as tier:transferable"
+  fi
+
+  # Fixture B: tier:transferable genuinely in frontmatter. Must be detected.
+  cat > "$MEMTIER_TMP/fixture-real-transferable.md" <<'EOF'
+---
+name: fixture-real-transferable
+tier: transferable
+---
+Body text, irrelevant to tier detection.
+EOF
+  if memory_is_tier_transferable "$MEMTIER_TMP/fixture-real-transferable.md"; then
+    pass "genuine frontmatter tier:transferable correctly detected"
+  else
+    fail "genuine frontmatter tier:transferable was NOT detected"
+  fi
+fi
+
+echo ""
+echo "--- scripts/memory-triage/: no tier:transferable file carries a session identifier (D#2598 fix-round 2 item 1) ---"
+# Direct source-corpus scan, independent of running a full bootstrap: every
+# tier:transferable file must be free of (1) an originSessionId frontmatter
+# field and (2) a bare UUID-shaped string anywhere in the file
+# ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}, case
+# insensitive) -- catches a session ID narrated in prose even without the
+# originSessionId key naming it. Non-transferable (tier:hardwire-candidate)
+# files are deliberately NOT checked here -- they never ship, and scrubbing
+# them isn't required by their lesson.
+TRIAGE_SESSION_LEAKS=""
+if [[ -d "$REPO_ROOT/scripts/memory-triage" ]]; then
+  while IFS= read -r -d '' tf; do
+    [[ "$(basename "$tf")" == "MEMORY.md" ]] && continue
+    memory_is_tier_transferable "$tf" || continue
+    if grep -qiE '^[[:space:]]*originSessionId:|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' "$tf" 2>/dev/null; then
+      TRIAGE_SESSION_LEAKS="${TRIAGE_SESSION_LEAKS}$(basename "$tf")"$'\n'
+    fi
+  done < <(find "$REPO_ROOT/scripts/memory-triage" -maxdepth 1 -type f -name '*.md' -print0 2>/dev/null)
+fi
+if [[ -z "$TRIAGE_SESSION_LEAKS" ]]; then
+  pass "no tier:transferable file in scripts/memory-triage/ carries a session identifier"
+else
+  fail "tier:transferable file(s) in scripts/memory-triage/ still carry a session identifier:"
+  echo "$TRIAGE_SESSION_LEAKS"
+fi
+
+echo ""
+echo "--- scripts/memory-triage/: no file carries an originSessionId frontmatter field ---"
+# Tier-independent: the originSessionId frontmatter key names this repo's own
+# session, which must never ship or linger anywhere in the corpus — not even
+# in tier:hardwire-candidate files that are excluded from installs. Lesson
+# prose is untouched by this check; only the frontmatter key is asserted
+# absent (case-insensitive, leading whitespace tolerated).
+TRIAGE_ORIGIN_KEYS=""
+if [[ -d "$REPO_ROOT/scripts/memory-triage" ]]; then
+  while IFS= read -r -d '' mf; do
+    if grep -qiE '^[[:space:]]*originSessionId:' "$mf" 2>/dev/null; then
+      TRIAGE_ORIGIN_KEYS="${TRIAGE_ORIGIN_KEYS}$(basename "$mf")"$'\n'
+    fi
+  done < <(find "$REPO_ROOT/scripts/memory-triage" -maxdepth 1 -type f -name '*.md' -print0 2>/dev/null)
+fi
+if [[ -z "$TRIAGE_ORIGIN_KEYS" ]]; then
+  pass "no file in scripts/memory-triage/ carries an originSessionId frontmatter field"
+else
+  fail "file(s) in scripts/memory-triage/ still carry an originSessionId frontmatter field:"
+  echo "$TRIAGE_ORIGIN_KEYS"
+fi
+
+echo ""
 echo "=== test_loop_bootstrap ==="
 echo ""
 
@@ -72,6 +172,48 @@ else
   fail "no memory files found in $MEMORY_DEST"
 fi
 
+# D#2598 item 13/14: memories are derived from scripts/memory-triage/ by
+# tier, not hand-copied from loop-bootstrap/memories/ (that directory no
+# longer exists). A tier:transferable file must be installed; a
+# tier:hardwire-candidate file must NOT be.
+if [[ -f "$MEMORY_DEST/feedback_no_nested_coordinator.md" ]]; then
+  pass "tier:transferable memory installed (feedback_no_nested_coordinator.md)"
+else
+  fail "tier:transferable memory missing: feedback_no_nested_coordinator.md"
+fi
+if [[ -f "$MEMORY_DEST/feedback_no_runaway_loops.md" ]]; then
+  fail "tier:hardwire-candidate memory was installed (should be excluded): feedback_no_runaway_loops.md"
+else
+  pass "tier:hardwire-candidate memory correctly excluded (feedback_no_runaway_loops.md)"
+fi
+if [[ -f "$MEMORY_DEST/MEMORY.md" ]]; then
+  fail "scripts/memory-triage/MEMORY.md (the corpus index) was installed — it is corpus tooling, not adopter guidance"
+else
+  pass "scripts/memory-triage/MEMORY.md correctly not installed"
+fi
+
+# D#2598 fix-round 2 item 1: no memory bootstrap installs (i.e. every
+# tier:transferable file) may carry an internal Claude session identifier.
+# Two patterns, checked over every installed memory file:
+#   1. An `originSessionId:` frontmatter field (any value) — this repo's own
+#      session-tracking metadata, meaningless and identifying to an adopter.
+#   2. A bare UUID-shaped string anywhere in the file
+#      ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}, case
+#      insensitive) — catches a session ID narrated in prose/a URL even
+#      without the originSessionId frontmatter key naming it.
+SESSION_LEAK_FILES=""
+while IFS= read -r -d '' mf; do
+  if grep -qiE '^[[:space:]]*originSessionId:|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' "$mf" 2>/dev/null; then
+    SESSION_LEAK_FILES="${SESSION_LEAK_FILES}${mf#"$MEMORY_DEST"/}"$'\n'
+  fi
+done < <(find "$MEMORY_DEST" -maxdepth 1 -type f -name '*.md' -print0 2>/dev/null)
+if [[ -z "$SESSION_LEAK_FILES" ]]; then
+  pass "no installed memory carries an originSessionId field or a UUID-shaped session reference"
+else
+  fail "installed memory file(s) still carry a session identifier:"
+  echo "$SESSION_LEAK_FILES"
+fi
+
 echo ""
 echo "--- Asserting scripts ---"
 assert_dir "$TARGET/scripts"
@@ -83,6 +225,146 @@ assert_dir "$TARGET/scripts/lib"
 assert_file "$TARGET/scripts/lib/working-principles.sh"
 assert_file "$TARGET/scripts/lib/panel-helpers.sh"
 assert_file "$TARGET/scripts/lib/gh-token.sh"
+
+echo ""
+echo "--- Asserting start-the-day.sh / merge-and-hook.sh ship byte-identical (D#2598) ---"
+assert_file "$TARGET/scripts/start-the-day.sh"
+if cmp -s "$REPO_ROOT/scripts/start-the-day.sh" "$TARGET/scripts/start-the-day.sh"; then
+  pass "installed scripts/start-the-day.sh is byte-identical to the live copy"
+else
+  fail "installed scripts/start-the-day.sh differs from the live copy"
+fi
+# The installed copy must carry both the self-heal section and the step-1b
+# working-tree-divergence / HEAD-restore section — the two pieces the old
+# 301-line adopter variant lacked entirely.
+if grep -q '^echo "## Self-heal checks"$' "$TARGET/scripts/start-the-day.sh"; then
+  pass "installed start-the-day.sh contains the self-heal section header"
+else
+  fail "installed start-the-day.sh is missing the self-heal section header"
+fi
+if grep -q '^echo "## 1b. Working-tree divergence check"$' "$TARGET/scripts/start-the-day.sh"; then
+  pass "installed start-the-day.sh contains the step-1b HEAD-restore/divergence section header"
+else
+  fail "installed start-the-day.sh is missing the step-1b HEAD-restore/divergence section header"
+fi
+
+assert_file "$TARGET/scripts/merge-and-hook.sh"
+if cmp -s "$REPO_ROOT/scripts/merge-and-hook.sh" "$TARGET/scripts/merge-and-hook.sh"; then
+  pass "installed scripts/merge-and-hook.sh is byte-identical to the live copy"
+else
+  fail "installed scripts/merge-and-hook.sh differs from the live copy"
+fi
+
+# start-dashboard.sh is the one remaining deliberate project-agnostic
+# variant — it must come from loop-bootstrap/, NOT the live copy.
+assert_file "$TARGET/scripts/start-dashboard.sh"
+if cmp -s "$REPO_ROOT/loop-bootstrap/scripts/start-dashboard.sh" "$TARGET/scripts/start-dashboard.sh"; then
+  pass "installed scripts/start-dashboard.sh matches the loop-bootstrap project-agnostic variant"
+else
+  fail "installed scripts/start-dashboard.sh does not match the loop-bootstrap variant"
+fi
+
+# The old hand-maintained loop-bootstrap/scripts/ copies of start-the-day.sh
+# and merge-and-hook.sh are gone from this repo entirely (D#2598 items 1-2).
+if [[ -e "$REPO_ROOT/loop-bootstrap/scripts/start-the-day.sh" ]]; then
+  fail "loop-bootstrap/scripts/start-the-day.sh still exists — should have been removed"
+else
+  pass "loop-bootstrap/scripts/start-the-day.sh no longer exists"
+fi
+if [[ -e "$REPO_ROOT/loop-bootstrap/scripts/merge-and-hook.sh" ]]; then
+  fail "loop-bootstrap/scripts/merge-and-hook.sh still exists — should have been removed"
+else
+  pass "loop-bootstrap/scripts/merge-and-hook.sh no longer exists"
+fi
+if [[ -e "$REPO_ROOT/loop-bootstrap/memories" ]]; then
+  fail "loop-bootstrap/memories/ still exists — memories should be derived from scripts/memory-triage/ by tier"
+else
+  pass "loop-bootstrap/memories/ no longer exists"
+fi
+
+echo ""
+echo "--- Asserting no project-identity leak after a foreign-slug bootstrap (D#2598 fix-round item 2) ---"
+# A reviewer's real acme/widget install had 79 mentions of
+# autonomous-agent-7/fulcrumaxe in .claude/agents/ alone, because only the
+# pre-rename SOURCE_REPO literal was ever being rewritten. $TARGET was
+# bootstrapped above with --repo acme/test-cold-start (this repo's own
+# slug nowhere in that string), so any surviving mention of either this
+# project's legacy or current Discussion-plane slug is a real leak.
+LEGACY_LEAK_FILES=$(grep -rl "autonomous-agent-7" "$TARGET" 2>/dev/null || true)
+# Documented exceptions (D#2598 fix-round item 2a). The two test files use
+# this project's own slug purely as arbitrary/illustrative test data, never
+# as a functional identity a script or role file reads at runtime (see the
+# PR body for the full explanation of each). config.json's "bot_account" is
+# NOT a hardcoded literal at all — bootstrap.sh's step 16b resolves it from
+# whichever GitHub account `gh` is actually authenticated as in the CI
+# runner or dev sandbox invoking this suite; in THIS repo's own CI/sandbox
+# that legitimately IS this project's own bot account, which is correct
+# behavior, not a leak (a real third-party adopter's runner would resolve
+# to THEIR OWN authenticated account instead).
+#
+# scripts/ci/commands-twin-divergence-guard.sh's bare "autonomous-agent-7"
+# occurrences (fix-round 2 item 2) are its OWN regression-scan pattern —
+# `grep -q "autonomous-agent-7" "$top_path"` and the FAIL message that names
+# it — a bare word, not a "autonomous-agent-7/fulcrumaxe" slug or a
+# owner:"autonomous-agent-7" split form, so rewrite_tree_identifiers has
+# nothing there to match and correctly leaves it alone: the guard's job is
+# to detect this exact string, so it has to contain it. This is the
+# detector, not a leak.
+KNOWN_FIXTURE_EXCEPTIONS="backend/tests/test_envelope_check.py
+backend/tests/test_trust_id_resolver.py
+.autonomous-team/config.json
+scripts/ci/commands-twin-divergence-guard.sh"
+UNEXPECTED_LEAKS=""
+while IFS= read -r f; do
+  [[ -z "$f" ]] && continue
+  rel="${f#"$TARGET"/}"
+  if ! grep -qxF "$rel" <<<"$KNOWN_FIXTURE_EXCEPTIONS"; then
+    UNEXPECTED_LEAKS="${UNEXPECTED_LEAKS}${rel}"$'\n'
+  fi
+done <<<"$LEGACY_LEAK_FILES"
+if [[ -z "$UNEXPECTED_LEAKS" ]]; then
+  pass "no unexpected 'autonomous-agent-7' mention anywhere in the installed tree"
+else
+  fail "unexpected 'autonomous-agent-7' mention(s) found:"
+  echo "$UNEXPECTED_LEAKS"
+fi
+
+# fulcrumaxe/fulcrumaxe (the code-plane slug) has two roles: this project's
+# own identity (must be rewritten) and the public engine repo an update
+# check must always target (must NOT be rewritten). The only place it
+# should survive is .autonomous-team/engine-install.json's source_repo and
+# the sed-proofed DEFAULT_ENGINE_REPO construction inside
+# scripts/update-check.sh (checked separately below) — anywhere else is a
+# project-identity leak.
+CODEPLANE_LEAK_FILES=$(grep -rl "fulcrumaxe/fulcrumaxe" "$TARGET" 2>/dev/null || true)
+UNEXPECTED_CODEPLANE_LEAKS=""
+while IFS= read -r f; do
+  [[ -z "$f" ]] && continue
+  rel="${f#"$TARGET"/}"
+  if [[ "$rel" != ".autonomous-team/engine-install.json" ]]; then
+    UNEXPECTED_CODEPLANE_LEAKS="${UNEXPECTED_CODEPLANE_LEAKS}${rel}"$'\n'
+  fi
+done <<<"$CODEPLANE_LEAK_FILES"
+if [[ -z "$UNEXPECTED_CODEPLANE_LEAKS" ]]; then
+  pass "no project-identity use of 'fulcrumaxe/fulcrumaxe' outside the documented engine-update reference"
+else
+  fail "unexpected project-identity 'fulcrumaxe/fulcrumaxe' mention(s) found:"
+  echo "$UNEXPECTED_CODEPLANE_LEAKS"
+fi
+
+# The engine-update references must still name the real engine repo after
+# rewriting, not the adopter's own --repo.
+if grep -q '"source_repo": "fulcrumaxe/fulcrumaxe"' "$TARGET/.autonomous-team/engine-install.json" 2>/dev/null; then
+  pass "engine-install.json source_repo still names fulcrumaxe/fulcrumaxe after a foreign-slug bootstrap"
+else
+  fail "engine-install.json source_repo does not name fulcrumaxe/fulcrumaxe (got: $(cat "$TARGET/.autonomous-team/engine-install.json" 2>/dev/null))"
+fi
+if grep -q '_ENGINE_UPSTREAM_OWNER="fulcrumaxe"' "$TARGET/scripts/update-check.sh" 2>/dev/null \
+   && grep -q '_ENGINE_UPSTREAM_NAME="fulcrumaxe"' "$TARGET/scripts/update-check.sh" 2>/dev/null; then
+  pass "installed scripts/update-check.sh still targets fulcrumaxe/fulcrumaxe for engine updates after a foreign-slug bootstrap"
+else
+  fail "installed scripts/update-check.sh's engine-repo constant was rewritten away from fulcrumaxe/fulcrumaxe"
+fi
 
 echo ""
 echo "--- Asserting agents ---"
@@ -115,16 +397,23 @@ assert_file "$TARGET/CLAUDE.md"
 echo ""
 echo "--- Idempotency: re-running bootstrap ---"
 
+# .autonomous-team/engine-install.json (D#2335 PR 1) is deliberately excluded
+# from this whole-tree comparison: it carries a wall-clock bootstrapped_at
+# field that legitimately changes on every invocation by design (bootstrap.sh
+# step 19a runs unconditionally). tests/test_loop_bootstrap_extended.sh
+# excludes the same path for the same reason.
+ENGINE_INSTALL_STAMP="$TARGET/.autonomous-team/engine-install.json"
+
 # Snapshot checksums before
-BEFORE=$(find "$TARGET" -type f | sort | xargs md5sum 2>/dev/null || find "$TARGET" -type f | sort | xargs sha256sum)
+BEFORE=$(find "$TARGET" -type f -not -path "$ENGINE_INSTALL_STAMP" | sort | xargs md5sum 2>/dev/null || find "$TARGET" -type f -not -path "$ENGINE_INSTALL_STAMP" | sort | xargs sha256sum)
 
 bash "$BOOTSTRAP" --repo acme/test-cold-start --force "$TARGET" > $RUN_TMP/bootstrap-rerun.log 2>&1
 
 # Snapshot checksums after
-AFTER=$(find "$TARGET" -type f | sort | xargs md5sum 2>/dev/null || find "$TARGET" -type f | sort | xargs sha256sum)
+AFTER=$(find "$TARGET" -type f -not -path "$ENGINE_INSTALL_STAMP" | sort | xargs md5sum 2>/dev/null || find "$TARGET" -type f -not -path "$ENGINE_INSTALL_STAMP" | sort | xargs sha256sum)
 
 if [[ "$BEFORE" == "$AFTER" ]]; then
-  pass "idempotent: re-run produced no diff"
+  pass "idempotent: re-run produced no diff (excluding the engine-install.json timestamp)"
 else
   fail "not idempotent: re-run changed files"
   diff <(echo "$BEFORE") <(echo "$AFTER") | head -20 || true

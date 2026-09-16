@@ -1,11 +1,10 @@
 ---
 name: Never dump auth headers — verbose/explain/trace flags leak secrets
-description: curl -v, vastai --explain/--curl, gh api --verbose, and set -x all print Authorization headers in plaintext. Two live leaks of the user's API key in session 85514482.
+description: curl -v, vastai --explain/--curl, gh api --verbose, and set -x all print Authorization headers in plaintext. Two live leaks of an API key in one incident before the key was rotated.
 type: feedback
-originSessionId: 85514482-6eda-41bb-baf3-45fb37863d1a
 tier: transferable
 ---
-In session 85514482 the user's API key leaked into chat TWICE within 15 minutes:
+In one incident, an API key leaked into chat TWICE within 15 minutes:
 1. `curl -v -X GET "https://api.example.com/v1/endpoints/" -H "Authorization: Bearer $(cat ~/api-key.txt)"` — printed the full Bearer token in the request headers section
 2. `vastai create endpoint ... --explain` — printed the full Bearer token in the "Prepared Request" headers dump
 
@@ -39,4 +38,4 @@ But prefer to NOT use verbose flags at all. Almost every debugging task can be d
 3. Recommend rotation steps.
 4. Wait for confirmation before continuing.
 
-Both leaks in session 85514482 were caught and the keys were rotated. This memory exists so future sessions don't repeat them.
+Both leaks were caught and the key was rotated. This memory exists so future sessions don't repeat them.

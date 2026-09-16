@@ -351,10 +351,25 @@ fi
 # reads like removing a redundant copy and is actually breaking plugin
 # install.
 #
-# Mirrored by pointing a second path at the SAME blob sha, so the two trees
-# are byte-identical by construction. export.sh rsyncs and then asserts they
-# match; this cannot drift in the first place.
+# commands/ is mirrored by pointing a second path at the SAME blob sha, so
+# the two trees are byte-identical by construction — export.sh rsyncs and
+# then asserts they match; this cannot drift in the first place.
+#
+# agents/ is NOT a byte-sha mirror (D#2598 fix-round 2 item 2): .claude/
+# agents/ correctly hardcodes this project's own Discussion-plane repo for
+# this project's own team, but a plugin-loaded agents/<name>.md has no
+# install step and no identifier rewrite in between — a user who installs
+# this project as a plugin and invokes a namespaced role before ever
+# running /coldstart got this project's own repo baked into their session.
+# scripts/lib/agents-plugin-mirror.sh's generate_agents_plugin_mirror
+# strips that down to a runtime resolver call (the same shape already used
+# here for the CODE plane). Each agents/<name>.md blob is therefore
+# generated fresh and hash-object'd into the object store rather than
+# reusing .claude/agents/<name>.md's own blob sha.
 # ---------------------------------------------------------------------------
+# shellcheck source=scripts/lib/agents-plugin-mirror.sh
+source "$REPO_ROOT/scripts/lib/agents-plugin-mirror.sh"
+
 MIRROR_SRC="$(mktemp)"
 cp "$INDEX_INFO" "$MIRROR_SRC"          # snapshot: the loop appends to INDEX_INFO
 for mirror_name in agents commands; do
@@ -363,8 +378,22 @@ for mirror_name in agents commands; do
     meta="${record%%$'\t'*}"; path="${record#*$'\t'}"
     case "$path" in
       ".claude/$mirror_name/"*)
-        printf '%s\t%s\0' "$meta" "${path#.claude/}" >> "$INDEX_INFO"
-        printf '%s\n' "${path#.claude/}" >> "$KEPT"
+        mirror_path="${path#.claude/}"
+        if [[ "$mirror_name" == "agents" ]]; then
+          read -r mode _type src_sha _rest <<<"$meta"
+          gen_tmp="$(mktemp)"
+          if ! git cat-file blob "$src_sha" | generate_agents_plugin_mirror /dev/stdin > "$gen_tmp"; then
+            rm -f "$MIRROR_SRC" "$gen_tmp"
+            echo "error: generating $mirror_path from $path (blob $src_sha) failed" >&2
+            exit 1
+          fi
+          new_sha="$(git hash-object -w "$gen_tmp")"
+          rm -f "$gen_tmp"
+          printf '%s blob %s\t%s\0' "$mode" "$new_sha" "$mirror_path" >> "$INDEX_INFO"
+        else
+          printf '%s\t%s\0' "$meta" "$mirror_path" >> "$INDEX_INFO"
+        fi
+        printf '%s\n' "$mirror_path" >> "$KEPT"
         found=$((found + 1))
         ;;
     esac
@@ -374,7 +403,11 @@ for mirror_name in agents commands; do
     echo "error: .claude/$mirror_name/ is not in the seed set — plugin auto-discovery needs $mirror_name/ at the root and there is nothing to mirror" >&2
     exit 1
   fi
-  echo "Mirrored .claude/$mirror_name/ -> $mirror_name/ for plugin auto-discovery ($found files)" >&2
+  if [[ "$mirror_name" == "agents" ]]; then
+    echo "Generated .claude/agents/ -> agents/ for plugin auto-discovery, Discussion-plane repo resolved at runtime instead of hardcoded ($found files)" >&2
+  else
+    echo "Mirrored .claude/$mirror_name/ -> $mirror_name/ for plugin auto-discovery ($found files)" >&2
+  fi
 done
 rm -f "$MIRROR_SRC"
 

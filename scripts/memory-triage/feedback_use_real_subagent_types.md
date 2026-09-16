@@ -2,7 +2,6 @@
 name: Always use the project's real subagent_types — never general-purpose for project work
 description: Spawning agents for autonomous-forever work must use executor / code-reviewer / project-manager / security-reviewer — never general-purpose
 type: feedback
-originSessionId: 85514482-6eda-41bb-baf3-45fb37863d1a
 tier: transferable
 ---
 The Agent tool exposes named subagent_types that match CLAUDE.md's role definitions: `executor`, `code-reviewer`, `security-reviewer`, `project-manager`, `acceptance-tester`. Each comes with role-specific system prompts and is what the post-agent-hook + label flow expects. Picking `general-purpose` because it's the first option visible bypasses all of that.

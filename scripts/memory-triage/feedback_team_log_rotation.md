@@ -2,7 +2,6 @@
 name: Rotate team-log at GitHub comment ceiling
 description: When the team-log Issue hits GitHub's 2500-comment cap, archive it and open a fresh one — don't just stop logging
 type: feedback
-originSessionId: a267c7bf-7678-4f93-a4d3-5490a697ebbc
 tier: transferable
 ---
 When the team-log GitHub Issue (label: `team-log`) hits GitHub's 2500-comment cap, `addComment` returns "Commenting is disabled on issues with more than 2500 comments". The protocol is:

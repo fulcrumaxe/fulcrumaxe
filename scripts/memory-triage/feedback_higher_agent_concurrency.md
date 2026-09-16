@@ -2,7 +2,6 @@
 name: Run high agent concurrency when user is monitoring
 description: User wants 4-6+ concurrent subagents at a time, not the conservative 1-2 default
 type: feedback
-originSessionId: a267c7bf-7678-4f93-a4d3-5490a697ebbc
 tier: transferable
 ---
 When the user is actively monitoring a session (signaled by "I'm watching", "let's go faster", "increase productivity", short wake intervals like 5min), default to spawning **all SPEC_READY work in parallel** and **all DISCUSSING work in parallel** as PMs — not one at a time.

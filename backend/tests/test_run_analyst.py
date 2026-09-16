@@ -548,10 +548,71 @@ class TestLoadFunctions(unittest.TestCase):
 
     @patch("run_analyst.subprocess.run")
     def test_load_audit_trail_handles_empty(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="[]")
+        # audit_trail.py's own `search --format=json` prints one
+        # json.dumps(entry) per line and prints NOTHING for zero matches —
+        # it never emits the literal text "[]". Empty stdout is the real
+        # shape a fresh state dir with no audit rows produces.
+        mock_run.return_value = MagicMock(returncode=0, stdout="")
         from run_analyst import load_audit_trail
         result = load_audit_trail(SINCE)
         self.assertEqual(result, [])
+        self.assertIsInstance(result, list)
+
+    @patch("run_analyst.subprocess.run")
+    def test_load_audit_trail_handles_single_entry(self, mock_run):
+        # D#2598 fix-round regression: a fresh install whose audit.jsonl has
+        # picked up exactly one row (a self-heal step, a dial flip) prints
+        # exactly one JSON object line. json.loads() on that single line
+        # used to return a dict, and collect_run_derived_findings's
+        # `feed_events + loop_logs + audit` crashed with
+        # "TypeError: can only concatenate list (not 'dict') to list" the
+        # first time this happened on a real bootstrap. This must return a
+        # list containing that one dict, never the dict itself.
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout='{"ts": "2026-09-16T00:00:00Z", "action": "install", "actor": "bootstrap"}\n',
+        )
+        from run_analyst import load_audit_trail
+        result = load_audit_trail(SINCE)
+        self.assertIsInstance(result, list)
+        self.assertEqual(result, [{"ts": "2026-09-16T00:00:00Z", "action": "install", "actor": "bootstrap"}])
+
+    @patch("run_analyst.subprocess.run")
+    def test_load_audit_trail_handles_multiple_entries(self, mock_run):
+        # Same shape bug, different symptom: 2+ newline-separated JSON
+        # objects made the old single json.loads() call raise
+        # JSONDecodeError (caught, silently returned []) instead of raising
+        # or returning the real entries — real rows silently vanished
+        # instead of crashing. Must return every entry as its own dict.
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout='{"ts": "1", "action": "a"}\n{"ts": "2", "action": "b"}\n',
+        )
+        from run_analyst import load_audit_trail
+        result = load_audit_trail(SINCE)
+        self.assertEqual(result, [{"ts": "1", "action": "a"}, {"ts": "2", "action": "b"}])
+
+    @patch("run_analyst.subprocess.run")
+    def test_collect_run_derived_findings_survives_single_audit_entry(self, mock_run):
+        # End-to-end regression for the reported crash: feed_events and
+        # loop_logs empty, audit carrying exactly the one-entry shape
+        # load_audit_trail now normalizes to a list, runs_analyzed > 0 so
+        # the function does not early-return. Must not raise TypeError.
+        from run_analyst import collect_run_derived_findings
+        findings = collect_run_derived_findings(
+            feed_events=[],
+            loop_logs=[],
+            audit=[{"ts": "2026-09-16T00:00:00Z", "action": "install"}],
+            role_efficiency={},
+            cost_tracker={},
+            needs_fix_prs=[],
+            loop_metrics=[],
+            budget_data={},
+            hook_events=[],
+            since=SINCE,
+            runs_analyzed=1,
+        )
+        self.assertIsInstance(findings, list)
 
     @patch("run_analyst.subprocess.run")
     def test_load_needs_fix_prs_handles_empty(self, mock_run):

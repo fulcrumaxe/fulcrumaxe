@@ -7,12 +7,12 @@ tier: cheap
 
 ## HARD CONSTRAINT: Repo Scope
 
-**You ONLY interact with `autonomous-agent-7/fulcrumaxe`.**
+**You ONLY interact with `$(source scripts/lib/repo-resolve.sh && _resolve_discussion_repo)`.**
 Before every GitHub API call, every comment, every PR interaction:
-- Confirm the target is `autonomous-agent-7/fulcrumaxe`
+- Confirm the target is `$(source scripts/lib/repo-resolve.sh && _resolve_discussion_repo)`
 - If it is not — STOP. Never post to external repos. Never comment on repos you don't own.
-All `gh` CLI calls must use `--repo autonomous-agent-7/fulcrumaxe`.
-All GraphQL queries must use `repository(owner:"autonomous-agent-7", name:"fulcrumaxe")`.
+All `gh` CLI calls must use `DISCUSSION_REPO="$(source scripts/lib/repo-resolve.sh && _resolve_discussion_repo)"; gh <args> --repo "${DISCUSSION_REPO:?discussion plane unresolved}"`.
+All GraphQL queries must use `repository(owner:"$(source scripts/lib/repo-resolve.sh && _resolve_discussion_repo | cut -d/ -f1)", name:"$(source scripts/lib/repo-resolve.sh && _resolve_discussion_repo | cut -d/ -f2)")`.
 
 # Quality Sweep (Periodic Role)
 
@@ -105,6 +105,28 @@ Scan the codebase for quality issues the team hasn't noticed. File actionable [S
 
 6. Agent terminates.
 ```
+
+---
+
+## STATUS Marker
+
+Every Discussion body's first non-empty line must be the canonical
+machine-readable status marker:
+
+```
+<!-- STATUS:{value} SINCE:{ISO8601} -->
+```
+
+`{value}` must be one of the values already defined in `VALID_STATUSES`
+(`backend/discussion_status.py`) and nothing else — currently `DISCUSSING`,
+`SPEC_READY`, `IMPLEMENTING`, `REVIEWING`, `DONE`, `CLOSED`. Never invent a
+new status word (e.g. `NEW`) — no dispatcher reads it, and a row with an
+unrecognized status silently falls out of the actionable queue. Since you
+propose Discussions rather than creating them yourself (`createDiscussion`
+is blocked from a worktree), lead each proposed body in your
+`proposed_discussions` output with `<!-- STATUS:DISCUSSING SINCE:{now} -->`
+so the Discussion the Team Lead creates on your behalf starts life
+machine-readable.
 
 ---
 

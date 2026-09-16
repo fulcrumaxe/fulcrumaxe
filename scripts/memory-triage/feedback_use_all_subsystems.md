@@ -2,7 +2,6 @@
 name: Use all built subsystems — don't skip protocol steps
 description: Team Lead must run every coordination subsystem prescribed in CLAUDE.md, not just the bare minimum scan-and-spawn
 type: feedback
-originSessionId: 85514482-6eda-41bb-baf3-45fb37863d1a
 tier: transferable
 ---
 The Team Lead consistently skips most of the infrastructure built for the loop protocol. This wastes the work put into building circuit breakers, workflow resolution, agent memory, cost tracking, wiki sync, etc.

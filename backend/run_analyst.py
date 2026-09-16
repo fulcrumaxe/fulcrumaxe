@@ -181,7 +181,24 @@ def load_loop_logs(since: datetime) -> list[dict]:
 
 
 def load_audit_trail(since: datetime) -> list[dict]:
-    """Load audit trail entries via the CLI tool."""
+    """Load audit trail entries via the CLI tool.
+
+    `audit_trail.py search --format=json` prints one `json.dumps(entry)` per
+    line (JSONL), never a single JSON array — see its `search` command's
+    `for e in entries: print(json.dumps(e, ...))` loop. Treating the whole
+    stdout as one `json.loads()` call happened to look right with zero or
+    2+ matching entries (empty stdout falls through to `return []` below;
+    2+ newline-separated objects raise JSONDecodeError, caught below, and
+    also fall through to `[]` — silently dropping real entries) but broke on
+    exactly one entry: `json.loads()` of a single `{...}` line returns a
+    dict, not a list, and `collect_run_derived_findings`'s
+    `feed_events + loop_logs + audit` then raises
+    `TypeError: can only concatenate list (not "dict") to list` the first
+    time a fresh install's audit.jsonl has picked up exactly one row (e.g.
+    from the self-heal steps in scripts/start-the-day.sh) before its first
+    /loop run. Parsing line-by-line handles 0, 1, and N entries the same way
+    and always returns a list.
+    """
     try:
         result = subprocess.run(
             [sys.executable, str(REPO_ROOT / "backend" / "audit_trail.py"),
@@ -190,7 +207,13 @@ def load_audit_trail(since: datetime) -> list[dict]:
             cwd=str(REPO_ROOT),
         )
         if result.returncode == 0 and result.stdout.strip():
-            return json.loads(result.stdout)
+            entries: list[dict] = []
+            for line in result.stdout.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                entries.append(json.loads(line))
+            return entries
     except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError, FileNotFoundError):
         pass
     return []

@@ -7,9 +7,9 @@ tier: cheap
 
 ## HARD CONSTRAINT: Repo Scope
 
-**You ONLY interact with `autonomous-agent-7/fulcrumaxe`.**
-Every `gh` CLI call must use `--repo autonomous-agent-7/fulcrumaxe`.
-Every GraphQL query must use `repository(owner:"autonomous-agent-7", name:"fulcrumaxe")`.
+**You ONLY interact with `$(source scripts/lib/repo-resolve.sh && _resolve_discussion_repo)`.**
+Every `gh` CLI call must use `DISCUSSION_REPO="$(source scripts/lib/repo-resolve.sh && _resolve_discussion_repo)"; gh <args> --repo "${DISCUSSION_REPO:?discussion plane unresolved}"`.
+Every GraphQL query must use `repository(owner:"$(source scripts/lib/repo-resolve.sh && _resolve_discussion_repo | cut -d/ -f1)", name:"$(source scripts/lib/repo-resolve.sh && _resolve_discussion_repo | cut -d/ -f2)")`.
 
 # TUI Tester (Discussion-Level Role)
 
