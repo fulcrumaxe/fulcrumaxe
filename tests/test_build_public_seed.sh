@@ -287,6 +287,73 @@ else
   bad "B3 plugin-root mirror" "commands/ drifted from .claude/commands/, or agents/ does not match generate_agents_plugin_mirror(.claude/agents/)"
 fi
 
+# B3b — no built agents/ blob passes an UNGUARDED Discussion-plane resolver
+# expansion to `gh --repo`, and the guarded shape is present. The unguarded
+# spelling expands to `--repo ""` for a forked adopter with no private twin
+# (the resolver prints nothing and returns 0 there), and `gh --repo ""`
+# silently resolves from the checkout's remote — the fail-open shape
+# `${VAR:?}` guards exist to prevent. The guarded
+# `${DISCUSSION_REPO:?discussion plane unresolved}` spelling aborts before
+# `gh` runs instead. Both halves are asserted: the absence alone would pass
+# vacuously on a tree whose agents/ never mentioned the Discussion plane.
+b3b_fail_open=0
+b3b_guarded=0
+b3b_agents=0
+while IFS= read -r agent_path; do
+  agent_sha="$(blob_in_tree "$TREE" "$agent_path")"
+  [[ -n "$agent_sha" ]] || continue
+  b3b_agents=$((b3b_agents + 1))
+  body="$(git -C "$REPO_ROOT" cat-file blob "$agent_sha")"
+  if grep -qF -- '--repo $(source scripts/lib/repo-resolve.sh && _resolve_discussion_repo' <<<"$body"; then
+    b3b_fail_open=$((b3b_fail_open + 1))
+  fi
+  if grep -qF -- '${DISCUSSION_REPO:?discussion plane unresolved}' <<<"$body"; then
+    b3b_guarded=$((b3b_guarded + 1))
+  fi
+done < <(git -C "$REPO_ROOT" ls-tree -r "$TREE" --name-only -- "agents" | grep '\.md$')
+if [[ "$b3b_agents" -eq 0 ]]; then
+  bad "B3b no fail-open Discussion-plane --repo in built agents/" "no agents/ files in the tree to scan"
+elif [[ "$b3b_fail_open" -gt 0 ]]; then
+  bad "B3b no fail-open Discussion-plane --repo in built agents/" "$b3b_fail_open file(s) pass an unguarded resolver expansion to gh --repo"
+else
+  ok "B3b no built agents/ file passes an unguarded Discussion-plane resolver expansion to gh --repo ($b3b_agents files scanned)"
+fi
+if [[ "$b3b_guarded" -gt 0 ]]; then
+  ok "B3b guarded DISCUSSION_REPO shape present in built agents/ ($b3b_guarded files)"
+else
+  bad "B3b guarded DISCUSSION_REPO shape present in built agents/" "absent everywhere — the B3b absence check above is vacuous"
+fi
+
+# B3c — every guarded DISCUSSION_REPO use in the built agents/ blobs shares
+# its statement with the resolution (round 2b). The guarded spelling alone
+# is broken-by-construction: shell state does not survive between tool
+# calls, so a use with no same-statement `DISCUSSION_REPO=` assignment fails
+# always, not just on empty resolution. Backslash continuations are joined
+# before the check, so a multi-line `gh issue create \` statement counts as
+# one statement.
+b3c_split=0
+b3c_split_names=""
+b3c_agents=0
+while IFS= read -r agent_path; do
+  agent_sha="$(blob_in_tree "$TREE" "$agent_path")"
+  [[ -n "$agent_sha" ]] || continue
+  b3c_agents=$((b3c_agents + 1))
+  agent_tmp="$TMP/b3c-$(basename "$agent_path")"
+  git -C "$REPO_ROOT" cat-file blob "$agent_sha" > "$agent_tmp"
+  if ! agents_mirror_same_statement_violations "$agent_tmp" >/dev/null 2>&1; then
+    b3c_split=$((b3c_split + 1))
+    b3c_split_names="${b3c_split_names}${agent_path} "
+  fi
+  rm -f "$agent_tmp"
+done < <(git -C "$REPO_ROOT" ls-tree -r "$TREE" --name-only -- "agents" | grep '\.md$')
+if [[ "$b3c_agents" -eq 0 ]]; then
+  bad "B3c no built agents/ file uses the split DISCUSSION_REPO shape" "no agents/ files in the tree to scan"
+elif [[ "$b3c_split" -eq 0 ]]; then
+  ok "B3c no built agents/ file uses the split DISCUSSION_REPO shape ($b3c_agents files scanned)"
+else
+  bad "B3c no built agents/ file uses the split DISCUSSION_REPO shape" "$b3c_split file(s): $b3c_split_names"
+fi
+
 # B4 — bootstrap-paths.generated present and comment-free.
 gen="$(blob_in_tree "$TREE" "loop-bootstrap/bootstrap-paths.generated")"
 if [[ -n "$gen" ]]; then

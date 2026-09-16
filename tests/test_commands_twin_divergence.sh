@@ -242,6 +242,101 @@ else
 fi
 rm -rf "$D9C"
 
+# ── Test 9d: the generator emits the GUARDED discussion-plane shape ─────────
+# (no fail-open `--repo $(... _resolve_discussion_repo)`). The fixture's
+# top-level file is produced by the real generator, so this asserts the
+# generator's own output contract: every --repo position carries
+# `${DISCUSSION_REPO:?discussion plane unresolved}`, and no unguarded
+# --repo expansion survives anywhere.
+echo ""
+echo "--- Test 9d: generator emits guarded DISCUSSION_REPO shape, no fail-open expansion ---"
+# shellcheck source=scripts/lib/agents-plugin-mirror.sh
+source "$AGENTS_MIRROR_LIB_SRC"
+D9D=$(new_fixture)
+write_pair "$D9D" ".claude/commands" "commands" "update.md" $'# Update\n'
+printf '%s' $'# Executor\nYou ONLY interact with `autonomous-agent-7/fulcrumaxe`.\nLOG=$(gh issue list --repo autonomous-agent-7/fulcrumaxe --label team-log)\n' > "$D9D/.claude/agents/executor.md"
+generate_agents_plugin_mirror "$D9D/.claude/agents/executor.md" > "$D9D/agents/executor.md"
+if grep -qF '${DISCUSSION_REPO:?discussion plane unresolved}' "$D9D/agents/executor.md" \
+  && ! grep -qF -- '--repo $(source scripts/lib/repo-resolve.sh && _resolve_discussion_repo' "$D9D/agents/executor.md"; then
+  pass "generator output carries the guarded shape and no unguarded --repo expansion"
+else
+  fail "generator output must carry the guarded shape with no unguarded --repo expansion, got: $(cat "$D9D/agents/executor.md")"
+fi
+run_guard "$D9D"
+if [[ "$RC" -eq 0 ]] && echo "$OUT" | grep -qF "PASS executor.md (agents)"; then
+  pass "guarded generated agents/executor.md passes the guard"
+else
+  fail "guarded generated agents/executor.md should pass the guard, got rc=$RC out=$OUT"
+fi
+rm -rf "$D9D"
+
+# ── Test 9e: the OLD fail-open spelling fails the guard directly ───────────
+# A top-level file passing an unguarded `_resolve_discussion_repo`
+# expansion to `gh --repo` must fail even if it matched its twin: for a
+# forked adopter with no private twin that flag expands to `--repo ""`,
+# and `gh --repo ""` silently resolves from the checkout's remote.
+echo ""
+echo "--- Test 9e: unguarded --repo resolver expansion fails the guard ---"
+D9E=$(new_fixture)
+write_pair "$D9E" ".claude/commands" "commands" "update.md" $'# Update\n'
+printf '%s' $'# Executor\nrole card\n' > "$D9E/.claude/agents/executor.md"
+printf '%s' $'# Executor\ngh issue list --repo $(source scripts/lib/repo-resolve.sh && _resolve_discussion_repo) --label team-log\n' > "$D9E/agents/executor.md"
+run_guard "$D9E"
+if [[ "$RC" -ne 0 ]] && echo "$OUT" | grep -qF "unguarded _resolve_discussion_repo expansion to gh --repo"; then
+  pass "unguarded --repo resolver expansion fails via the fail-open scan"
+else
+  fail "unguarded --repo resolver expansion should fail via the fail-open scan, got rc=$RC out=$OUT"
+fi
+rm -rf "$D9E"
+
+# ── Test 9f: resolution and guarded use share ONE statement ──────────────
+# The round-2a split shape (`--repo "${DISCUSSION_REPO:?...}"` with zero
+# `DISCUSSION_REPO=` assignments anywhere in the file) greps as guarded but
+# fails always: shell state does not survive between tool calls, so the
+# guard trips on every Discussion-plane gh call, not just on empty
+# resolution. agents_mirror_same_statement_violations joins backslash
+# continuations first, then requires every guarded use to share its
+# statement with the resolution. Three assertions: the real generator's
+# output is clean (positive), the split shape is flagged (negative — this
+# is the fixture capturing the previous fix attempt), and the split shape
+# fails the guard end-to-end via the same-statement scan.
+echo ""
+echo "--- Test 9f: DISCUSSION_REPO resolution and guarded use share one statement ---"
+# shellcheck source=scripts/lib/agents-plugin-mirror.sh
+source "$AGENTS_MIRROR_LIB_SRC"
+D9F=$(new_fixture)
+write_pair "$D9F" ".claude/commands" "commands" "update.md" $'# Update\n'
+printf '%s' $'# Executor\nYou ONLY interact with `autonomous-agent-7/fulcrumaxe`.\nLOG=$(gh issue list --repo autonomous-agent-7/fulcrumaxe --label team-log)\n   gh issue create \\\n     --repo autonomous-agent-7/fulcrumaxe \\\n     --title "x"\n' > "$D9F/.claude/agents/executor.md"
+generate_agents_plugin_mirror "$D9F/.claude/agents/executor.md" > "$D9F/agents/executor.md"
+if agents_mirror_same_statement_violations "$D9F/agents/executor.md" >"$D9F/same.out" 2>&1; then
+  pass "generator output has no split-shape statement (resolution shares every guarded use)"
+else
+  fail "generator output should have no split-shape statement, got: $(cat "$D9F/same.out")"
+fi
+# Negative fixture: the round-2a split shape — guarded uses, no assignment.
+printf '%s' $'# Executor\nLOG=$(gh issue list --repo "${DISCUSSION_REPO:?discussion plane unresolved}" --label team-log)\ngh issue comment $LOG --repo "${DISCUSSION_REPO:?discussion plane unresolved}" --body "hi"\n' > "$D9F/split.md"
+if agents_mirror_same_statement_violations "$D9F/split.md" >"$D9F/split.out" 2>&1; then
+  fail "split shape (guarded use, no same-statement resolution) should be flagged, was accepted"
+else
+  if grep -qF "split.md:2" "$D9F/split.out" && grep -qF "split.md:3" "$D9F/split.out"; then
+    pass "split shape from the previous fix attempt is flagged on both statements"
+  else
+    fail "split shape should be flagged on lines 2 and 3, got: $(cat "$D9F/split.out")"
+  fi
+fi
+# End-to-end: the split shape fails the guard even where it matches nothing
+# else — copy it over the generated twin so generation-match agrees and only
+# the same-statement scan can catch it.
+cp "$D9F/split.md" "$D9F/agents/executor.md"
+printf '%s' $'# Executor\nLOG=$(gh issue list --repo "${DISCUSSION_REPO:?discussion plane unresolved}" --label team-log)\ngh issue comment $LOG --repo "${DISCUSSION_REPO:?discussion plane unresolved}" --body "hi"\n' > "$D9F/.claude/agents/executor.md"
+run_guard "$D9F"
+if [[ "$RC" -ne 0 ]] && echo "$OUT" | grep -qF "no same-statement DISCUSSION_REPO resolution"; then
+  pass "split shape fails the guard via the same-statement scan"
+else
+  fail "split shape should fail the guard via the same-statement scan, got rc=$RC out=$OUT"
+fi
+rm -rf "$D9F"
+
 # ═══════════════════════════════════════════════════════════════════════════
 # scripts family (D#2598 item 5) — driven by loop-bootstrap/scripts/, missing
 # live twin is a NOTE not a FAIL (bootstrap-only residue scripts are expected)

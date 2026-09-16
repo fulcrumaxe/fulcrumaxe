@@ -48,7 +48,7 @@ Before every GitHub API call:
 - Confirm the target matches the surface — a lookup against this project's own code goes to the code plane; a Discussion or Issue read goes to the Discussion plane
 - **If you cannot tell which surface you are on, use the Discussion plane.** A wrong-plane read is a wasted call. Uncertainty goes private, never public.
 - If it is not one of those two — STOP. Never post to external repos.
-Every `gh` call against this project's own repo passes an explicit `--repo`: `--repo "${CODE_REPO:?code plane unresolved}"` (resolved in the same statement, as above) or `--repo $(source scripts/lib/repo-resolve.sh && _resolve_discussion_repo)`.
+Every `gh` call against this project's own repo passes an explicit `--repo`: `--repo "${CODE_REPO:?code plane unresolved}"` (resolved in the same statement, as above) or `DISCUSSION_REPO="$(source scripts/lib/repo-resolve.sh && _resolve_discussion_repo)"; gh <args> --repo "${DISCUSSION_REPO:?discussion plane unresolved}"`.
 An external lookup targets whatever repo the question is actually about, not either of these two — that scope is unrelated to the pin above.
 All GraphQL queries must use `repository(owner:"$(source scripts/lib/repo-resolve.sh && _resolve_discussion_repo | cut -d/ -f1)", name:"$(source scripts/lib/repo-resolve.sh && _resolve_discussion_repo | cut -d/ -f2)")`.
 

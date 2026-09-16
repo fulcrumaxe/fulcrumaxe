@@ -120,6 +120,28 @@ else
 fi
 
 echo ""
+echo "--- scripts/memory-triage/: no file carries an originSessionId frontmatter field ---"
+# Tier-independent: the originSessionId frontmatter key names this repo's own
+# session, which must never ship or linger anywhere in the corpus — not even
+# in tier:hardwire-candidate files that are excluded from installs. Lesson
+# prose is untouched by this check; only the frontmatter key is asserted
+# absent (case-insensitive, leading whitespace tolerated).
+TRIAGE_ORIGIN_KEYS=""
+if [[ -d "$REPO_ROOT/scripts/memory-triage" ]]; then
+  while IFS= read -r -d '' mf; do
+    if grep -qiE '^[[:space:]]*originSessionId:' "$mf" 2>/dev/null; then
+      TRIAGE_ORIGIN_KEYS="${TRIAGE_ORIGIN_KEYS}$(basename "$mf")"$'\n'
+    fi
+  done < <(find "$REPO_ROOT/scripts/memory-triage" -maxdepth 1 -type f -name '*.md' -print0 2>/dev/null)
+fi
+if [[ -z "$TRIAGE_ORIGIN_KEYS" ]]; then
+  pass "no file in scripts/memory-triage/ carries an originSessionId frontmatter field"
+else
+  fail "file(s) in scripts/memory-triage/ still carry an originSessionId frontmatter field:"
+  echo "$TRIAGE_ORIGIN_KEYS"
+fi
+
+echo ""
 echo "=== test_loop_bootstrap ==="
 echo ""
 

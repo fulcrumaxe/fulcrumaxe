@@ -2,7 +2,6 @@
 name: Runaway loop prevention is non-negotiable
 description: Any code path that spawns `claude -p` or fires /loop must have a hard rate-limit and an external kill switch
 type: feedback
-originSessionId: f602f51e-d8cd-4b9e-8d85-4fb81c68c859
 tier: hardwire-candidate
 ---
 On 2026-05-10, `backend/api.py`'s `_innovate_tick` endpoint fanned out 16+ `claude -p "Run ONE /loop iteration..."` Opus subprocesses in a 2-minute burst, burning a large chunk of the user's plan credit before they noticed. Suspected trigger: a Puppeteer E2E test session hitting the dashboard's "Run loop" button after a recent fix made that button actually wire through to the backend.

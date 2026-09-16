@@ -318,6 +318,48 @@ else
       fi
     done < <(find "$TOP_AGENTS_DIR" -maxdepth 1 -type f -name '*.md' | sort)
   fi
+
+  # Fail-open scan, independent of the generation-match check above: a
+  # `--repo` flag fed by an UNGUARDED `_resolve_discussion_repo` expansion
+  # expands to `--repo ""` for a forked adopter with no private twin (the
+  # resolver prints nothing and returns 0 there), and `gh --repo ""` exits
+  # 0 after silently resolving the slug from the checkout's git remote.
+  # The generator must therefore emit the guarded
+  # `${DISCUSSION_REPO:?discussion plane unresolved}` shape (resolved in
+  # the same statement, mirroring the code plane) at every --repo position
+  # instead. This scan fails the moment the fail-open spelling reappears,
+  # even if both twins happen to agree on it.
+  if [ -d "$TOP_AGENTS_DIR" ]; then
+    while IFS= read -r top_path; do
+      name="$(basename "$top_path")"
+      if grep -q -- '--repo $(source scripts/lib/repo-resolve.sh && _resolve_discussion_repo' "$top_path" 2>/dev/null; then
+        echo "FAIL $name (agents) — $top_path passes an unguarded _resolve_discussion_repo expansion to gh --repo (fail-open: empty resolves from the checkout remote; use \"\${DISCUSSION_REPO:?discussion plane unresolved}\")"
+        FAILED=$((FAILED + 1))
+      fi
+    done < <(find "$TOP_AGENTS_DIR" -maxdepth 1 -type f -name '*.md' | sort)
+  fi
+
+  # Same-statement scan (round 2b): the guarded shape alone is NOT enough.
+  # Shell state does not survive between tool calls, so a guarded
+  # `${DISCUSSION_REPO:?...}` use with no `DISCUSSION_REPO=...` assignment
+  # in the SAME `;`-joined statement fails always, not just on empty
+  # resolution — every Discussion-plane gh call in the file would be
+  # broken-by-construction. agents_mirror_same_statement_violations joins
+  # backslash continuations first, so a multi-line `gh issue create \`
+  # statement counts as one statement.
+  if [ -d "$TOP_AGENTS_DIR" ]; then
+    while IFS= read -r top_path; do
+      name="$(basename "$top_path")"
+      same_stmt_bad="$(agents_mirror_same_statement_violations "$top_path" 2>/dev/null)"
+      if [ -n "$same_stmt_bad" ]; then
+        echo "FAIL $name (agents) — $top_path uses \${DISCUSSION_REPO:?discussion plane unresolved} with no same-statement DISCUSSION_REPO resolution (shell state does not survive between tool calls; resolve AND use in one statement joined by ';')"
+        echo "$same_stmt_bad" | while IFS= read -r bad_line; do
+          echo "     $bad_line"
+        done
+        FAILED=$((FAILED + 1))
+      fi
+    done < <(find "$TOP_AGENTS_DIR" -maxdepth 1 -type f -name '*.md' | sort)
+  fi
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════

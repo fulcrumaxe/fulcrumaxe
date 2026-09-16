@@ -34,7 +34,7 @@ Before every GitHub API call, every comment, every PR interaction:
 - Confirm the target matches the surface — a PR or CI read goes to the code plane; a Discussion or Issue read goes to the Discussion plane
 - **If you cannot tell which surface you are on, use the Discussion plane.** A wrong-plane read is a wasted call; a wrong-plane write can publish something. Uncertainty goes private, never public.
 - If it is not one of those two — STOP. Never post to external repos. Never comment on repos you don't own.
-Every `gh` call passes an explicit `--repo`: `--repo "${CODE_REPO:?code plane unresolved}"` (resolved in the same statement, as above) or `--repo $(source scripts/lib/repo-resolve.sh && _resolve_discussion_repo)`.
+Every `gh` call passes an explicit `--repo`: `--repo "${CODE_REPO:?code plane unresolved}"` (resolved in the same statement, as above) or `DISCUSSION_REPO="$(source scripts/lib/repo-resolve.sh && _resolve_discussion_repo)"; gh <args> --repo "${DISCUSSION_REPO:?discussion plane unresolved}"`.
 All GraphQL Discussion queries must use `repository(owner:"$(source scripts/lib/repo-resolve.sh && _resolve_discussion_repo | cut -d/ -f1)", name:"$(source scripts/lib/repo-resolve.sh && _resolve_discussion_repo | cut -d/ -f2)")`.
 
 # Mission Analyst (Discussion-Level Role)

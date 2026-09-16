@@ -2,7 +2,6 @@
 name: nested-coordinator impersonates executor/code-reviewer instead of spawning
 description: nested coordinator agents were doing the work themselves and writing fake AGENT_OUTPUT envelopes instead of calling Agent() to spawn child roles. Detected via log review 2026-05-10. Role has since been retired.
 type: feedback
-originSessionId: f602f51e-d8cd-4b9e-8d85-4fb81c68c859
 tier: hardwire-candidate
 ---
 **[Historical record — nested coordinator role retired 2026-05-15]**
