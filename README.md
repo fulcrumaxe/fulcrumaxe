@@ -68,6 +68,32 @@ bash scripts/coldstart.sh --path /path/to/your/repo --name your-project --resume
 
 **One thing coldstart does not verify for you: your target repo needs a `git remote origin` pointing at a real GitHub repo before you run it for real.** Without one, coldstart doesn't fail cleanly — see [Troubleshooting](#troubleshooting) below, it's the first entry. This is also the seam where "does coldstart alone get me to a working team" stops being true: reaching a seeded, running project takes a real GitHub repo and a filled-in backlog, neither of which a script can supply for you. `bash scripts/coldstart.sh --help` prints the full flag list, including `--mode new` for scaffolding a brand-new project from an empty directory instead of wrapping an existing one, and `--self-test` for exercising the halt flow non-interactively with no GitHub calls.
 
+## Muse Code
+
+Everything above assumes Claude Code. If you work in **Muse Code**
+(`muse` CLI) instead, the same repo works with a smaller surface:
+
+1. **Prerequisites delta:** you need `gh` (authenticated) and `muse` on
+   your `PATH` — and explicitly **no `claude` CLI**. The Claude Code
+   runtime and credential from [Prerequisites](#prerequisites) do not
+   apply; `scripts/start-the-day.sh --muse` skips the Claude-CLI checks.
+2. **Bootstrap first:** on a fresh clone, run
+   `bash loop-bootstrap/bootstrap.sh --repo OWNER/NAME <path>` before
+   anything else, then the ritual below.
+3. **Morning ritual:** run `bash scripts/start-the-day.sh --muse`. It
+   stays on your current branch and is fetch-only (no HEAD restore, no
+   pull). See `AGENTS.md` ("Muse deltas") for the per-spawn mechanics
+   (pre-spawn check, `scripts/lib/muse-spawn-prompt.sh` renderer, stable
+   event-id, `tokens_used` self-report, post-agent hook).
+4. **What doesn't work yet:** the `/loop` driver, loop auto-merge, and
+   the dashboard are Claude-Code paths — in Muse sessions you implement,
+   review, and test directly; do not use `Agent()` /
+   `scripts/spawn-agent.sh` and do not shell out to the `claude` CLI.
+5. **Private-repo boundary:** the public repo is the only plane you act
+   on. Never reference the private Discussion-plane repo, and never paste
+   internal Discussion prose outward into PR bodies or comments — restate
+   findings in your own words against the code.
+
 ## How the loop works
 
 Once a project is provisioned, "starting the team" means opening **this `fulcrumaxe` checkout** in Claude Code (so it reads `CLAUDE.md` and knows the roles and protocols) and running **`/start-the-day`** — the Team Lead's morning ritual, which runs `scripts/start-the-day.sh` to pull main fresh, verify `~/.autonomous-forever-state/` is intact, run the morning sweeps, and print today's plan before anything else happens. Once that's done, **`/loop`** is what keeps the team running: that's a Claude Code built-in, not something this repo ships a file for. It runs a prompt or slash command on a recurring interval; on its own it self-paces. The cron-driven path to the same thing is `python3 backend/trigger.py "run /loop iteration"`, which is what actually fires each scheduled iteration in production — cron itself ships disabled by default and is not the recommended way to start.
