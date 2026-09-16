@@ -85,8 +85,9 @@ Everything above assumes Claude Code. If you work in **Muse Code**
    pull). See `AGENTS.md` ("Muse deltas") for the per-spawn mechanics
    (pre-spawn check, `scripts/lib/muse-spawn-prompt.sh` renderer, stable
    event-id, `tokens_used` self-report, post-agent hook).
-4. **What doesn't work yet:** the `/loop` driver, loop auto-merge, and
-   the dashboard are Claude-Code paths — in Muse sessions you implement,
+4. **What doesn't work yet:** this repo's `/loop` iteration driver
+   (cron → `backend/trigger.py` → the `claude` CLI), loop auto-merge,
+   and the dashboard are Claude-Code paths — in Muse sessions you implement,
    review, and test directly; do not use `Agent()` /
    `scripts/spawn-agent.sh` and do not shell out to the `claude` CLI.
 5. **Private-repo boundary:** the public repo is the only plane you act
@@ -105,20 +106,19 @@ Everything above assumes Claude Code. If you work in **Muse Code**
    manifest at `.muse-plugin/plugin.json` exposing the same three
    skills (`coldstart`, `start-the-day`, `update`, all on by default).
    It passes `muse plugins validate . --json` with zero errors. To use
-   the skills through the plugin system instead of the workspace, point
-   a local marketplace at a checkout — verified offline, no network —
-   then install from it (installation itself is left to you):
+   the skills through the plugin system instead of the workspace, add
+   the public repo as a marketplace — no local clone needed — then
+   install from it (installation itself is left to you):
 
    ```bash
-   muse plugins marketplace add fulcrumaxe-local /path/to/fulcrumaxe
-   muse plugins install fulcrumaxe@fulcrumaxe-local
+   muse plugins marketplace add fulcrumaxe https://github.com/fulcrumaxe/fulcrumaxe
+   muse plugins install fulcrumaxe@fulcrumaxe
    ```
 
-   Only the `marketplace add` step was run here (it reports one
-   available plugin, transport `local-path`); the `install` form is
-   transcribed from `muse plugins --help`, not executed. Nothing is
-   installed by default — the workspace skills in item 5 work as-is
-   once trusted.
+   Only the `marketplace add` step was run here (it reports `plugins=1`
+   for the URL source); the `install` form is transcribed from
+   `muse plugins --help`, not executed. Nothing is installed by
+   default — the workspace skills in item 5 work as-is once trusted.
 7. **Sandbox vs pushes/merges:** approval and the sandbox are ON by
    default. Loop operations that push or merge need real `git`/`gh`
    network access, so either run with the sandbox off for the run:
@@ -132,10 +132,25 @@ Everything above assumes Claude Code. If you work in **Muse Code**
    approval and sandboxing and trust this workspace for this run"),
    or keep the sandbox on and hand the commands that need network a
    scoped `GH_TOKEN` instead.
+8. **Loop under Muse:** `muse --help` lists no `loop` subcommand, so
+   there is no Muse-native iteration driver behind `/loop` — item 4's
+   shape stands. (`/loop` the product command and this repo's
+   iteration driver for it are different things — see
+   [How the loop works](#how-the-loop-works).)
+   What does run: the morning ritual (item 3), the workspace skills
+   (item 5), and the `gh`/merge-gate tooling
+   (`scripts/loop-phased-step5.sh`, `scripts/merge-and-hook.sh`,
+   `scripts/lib/merge-gate-labels.sh` — plain shell plus `gh`, no
+   `claude`-binary dependency). What doesn't: any step that shells
+   out to the `claude` binary — `./run-loop-iteration.sh` (repo root)
+   exits `FATAL` when neither `$CLAUDE_BIN` nor `PATH` resolves it, and
+   `backend/trigger.py` exits non-zero on the same condition when the
+   TUI isn't running. In Muse sessions the loop pieces run on demand,
+   driven by you, not on a schedule.
 
 ## How the loop works
 
-Once a project is provisioned, "starting the team" means opening **this `fulcrumaxe` checkout** in Claude Code (so it reads `CLAUDE.md` and knows the roles and protocols) and running **`/start-the-day`** — the Team Lead's morning ritual, which runs `scripts/start-the-day.sh` to pull main fresh, verify `~/.autonomous-forever-state/` is intact, run the morning sweeps, and print today's plan before anything else happens. Once that's done, **`/loop`** is what keeps the team running: that's a Claude Code built-in, not something this repo ships a file for. It runs a prompt or slash command on a recurring interval; on its own it self-paces. The cron-driven path to the same thing is `python3 backend/trigger.py "run /loop iteration"`, which is what actually fires each scheduled iteration in production — cron itself ships disabled by default and is not the recommended way to start.
+Once a project is provisioned, "starting the team" means opening **this `fulcrumaxe` checkout** in Claude Code (so it reads `CLAUDE.md` and knows the roles and protocols) and running **`/start-the-day`** — the Team Lead's morning ritual, which runs `scripts/start-the-day.sh` to pull main fresh, verify `~/.autonomous-forever-state/` is intact, run the morning sweeps, and print today's plan before anything else happens. Once that's done, **`/loop`** is what keeps the team running: that's a product command in both CLIs, not a file this repo ships. Iterations fire one of two ways — the Team Lead runs them in-session from the TUI, or the scheduler fires `python3 backend/trigger.py "run /loop iteration"`, which writes the request to the TUI's FIFO (`/tmp/af-trigger.fifo`, read by `backend/server.py`) and falls back to the `claude` CLI only when the TUI isn't running. The scheduled path ships disabled: every entry in `scripts/schedule/jobs.yaml` is `enabled: false`, so nothing fires until you opt in.
 
 **If you provisioned a separate target repo with `--path`, keep `fulcrumaxe` open — not the target.** Running `coldstart.sh` end to end confirms the target repo comes out with only `.autonomous-team/` (state, `project.json`) and its GitHub labels — no `CLAUDE.md`, `scripts/`, or `.claude/agents/` of its own. The Team Lead session, `/loop`, and every spawned role keep running from this `fulcrumaxe` checkout; `--path` and the target's `repo` field just tell those scripts which GitHub repo's Discussions, Issues, and PRs to act on. A separate kit does install a standalone copy of the engine — its own `CLAUDE.md`, `scripts/`, `.claude/agents/`, and a `backend/` snapshot — into a target repo so it can run `/loop` on its own from then on; that's the real "open the target repo instead" path. It's a separate, manually-run step that `coldstart.sh` does not invoke for you, and it lives at `loop-bootstrap/bootstrap.sh`, which ships in the engine repo, the open-source export, and the installed plugin alike (a one-command wrapper, `scripts/coldstart-unified.sh`, chains this same two-step sequence and ships in all three the same way — see [Provisioning: coldstart](#provisioning-coldstart)). See [Updating](#updating) for the exact command.
 
@@ -146,18 +161,12 @@ You (or the team) open a Discussion
   → project-manager writes a Spec in the Discussion body
   → executor implements it in an isolated git worktree, opens a PR
   → code-reviewer checks it              → code-review-passed
-  → security-reviewer checks it          → security-passed
+  → security-reviewer checks it          → security-review-passed
   → acceptance-tester validates it        → acceptance-passed
-  → loop auto-merge, once all three labels are present
+  → loop auto-merge, once the gate below is satisfied
 ```
 
-The three merge-gate labels each verify something different, and a PR needs all of them before the loop will merge it:
-
-- **`code-review-passed`** — a code-reviewer agent read the diff and confirmed it matches the Spec, follows repo conventions, and doesn't introduce obvious bugs.
-- **`security-passed`** — a security-reviewer agent checked the change for auth, SQL, secret-handling, or sandbox-rule risk (skipped/auto-passed for changes that don't touch anything sensitive).
-- **`acceptance-passed`** — an acceptance-tester agent ran the actual tests/build against the Spec's acceptance criteria and confirmed they pass.
-
-See [CLAUDE.md](CLAUDE.md) ("Merge Gate Protocol") for the enforcement details, and [CONTRIBUTING.md](CONTRIBUTING.md) for the contributor-facing version of this flow.
+The three merge-gate labels each verify something different: **`code-review-passed`** (required on every PR), **`security-review-passed`** (conditional — required when `needs_security_review` is set, a live diff-content security trigger fires, or the originating Discussion is `provenance:external`), **`acceptance-passed`** (advisory — its absence never blocks a merge, but `acceptance-failed` vetoes one). That's the whole quorum — see [CLAUDE.md](CLAUDE.md) ("Merge Gate Protocol") for the enforcement details. [CONTRIBUTING.md](CONTRIBUTING.md#what-happens-after-you-open-a-pr) ("What happens after you open a PR") covers what an external contributor sees of this flow — CI, maintainer review, mandatory security review — not the label quorum itself.
 
 ## Updating
 
