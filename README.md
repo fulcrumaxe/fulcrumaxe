@@ -101,6 +101,37 @@ Everything above assumes Claude Code. If you work in **Muse Code**
    `muse skills list --source project --workspace <path>` (all three
    should list as on; see `muse skills list --help` for the
    `--trust-workspace` flag).
+6. **Native plugin (optional):** this repo ships a native Muse plugin
+   manifest at `.muse-plugin/plugin.json` exposing the same three
+   skills (`coldstart`, `start-the-day`, `update`, all on by default).
+   It passes `muse plugins validate . --json` with zero errors. To use
+   the skills through the plugin system instead of the workspace, point
+   a local marketplace at a checkout — verified offline, no network —
+   then install from it (installation itself is left to you):
+
+   ```bash
+   muse plugins marketplace add fulcrumaxe-local /path/to/fulcrumaxe
+   muse plugins install fulcrumaxe@fulcrumaxe-local
+   ```
+
+   Only the `marketplace add` step was run here (it reports one
+   available plugin, transport `local-path`); the `install` form is
+   transcribed from `muse plugins --help`, not executed. Nothing is
+   installed by default — the workspace skills in item 5 work as-is
+   once trusted.
+7. **Sandbox vs pushes/merges:** approval and the sandbox are ON by
+   default. Loop operations that push or merge need real `git`/`gh`
+   network access, so either run with the sandbox off for the run:
+
+   ```bash
+   muse --disable-sandbox
+   ```
+
+   (exact `muse --help` wording: `--disable-sandbox` — "Disable shell
+   filesystem/network sandboxing for this run"; `--yolo` — "Disable
+   approval and sandboxing and trust this workspace for this run"),
+   or keep the sandbox on and hand the commands that need network a
+   scoped `GH_TOKEN` instead.
 
 ## How the loop works
 
