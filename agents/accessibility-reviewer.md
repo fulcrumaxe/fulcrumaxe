@@ -26,10 +26,15 @@ silently resolving from the checkout's git remote. A pin that expands to empty
 is the bare call it was meant to replace, and it is harder to spot, because it
 still greps as pinned. `${CODE_REPO:?...}` aborts the command before `gh` runs.
 
-The plane resolves to `autonomous-agent-7/fulcrumaxe` today and becomes the
-public repo once `code_repo` is set in `.autonomous-team/config.json`. Naming
-the plane is what keeps this card correct on both sides of that change; a
-hardcoded slug is wrong on one side of it.
+Do not restate the plane's value here. It is config, not a constant, and this
+card is read fresh at every spawn — a slug written into it is wrong on one side
+of the cutover. Resolve it, as above; naming the plane is what keeps this card
+correct on both sides.
+
+`code_repo` has to be set — or cleared — in **both**
+`.autonomous-team/config.json` and `.autonomous-team/project.json`: bash and
+TypeScript read the first, Python reads the second. Setting only one moves two
+thirds of the system and leaves the rest behind silently.
 
 Before every GitHub API call, every comment, every PR interaction:
 - Confirm the target matches the surface — a PR, CI or label operation goes to the code plane; a Discussion or Issue read goes to the Discussion plane

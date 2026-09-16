@@ -72,6 +72,26 @@ else
   fail "no memory files found in $MEMORY_DEST"
 fi
 
+# D#2598 item 13/14: memories are derived from scripts/memory-triage/ by
+# tier, not hand-copied from loop-bootstrap/memories/ (that directory no
+# longer exists). A tier:transferable file must be installed; a
+# tier:hardwire-candidate file must NOT be.
+if [[ -f "$MEMORY_DEST/feedback_no_nested_coordinator.md" ]]; then
+  pass "tier:transferable memory installed (feedback_no_nested_coordinator.md)"
+else
+  fail "tier:transferable memory missing: feedback_no_nested_coordinator.md"
+fi
+if [[ -f "$MEMORY_DEST/feedback_no_runaway_loops.md" ]]; then
+  fail "tier:hardwire-candidate memory was installed (should be excluded): feedback_no_runaway_loops.md"
+else
+  pass "tier:hardwire-candidate memory correctly excluded (feedback_no_runaway_loops.md)"
+fi
+if [[ -f "$MEMORY_DEST/MEMORY.md" ]]; then
+  fail "scripts/memory-triage/MEMORY.md (the corpus index) was installed — it is corpus tooling, not adopter guidance"
+else
+  pass "scripts/memory-triage/MEMORY.md correctly not installed"
+fi
+
 echo ""
 echo "--- Asserting scripts ---"
 assert_dir "$TARGET/scripts"
@@ -83,6 +103,62 @@ assert_dir "$TARGET/scripts/lib"
 assert_file "$TARGET/scripts/lib/working-principles.sh"
 assert_file "$TARGET/scripts/lib/panel-helpers.sh"
 assert_file "$TARGET/scripts/lib/gh-token.sh"
+
+echo ""
+echo "--- Asserting start-the-day.sh / merge-and-hook.sh ship byte-identical (D#2598) ---"
+assert_file "$TARGET/scripts/start-the-day.sh"
+if cmp -s "$REPO_ROOT/scripts/start-the-day.sh" "$TARGET/scripts/start-the-day.sh"; then
+  pass "installed scripts/start-the-day.sh is byte-identical to the live copy"
+else
+  fail "installed scripts/start-the-day.sh differs from the live copy"
+fi
+# The installed copy must carry both the self-heal section and the step-1b
+# working-tree-divergence / HEAD-restore section — the two pieces the old
+# 301-line adopter variant lacked entirely.
+if grep -q '^echo "## Self-heal checks"$' "$TARGET/scripts/start-the-day.sh"; then
+  pass "installed start-the-day.sh contains the self-heal section header"
+else
+  fail "installed start-the-day.sh is missing the self-heal section header"
+fi
+if grep -q '^echo "## 1b. Working-tree divergence check"$' "$TARGET/scripts/start-the-day.sh"; then
+  pass "installed start-the-day.sh contains the step-1b HEAD-restore/divergence section header"
+else
+  fail "installed start-the-day.sh is missing the step-1b HEAD-restore/divergence section header"
+fi
+
+assert_file "$TARGET/scripts/merge-and-hook.sh"
+if cmp -s "$REPO_ROOT/scripts/merge-and-hook.sh" "$TARGET/scripts/merge-and-hook.sh"; then
+  pass "installed scripts/merge-and-hook.sh is byte-identical to the live copy"
+else
+  fail "installed scripts/merge-and-hook.sh differs from the live copy"
+fi
+
+# start-dashboard.sh is the one remaining deliberate project-agnostic
+# variant — it must come from loop-bootstrap/, NOT the live copy.
+assert_file "$TARGET/scripts/start-dashboard.sh"
+if cmp -s "$REPO_ROOT/loop-bootstrap/scripts/start-dashboard.sh" "$TARGET/scripts/start-dashboard.sh"; then
+  pass "installed scripts/start-dashboard.sh matches the loop-bootstrap project-agnostic variant"
+else
+  fail "installed scripts/start-dashboard.sh does not match the loop-bootstrap variant"
+fi
+
+# The old hand-maintained loop-bootstrap/scripts/ copies of start-the-day.sh
+# and merge-and-hook.sh are gone from this repo entirely (D#2598 items 1-2).
+if [[ -e "$REPO_ROOT/loop-bootstrap/scripts/start-the-day.sh" ]]; then
+  fail "loop-bootstrap/scripts/start-the-day.sh still exists — should have been removed"
+else
+  pass "loop-bootstrap/scripts/start-the-day.sh no longer exists"
+fi
+if [[ -e "$REPO_ROOT/loop-bootstrap/scripts/merge-and-hook.sh" ]]; then
+  fail "loop-bootstrap/scripts/merge-and-hook.sh still exists — should have been removed"
+else
+  pass "loop-bootstrap/scripts/merge-and-hook.sh no longer exists"
+fi
+if [[ -e "$REPO_ROOT/loop-bootstrap/memories" ]]; then
+  fail "loop-bootstrap/memories/ still exists — memories should be derived from scripts/memory-triage/ by tier"
+else
+  pass "loop-bootstrap/memories/ no longer exists"
+fi
 
 echo ""
 echo "--- Asserting agents ---"
@@ -115,16 +191,23 @@ assert_file "$TARGET/CLAUDE.md"
 echo ""
 echo "--- Idempotency: re-running bootstrap ---"
 
+# .autonomous-team/engine-install.json (D#2335 PR 1) is deliberately excluded
+# from this whole-tree comparison: it carries a wall-clock bootstrapped_at
+# field that legitimately changes on every invocation by design (bootstrap.sh
+# step 19a runs unconditionally). tests/test_loop_bootstrap_extended.sh
+# excludes the same path for the same reason.
+ENGINE_INSTALL_STAMP="$TARGET/.autonomous-team/engine-install.json"
+
 # Snapshot checksums before
-BEFORE=$(find "$TARGET" -type f | sort | xargs md5sum 2>/dev/null || find "$TARGET" -type f | sort | xargs sha256sum)
+BEFORE=$(find "$TARGET" -type f -not -path "$ENGINE_INSTALL_STAMP" | sort | xargs md5sum 2>/dev/null || find "$TARGET" -type f -not -path "$ENGINE_INSTALL_STAMP" | sort | xargs sha256sum)
 
 bash "$BOOTSTRAP" --repo acme/test-cold-start --force "$TARGET" > $RUN_TMP/bootstrap-rerun.log 2>&1
 
 # Snapshot checksums after
-AFTER=$(find "$TARGET" -type f | sort | xargs md5sum 2>/dev/null || find "$TARGET" -type f | sort | xargs sha256sum)
+AFTER=$(find "$TARGET" -type f -not -path "$ENGINE_INSTALL_STAMP" | sort | xargs md5sum 2>/dev/null || find "$TARGET" -type f -not -path "$ENGINE_INSTALL_STAMP" | sort | xargs sha256sum)
 
 if [[ "$BEFORE" == "$AFTER" ]]; then
-  pass "idempotent: re-run produced no diff"
+  pass "idempotent: re-run produced no diff (excluding the engine-install.json timestamp)"
 else
   fail "not idempotent: re-run changed files"
   diff <(echo "$BEFORE") <(echo "$AFTER") | head -20 || true

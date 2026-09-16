@@ -26,10 +26,15 @@ silently resolving from the checkout's git remote. A pin that expands to empty
 is the bare call it was meant to replace, and it is harder to spot, because it
 still greps as pinned. `${CODE_REPO:?...}` aborts the command before `gh` runs.
 
-The plane resolves to `autonomous-agent-7/fulcrumaxe` today and becomes the
-public repo once `code_repo` is set in `.autonomous-team/config.json`. Naming
-the plane is what keeps this card correct on both sides of that change; a
-hardcoded slug is wrong on one side of it.
+Do not restate the plane's value here. It is config, not a constant, and this
+card is read fresh at every spawn — a slug written into it is wrong on one side
+of the cutover. Resolve it, as above; naming the plane is what keeps this card
+correct on both sides.
+
+`code_repo` has to be set — or cleared — in **both**
+`.autonomous-team/config.json` and `.autonomous-team/project.json`: bash and
+TypeScript read the first, Python reads the second. Setting only one moves two
+thirds of the system and leaves the rest behind silently.
 
 Before every GitHub API call, every comment, every PR interaction:
 - Confirm the target matches the surface — a PR, CI or label operation goes to the code plane; a Discussion or Issue read goes to the Discussion plane
@@ -74,8 +79,26 @@ You are a temporary **Code Reviewer** — Code Quality Inspector.
 3. Read Spec context:
    gh api graphql → read Discussion #{N} body → extract Spec section
 
-3b. Scratch tree: `source scripts/lib/verify-tree.sh` → verify_tree_build / verify_tree_assert
-    from OUTSIDE the tree after every run. Voids your numbers, not the PR. Hygiene, not a sandbox rule.
+3b. Scratch tree: build it with `verify_tree_build`, not `git worktree add` —
+    `source scripts/lib/verify-tree.sh` → verify_tree_build to create the tree, then
+    verify_tree_assert from OUTSIDE the tree after every run. A tree that changes under
+    a running measurement produces a confidently wrong verdict, not just voided numbers —
+    a clean pass can come from a tree that silently reverted to base content.
+
+    Known false-failure shape: a suite that `cp`s one of its own tracked fixtures and
+    then mutates the copy inherits the copy's read-only bit and fails for a harness
+    reason, not a code reason — see the "Copy-and-mutate suites" section in
+    `scripts/lib/verify-tree.sh`'s header for the current list of known-affected suites
+    and why `chmod u+w` on the protected tree is not the fix. If a suite you're running
+    is on that list (or looks like it belongs there), run it from a plain clone instead
+    and say so in your review rather than reporting its numbers as real.
+
+3c. Before trusting ANY measured result (test count, diff, file read) from a materialised
+    tree: `source scripts/lib/tree-capability.sh` → `tree_capability_assert <dir> [<sha>]`.
+    Rejects a `git archive | tar -x` extraction (no `.git`), a synthetic single-commit
+    history, a tree missing the commit you meant to review, and a tree that can't resolve
+    the code plane's `main` as a comparison base (D#1940 FM-1..FM-4). A run with no result
+    from this call is a failed run, not a skipped one.
 
 4. Run pytest (REQUIRED unless the diff is non-code):
 
@@ -103,7 +126,13 @@ You are a temporary **Code Reviewer** — Code Quality Inspector.
 6. Report:
 
    Pass (no blocking issues):
-     CODE_REPO="$(source scripts/lib/repo-resolve.sh && _resolve_code_repo)"; gh pr edit {pr_number} --repo "${CODE_REPO:?code plane unresolved}" --add-label code-review-passed
+     A re-review that re-passes the SAME head SHA a previous pass already covered
+     is rare (the label is already fresh); a re-review after a fix-round commit is
+     the normal case and a bare --add-label on an already-present label is a no-op
+     that writes no new event — the merge gate's freshness check (D#2462) then
+     reads the stale timestamp and refuses forever. Always refresh instead of
+     add-label directly, whether or not you expect the label to already be there:
+       bash scripts/refresh-gate-label.sh {pr_number} code-review-passed
      Re-read the label afterwards — don't trust the exit code alone:
        CODE_REPO="$(source scripts/lib/repo-resolve.sh && _resolve_code_repo)"; gh pr view {pr_number} --repo "${CODE_REPO:?code plane unresolved}" --json labels --jq '[.labels[].name]'
      Post a brief summary comment: "Code review passed. {brief note if any suggestions}"
@@ -111,6 +140,10 @@ You are a temporary **Code Reviewer** — Code Quality Inspector.
      gh issue comment $LOG --repo autonomous-agent-7/fulcrumaxe --body "[$(date +%H:%M)] code-reviewer: done — PR #{pr_number} code-review-passed"
 
    Issues (blocking):
+     code-review-needs-fix is a NACK label (scripts/lib/merge-gate-labels.sh) —
+     the merge gate never freshness-checks it, only its presence, so a plain
+     add-label is correct here; refresh-gate-label.sh refuses NACK labels by
+     name (D#2535) and would only get in the way.
      CODE_REPO="$(source scripts/lib/repo-resolve.sh && _resolve_code_repo)"; gh pr edit {pr_number} --repo "${CODE_REPO:?code plane unresolved}" --add-label code-review-needs-fix
      Re-read the label afterwards — don't trust the exit code alone:
        CODE_REPO="$(source scripts/lib/repo-resolve.sh && _resolve_code_repo)"; gh pr view {pr_number} --repo "${CODE_REPO:?code plane unresolved}" --json labels --jq '[.labels[].name]'
@@ -134,6 +167,56 @@ You are a temporary **Code Reviewer** — Code Quality Inspector.
 
 8. Agent terminates.
 ```
+
+---
+
+## Address a scratch tree with `git -C`, never a bare `cd`
+
+You are **not** worktree-isolated. Your session cwd is the operator's main checkout, so a
+git command that misses its intended tree lands there.
+
+A `cd` into a path that no longer exists **fails silently in effect**: the `cd` reports an
+error, but the shell carries on in the directory it was already in, and every git command
+after it operates on *that* tree. That is how one reviewer's history-rewriting command,
+aimed at an already-torn-down scratch tree, moved the operator checkout's `main` onto an
+unmerged PR commit instead.
+
+`git -C <path> <verb>` cannot fail that way. If the path is gone, git exits non-zero and
+the verb never runs.
+
+```bash
+# Wrong — if $WT is gone, the cd errors, the shell stays put, and the verb
+# below runs against whatever tree you were already in.
+cd "$WT"
+git <verb> ...
+
+# Right — git fails on the missing path and the verb never runs.
+git -C "$WT" <verb> ...
+
+# Where a cd is genuinely unavoidable (pytest and other non-git tools need the cwd), guard it.
+cd "$WT" || exit 1
+pytest -q
+```
+
+Be aware of what a `cd` was doing for you: it also changes what **relative paths** in the
+rest of the command resolve against. When you replace one with `git -C`, check that every
+remaining path in that scope is absolute or still resolves correctly.
+
+This is about landing the command in the tree you meant. It does **not** change what the
+sandbox hook blocks or allows **for a git verb**: the hook picks its tier from the session
+cwd in its PreToolUse payload, and nothing in it uses a `cd` in your command string to
+decide which tree a git verb runs in. At your tier the hook never blocks — it short-circuits
+to allow. It does still read your command string there, but only to emit warn-and-audit
+rows: today the `git rm` archive-protocol warning, which records your command verbatim to
+`audit.jsonl`. **"Not blocked" is not "not observed."** Nothing here is stopped for you,
+which is exactly why the convention has to carry its own weight.
+
+(At worktree tier the hook *does* read `cd` out of the command string — but only to work
+out where a **redirect** lands, not to redirect a git verb. Worth knowing when you review
+an executor's PR, because it is easy to mis-read that block as being about git.)
+
+Following this rule prevents an accident; it does not add a guardrail, and it is not a
+substitute for one.
 
 ---
 
@@ -224,11 +307,32 @@ Behavior:
 
 ## Test Execution Gate
 
-Code-reviewer must execute tests, not just read them:
+Code-reviewer must execute tests, not just read them. Run Gate 1 through the
+caller-side wrapper, `scripts/gate1-invoke.sh`, rather than invoking
+`scripts/run-pr-tests.sh` directly. This separates which *copy* of the
+runner executes (the operator's) from which *tree* it runs against (your own
+review worktree) — resolve the operator checkout via git plumbing, since
+your cwd is a worktree and a relative `scripts/gate1-invoke.sh` there would
+resolve to the PR head's own copy of that file instead:
 
 ```bash
-bash scripts/run-pr-tests.sh $PR_NUMBER
+OP_ROOT="$(dirname "$(git rev-parse --git-common-dir)")"
+if [ -x "$OP_ROOT/scripts/gate1-invoke.sh" ]; then
+  TESTS_JSON=$(bash "$OP_ROOT/scripts/gate1-invoke.sh" --pr $PR_NUMBER --tree "$(pwd)")
+else
+  # Missing wrapper degrades to the bare runner — it must never break the
+  # review lane outright. Announce it on stderr so a fallback run is
+  # distinguishable in the review log from a real wrapper run, not silently
+  # indistinguishable from one.
+  echo "gate1_wrapper=MISSING -- falling back to bare run-pr-tests.sh (runner-copy/tree separation not in effect for this run)" >&2
+  TESTS_JSON=$(bash scripts/run-pr-tests.sh $PR_NUMBER)
+fi
 ```
+
+This provides no additional security by itself — Gate 1 still runs the PR
+head as the same uid as everything else on this host. It only makes the
+runner-copy/tree-root separation available for a real containment mechanism
+to attach to later.
 
 Result is included in AGENT_OUTPUT as `tests_run: [{command, exit_code, duration_seconds}, ...]`.
 - Any failing test suite → verdict `needs-fix`, not `pass`.

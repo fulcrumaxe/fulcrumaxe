@@ -36,13 +36,26 @@
 # already been archived. A file that isn't a second copy can't drift from
 # the first. See the Discussion for the full case.
 #
-# Three files remain hand-maintained on purpose, not by oversight: they are
-# DELIBERATE project-agnostic variants of files that also exist live, not
-# stale copies of them — scripts/start-dashboard.sh, scripts/merge-and-hook.sh,
-# and scripts/start-the-day.sh each self-describe in their own header as
-# reading identity from .autonomous-team/project.json where the live copy at
-# the same path hardcodes this repo's own values. Every other loop-bootstrap/
-# file that used to duplicate a live path was archived — see
+# One file remains hand-maintained on purpose, not by oversight (D#2598):
+# scripts/start-dashboard.sh is a DELIBERATE project-agnostic variant of a
+# file that also exists live, not a stale copy of it — it delegates to a real
+# fulcrumaxe checkout for the actual dashboard code (backend/, dashboard/),
+# neither of which ships to a bootstrapped target (dashboard/ — the Vite
+# frontend and SSE bridge — is not part of BOOTSTRAP_PATHS at all). The live
+# copy at the same path has no such fallback; it assumes the frontend it
+# starts is sitting right there.
+#
+# scripts/start-the-day.sh and scripts/merge-and-hook.sh used to be classified
+# the same way, but both were audited against what actually ships: every
+# dependency either reads identity from scripts/lib/repo-resolve.sh /
+# .autonomous-team/project.json already (start-the-day.sh) or lives under
+# scripts/lib/ and ships in the same BOOTSTRAP_PATHS scripts/ entry
+# (merge-and-hook.sh's two-gate-check.sh, ci-status-check.sh,
+# pr-dependents.sh, merge-gate-labels.sh, resolve-pr-discussion.sh, and
+# post-merge-hook.sh itself). Neither needed a hand-maintained twin — they
+# now ship live like everything else under scripts/, and their
+# loop-bootstrap/scripts/ copies are gone. Every other loop-bootstrap/ file
+# that used to duplicate a live path was archived — see
 # archive/loop-bootstrap-snapshot-2026-08-17/README.md and
 # open-source/bootstrap-classification.md for the per-file classification.
 # ------------------------------------------------------------------------
@@ -403,17 +416,33 @@ if [[ "${#RSYNC_EXCLUDES[@]}" -eq 0 ]]; then
   exit 1
 fi
 
-# 1. Memories — NOT YET derived from scripts/memory-triage/ by tier. That
-#    migration (mirroring what open-source/export.sh already does) is
-#    D#1890 PR 2 scope (§2.6): scripts/memory-triage/ carries tier:project
-#    memories (internal GPU-rental/training-initiative notes) that must be
-#    pruned before shipping, and that prune pass isn't wired into this
-#    script yet. Installing from the old hand-picked loop-bootstrap/memories/
-#    list here, unchanged, is intentional — it is why BOOTSTRAP_PATHS above
-#    does not list memories/scripts/memory-triage at all in this PR.
+# 1. Memories — derived from scripts/memory-triage/ by tier (D#2598), not a
+#    hand-maintained loop-bootstrap/memories/ copy (that directory is gone).
+#    Only files carrying `tier: transferable` frontmatter ship: a
+#    `hardwire-candidate` note describes behavior that has been (or should
+#    be) hardwired into the codebase itself rather than left as loose agent
+#    guidance, and a hypothetical future `tier: project` note would be
+#    internal-only. MEMORY.md (the corpus's own index) and apply-tiers.sh
+#    (a one-time migration tool for the *live* memory directory, unrelated
+#    to this install path) are triage-corpus tooling, never installed.
+#    Read from $REPO_ROOT (the source tree), never from a target copy —
+#    scripts/memory-triage/ is deliberately excluded from the bulk scripts/
+#    rsync below, so an adopter never gets the raw corpus in their own tree.
 echo ""
-echo "==> memories → $MEMORY_DEST"
-do_install_dir "$SCRIPT_DIR/memories" "$MEMORY_DEST"
+echo "==> memories (tier:transferable, from scripts/memory-triage/) → $MEMORY_DEST"
+MEMORY_TRIAGE_DIR="$REPO_ROOT/scripts/memory-triage"
+if [[ ! -d "$MEMORY_TRIAGE_DIR" ]]; then
+  echo "warn: source dir missing, skipping: scripts/memory-triage" >&2
+else
+  [[ "$DRY_RUN" == "true" ]] || mkdir -p "$MEMORY_DEST"
+  shopt -s nullglob
+  for f in "$MEMORY_TRIAGE_DIR"/*.md; do
+    [[ "$(basename "$f")" == "MEMORY.md" ]] && continue
+    grep -q '^tier: transferable$' "$f" 2>/dev/null || continue
+    do_install "$f" "$MEMORY_DEST"
+  done
+  shopt -u nullglob
+fi
 
 # 2. BOOTSTRAP_PATHS-derived paths: backend/, scripts/, hooks/,
 #    .claude/agents/*.md, .claude/commands/*.md, requirements.txt.
@@ -451,16 +480,19 @@ for entry in "${BOOTSTRAP_PATHS[@]}"; do
         scripts/)
           # scripts/ carries things that must NOT come from the live
           # tree wholesale:
-          #   - the three deliberate project-agnostic variants (they have
-          #     their own install step below, from loop-bootstrap/ — a live
-          #     rsync here would silently overwrite them with this repo's
-          #     own hardcoded-identity copies, the exact bug D#1889 exists
-          #     because of);
-          #   - memory-triage/, which carries tier:project memories with no
-          #     prune pass wired in yet (see step 1's comment) — shipping
-          #     it unfiltered here would leak internal-only notes that
-          #     open-source/export.sh already knows to prune. Deferred to
-          #     PR 2 alongside the memories/ migration above.
+          #   - scripts/start-dashboard.sh, the one remaining deliberate
+          #     project-agnostic variant (it has its own install step below,
+          #     from loop-bootstrap/ — a live rsync here would silently
+          #     overwrite it with this repo's own hardcoded-identity copy,
+          #     the exact bug D#1889 exists because of). start-the-day.sh
+          #     and merge-and-hook.sh were audited off this list in D#2598 —
+          #     they now ship live, same as the rest of scripts/.
+          #   - memory-triage/ itself, which is a curated corpus with
+          #     internal tier markers (tier:transferable / hardwire-candidate,
+          #     and potentially tier:project) — an adopter has no use for the
+          #     raw corpus sitting in their scripts/ tree. Step 1 above reads
+          #     it directly from $REPO_ROOT (not from a target copy) and
+          #     installs only the tier:transferable subset into $MEMORY_DEST.
           #   - coldstart-unified.sh, which hard-depends on
           #     loop-bootstrap/bootstrap.sh by relative path. loop-bootstrap/
           #     is deliberately not part of BOOTSTRAP_PATHS above (this
@@ -473,8 +505,6 @@ for entry in "${BOOTSTRAP_PATHS[@]}"; do
           #     shared open-source/lib/rsync-excludes.sh list.
           rsync_bootstrap_dir "$REPO_ROOT/$entry" "$TARGET/$entry" \
             --exclude='start-dashboard.sh' \
-            --exclude='merge-and-hook.sh' \
-            --exclude='start-the-day.sh' \
             --exclude='memory-triage/' \
             --exclude='/coldstart-unified.sh'
           ;;
@@ -529,13 +559,15 @@ if [[ "${#AGENT_UPSTREAM_UPDATES[@]}" -gt 0 ]]; then
   echo "             loop-bootstrap/team-lead-protocol.md yourself after upgrades."
 fi
 
-# 3. The deliberate project-agnostic variants — hand-maintained on purpose,
-#    not stale copies (see the module docstring above and
+# 3. The one remaining deliberate project-agnostic variant — hand-maintained
+#    on purpose, not a stale copy (see the module docstring above and
 #    open-source/bootstrap-classification.md). Installed unconditionally,
-#    same as before this PR.
+#    same as before this PR. start-the-day.sh and merge-and-hook.sh used to
+#    install from here too; both now ship live via the BOOTSTRAP_PATHS
+#    scripts/ entry above (D#2598).
 echo ""
 echo "==> project-agnostic scripts → $TARGET/scripts"
-for f in "$SCRIPT_DIR/scripts/start-dashboard.sh" "$SCRIPT_DIR/scripts/merge-and-hook.sh" "$SCRIPT_DIR/scripts/start-the-day.sh"; do
+for f in "$SCRIPT_DIR/scripts/start-dashboard.sh"; do
   [[ -f "$f" ]] || continue
   do_install "$f" "$TARGET/scripts"
   if [[ "$DRY_RUN" != "true" ]]; then

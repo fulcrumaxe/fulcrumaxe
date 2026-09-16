@@ -29,6 +29,15 @@ REPO_NAME="${REPO##*/}"
 # empty --repo, which gh resolves from the checkout instead of rejecting.
 CODE_REPO="$(_require_code_repo "start-the-day")" || exit 1
 
+# Export AUTONOMOUS_TEAM_STATE_DIR from .autonomous-team/project.json's
+# state_dir field, if the caller's shell hasn't already set it. Without this,
+# every python3 backend/*.py call below (and the EXT default further down)
+# falls through to the ~/.autonomous-forever-state/ default regardless of what
+# an adopter configured — the exact hardcoded-identity gap this script must
+# not have (D#2598).
+# shellcheck source=scripts/lib/state-dir.sh
+source "$SCRIPT_DIR/lib/state-dir.sh"
+
 SKIP_SWEEPS=false
 for arg in "$@"; do
   case "$arg" in
@@ -387,34 +396,49 @@ else
   echo "  [OK] Gate values correct"
 fi
 
-# 4. Dashboard ports — start if any are unbound (one call starts all four)
-PORTS_DOWN=()
-for port in 5173 18099 8765 8420; do
-  if ! ss -tlnp 2>/dev/null | grep -q ":$port "; then
-    PORTS_DOWN+=("$port")
-  fi
-done
-if [ "${#PORTS_DOWN[@]}" -gt 0 ]; then
-  echo "  [FIX] Dashboard ports not bound (${PORTS_DOWN[*]}) — starting dashboard in background..."
-  bash scripts/start-dashboard.sh >/dev/null 2>&1 &
-  sleep 5
-  STILL_DOWN=()
-  for port in "${PORTS_DOWN[@]}"; do
+# 4. Dashboard ports — start if any are unbound (one call starts all four).
+# dashboard/ (the Vite frontend + SSE bridge) is not part of BOOTSTRAP_PATHS
+# (loop-bootstrap/bootstrap.sh only ships backend/, scripts/, hooks/ and the
+# agent/command role files) — it never lands in a freshly-bootstrapped
+# adopter project. Detect that up front and skip with a message rather than
+# backgrounding a start-dashboard.sh run that can only fail there.
+if [[ ! -f "$REPO_ROOT/dashboard/server.py" ]]; then
+  echo "  [SKIP] dashboard not installed in this project (no dashboard/server.py) — dashboard ports left unbound"
+else
+  # shellcheck source=scripts/lib/dashboard-ports.sh
+  source "$SCRIPT_DIR/lib/dashboard-ports.sh"
+  resolve_dashboard_ports "$REPO_ROOT"
+  PORTS_DOWN=()
+  for port in "$VITE_PORT" "$API_PORT" "$RPC_PORT" "$SSE_PORT"; do
     if ! ss -tlnp 2>/dev/null | grep -q ":$port "; then
-      STILL_DOWN+=("$port")
+      PORTS_DOWN+=("$port")
     fi
   done
-  if [ "${#STILL_DOWN[@]}" -gt 0 ]; then
-    SELFHEAL_WARNS+=("dashboard ports still unbound after start: ${STILL_DOWN[*]}")
-    echo "  [WARN] Dashboard ports still unbound: ${STILL_DOWN[*]}"
+  if [ "${#PORTS_DOWN[@]}" -gt 0 ]; then
+    echo "  [FIX] Dashboard ports not bound (${PORTS_DOWN[*]}) — starting dashboard in background..."
+    bash scripts/start-dashboard.sh >/dev/null 2>&1 &
+    sleep 5
+    STILL_DOWN=()
+    for port in "${PORTS_DOWN[@]}"; do
+      if ! ss -tlnp 2>/dev/null | grep -q ":$port "; then
+        STILL_DOWN+=("$port")
+      fi
+    done
+    if [ "${#STILL_DOWN[@]}" -gt 0 ]; then
+      SELFHEAL_WARNS+=("dashboard ports still unbound after start: ${STILL_DOWN[*]}")
+      echo "  [WARN] Dashboard ports still unbound: ${STILL_DOWN[*]}"
+    else
+      echo "  [OK] Dashboard started"
+    fi
   else
-    echo "  [OK] Dashboard started"
+    echo "  [OK] Dashboard ports bound"
   fi
-else
-  echo "  [OK] Dashboard ports bound"
 fi
 
-# 5. chrome-devtools MCP — warn if --headless flag missing (manual fix only)
+# 5. chrome-devtools MCP — optional visual-verification tool. Not configuring
+# it is a normal, common state (nothing in bootstrap installs it), so an
+# absent entry is a skip, not a warning; a present-but-misconfigured entry is
+# still a warning worth fixing.
 if claude mcp list 2>/dev/null | grep -q "chrome-devtools"; then
   if claude mcp list 2>/dev/null | grep "chrome-devtools" | grep -q "\-\-headless"; then
     echo "  [OK] chrome-devtools MCP has --headless"
@@ -424,9 +448,8 @@ if claude mcp list 2>/dev/null | grep -q "chrome-devtools"; then
     SELFHEAL_WARNS+=("chrome-devtools MCP missing --headless")
   fi
 else
-  echo "  [WARN] chrome-devtools MCP not configured"
-  echo "         Fix: claude mcp add chrome-devtools npx -- -y chrome-devtools-mcp@latest --headless --isolated -s local"
-  SELFHEAL_WARNS+=("chrome-devtools MCP not found")
+  echo "  [SKIP] chrome-devtools MCP not configured (optional — needed only for browser-based visual verification)"
+  echo "         To enable: claude mcp add chrome-devtools npx -- -y chrome-devtools-mcp@latest --headless --isolated -s local"
 fi
 
 # 6. Reap stale polling shells aged >30min (until...sleep patterns)

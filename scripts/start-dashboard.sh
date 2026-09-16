@@ -121,57 +121,12 @@ RUNTIME_FILE="$REPO_ROOT/.autonomous-team/dashboard-runtime.json"
 STATE_RUNTIME_FILE="${AF_DASHBOARD_STATE_RUNTIME_FILE:-$STATE_DIR/dashboard-runtime.json}"
 
 # ---- Port resolution --------------------------------------------------------
-# Autonomous-forever keeps its existing ports explicitly in project.json.
-# New projects get ports derived from dashboard_port.
-
-_read_ports_from_project() {
-  if [[ ! -f "$PROJECT_JSON" ]]; then return; fi
-  python3 - <<PYEOF
-import json, sys
-try:
-    d = json.load(open('$PROJECT_JSON'))
-    ports = d.get('ports', {})
-    dp = d.get('dashboard_port')
-
-    # If explicit ports block present, use it
-    if ports.get('vite') and ports.get('api') and ports.get('rpc') and ports.get('sse'):
-        print(f"vite={ports['vite']}")
-        print(f"api={ports['api']}")
-        print(f"rpc={ports['rpc']}")
-        print(f"sse={ports['sse']}")
-    elif isinstance(dp, int):
-        # Derive from dashboard_port
-        print(f"vite={dp}")
-        print(f"api={dp + 100}")
-        print(f"rpc={dp + 200}")
-        print(f"sse={dp + 300}")
-except Exception:
-    pass
-PYEOF
-}
-
-# Default ports (autonomous-forever hardcoded values — preserved for backward compatibility)
-API_PORT=18099
-RPC_PORT=8765
-SSE_PORT=8420
-VITE_PORT=5173
-
-# Apply project.json ports (overrides defaults)
-while IFS='=' read -r key val; do
-  [[ -z "$key" ]] && continue
-  case "$key" in
-    api)  API_PORT="$val" ;;
-    rpc)  RPC_PORT="$val" ;;
-    sse)  SSE_PORT="$val" ;;
-    vite) VITE_PORT="$val" ;;
-  esac
-done < <(_read_ports_from_project)
-
-# Apply explicit env overrides (highest priority)
-API_PORT="${AF_API_PORT:-$API_PORT}"
-RPC_PORT="${AF_RPC_PORT:-$RPC_PORT}"
-SSE_PORT="${AF_SSE_PORT:-$SSE_PORT}"
-VITE_PORT="${AF_VITE_PORT:-$VITE_PORT}"
+# Shared with scripts/start-the-day.sh's port-bound self-heal check so the
+# two never hardcode two independent copies of the same four numbers
+# (D#2598) — see scripts/lib/dashboard-ports.sh for the full resolution order.
+# shellcheck source=scripts/lib/dashboard-ports.sh
+source "$REPO_ROOT/scripts/lib/dashboard-ports.sh"
+resolve_dashboard_ports "$REPO_ROOT"
 
 log "Project: $(basename "$REPO_ROOT")"
 log "Ports: vite=$VITE_PORT api=$API_PORT rpc=$RPC_PORT sse=$SSE_PORT"

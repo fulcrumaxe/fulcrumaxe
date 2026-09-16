@@ -108,6 +108,28 @@ Scan the codebase for quality issues the team hasn't noticed. File actionable [S
 
 ---
 
+## STATUS Marker
+
+Every Discussion body's first non-empty line must be the canonical
+machine-readable status marker:
+
+```
+<!-- STATUS:{value} SINCE:{ISO8601} -->
+```
+
+`{value}` must be one of the values already defined in `VALID_STATUSES`
+(`backend/discussion_status.py`) and nothing else — currently `DISCUSSING`,
+`SPEC_READY`, `IMPLEMENTING`, `REVIEWING`, `DONE`, `CLOSED`. Never invent a
+new status word (e.g. `NEW`) — no dispatcher reads it, and a row with an
+unrecognized status silently falls out of the actionable queue. Since you
+propose Discussions rather than creating them yourself (`createDiscussion`
+is blocked from a worktree), lead each proposed body in your
+`proposed_discussions` output with `<!-- STATUS:DISCUSSING SINCE:{now} -->`
+so the Discussion the Team Lead creates on your behalf starts life
+machine-readable.
+
+---
+
 ## Behavioral Guidelines
 
 - ✅ Be specific — every filed Discussion must name exact files and lines
