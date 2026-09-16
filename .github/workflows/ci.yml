@@ -499,8 +499,8 @@ jobs:
 
       # D#2598: tests/test_commands_twin_divergence.sh drives the real
       # scripts/ci/commands-twin-divergence-guard.sh through hermetic
-      # fixtures for all four twin families (commands, agents, scripts,
-      # memories) plus the allowlist's own validation. run-guards.sh above
+      # fixtures for all five twin families (commands, agents, scripts,
+      # memories, skills) plus the allowlist's own validation. run-guards.sh above
       # executes the guard itself against the live tree; this step is what
       # actually exercises the guard's own logic (divergence detection,
       # missing-twin handling, allowlist parsing) rather than just running it
@@ -508,7 +508,7 @@ jobs:
       # Same reasoning as the two steps above: a tests/ suite that executes
       # the file under review belongs here, not in scripts/ci/'s discovered
       # set or guard-ledger.json.
-      - name: Twin-divergence guard suite (commands/agents/scripts/memories)
+      - name: Twin-divergence guard suite (commands/agents/scripts/memories/skills)
         if: ${{ !cancelled() }}
         run: bash tests/test_commands_twin_divergence.sh
 
