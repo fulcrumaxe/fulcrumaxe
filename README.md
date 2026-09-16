@@ -85,8 +85,9 @@ Everything above assumes Claude Code. If you work in **Muse Code**
    pull). See `AGENTS.md` ("Muse deltas") for the per-spawn mechanics
    (pre-spawn check, `scripts/lib/muse-spawn-prompt.sh` renderer, stable
    event-id, `tokens_used` self-report, post-agent hook).
-4. **What doesn't work yet:** the `/loop` driver, loop auto-merge, and
-   the dashboard are Claude-Code paths — in Muse sessions you implement,
+4. **What doesn't work yet:** this repo's `/loop` iteration driver
+   (cron → `backend/trigger.py` → the `claude` CLI), loop auto-merge,
+   and the dashboard are Claude-Code paths — in Muse sessions you implement,
    review, and test directly; do not use `Agent()` /
    `scripts/spawn-agent.sh` and do not shell out to the `claude` CLI.
 5. **Private-repo boundary:** the public repo is the only plane you act
@@ -132,14 +133,17 @@ Everything above assumes Claude Code. If you work in **Muse Code**
    or keep the sandbox on and hand the commands that need network a
    scoped `GH_TOKEN` instead.
 8. **Loop under Muse:** `muse --help` lists no `loop` subcommand, so
-   there is no Muse-native `/loop` driver — item 4's shape stands.
+   there is no Muse-native iteration driver behind `/loop` — item 4's
+   shape stands. (`/loop` the product command and this repo's
+   iteration driver for it are different things — see
+   [How the loop works](#how-the-loop-works).)
    What does run: the morning ritual (item 3), the workspace skills
    (item 5), and the `gh`/merge-gate tooling
    (`scripts/loop-phased-step5.sh`, `scripts/merge-and-hook.sh`,
    `scripts/lib/merge-gate-labels.sh` — plain shell plus `gh`, no
    `claude`-binary dependency). What doesn't: any step that shells
-   out to the `claude` binary — `run-loop-iteration.sh` exits `FATAL`
-   when neither `$CLAUDE_BIN` nor `PATH` resolves it, and
+   out to the `claude` binary — `./run-loop-iteration.sh` (repo root)
+   exits `FATAL` when neither `$CLAUDE_BIN` nor `PATH` resolves it, and
    `backend/trigger.py` exits non-zero on the same condition when the
    TUI isn't running. In Muse sessions the loop pieces run on demand,
    driven by you, not on a schedule.
@@ -162,7 +166,7 @@ You (or the team) open a Discussion
   → loop auto-merge, once the gate below is satisfied
 ```
 
-The three merge-gate labels each verify something different: **`code-review-passed`** (required on every PR), **`security-review-passed`** (conditional — only required when a security trigger fires), **`acceptance-passed`** (advisory — its absence never blocks a merge, but `acceptance-failed` vetoes one). That's the whole quorum — see [CLAUDE.md](CLAUDE.md) ("Merge Gate Protocol") for the enforcement details, and [CONTRIBUTING.md](CONTRIBUTING.md) for the contributor-facing version of this flow.
+The three merge-gate labels each verify something different: **`code-review-passed`** (required on every PR), **`security-review-passed`** (conditional — required when `needs_security_review` is set, a live diff-content security trigger fires, or the originating Discussion is `provenance:external`), **`acceptance-passed`** (advisory — its absence never blocks a merge, but `acceptance-failed` vetoes one). That's the whole quorum — see [CLAUDE.md](CLAUDE.md) ("Merge Gate Protocol") for the enforcement details. [CONTRIBUTING.md](CONTRIBUTING.md#what-happens-after-you-open-a-pr) ("What happens after you open a PR") covers what an external contributor sees of this flow — CI, maintainer review, mandatory security review — not the label quorum itself.
 
 ## Updating
 
