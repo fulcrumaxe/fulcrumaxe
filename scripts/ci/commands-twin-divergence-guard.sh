@@ -22,16 +22,20 @@
 # memory files had drifted, one file existed only on the adopter side with
 # no counterpart at all). Rather than writing a second guard for each new
 # pair — the D#2339 failure mode this guard's own header used to warn about,
-# for a different reason — this one file now checks all four families.
-# Adding a fifth twin family later means extending the FAMILIES below, not
+# for a different reason — this one file now checks all five families.
+# Adding a sixth twin family later means extending the FAMILIES below, not
 # writing scripts/ci/some-other-twin-guard.sh.
 #
-# What it checks — four families
+# What it checks — five families
 # --------------------------------
 #   commands   .claude/commands/*.md  <->  commands/<same-basename>
 #   agents     .claude/agents/*.md    <->  agents/<same-basename>
 #   scripts    loop-bootstrap/scripts/*  <->  scripts/<same-basename>
 #   memories   loop-bootstrap/memories/*.md  <->  scripts/memory-triage/<same-basename>
+#   skills     .claude/commands/<name>.md  <->  .agents/skills/<name>/SKILL.md
+#     (adapted twins, D#2601 — existence + source pointer + adaptation
+#     contract + no Claude-Code-only directives; NEVER byte-identity, since
+#     the skill is a Muse rewrite of the command, not a copy)
 #
 # For "commands" and "agents", pairing is DRIVEN by .claude/<family>/ (the
 # canonical, actually-loaded copy) exactly like the original commands-only
@@ -410,6 +414,75 @@ else
     fi
     check_pair memories "$name" "$triage_path" "$boot_path"
   done < <(find "$BOOT_MEMORIES_DIR" -maxdepth 1 -type f -name '*.md' | sort)
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Family: skills  (.claude/commands/<name>.md <-> .agents/skills/<name>/SKILL.md)
+# — adapted twins, NOT byte-identity (D#2601). The Muse skills duplicate the
+# Claude commands' content in adapted form (Muse has no plugin-marker
+# substitution, no Claude CLI, no spawn wrapper), which is exactly the shape
+# D#2598 just eliminated elsewhere — so this family keeps that duplication
+# listed and shaped instead of silent. Driven by the .claude/commands/ side
+# (canonical), same asymmetric shape as commands/agents: a canonical command
+# with no skill twin FAILS; a skill dir with no command counterpart is only
+# noted. Each twin must (a) name its source command, (b) carry the
+# adaptation-contract marker (restate-never-paste), and (c) contain none of
+# the Claude-Code-only directive literals (a skill containing those was
+# copied, not adapted). A deliberately divergent skill goes through the
+# shared allowlist as "skills:<name>".
+# ═══════════════════════════════════════════════════════════════════════════
+echo ""
+echo "── skills ──────────────────────────────────────────────────────────────"
+SKILLS_DIR=".agents/skills"
+
+if [ ! -d "$CLAUDE_DIR" ]; then
+  echo "FAIL skills — $CLAUDE_DIR is not a directory"
+  FAILED=$((FAILED + 1))
+else
+  while IFS= read -r claude_path; do
+    name="$(basename "$claude_path" .md)"
+    skill_path="$SKILLS_DIR/$name/SKILL.md"
+    if [ ! -f "$skill_path" ]; then
+      echo "FAIL $name (skills) — $claude_path has no Muse-skill twin at $skill_path"
+      FAILED=$((FAILED + 1))
+      continue
+    fi
+    if reason="$(is_allowlisted skills "$name")"; then
+      echo "PASS $name (skills) — allowlisted deliberate variant: $reason"
+      ALLOWED=$((ALLOWED + 1))
+      continue
+    fi
+    skill_bad=0
+    if ! grep -qF ".claude/commands/$name.md" "$skill_path"; then
+      echo "FAIL $name (skills) — $skill_path does not name its source command (.claude/commands/$name.md)"
+      skill_bad=1
+    fi
+    if ! grep -qF "restate-never-paste" "$skill_path"; then
+      echo "FAIL $name (skills) — $skill_path is missing the adaptation-contract marker (restate-never-paste)"
+      skill_bad=1
+    fi
+    leaked="$(grep -nE 'CLAUDE_PLUGIN_ROOT|CLAUDE_PROJECT_DIR|spawn-agent\.sh|AskUserQuestion|Agent\(\)' "$skill_path" || true)"
+    if [ -n "$leaked" ]; then
+      echo "FAIL $name (skills) — $skill_path contains Claude-Code-only directives (copied, not adapted):"
+      echo "$leaked" | sed 's/^/    /'
+      skill_bad=1
+    fi
+    if [ "$skill_bad" -eq 0 ]; then
+      echo "PASS $name (skills) — twin present, sourced, adaptation contract intact"
+      MATCHED=$((MATCHED + 1))
+    else
+      FAILED=$((FAILED + 1))
+    fi
+  done < <(find "$CLAUDE_DIR" -maxdepth 1 -type f -name '*.md' | sort)
+
+  if [ -d "$SKILLS_DIR" ]; then
+    while IFS= read -r skill_file; do
+      sname="$(basename "$(dirname "$skill_file")")"
+      if [ ! -f "$CLAUDE_DIR/$sname.md" ]; then
+        echo "NOTE $sname (skills) — $skill_file has no .claude/commands/ counterpart (not flagged — same structural question as commands/, D#2486)"
+      fi
+    done < <(find "$SKILLS_DIR" -mindepth 2 -maxdepth 2 -type f -name 'SKILL.md' | sort)
+  fi
 fi
 
 # ── summary ──────────────────────────────────────────────────────────────────
