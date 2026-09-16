@@ -94,6 +94,14 @@ Everything above assumes Claude Code. If you work in **Muse Code**
    internal Discussion prose outward into PR bodies or comments — restate
    findings in your own words against the code.
 
+   **Trust the workspace once:** the project skills (`coldstart`,
+   `start-the-day`, `update` in `.agents/skills/`) are skipped with
+   `project-skills-untrusted` until the workspace is trusted — Muse
+   prompts on first run in a new workspace. Then verify with
+   `muse skills list --source project --workspace <path>` (all three
+   should list as on; see `muse skills list --help` for the
+   `--trust-workspace` flag).
+
 ## How the loop works
 
 Once a project is provisioned, "starting the team" means opening **this `fulcrumaxe` checkout** in Claude Code (so it reads `CLAUDE.md` and knows the roles and protocols) and running **`/start-the-day`** — the Team Lead's morning ritual, which runs `scripts/start-the-day.sh` to pull main fresh, verify `~/.autonomous-forever-state/` is intact, run the morning sweeps, and print today's plan before anything else happens. Once that's done, **`/loop`** is what keeps the team running: that's a Claude Code built-in, not something this repo ships a file for. It runs a prompt or slash command on a recurring interval; on its own it self-paces. The cron-driven path to the same thing is `python3 backend/trigger.py "run /loop iteration"`, which is what actually fires each scheduled iteration in production — cron itself ships disabled by default and is not the recommended way to start.
