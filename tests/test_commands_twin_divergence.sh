@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # tests/test_commands_twin_divergence.sh — hermetic unit tests for
 # scripts/ci/commands-twin-divergence-guard.sh (D#2486, extended D#2598 for
-# the agents/scripts/memories families and the allowlist).
+# the agents/scripts/memories families and the allowlist, D#2601 for the
+# skills family).
 #
 # Modelled on tests/test_state_dir_resolver_guard.sh: every fixture is a
 # small synthetic tree built under mktemp -d, with a COPY of the real guard
@@ -38,14 +39,28 @@ fail() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
 # scripts and loop-bootstrap/memories are intentionally NOT created here —
 # their absence (the normal post-D#2598 state) is asserted by dedicated
 # tests below; individual tests that need them create them explicitly.
+# .agents/skills/ IS created here (empty): the skills family (D#2601) is
+# driven by .claude/commands/ and FAILS on a canonical command with no
+# skill twin, so a fixture with a commands pair but no skills dir would
+# fail for the wrong reason. Tests add per-command twins via write_skill.
 new_fixture() {
   local dir
   dir=$(mktemp -d)
   mkdir -p "$dir/scripts/ci" "$dir/scripts/lib" "$dir/.claude/commands" "$dir/commands" \
-           "$dir/.claude/agents" "$dir/agents"
+           "$dir/.claude/agents" "$dir/agents" "$dir/.agents/skills"
   cp "$GUARD_SRC" "$dir/$GUARD_REL"
   cp "$AGENTS_MIRROR_LIB_SRC" "$dir/$AGENTS_MIRROR_LIB_REL"
   printf '%s\n' "$dir"
+}
+
+# write_skill <dir> <name> — a minimal VALID Muse skill twin for
+# .claude/commands/<name>.md: names its source command and carries the
+# adaptation-contract marker, with no Claude-Code-only directive literals.
+write_skill() {
+  local dir="$1" name="$2"
+  mkdir -p "$dir/.agents/skills/$name"
+  printf '# %s\nAdapted from .claude/commands/%s.md.\nContract: restate-never-paste.\n' \
+    "$name" "$name" > "$dir/.agents/skills/$name/SKILL.md"
 }
 
 write_pair() {
@@ -80,6 +95,8 @@ echo "--- Test 1: identical pairs pass ---"
 D1=$(new_fixture)
 write_pair "$D1" ".claude/commands" "commands" "coldstart.md" $'# Coldstart\nstep one\n'
 write_pair "$D1" ".claude/commands" "commands" "update.md" $'# Update\nstep one\n'
+write_skill "$D1" "coldstart"
+write_skill "$D1" "update"
 run_guard "$D1"
 if [[ "$RC" -eq 0 ]] && echo "$OUT" | grep -qF "PASS coldstart.md" && echo "$OUT" | grep -qF "PASS update.md"; then
   pass "two identical pairs: exit 0, both named PASS"
@@ -94,6 +111,8 @@ echo "--- Test 2: one-character divergence fails, names the pair ---"
 D2=$(new_fixture)
 write_pair "$D2" ".claude/commands" "commands" "coldstart.md" $'# Coldstart\nstep one\n'
 write_pair "$D2" ".claude/commands" "commands" "update.md" $'# Update\nstep one\n'
+write_skill "$D2" "coldstart"
+write_skill "$D2" "update"
 # Introduce a one-character difference in the .claude side only.
 printf '%s' $'# Coldstart\nstep TWO\n' > "$D2/.claude/commands/coldstart.md"
 run_guard "$D2"
@@ -121,6 +140,7 @@ echo "--- Test 4: missing top-level twin fails ---"
 D4=$(new_fixture)
 write_pair "$D4" ".claude/commands" "commands" "update.md" $'# Update\nstep one\n'
 printf '%s' $'# New command\n' > "$D4/.claude/commands/newcmd.md"
+write_skill "$D4" "update"
 run_guard "$D4"
 if [[ "$RC" -ne 0 ]] && echo "$OUT" | grep -qF "FAIL newcmd.md" && echo "$OUT" | grep -qF "no top-level twin"; then
   pass "missing top-level twin: fails and names newcmd.md"
@@ -134,6 +154,7 @@ echo ""
 echo "--- Test 5: top-level-only file is noted, not failed ---"
 D5=$(new_fixture)
 write_pair "$D5" ".claude/commands" "commands" "update.md" $'# Update\nstep one\n'
+write_skill "$D5" "update"
 printf '%s' $'# Adopter-only doc\n' > "$D5/commands/adopteronly.md"
 run_guard "$D5"
 if [[ "$RC" -eq 0 ]] && echo "$OUT" | grep -qF "NOTE adopteronly.md" && echo "$OUT" | grep -qF "not flagged"; then
@@ -167,6 +188,7 @@ echo ""
 echo "--- Test 7: agents pair divergence fails ---"
 D7=$(new_fixture)
 write_pair "$D7" ".claude/commands" "commands" "update.md" $'# Update\n'
+write_skill "$D7" "update"
 write_pair "$D7" ".claude/agents" "agents" "executor.md" $'# Executor\nrole card\n'
 printf '%s' $'# Executor\nSTALE role card\n' > "$D7/agents/executor.md"
 run_guard "$D7"
@@ -182,6 +204,7 @@ echo ""
 echo "--- Test 8: .claude/agents file missing its top-level twin fails ---"
 D8=$(new_fixture)
 write_pair "$D8" ".claude/commands" "commands" "update.md" $'# Update\n'
+write_skill "$D8" "update"
 printf '%s' $'# New role\n' > "$D8/.claude/agents/newrole.md"
 run_guard "$D8"
 if [[ "$RC" -ne 0 ]] && echo "$OUT" | grep -qF "FAIL newrole.md" && echo "$OUT" | grep -qF "no top-level twin"; then
@@ -196,6 +219,7 @@ echo ""
 echo "--- Test 9: top-level-only agent file is noted, not failed ---"
 D9=$(new_fixture)
 write_pair "$D9" ".claude/commands" "commands" "update.md" $'# Update\n'
+write_skill "$D9" "update"
 printf '%s' $'# Adopter-only role\n' > "$D9/agents/adopteronly.md"
 run_guard "$D9"
 if [[ "$RC" -eq 0 ]] && echo "$OUT" | grep -qF "NOTE adopteronly.md" && echo "$OUT" | grep -qF "(agents)"; then
@@ -213,6 +237,7 @@ echo ""
 echo "--- Test 9b: correctly-generated agents/ file passes despite not being byte-identical ---"
 D9B=$(new_fixture)
 write_pair "$D9B" ".claude/commands" "commands" "update.md" $'# Update\n'
+write_skill "$D9B" "update"
 printf '%s' $'# Executor\nYou ONLY interact with `autonomous-agent-7/fulcrumaxe`.\n' > "$D9B/.claude/agents/executor.md"
 printf '%s' $'# Executor\nYou ONLY interact with `$(source scripts/lib/repo-resolve.sh && _resolve_discussion_repo)`.\n' > "$D9B/agents/executor.md"
 run_guard "$D9B"
@@ -229,6 +254,7 @@ echo ""
 echo "--- Test 9c: literal autonomous-agent-7 mention in agents/ fails directly ---"
 D9C=$(new_fixture)
 write_pair "$D9C" ".claude/commands" "commands" "update.md" $'# Update\n'
+write_skill "$D9C" "update"
 # Deliberately identical on both sides -- generation-match alone would NOT
 # catch this if .claude/agents/ itself carried a spelling the generator
 # doesn't know about; the direct scan must catch it regardless.
@@ -254,6 +280,7 @@ echo "--- Test 9d: generator emits guarded DISCUSSION_REPO shape, no fail-open e
 source "$AGENTS_MIRROR_LIB_SRC"
 D9D=$(new_fixture)
 write_pair "$D9D" ".claude/commands" "commands" "update.md" $'# Update\n'
+write_skill "$D9D" "update"
 printf '%s' $'# Executor\nYou ONLY interact with `autonomous-agent-7/fulcrumaxe`.\nLOG=$(gh issue list --repo autonomous-agent-7/fulcrumaxe --label team-log)\n' > "$D9D/.claude/agents/executor.md"
 generate_agents_plugin_mirror "$D9D/.claude/agents/executor.md" > "$D9D/agents/executor.md"
 if grep -qF '${DISCUSSION_REPO:?discussion plane unresolved}' "$D9D/agents/executor.md" \
@@ -279,6 +306,7 @@ echo ""
 echo "--- Test 9e: unguarded --repo resolver expansion fails the guard ---"
 D9E=$(new_fixture)
 write_pair "$D9E" ".claude/commands" "commands" "update.md" $'# Update\n'
+write_skill "$D9E" "update"
 printf '%s' $'# Executor\nrole card\n' > "$D9E/.claude/agents/executor.md"
 printf '%s' $'# Executor\ngh issue list --repo $(source scripts/lib/repo-resolve.sh && _resolve_discussion_repo) --label team-log\n' > "$D9E/agents/executor.md"
 run_guard "$D9E"
@@ -306,6 +334,7 @@ echo "--- Test 9f: DISCUSSION_REPO resolution and guarded use share one statemen
 source "$AGENTS_MIRROR_LIB_SRC"
 D9F=$(new_fixture)
 write_pair "$D9F" ".claude/commands" "commands" "update.md" $'# Update\n'
+write_skill "$D9F" "update"
 printf '%s' $'# Executor\nYou ONLY interact with `autonomous-agent-7/fulcrumaxe`.\nLOG=$(gh issue list --repo autonomous-agent-7/fulcrumaxe --label team-log)\n   gh issue create \\\n     --repo autonomous-agent-7/fulcrumaxe \\\n     --title "x"\n' > "$D9F/.claude/agents/executor.md"
 generate_agents_plugin_mirror "$D9F/.claude/agents/executor.md" > "$D9F/agents/executor.md"
 if agents_mirror_same_statement_violations "$D9F/agents/executor.md" >"$D9F/same.out" 2>&1; then
@@ -347,6 +376,7 @@ echo ""
 echo "--- Test 10: absent loop-bootstrap/scripts/ is fine, not a failure ---"
 D10=$(new_fixture)
 write_pair "$D10" ".claude/commands" "commands" "update.md" $'# Update\n'
+write_skill "$D10" "update"
 run_guard "$D10"
 if [[ "$RC" -eq 0 ]] && echo "$OUT" | grep -qF "does not exist — nothing to pair"; then
   pass "absent loop-bootstrap/scripts/: exit 0, noted"
@@ -360,6 +390,7 @@ echo ""
 echo "--- Test 11: bootstrap-only residue script is noted, not failed ---"
 D11=$(new_fixture)
 write_pair "$D11" ".claude/commands" "commands" "update.md" $'# Update\n'
+write_skill "$D11" "update"
 mkdir -p "$D11/loop-bootstrap/scripts"
 printf '%s' $'#!/usr/bin/env bash\necho residue\n' > "$D11/loop-bootstrap/scripts/setup-deps.sh"
 run_guard "$D11"
@@ -375,6 +406,7 @@ echo ""
 echo "--- Test 12: unlisted scripts pair divergence fails ---"
 D12=$(new_fixture)
 write_pair "$D12" ".claude/commands" "commands" "update.md" $'# Update\n'
+write_skill "$D12" "update"
 mkdir -p "$D12/loop-bootstrap/scripts" "$D12/scripts"
 printf '%s' $'#!/usr/bin/env bash\necho live\n' > "$D12/scripts/start-dashboard.sh"
 printf '%s' $'#!/usr/bin/env bash\necho variant\n' > "$D12/loop-bootstrap/scripts/start-dashboard.sh"
@@ -396,6 +428,7 @@ echo ""
 echo "--- Test 13: absent loop-bootstrap/memories/ is fine, not a failure ---"
 D13=$(new_fixture)
 write_pair "$D13" ".claude/commands" "commands" "update.md" $'# Update\n'
+write_skill "$D13" "update"
 run_guard "$D13"
 if [[ "$RC" -eq 0 ]] && echo "$OUT" | grep -qF "derived from scripts/memory-triage by tier"; then
   pass "absent loop-bootstrap/memories/: exit 0, noted"
@@ -409,6 +442,7 @@ echo ""
 echo "--- Test 14: unlisted memories pair divergence fails ---"
 D14=$(new_fixture)
 write_pair "$D14" ".claude/commands" "commands" "update.md" $'# Update\n'
+write_skill "$D14" "update"
 mkdir -p "$D14/loop-bootstrap/memories" "$D14/scripts/memory-triage"
 printf '%s' $'live content\n' > "$D14/scripts/memory-triage/feedback_x.md"
 printf '%s' $'stale content\n' > "$D14/loop-bootstrap/memories/feedback_x.md"
@@ -429,6 +463,7 @@ echo ""
 echo "--- Test 15: allowlisted divergent pair passes ---"
 D15=$(new_fixture)
 write_pair "$D15" ".claude/commands" "commands" "update.md" $'# Update\n'
+write_skill "$D15" "update"
 mkdir -p "$D15/loop-bootstrap/scripts" "$D15/scripts"
 printf '%s' $'#!/usr/bin/env bash\necho live\n' > "$D15/scripts/start-dashboard.sh"
 printf '%s' $'#!/usr/bin/env bash\necho variant\n' > "$D15/loop-bootstrap/scripts/start-dashboard.sh"
@@ -446,6 +481,7 @@ echo ""
 echo "--- Test 16: allowlist entry missing reason fails the guard ---"
 D16=$(new_fixture)
 write_pair "$D16" ".claude/commands" "commands" "update.md" $'# Update\n'
+write_skill "$D16" "update"
 mkdir -p "$D16/loop-bootstrap/scripts" "$D16/scripts"
 printf '%s' $'#!/usr/bin/env bash\necho live\n' > "$D16/scripts/start-dashboard.sh"
 printf '%s' $'#!/usr/bin/env bash\necho variant\n' > "$D16/loop-bootstrap/scripts/start-dashboard.sh"
@@ -463,6 +499,7 @@ echo ""
 echo "--- Test 17: a 'pending reconciliation' reason fails the guard ---"
 D17=$(new_fixture)
 write_pair "$D17" ".claude/commands" "commands" "update.md" $'# Update\n'
+write_skill "$D17" "update"
 mkdir -p "$D17/loop-bootstrap/scripts" "$D17/scripts"
 printf '%s' $'#!/usr/bin/env bash\necho live\n' > "$D17/scripts/start-dashboard.sh"
 printf '%s' $'#!/usr/bin/env bash\necho variant\n' > "$D17/loop-bootstrap/scripts/start-dashboard.sh"
@@ -480,6 +517,7 @@ echo ""
 echo "--- Test 18: a non-ISO-8601 date fails the guard ---"
 D18=$(new_fixture)
 write_pair "$D18" ".claude/commands" "commands" "update.md" $'# Update\n'
+write_skill "$D18" "update"
 mkdir -p "$D18/loop-bootstrap/scripts" "$D18/scripts"
 printf '%s' $'#!/usr/bin/env bash\necho live\n' > "$D18/scripts/start-dashboard.sh"
 printf '%s' $'#!/usr/bin/env bash\necho variant\n' > "$D18/loop-bootstrap/scripts/start-dashboard.sh"
@@ -500,6 +538,7 @@ echo ""
 echo "--- Test 19: an ISO-shaped but impossible calendar date fails the guard ---"
 D19=$(new_fixture)
 write_pair "$D19" ".claude/commands" "commands" "update.md" $'# Update\n'
+write_skill "$D19" "update"
 mkdir -p "$D19/loop-bootstrap/scripts" "$D19/scripts"
 printf '%s' $'#!/usr/bin/env bash\necho live\n' > "$D19/scripts/start-dashboard.sh"
 printf '%s' $'#!/usr/bin/env bash\necho variant\n' > "$D19/loop-bootstrap/scripts/start-dashboard.sh"
@@ -511,6 +550,102 @@ else
   fail "impossible calendar date '2026-13-40': expected a failure naming it, got rc=$RC out=$OUT"
 fi
 rm -rf "$D19"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# skills family (D#2601) — driven by .claude/commands/, adapted twins (NOT
+# byte-identity): each canonical command needs a .agents/skills/<name>/
+# SKILL.md that names its source command, carries the adaptation-contract
+# marker, and contains no Claude-Code-only directives. A skill dir with no
+# command counterpart is only noted.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── Test 20: valid skill twin — passes, names the skills PASS ───────────────
+echo ""
+echo "--- Test 20: valid skill twin passes ---"
+D20=$(new_fixture)
+write_pair "$D20" ".claude/commands" "commands" "update.md" $'# Update\n'
+write_skill "$D20" "update"
+run_guard "$D20"
+if [[ "$RC" -eq 0 ]] && echo "$OUT" | grep -qF "PASS update (skills)"; then
+  pass "valid skill twin: exit 0, names PASS update (skills)"
+else
+  fail "valid skill twin: expected exit 0 with PASS update (skills), got rc=$RC out=$OUT"
+fi
+rm -rf "$D20"
+
+# ── Test 21: canonical command with no skill twin — FAILS, names it ─────────
+echo ""
+echo "--- Test 21: missing skill twin fails ---"
+D21=$(new_fixture)
+write_pair "$D21" ".claude/commands" "commands" "update.md" $'# Update\n'
+run_guard "$D21"
+if [[ "$RC" -ne 0 ]] && echo "$OUT" | grep -qF "FAIL update (skills)" && echo "$OUT" | grep -qF "no Muse-skill twin"; then
+  pass "missing skill twin: fails and names update (skills)"
+else
+  fail "missing skill twin: expected a named failure, got rc=$RC out=$OUT"
+fi
+rm -rf "$D21"
+
+# ── Test 22: skill that does not name its source command — FAILS ────────────
+echo ""
+echo "--- Test 22: skill missing its source pointer fails ---"
+D22=$(new_fixture)
+write_pair "$D22" ".claude/commands" "commands" "update.md" $'# Update\n'
+mkdir -p "$D22/.agents/skills/update"
+printf '%s' $'# Update\nContract: restate-never-paste.\n' > "$D22/.agents/skills/update/SKILL.md"
+run_guard "$D22"
+if [[ "$RC" -ne 0 ]] && echo "$OUT" | grep -qF "FAIL update (skills)" && echo "$OUT" | grep -qF "does not name its source command"; then
+  pass "skill missing source pointer: fails and names it"
+else
+  fail "skill missing source pointer: expected a named failure, got rc=$RC out=$OUT"
+fi
+rm -rf "$D22"
+
+# ── Test 23: skill missing the adaptation-contract marker — FAILS ───────────
+echo ""
+echo "--- Test 23: skill missing the adaptation-contract marker fails ---"
+D23=$(new_fixture)
+write_pair "$D23" ".claude/commands" "commands" "update.md" $'# Update\n'
+mkdir -p "$D23/.agents/skills/update"
+printf '%s' $'# Update\nAdapted from .claude/commands/update.md.\n' > "$D23/.agents/skills/update/SKILL.md"
+run_guard "$D23"
+if [[ "$RC" -ne 0 ]] && echo "$OUT" | grep -qF "FAIL update (skills)" && echo "$OUT" | grep -qF "adaptation-contract marker"; then
+  pass "skill missing adaptation marker: fails and names it"
+else
+  fail "skill missing adaptation marker: expected a named failure, got rc=$RC out=$OUT"
+fi
+rm -rf "$D23"
+
+# ── Test 24: skill containing a Claude-Code-only directive — FAILS ──────────
+echo ""
+echo "--- Test 24: skill with a Claude-Code-only directive fails ---"
+D24=$(new_fixture)
+write_pair "$D24" ".claude/commands" "commands" "update.md" $'# Update\n'
+mkdir -p "$D24/.agents/skills/update"
+printf '%s' $'# Update\nAdapted from .claude/commands/update.md.\nContract: restate-never-paste.\nUse AskUserQuestion to confirm before proceeding.\n' > "$D24/.agents/skills/update/SKILL.md"
+run_guard "$D24"
+if [[ "$RC" -ne 0 ]] && echo "$OUT" | grep -qF "FAIL update (skills)" && echo "$OUT" | grep -qF "Claude-Code-only directives"; then
+  pass "skill with Claude-Code-only directive: fails as copied-not-adapted"
+else
+  fail "skill with Claude-Code-only directive: expected a named failure, got rc=$RC out=$OUT"
+fi
+rm -rf "$D24"
+
+# ── Test 25: skill dir with no command counterpart — NOTED, never fails ─────
+echo ""
+echo "--- Test 25: skill-only directory is noted, not failed ---"
+D25=$(new_fixture)
+write_pair "$D25" ".claude/commands" "commands" "update.md" $'# Update\n'
+write_skill "$D25" "update"
+mkdir -p "$D25/.agents/skills/orphan"
+printf '%s' $'# Orphan\nNo command counterpart.\n' > "$D25/.agents/skills/orphan/SKILL.md"
+run_guard "$D25"
+if [[ "$RC" -eq 0 ]] && echo "$OUT" | grep -qF "NOTE orphan (skills)"; then
+  pass "skill-only directory: exit 0, printed as NOTE"
+else
+  fail "skill-only directory: expected exit 0 with a NOTE line, got rc=$RC out=$OUT"
+fi
+rm -rf "$D25"
 
 echo ""
 echo "=== $PASS passed, $FAIL failed ==="
