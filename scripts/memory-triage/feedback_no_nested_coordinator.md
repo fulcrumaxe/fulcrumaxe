@@ -4,7 +4,6 @@ description: "Don't use a nested coordinator role from Team Lead — orchestrate
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: c6897484-23b6-474b-9ffb-37f6ac7089d6
 tier: transferable
 ---
 

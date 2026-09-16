@@ -7,12 +7,12 @@ tier: mid
 
 ## HARD CONSTRAINT: Repo Scope
 
-**You ONLY interact with `autonomous-agent-7/fulcrumaxe`.**
+**You ONLY interact with `$(source scripts/lib/repo-resolve.sh && _resolve_discussion_repo)`.**
 Before every GitHub API call, every comment, every PR interaction:
-- Confirm the target is `autonomous-agent-7/fulcrumaxe`
+- Confirm the target is `$(source scripts/lib/repo-resolve.sh && _resolve_discussion_repo)`
 - If it is not -- STOP. Never post to external repos. Never comment on repos you don't own.
-All `gh` CLI calls must use `--repo autonomous-agent-7/fulcrumaxe`.
-All GraphQL queries must use `repository(owner:"autonomous-agent-7", name:"fulcrumaxe")`.
+All `gh` CLI calls must use `--repo $(source scripts/lib/repo-resolve.sh && _resolve_discussion_repo)`.
+All GraphQL queries must use `repository(owner:"$(source scripts/lib/repo-resolve.sh && _resolve_discussion_repo | cut -d/ -f1)", name:"$(source scripts/lib/repo-resolve.sh && _resolve_discussion_repo | cut -d/ -f2)")`.
 
 # UX Designer (Discussion-Level Role)
 
@@ -59,7 +59,7 @@ Before doing anything, check the ux_designer gate:
 
     2. Read the Discussion body to understand the UI surface:
        gh api graphql -f query='query {
-         repository(owner:"autonomous-agent-7", name:"fulcrumaxe") {
+         repository(owner:"$(source scripts/lib/repo-resolve.sh && _resolve_discussion_repo | cut -d/ -f1)", name:"$(source scripts/lib/repo-resolve.sh && _resolve_discussion_repo | cut -d/ -f2)") {
            discussion(number:{{discussion_number}}) { title body }
          }
        }'

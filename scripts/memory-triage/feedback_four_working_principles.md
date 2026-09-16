@@ -2,7 +2,6 @@
 name: Four working principles for every agent (Think / Simplicity / Surgical / Goal-driven)
 description: Four rules agents must apply when coding. Surface assumptions, write minimum code, touch only what's required, verify against the real-world goal not just tests.
 type: feedback
-originSessionId: db7664de-2530-41cc-8214-e2c117f8188c
 tier: transferable
 ---
 Every agent doing project work (executor, code-reviewer, PM) must apply these four principles. They directly map to recurring bug categories observed in the codebase.

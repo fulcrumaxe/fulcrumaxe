@@ -5,7 +5,7 @@
 - [Team Lead never writes code](feedback_team_lead_never_writes_code.md) — every code change goes through an executor agent; Edit/Write for project files is the HARD STOP
 - [Use real subagent_types](feedback_use_real_subagent_types.md) — executor / code-reviewer / project-manager — NEVER general-purpose for project work; isolation:worktree when parallel
 - [Canonical /loop is 8 steps](feedback_canonical_loop_8_steps.md) — every iteration runs steps 0-9 from CLAUDE.md, not "do work and ScheduleWakeup"
-- [Remove not delete](feedback_remove_not_delete.md) — git rm is NEVER allowed; inactive files get git mv'd to archive/<name>-<date>/ with a README; user rule from session 85514482
+- [Remove not delete](feedback_remove_not_delete.md) — git rm is NEVER allowed; inactive files get git mv'd to archive/<name>-<date>/ with a README; user rule from an incident session
 - [Never dump auth headers](feedback_never_dump_auth_headers.md) — curl -v, vastai --explain/--curl, gh api --verbose, set -x with secrets all leak; use curl -i or --raw instead
 - [Always parallelize](feedback_always_parallelize.md) — if steps don't depend on each other, they're separate parallel agents — never sequential
 - [Don't ask, just act](feedback_dont_ask_just_act.md) — when SPEC_READY work exists and pre-spawn passes, spawn immediately — never ask permission

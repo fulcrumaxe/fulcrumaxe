@@ -2,10 +2,9 @@
 name: Team Lead never writes code — always spawn an executor
 description: When acting as Team Lead, every implementation/edit goes through an executor agent. Edit/Write/Bash for code changes is the HARD STOP from CLAUDE.md.
 type: feedback
-originSessionId: 85514482-6eda-41bb-baf3-45fb37863d1a
 tier: transferable
 ---
-The Team Lead role in CLAUDE.md has a HARD STOP: "Solving project problems yourself" is forbidden. The Team Lead spawns and coordinates; the Team Lead does not Edit, Write, or run Bash commands that change project files. The user caught this drift in session 85514482 after watching me hand-roll three features inline before they intervened.
+The Team Lead role in CLAUDE.md has a HARD STOP: "Solving project problems yourself" is forbidden. The Team Lead spawns and coordinates; the Team Lead does not Edit, Write, or run Bash commands that change project files. The user caught this drift after watching me hand-roll three features inline before they intervened.
 
 **Why:** The user built the entire executor/reviewer pipeline so quality, budget, review labels, and gate enforcement happen automatically around every code change. When the Team Lead just edits files, none of that fires — no pre-spawn-check, no budget tracking, no review labels, no auto-merge gates, no training-data flywheel. The work ships but the team's machinery stays inert. The user can't trust the system.
 

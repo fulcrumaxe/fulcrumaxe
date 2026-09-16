@@ -2,7 +2,6 @@
 name: Pull main after every merge
 description: After every merge, run git pull on the local main repo so executors and rebases see the actual current main, not stale state
 type: feedback
-originSessionId: f602f51e-d8cd-4b9e-8d85-4fb81c68c859
 tier: transferable
 ---
 After every PR merges (whether via auto-merge or `gh pr merge`), the LOCAL repo at `<repo-root>` is one commit behind origin/main. If multiple PRs merge in a session, local main drifts further behind. This causes:

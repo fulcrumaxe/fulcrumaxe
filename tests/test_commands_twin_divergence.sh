@@ -18,6 +18,14 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GUARD_SRC="$REPO_ROOT/scripts/ci/commands-twin-divergence-guard.sh"
 GUARD_REL="scripts/ci/commands-twin-divergence-guard.sh"
 ALLOWLIST_REL="scripts/ci/twin-divergence-allowlist.json"
+# The guard `source`s this to generate the agents/ mirror (D#2598 fix-round
+# 2 item 2) — every fixture needs a copy at the same relative path, or the
+# source fails, generate_agents_plugin_mirror is undefined, and every
+# "agents" family assertion below would pass or fail for the WRONG reason
+# (an empty generated file, not a real generation-based comparison) instead
+# of erroring loudly. Caught exactly this way while writing this suite.
+AGENTS_MIRROR_LIB_SRC="$REPO_ROOT/scripts/lib/agents-plugin-mirror.sh"
+AGENTS_MIRROR_LIB_REL="scripts/lib/agents-plugin-mirror.sh"
 
 PASS=0
 FAIL=0
@@ -33,9 +41,10 @@ fail() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
 new_fixture() {
   local dir
   dir=$(mktemp -d)
-  mkdir -p "$dir/scripts/ci" "$dir/.claude/commands" "$dir/commands" \
+  mkdir -p "$dir/scripts/ci" "$dir/scripts/lib" "$dir/.claude/commands" "$dir/commands" \
            "$dir/.claude/agents" "$dir/agents"
   cp "$GUARD_SRC" "$dir/$GUARD_REL"
+  cp "$AGENTS_MIRROR_LIB_SRC" "$dir/$AGENTS_MIRROR_LIB_REL"
   printf '%s\n' "$dir"
 }
 
@@ -138,8 +147,9 @@ rm -rf "$D5"
 echo ""
 echo "--- Test 6: missing .claude/commands directory fails ---"
 D6=$(mktemp -d)
-mkdir -p "$D6/scripts/ci" "$D6/commands" "$D6/.claude/agents" "$D6/agents"
+mkdir -p "$D6/scripts/ci" "$D6/scripts/lib" "$D6/commands" "$D6/.claude/agents" "$D6/agents"
 cp "$GUARD_SRC" "$D6/$GUARD_REL"
+cp "$AGENTS_MIRROR_LIB_SRC" "$D6/$AGENTS_MIRROR_LIB_REL"
 run_guard "$D6"
 if [[ "$RC" -ne 0 ]] && echo "$OUT" | grep -qF "is not a directory"; then
   pass "missing .claude/commands: fails loudly"
@@ -194,6 +204,43 @@ else
   fail "top-level-only agent file: expected exit 0 with a NOTE line, got rc=$RC out=$OUT"
 fi
 rm -rf "$D9"
+
+# ── Test 9b: agents/ is GENERATED, not byte-identical (D#2598 fix-round 2
+# item 2) — a top-level file that differs from .claude/agents/ ONLY in the
+# way generate_agents_plugin_mirror transforms it must PASS, not fail on a
+# raw byte-diff.
+echo ""
+echo "--- Test 9b: correctly-generated agents/ file passes despite not being byte-identical ---"
+D9B=$(new_fixture)
+write_pair "$D9B" ".claude/commands" "commands" "update.md" $'# Update\n'
+printf '%s' $'# Executor\nYou ONLY interact with `autonomous-agent-7/fulcrumaxe`.\n' > "$D9B/.claude/agents/executor.md"
+printf '%s' $'# Executor\nYou ONLY interact with `$(source scripts/lib/repo-resolve.sh && _resolve_discussion_repo)`.\n' > "$D9B/agents/executor.md"
+run_guard "$D9B"
+if [[ "$RC" -eq 0 ]] && echo "$OUT" | grep -qF "PASS executor.md (agents)"; then
+  pass "correctly-generated (non-identical) agents/executor.md passes"
+else
+  fail "correctly-generated agents/executor.md should pass, got rc=$RC out=$OUT"
+fi
+rm -rf "$D9B"
+
+# ── Test 9c: a literal identity leak in agents/ fails even if it happens to
+# match itself byte-for-byte (the direct scan, independent of generation-match) ─
+echo ""
+echo "--- Test 9c: literal autonomous-agent-7 mention in agents/ fails directly ---"
+D9C=$(new_fixture)
+write_pair "$D9C" ".claude/commands" "commands" "update.md" $'# Update\n'
+# Deliberately identical on both sides -- generation-match alone would NOT
+# catch this if .claude/agents/ itself carried a spelling the generator
+# doesn't know about; the direct scan must catch it regardless.
+printf '%s' $'# Executor\nautonomous-agent-7 leaked here somehow\n' > "$D9C/.claude/agents/executor.md"
+printf '%s' $'# Executor\nautonomous-agent-7 leaked here somehow\n' > "$D9C/agents/executor.md"
+run_guard "$D9C"
+if [[ "$RC" -ne 0 ]] && echo "$OUT" | grep -qF "still contains a literal 'autonomous-agent-7' mention"; then
+  pass "literal autonomous-agent-7 mention in agents/ fails via the direct scan"
+else
+  fail "literal autonomous-agent-7 mention in agents/ should fail via the direct scan, got rc=$RC out=$OUT"
+fi
+rm -rf "$D9C"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # scripts family (D#2598 item 5) — driven by loop-bootstrap/scripts/, missing

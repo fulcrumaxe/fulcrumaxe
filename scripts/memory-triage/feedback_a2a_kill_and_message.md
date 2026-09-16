@@ -4,7 +4,6 @@ description: "When agents hang, the right primitive is kill-and-send-message —
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: c6897484-23b6-474b-9ffb-37f6ac7089d6
 tier: transferable
 ---
 

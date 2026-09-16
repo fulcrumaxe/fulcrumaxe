@@ -526,6 +526,16 @@ jobs:
         if: ${{ !cancelled() }}
         run: bash tests/test_loop_bootstrap.sh
 
+      # D#2598 fix-round 2 item 3: tests/test_data_completeness_graphql_injection.sh
+      # drives the real _dcc_is_valid_github_owner / _dcc_is_valid_github_name
+      # validators scripts/data-completeness-check.sh's Discussion-count
+      # cross-check runs before ever building a GraphQL query string from a
+      # resolved (user-editable, via .autonomous-team/config.json) owner/name
+      # pair. A regression here is a query-injection path reopening.
+      - name: Data-completeness GraphQL injection guard suite
+        if: ${{ !cancelled() }}
+        run: bash tests/test_data_completeness_graphql_injection.sh
+
       # Python lint is ratcheted, not omitted (D#2411). ruff.toml pins the
       # rule set; scripts/ci/ruff-ratchet.py runs `ruff check backend/
       # tests/ scripts/` (the same scope as Makefile:lint) against the

@@ -4,7 +4,6 @@ description: "Team Lead concurrency caps — max 6-8 total agents, max 4 executo
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: c6897484-23b6-474b-9ffb-37f6ac7089d6
 tier: transferable
 ---
 

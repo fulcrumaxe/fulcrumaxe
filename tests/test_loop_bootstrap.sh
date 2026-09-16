@@ -93,6 +93,33 @@ EOF
 fi
 
 echo ""
+echo "--- scripts/memory-triage/: no tier:transferable file carries a session identifier (D#2598 fix-round 2 item 1) ---"
+# Direct source-corpus scan, independent of running a full bootstrap: every
+# tier:transferable file must be free of (1) an originSessionId frontmatter
+# field and (2) a bare UUID-shaped string anywhere in the file
+# ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}, case
+# insensitive) -- catches a session ID narrated in prose even without the
+# originSessionId key naming it. Non-transferable (tier:hardwire-candidate)
+# files are deliberately NOT checked here -- they never ship, and scrubbing
+# them isn't required by their lesson.
+TRIAGE_SESSION_LEAKS=""
+if [[ -d "$REPO_ROOT/scripts/memory-triage" ]]; then
+  while IFS= read -r -d '' tf; do
+    [[ "$(basename "$tf")" == "MEMORY.md" ]] && continue
+    memory_is_tier_transferable "$tf" || continue
+    if grep -qiE '^[[:space:]]*originSessionId:|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' "$tf" 2>/dev/null; then
+      TRIAGE_SESSION_LEAKS="${TRIAGE_SESSION_LEAKS}$(basename "$tf")"$'\n'
+    fi
+  done < <(find "$REPO_ROOT/scripts/memory-triage" -maxdepth 1 -type f -name '*.md' -print0 2>/dev/null)
+fi
+if [[ -z "$TRIAGE_SESSION_LEAKS" ]]; then
+  pass "no tier:transferable file in scripts/memory-triage/ carries a session identifier"
+else
+  fail "tier:transferable file(s) in scripts/memory-triage/ still carry a session identifier:"
+  echo "$TRIAGE_SESSION_LEAKS"
+fi
+
+echo ""
 echo "=== test_loop_bootstrap ==="
 echo ""
 
@@ -141,6 +168,28 @@ if [[ -f "$MEMORY_DEST/MEMORY.md" ]]; then
   fail "scripts/memory-triage/MEMORY.md (the corpus index) was installed — it is corpus tooling, not adopter guidance"
 else
   pass "scripts/memory-triage/MEMORY.md correctly not installed"
+fi
+
+# D#2598 fix-round 2 item 1: no memory bootstrap installs (i.e. every
+# tier:transferable file) may carry an internal Claude session identifier.
+# Two patterns, checked over every installed memory file:
+#   1. An `originSessionId:` frontmatter field (any value) — this repo's own
+#      session-tracking metadata, meaningless and identifying to an adopter.
+#   2. A bare UUID-shaped string anywhere in the file
+#      ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}, case
+#      insensitive) — catches a session ID narrated in prose/a URL even
+#      without the originSessionId frontmatter key naming it.
+SESSION_LEAK_FILES=""
+while IFS= read -r -d '' mf; do
+  if grep -qiE '^[[:space:]]*originSessionId:|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' "$mf" 2>/dev/null; then
+    SESSION_LEAK_FILES="${SESSION_LEAK_FILES}${mf#"$MEMORY_DEST"/}"$'\n'
+  fi
+done < <(find "$MEMORY_DEST" -maxdepth 1 -type f -name '*.md' -print0 2>/dev/null)
+if [[ -z "$SESSION_LEAK_FILES" ]]; then
+  pass "no installed memory carries an originSessionId field or a UUID-shaped session reference"
+else
+  fail "installed memory file(s) still carry a session identifier:"
+  echo "$SESSION_LEAK_FILES"
 fi
 
 echo ""
@@ -230,9 +279,19 @@ LEGACY_LEAK_FILES=$(grep -rl "autonomous-agent-7" "$TARGET" 2>/dev/null || true)
 # that legitimately IS this project's own bot account, which is correct
 # behavior, not a leak (a real third-party adopter's runner would resolve
 # to THEIR OWN authenticated account instead).
+#
+# scripts/ci/commands-twin-divergence-guard.sh's bare "autonomous-agent-7"
+# occurrences (fix-round 2 item 2) are its OWN regression-scan pattern —
+# `grep -q "autonomous-agent-7" "$top_path"` and the FAIL message that names
+# it — a bare word, not a "autonomous-agent-7/fulcrumaxe" slug or a
+# owner:"autonomous-agent-7" split form, so rewrite_tree_identifiers has
+# nothing there to match and correctly leaves it alone: the guard's job is
+# to detect this exact string, so it has to contain it. This is the
+# detector, not a leak.
 KNOWN_FIXTURE_EXCEPTIONS="backend/tests/test_envelope_check.py
 backend/tests/test_trust_id_resolver.py
-.autonomous-team/config.json"
+.autonomous-team/config.json
+scripts/ci/commands-twin-divergence-guard.sh"
 UNEXPECTED_LEAKS=""
 while IFS= read -r f; do
   [[ -z "$f" ]] && continue

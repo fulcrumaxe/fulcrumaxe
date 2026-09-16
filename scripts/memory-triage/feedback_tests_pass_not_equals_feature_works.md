@@ -2,7 +2,6 @@
 name: Tests-pass is not feature-works — separate verification axes
 description: Synthetic fixture tests passing tells you the code matches the spec; running the actual binary/UI tells you the spec matches reality. Both gates required.
 type: feedback
-originSessionId: db7664de-2530-41cc-8214-e2c117f8188c
 tier: transferable
 ---
 A PR that ships green on `pytest` is NOT verified — the synthetic fixtures only cover shapes the author imagined. The actual feature can still be completely broken in production.

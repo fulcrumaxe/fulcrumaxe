@@ -100,6 +100,14 @@ cd "$REPO_ROOT" || exit 1
 
 ALLOWLIST="$REPO_ROOT/scripts/ci/twin-divergence-allowlist.json"
 
+# D#2598 fix-round 2 item 2: agents/ is no longer a byte-identical mirror of
+# .claude/agents/ — it's generated from it (scripts/lib/agents-plugin-mirror.sh
+# strips this project's Discussion-plane repo down to a runtime resolver call,
+# the same shape .claude/agents/ already uses for the code plane, so a plugin
+# user never gets this project's own repo baked into a namespaced role).
+# shellcheck source=scripts/lib/agents-plugin-mirror.sh
+source "$REPO_ROOT/scripts/lib/agents-plugin-mirror.sh"
+
 FAILED=0
 MATCHED=0
 ALLOWED=0
@@ -250,9 +258,16 @@ else
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Family: agents  (.claude/agents/*.md <-> agents/<name>) — same asymmetric
-# shape as commands (D#2598 item 12): .claude/agents/ is canonical (it's what
-# Claude Code actually loads), top-level agents/ is its public mirror.
+# Family: agents  (.claude/agents/*.md <-> agents/<name>) — NOT byte-identity
+# (D#2598 fix-round 2 item 2): agents/ is GENERATED from .claude/agents/ via
+# generate_agents_plugin_mirror, which strips this project's Discussion-plane
+# repo down to a runtime resolver call. .claude/agents/ is canonical (it's
+# what Claude Code actually loads for this project's own team) and is never
+# touched by the generator; top-level agents/ must equal
+# generate_agents_plugin_mirror(.claude/agents/<name>) exactly. Missing-twin
+# rules are otherwise unchanged from before this round (same asymmetric
+# shape as commands, D#2598 item 12): a canonical file with no top-level
+# twin at all still fails, and a top-level-only file is still only noted.
 # ═══════════════════════════════════════════════════════════════════════════
 echo ""
 echo "── agents ────────────────────────────────────────────────────────────"
@@ -263,6 +278,7 @@ if [ ! -d "$CLAUDE_AGENTS_DIR" ]; then
   echo "FAIL agents — $CLAUDE_AGENTS_DIR is not a directory"
   FAILED=$((FAILED + 1))
 else
+  AGENTS_GEN_TMPDIR="$(mktemp -d)"
   while IFS= read -r claude_path; do
     name="$(basename "$claude_path")"
     top_path="$TOP_AGENTS_DIR/$name"
@@ -271,14 +287,34 @@ else
       FAILED=$((FAILED + 1))
       continue
     fi
-    check_pair agents "$name" "$top_path" "$claude_path"
+    gen_path="$AGENTS_GEN_TMPDIR/$name"
+    generate_agents_plugin_mirror "$claude_path" > "$gen_path"
+    check_pair agents "$name" "$top_path" "$gen_path"
   done < <(find "$CLAUDE_AGENTS_DIR" -maxdepth 1 -type f -name '*.md' | sort)
+  rm -rf "$AGENTS_GEN_TMPDIR"
 
   if [ -d "$TOP_AGENTS_DIR" ]; then
     while IFS= read -r top_path; do
       name="$(basename "$top_path")"
       if [ ! -f "$CLAUDE_AGENTS_DIR/$name" ]; then
         echo "NOTE $name (agents) — $top_path has no .claude/agents/ counterpart (not flagged — same structural question as commands/, D#2486)"
+      fi
+    done < <(find "$TOP_AGENTS_DIR" -maxdepth 1 -type f -name '*.md' | sort)
+  fi
+
+  # Direct regression scan, independent of the generation-match check above:
+  # even a file that perfectly matches its own freshly-generated mirror is
+  # only as identity-free as the two literal patterns
+  # generate_agents_plugin_mirror knows about. A NEW hardcoded mention added
+  # to .claude/agents/ in some other spelling would sail through the
+  # generation-match check (both sides would still agree, both still
+  # leaking) without this second, independent assertion.
+  if [ -d "$TOP_AGENTS_DIR" ]; then
+    while IFS= read -r top_path; do
+      name="$(basename "$top_path")"
+      if grep -q "autonomous-agent-7" "$top_path" 2>/dev/null; then
+        echo "FAIL $name (agents) — $top_path still contains a literal 'autonomous-agent-7' mention after generation"
+        FAILED=$((FAILED + 1))
       fi
     done < <(find "$TOP_AGENTS_DIR" -maxdepth 1 -type f -name '*.md' | sort)
   fi

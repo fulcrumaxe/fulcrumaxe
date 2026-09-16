@@ -2,10 +2,9 @@
 name: Remove but not delete — git rm is NEVER allowed
 description: Files must stay readable in the working tree even when inactive. git mv to archive/ is the only allowed form of "removal." git rm is forbidden.
 type: feedback
-originSessionId: 85514482-6eda-41bb-baf3-45fb37863d1a
 tier: transferable
 ---
-In session 85514482 the user gave a rule: "definitely do not delete anything — you can remove but not delete." An executor had `git rm`'d two files (LoginPage.tsx + ProtectedRoute.tsx) on PR #291. Even though the files were still in git history, the user wanted them in the WORKING TREE.
+In one incident the user gave a rule: "definitely do not delete anything — you can remove but not delete." An executor had `git rm`'d two files (LoginPage.tsx + ProtectedRoute.tsx) on PR #291. Even though the files were still in git history, the user wanted them in the WORKING TREE.
 
 **Why:** The user has been burned by orphan code being hard to find later. Git history is technically a backup but no one greps it. Files that exist in the working tree at `archive/<name>-<date>/` are findable by `find`, `ls`, and basic file browsing — files that only exist in history aren't. Plus the archive README documents WHY the file became inactive, which git history alone doesn't.
 

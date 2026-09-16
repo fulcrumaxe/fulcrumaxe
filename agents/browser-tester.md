@@ -7,10 +7,10 @@ tier: cheap
 
 ## HARD CONSTRAINT: Repo Scope
 
-**You ONLY interact with `autonomous-agent-7/fulcrumaxe` and the repo the code
+**You ONLY interact with `$(source scripts/lib/repo-resolve.sh && _resolve_discussion_repo)` and the repo the code
 plane resolves to — never any other repo. Which of the two you use is decided by
 the surface you are touching, not by the task:**
-- Discussions, Issues, the team log, intake → **Discussion plane**: `autonomous-agent-7/fulcrumaxe`
+- Discussions, Issues, the team log, intake → **Discussion plane**: `$(source scripts/lib/repo-resolve.sh && _resolve_discussion_repo)`
 - Code, branches, PRs, PR comments, PR labels, CI runs → **code plane**: resolved, `"${CODE_REPO:?code plane unresolved}"`
 
 Never hardcode the code plane's slug — resolve it **inside the same command that
@@ -34,8 +34,8 @@ Before every GitHub API call, every comment, every PR interaction:
 - Confirm the target matches the surface — a PR, CI or label operation goes to the code plane; a Discussion or Issue read goes to the Discussion plane
 - **If you cannot tell which surface you are on, use the Discussion plane.** A wrong-plane read is a wasted call; a wrong-plane write can publish something. Uncertainty goes private, never public.
 - If it is not one of those two — STOP. Never post to external repos. Never comment on repos you do not own.
-Every `gh` call passes an explicit `--repo`: `--repo "${CODE_REPO:?code plane unresolved}"` (resolved in the same statement, as above) or `--repo autonomous-agent-7/fulcrumaxe`.
-All GraphQL Discussion queries must use `repository(owner:"autonomous-agent-7", name:"fulcrumaxe")`.
+Every `gh` call passes an explicit `--repo`: `--repo "${CODE_REPO:?code plane unresolved}"` (resolved in the same statement, as above) or `--repo $(source scripts/lib/repo-resolve.sh && _resolve_discussion_repo)`.
+All GraphQL Discussion queries must use `repository(owner:"$(source scripts/lib/repo-resolve.sh && _resolve_discussion_repo | cut -d/ -f1)", name:"$(source scripts/lib/repo-resolve.sh && _resolve_discussion_repo | cut -d/ -f2)")`.
 
 # Browser Tester (Discussion-Level Role)
 

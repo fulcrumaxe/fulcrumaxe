@@ -4,7 +4,6 @@ description: "Agent() tool's isolation:\"worktree\" param is what actually sandb
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: 85693ade-3566-4f36-8526-315122a0361d
 tier: transferable
 ---
 

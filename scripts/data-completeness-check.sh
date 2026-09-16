@@ -284,6 +284,18 @@ except: print(0)
   fi
 fi
 
+# _dcc_is_valid_github_owner / _dcc_is_valid_github_name — D#2598 fix-round 2
+# item 3. The Discussion-plane owner/name used to be pasted directly into a
+# GraphQL query STRING (string interpolation into a `-f query=` value), the
+# same injection shape as a hand-built SQL string, and the value comes from
+# .autonomous-team/config.json — user-editable, not a constant. Extracted as
+# standalone functions so they're unit-testable without needing a live `gh`
+# call: a regex that matches GitHub's actual login/repo-name character set,
+# used to FAIL loudly (never silently skip) on a value that couldn't be a
+# real GitHub identifier.
+_dcc_is_valid_github_owner() { [[ "$1" =~ ^[A-Za-z0-9-]+$ ]]; }
+_dcc_is_valid_github_name()  { [[ "$1" =~ ^[A-Za-z0-9_.-]+$ ]]; }
+
 # ---------------------------------------------------------------------------
 # Cross-endpoint consistency: if GitHub is accessible, compare discussion counts
 # ---------------------------------------------------------------------------
@@ -300,8 +312,24 @@ if [ -z "$_DCC_DISC_REPO" ]; then
 elif command -v gh >/dev/null 2>&1; then
   _DCC_DISC_OWNER="${_DCC_DISC_REPO%%/*}"
   _DCC_DISC_NAME="${_DCC_DISC_REPO##*/}"
-  GH_COUNT=$(gh api graphql -f query='query { repository(owner:"'"$_DCC_DISC_OWNER"'", name:"'"$_DCC_DISC_NAME"'") { discussions(first:1) { totalCount } } }' \
-    --jq '.data.repository.discussions.totalCount' 2>/dev/null || echo "")
+  # Two defenses, not one: validate before using the values at all, AND pass
+  # them as separate GraphQL variables via `-F owner=... -F name=...` rather
+  # than string-building the query, so even a value that passed validation
+  # can never be interpreted as query syntax.
+  if ! _dcc_is_valid_github_owner "$_DCC_DISC_OWNER"; then
+    echo "  FAIL: resolved Discussion-plane owner is not a valid GitHub login: '$_DCC_DISC_OWNER'" >&2
+    FAILURES=$((FAILURES + 1))
+    GH_COUNT=""
+  elif ! _dcc_is_valid_github_name "$_DCC_DISC_NAME"; then
+    echo "  FAIL: resolved Discussion-plane repo name is not a valid GitHub repo name: '$_DCC_DISC_NAME'" >&2
+    FAILURES=$((FAILURES + 1))
+    GH_COUNT=""
+  else
+    GH_COUNT=$(gh api graphql \
+      -f query='query($owner:String!, $name:String!) { repository(owner:$owner, name:$name) { discussions(first:1) { totalCount } } }' \
+      -F owner="$_DCC_DISC_OWNER" -F name="$_DCC_DISC_NAME" \
+      --jq '.data.repository.discussions.totalCount' 2>/dev/null || echo "")
+  fi
   if [ -n "$GH_COUNT" ] && [ -n "$REGISTRY" ]; then
     REG_TOTAL=$(echo "$REGISTRY" | python3 -c "
 import sys, json

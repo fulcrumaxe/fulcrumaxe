@@ -2,10 +2,9 @@
 name: /loop is the canonical 8-step CLAUDE.md flow, not "do work and ScheduleWakeup"
 description: Each /loop iteration must run all 8 steps from CLAUDE.md, including pre-flight, Discussion scan, PR scan, post-agent-hook chain, subsystem sweep, now.md update
 type: feedback
-originSessionId: 85514482-6eda-41bb-baf3-45fb37863d1a
 tier: transferable
 ---
-In session 85514482 the user invoked `/loop` with a 6-feature directive. I treated each iteration as "do one chunk of feature work and ScheduleWakeup," which produced shippable code but skipped almost the entire CLAUDE.md /loop protocol. The user called this out twice and asked me to teach future-me the right flow.
+In one incident the user invoked `/loop` with a 6-feature directive. I treated each iteration as "do one chunk of feature work and ScheduleWakeup," which produced shippable code but skipped almost the entire CLAUDE.md /loop protocol. The user called this out twice and asked me to teach future-me the right flow.
 
 **Why:** CLAUDE.md spells out the 8-step iteration explicitly. Skipping steps means: no budget tracking, no audit entries, no training-data flywheel firing, no Discussion lifecycle, no review labels, no auto-merge gates, no wiki sync. The work ships but the team's observability and quality machinery stays inert. When the cron loop is dead AND I'm running a half-loop, nothing in `audit.jsonl` or `loop-metrics.jsonl` gets updated, so `/health/loop` goes red and the dashboard reports a broken team.
 
@@ -52,5 +51,5 @@ Steps 0-9 are non-negotiable. The dashboard-side LoopRunner button writes to loo
 
 **Key wrinkles:**
 - `backend/trigger.py` is the cron-side launcher that writes a loop-iteration request to the TUI's FIFO. The Team Lead in a Claude Code session does NOT call trigger.py (would lose visibility) — instead the Team Lead IS the loop, executing the 8 steps directly.
-- The loop driver decision (Claude Code vs cron Kimi vs both) is the user's call. As of session 85514482 the user chose: "keep me as the loop driver" — Claude Opus stays the Team Lead, cron stays dead.
+- The loop driver decision (Claude Code vs cron Kimi vs both) is the user's call. The user chose: "keep me as the loop driver" — Claude Opus stays the Team Lead, cron stays dead.
 - If the user types `/loop <directive>`, the directive becomes the goal of the iterations but does not replace the 8-step flow. The directive shapes step 5 (what to act on), nothing else.

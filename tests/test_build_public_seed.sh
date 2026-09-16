@@ -250,17 +250,41 @@ else
   bad "B2 MEMORY.md index prune" "MEMORY.md missing from the tree entirely"
 fi
 
-# B3 — plugin auto-discovery mirror, byte-identical to .claude/.
+# B3 — plugin auto-discovery mirror. commands/ is byte-identical to
+# .claude/commands/ (unchanged). agents/ is GENERATED from .claude/agents/
+# (D#2598 fix-round 2 item 2) — .claude/agents/ correctly hardcodes this
+# project's own Discussion-plane repo for this project's own team, but a
+# plugin-loaded agents/<name>.md has no install-time rewrite step, so it is
+# generate_agents_plugin_mirror(.claude/agents/<name>.md), never a raw
+# blob-sha copy.
 mirror_ok=1
-for name in agents commands; do
-  a="$(git -C "$REPO_ROOT" ls-tree -r "$TREE" -- ".claude/$name" | sed "s#\t.claude/#\t#")"
-  b="$(git -C "$REPO_ROOT" ls-tree -r "$TREE" -- "$name")"
-  [[ -n "$a" && "$a" == "$b" ]] || mirror_ok=0
-done
+a="$(git -C "$REPO_ROOT" ls-tree -r "$TREE" -- ".claude/commands" | sed "s#\t.claude/#\t#")"
+b="$(git -C "$REPO_ROOT" ls-tree -r "$TREE" -- "commands")"
+[[ -n "$a" && "$a" == "$b" ]] || mirror_ok=0
+
+# shellcheck source=scripts/lib/agents-plugin-mirror.sh
+source "$REPO_ROOT/scripts/lib/agents-plugin-mirror.sh"
+agents_checked=0
+while IFS= read -r claude_path; do
+  name="$(basename "$claude_path")"
+  top_path="agents/$name"
+  claude_sha="$(blob_in_tree "$TREE" "$claude_path")"
+  top_sha="$(blob_in_tree "$TREE" "$top_path")"
+  if [[ -z "$claude_sha" || -z "$top_sha" ]]; then
+    mirror_ok=0
+    continue
+  fi
+  expected="$(git -C "$REPO_ROOT" cat-file blob "$claude_sha" | generate_agents_plugin_mirror /dev/stdin)"
+  actual="$(git -C "$REPO_ROOT" cat-file blob "$top_sha")"
+  [[ "$expected" == "$actual" ]] || mirror_ok=0
+  agents_checked=$((agents_checked + 1))
+done < <(git -C "$REPO_ROOT" ls-tree -r "$TREE" --name-only -- ".claude/agents" | grep '\.md$')
+[[ "$agents_checked" -gt 0 ]] || mirror_ok=0
+
 if [[ "$mirror_ok" -eq 1 ]]; then
-  ok "B3 plugin-root mirror: agents/ and commands/ are byte-identical to .claude/"
+  ok "B3 plugin-root mirror: commands/ is byte-identical to .claude/commands/, agents/ ($agents_checked files) matches generate_agents_plugin_mirror(.claude/agents/)"
 else
-  bad "B3 plugin-root mirror" "agents/ or commands/ missing or drifted from .claude/"
+  bad "B3 plugin-root mirror" "commands/ drifted from .claude/commands/, or agents/ does not match generate_agents_plugin_mirror(.claude/agents/)"
 fi
 
 # B4 — bootstrap-paths.generated present and comment-free.
