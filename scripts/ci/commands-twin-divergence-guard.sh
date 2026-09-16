@@ -116,10 +116,12 @@ ALLOWLIST_OK=true
 ALLOWLIST_ENTRIES=""
 if [ -f "$ALLOWLIST" ]; then
   ALLOWLIST_ENTRIES="$(python3 - "$ALLOWLIST" <<'PYEOF'
-import json, sys
+import json, re, sys
+from datetime import date as _date
 
 path = sys.argv[1]
 BANNED = ("pending", "follow-up", "followup", "reconcile later")
+ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 try:
     with open(path) as f:
@@ -140,6 +142,19 @@ for e in entries:
     reason = e.get("reason") if isinstance(e, dict) else None
     if not pair or not date or not reason:
         print(f"ERROR: {path}: entry missing pair/date/reason: {e}", file=sys.stderr)
+        bad += 1
+        continue
+    # Reject anything that isn't a real ISO 8601 calendar date (YYYY-MM-DD).
+    # A regex match alone accepts "2026-13-40"; date.fromisoformat() also
+    # rejects an out-of-range month/day, not just a wrong shape.
+    if not isinstance(date, str) or not ISO_DATE_RE.match(date):
+        print(f"ERROR: {path}: entry '{pair}' date is not ISO 8601 YYYY-MM-DD: {date!r}", file=sys.stderr)
+        bad += 1
+        continue
+    try:
+        _date.fromisoformat(date)
+    except ValueError:
+        print(f"ERROR: {path}: entry '{pair}' date is not a real calendar date: {date!r}", file=sys.stderr)
         bad += 1
         continue
     low = reason.lower()

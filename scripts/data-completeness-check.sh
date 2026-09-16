@@ -20,6 +20,8 @@
 set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
+# shellcheck source=scripts/lib/repo-resolve.sh
+source "$REPO_ROOT/scripts/lib/repo-resolve.sh"
 
 API=${API_PORT:-18099}
 RUST_PORT=${RUST_PORT:-3000}
@@ -287,8 +289,18 @@ fi
 # ---------------------------------------------------------------------------
 echo ""
 echo "[cross-check] Discussion count consistency"
-if command -v gh >/dev/null 2>&1; then
-  GH_COUNT=$(gh api graphql -f query='query { repository(owner:"autonomous-agent-7", name:"fulcrumaxe") { discussions(first:1) { totalCount } } }' \
+# Discussion repo, resolved -- never the hardcoded owner/name this project
+# used to carry here (D#2598 fix-round item 2c). _resolve_discussion_repo
+# prints nothing and returns 0 when a fork has no private Discussion-plane
+# twin at all, which is a legitimate state, not a failure -- skip the
+# cross-check rather than fail loudly or fall back to this project's own repo.
+_DCC_DISC_REPO="$(_resolve_discussion_repo)"
+if [ -z "$_DCC_DISC_REPO" ]; then
+  echo "  SKIP: no Discussion-plane repo resolved (fork with no private twin) — skipping cross-check"
+elif command -v gh >/dev/null 2>&1; then
+  _DCC_DISC_OWNER="${_DCC_DISC_REPO%%/*}"
+  _DCC_DISC_NAME="${_DCC_DISC_REPO##*/}"
+  GH_COUNT=$(gh api graphql -f query='query { repository(owner:"'"$_DCC_DISC_OWNER"'", name:"'"$_DCC_DISC_NAME"'") { discussions(first:1) { totalCount } } }' \
     --jq '.data.repository.discussions.totalCount' 2>/dev/null || echo "")
   if [ -n "$GH_COUNT" ] && [ -n "$REGISTRY" ]; then
     REG_TOTAL=$(echo "$REGISTRY" | python3 -c "

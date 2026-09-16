@@ -20,16 +20,17 @@
 #   panel_gate_post_timeout_notice DISC_NUM "role,role" -> posts one Discussion comment naming missing roles
 
 if [ -z "${_PANEL_HELPERS_REPO_OWNER:-}" ]; then
+  # D#2598 fix-round item 2c: same fix as scripts/lib/panel-helpers.sh — no
+  # hard-coded 'autonomous-agent-7/fulcrumaxe' fallback. An unresolved repo
+  # fails loudly (empty owner/name) instead of silently querying this
+  # project's own repo.
   _PQ_REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
-  _PANEL_HELPERS_REPO=$(python3 -c "
-import json
-try:
-    with open('$_PQ_REPO_ROOT/.autonomous-team/config.json') as f:
-        r = json.load(f).get('repo', '')
-except Exception:
-    r = ''
-print(r or 'autonomous-agent-7/fulcrumaxe')
-" 2>/dev/null)
+  # shellcheck source=scripts/lib/repo-resolve.sh
+  source "$_PQ_REPO_ROOT/scripts/lib/repo-resolve.sh"
+  _PANEL_HELPERS_REPO="$(_resolve_repo 2>/dev/null || true)"
+  if [ -z "$_PANEL_HELPERS_REPO" ]; then
+    echo "panel-quorum.sh: FATAL: could not resolve a repo slug (checked .autonomous-team/config.json and AUTONOMOUS_TEAM_REPO) — refusing to silently fall back to this project's own repo" >&2
+  fi
   _PANEL_HELPERS_REPO_OWNER="${_PANEL_HELPERS_REPO%%/*}"
   _PANEL_HELPERS_REPO_NAME="${_PANEL_HELPERS_REPO##*/}"
 fi

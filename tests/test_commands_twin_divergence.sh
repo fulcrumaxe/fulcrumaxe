@@ -333,6 +333,43 @@ else
 fi
 rm -rf "$D17"
 
+# ── Test 18: allowlist entry with a non-ISO date — guard FAILS (D#2598 fix-round item 5) ─
+echo ""
+echo "--- Test 18: a non-ISO-8601 date fails the guard ---"
+D18=$(new_fixture)
+write_pair "$D18" ".claude/commands" "commands" "update.md" $'# Update\n'
+mkdir -p "$D18/loop-bootstrap/scripts" "$D18/scripts"
+printf '%s' $'#!/usr/bin/env bash\necho live\n' > "$D18/scripts/start-dashboard.sh"
+printf '%s' $'#!/usr/bin/env bash\necho variant\n' > "$D18/loop-bootstrap/scripts/start-dashboard.sh"
+# "09/16/2026" is a real calendar date but not ISO 8601 shape; a regex-only
+# check would also accept "2026-13-40" (wrong shape passes, wrong value
+# doesn't) — this case and the next one each catch a different half.
+write_allowlist "$D18" '{"entries":[{"pair":"scripts:start-dashboard.sh","date":"09/16/2026","reason":"deliberate project-agnostic variant"}]}'
+run_guard "$D18"
+if [[ "$RC" -ne 0 ]] && echo "$OUT" | grep -qF "ALLOWLIST INVALID" && echo "$OUT" | grep -qiF "not ISO 8601"; then
+  pass "non-ISO date '09/16/2026': guard fails, names the bad date"
+else
+  fail "non-ISO date '09/16/2026': expected a failure naming the bad date, got rc=$RC out=$OUT"
+fi
+rm -rf "$D18"
+
+# ── Test 19: allowlist entry with an out-of-range calendar date — guard FAILS ─
+echo ""
+echo "--- Test 19: an ISO-shaped but impossible calendar date fails the guard ---"
+D19=$(new_fixture)
+write_pair "$D19" ".claude/commands" "commands" "update.md" $'# Update\n'
+mkdir -p "$D19/loop-bootstrap/scripts" "$D19/scripts"
+printf '%s' $'#!/usr/bin/env bash\necho live\n' > "$D19/scripts/start-dashboard.sh"
+printf '%s' $'#!/usr/bin/env bash\necho variant\n' > "$D19/loop-bootstrap/scripts/start-dashboard.sh"
+write_allowlist "$D19" '{"entries":[{"pair":"scripts:start-dashboard.sh","date":"2026-13-40","reason":"deliberate project-agnostic variant"}]}'
+run_guard "$D19"
+if [[ "$RC" -ne 0 ]] && echo "$OUT" | grep -qF "ALLOWLIST INVALID" && echo "$OUT" | grep -qiF "not a real calendar date"; then
+  pass "impossible calendar date '2026-13-40': guard fails, names it"
+else
+  fail "impossible calendar date '2026-13-40': expected a failure naming it, got rc=$RC out=$OUT"
+fi
+rm -rf "$D19"
+
 echo ""
 echo "=== $PASS passed, $FAIL failed ==="
 if [[ "$FAIL" -gt 0 ]]; then

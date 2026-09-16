@@ -222,14 +222,26 @@ if [[ "$_SYNC_AMBIENT_ROOT" != "$_SYNC_MAIN_ROOT" ]]; then
   exit 1
 fi
 
+# Resolve the default branch instead of assuming "main" (D#2598 fix-round):
+# an adopter whose remote's default branch is "master" (or anything else)
+# must not have this step fight its own repo. refs/remotes/origin/HEAD is
+# the symlink-style ref git itself writes at clone time to record the
+# remote's default branch; --short strips it down to "origin/<branch>",
+# and the sed strips the remaining "origin/" prefix. Falls back to "main"
+# only when that ref is absent (e.g. a bare `git init` with no clone).
+DEFAULT_BRANCH="$(git -C "$_SYNC_MAIN_ROOT" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')"
+if [[ -z "$DEFAULT_BRANCH" ]]; then
+  DEFAULT_BRANCH="main"
+fi
+
 # Every git call below is scoped with -C to the resolved main root rather
 # than left to act on whatever tree the shell happens to be standing in, so
 # an odd invocation (e.g. an absolute path to this same script run from
 # somewhere else) can't silently retarget it either.
 BRANCH="$(git -C "$_SYNC_MAIN_ROOT" branch --show-current 2>/dev/null)"
-if [[ "$BRANCH" != "main" ]]; then
-  echo "  HEAD was on '$BRANCH' — restoring to main"
-  git -C "$_SYNC_MAIN_ROOT" symbolic-ref HEAD refs/heads/main
+if [[ "$BRANCH" != "$DEFAULT_BRANCH" ]]; then
+  echo "  HEAD was on '$BRANCH' — restoring to $DEFAULT_BRANCH"
+  git -C "$_SYNC_MAIN_ROOT" symbolic-ref HEAD "refs/heads/$DEFAULT_BRANCH"
 fi
 
 # `--mixed` moved the ref and index only and left the working tree stale —
@@ -242,7 +254,7 @@ fi
 # be silently discarded (--hard) or silently left desynced (the old --mixed
 # behavior). A local edit that does NOT collide survives untouched, same as
 # any other git merge.
-if PULL_OUT="$(git -C "$_SYNC_MAIN_ROOT" pull --ff-only origin main 2>&1)"; then
+if PULL_OUT="$(git -C "$_SYNC_MAIN_ROOT" pull --ff-only origin "$DEFAULT_BRANCH" 2>&1)"; then
   echo "$PULL_OUT" | tail -8
 else
   echo "$PULL_OUT" | tail -10

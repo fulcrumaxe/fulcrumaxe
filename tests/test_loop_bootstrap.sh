@@ -42,6 +42,57 @@ assert_dir() {
 }
 
 echo ""
+echo "--- memory_is_tier_transferable: matches only inside frontmatter (D#2598 fix-round item 3) ---"
+# A bare `grep -q '^tier: transferable$' "$f"` matches that string ANYWHERE
+# in the file, including a memory's own BODY prose — e.g. a note that
+# happens to quote or discuss another file's tier value. Extract the real
+# function from bootstrap.sh (not a hand-duplicated copy, so this test
+# cannot silently drift from the implementation) and prove it looks only at
+# the frontmatter block.
+MEMTIER_FN_SRC=$(sed -n '/^memory_is_tier_transferable() {/,/^}/p' "$BOOTSTRAP")
+if [[ -z "$MEMTIER_FN_SRC" ]]; then
+  fail "could not extract memory_is_tier_transferable() from $BOOTSTRAP — has it been renamed?"
+else
+  eval "$MEMTIER_FN_SRC"
+
+  MEMTIER_TMP="$RUN_TMP/memtier-fixtures"
+  mkdir -p "$MEMTIER_TMP"
+
+  # Fixture A: tier:hardwire-candidate in frontmatter, but the BODY prose
+  # happens to contain the literal line "tier: transferable" (quoting or
+  # discussing some other file). Must NOT be treated as transferable.
+  cat > "$MEMTIER_TMP/fixture-body-mention.md" <<'EOF'
+---
+name: fixture-body-mention
+tier: hardwire-candidate
+---
+This note is not itself transferable. For contrast, another memory in this
+corpus carries this exact line in ITS frontmatter:
+tier: transferable
+That line above is body prose, not frontmatter, and must not count.
+EOF
+  if memory_is_tier_transferable "$MEMTIER_TMP/fixture-body-mention.md"; then
+    fail "body-only 'tier: transferable' mention was wrongly treated as frontmatter tier:transferable"
+  else
+    pass "body-only 'tier: transferable' mention correctly NOT treated as tier:transferable"
+  fi
+
+  # Fixture B: tier:transferable genuinely in frontmatter. Must be detected.
+  cat > "$MEMTIER_TMP/fixture-real-transferable.md" <<'EOF'
+---
+name: fixture-real-transferable
+tier: transferable
+---
+Body text, irrelevant to tier detection.
+EOF
+  if memory_is_tier_transferable "$MEMTIER_TMP/fixture-real-transferable.md"; then
+    pass "genuine frontmatter tier:transferable correctly detected"
+  else
+    fail "genuine frontmatter tier:transferable was NOT detected"
+  fi
+fi
+
+echo ""
 echo "=== test_loop_bootstrap ==="
 echo ""
 
@@ -158,6 +209,80 @@ if [[ -e "$REPO_ROOT/loop-bootstrap/memories" ]]; then
   fail "loop-bootstrap/memories/ still exists — memories should be derived from scripts/memory-triage/ by tier"
 else
   pass "loop-bootstrap/memories/ no longer exists"
+fi
+
+echo ""
+echo "--- Asserting no project-identity leak after a foreign-slug bootstrap (D#2598 fix-round item 2) ---"
+# A reviewer's real acme/widget install had 79 mentions of
+# autonomous-agent-7/fulcrumaxe in .claude/agents/ alone, because only the
+# pre-rename SOURCE_REPO literal was ever being rewritten. $TARGET was
+# bootstrapped above with --repo acme/test-cold-start (this repo's own
+# slug nowhere in that string), so any surviving mention of either this
+# project's legacy or current Discussion-plane slug is a real leak.
+LEGACY_LEAK_FILES=$(grep -rl "autonomous-agent-7" "$TARGET" 2>/dev/null || true)
+# Documented exceptions (D#2598 fix-round item 2a). The two test files use
+# this project's own slug purely as arbitrary/illustrative test data, never
+# as a functional identity a script or role file reads at runtime (see the
+# PR body for the full explanation of each). config.json's "bot_account" is
+# NOT a hardcoded literal at all — bootstrap.sh's step 16b resolves it from
+# whichever GitHub account `gh` is actually authenticated as in the CI
+# runner or dev sandbox invoking this suite; in THIS repo's own CI/sandbox
+# that legitimately IS this project's own bot account, which is correct
+# behavior, not a leak (a real third-party adopter's runner would resolve
+# to THEIR OWN authenticated account instead).
+KNOWN_FIXTURE_EXCEPTIONS="backend/tests/test_envelope_check.py
+backend/tests/test_trust_id_resolver.py
+.autonomous-team/config.json"
+UNEXPECTED_LEAKS=""
+while IFS= read -r f; do
+  [[ -z "$f" ]] && continue
+  rel="${f#"$TARGET"/}"
+  if ! grep -qxF "$rel" <<<"$KNOWN_FIXTURE_EXCEPTIONS"; then
+    UNEXPECTED_LEAKS="${UNEXPECTED_LEAKS}${rel}"$'\n'
+  fi
+done <<<"$LEGACY_LEAK_FILES"
+if [[ -z "$UNEXPECTED_LEAKS" ]]; then
+  pass "no unexpected 'autonomous-agent-7' mention anywhere in the installed tree"
+else
+  fail "unexpected 'autonomous-agent-7' mention(s) found:"
+  echo "$UNEXPECTED_LEAKS"
+fi
+
+# fulcrumaxe/fulcrumaxe (the code-plane slug) has two roles: this project's
+# own identity (must be rewritten) and the public engine repo an update
+# check must always target (must NOT be rewritten). The only place it
+# should survive is .autonomous-team/engine-install.json's source_repo and
+# the sed-proofed DEFAULT_ENGINE_REPO construction inside
+# scripts/update-check.sh (checked separately below) — anywhere else is a
+# project-identity leak.
+CODEPLANE_LEAK_FILES=$(grep -rl "fulcrumaxe/fulcrumaxe" "$TARGET" 2>/dev/null || true)
+UNEXPECTED_CODEPLANE_LEAKS=""
+while IFS= read -r f; do
+  [[ -z "$f" ]] && continue
+  rel="${f#"$TARGET"/}"
+  if [[ "$rel" != ".autonomous-team/engine-install.json" ]]; then
+    UNEXPECTED_CODEPLANE_LEAKS="${UNEXPECTED_CODEPLANE_LEAKS}${rel}"$'\n'
+  fi
+done <<<"$CODEPLANE_LEAK_FILES"
+if [[ -z "$UNEXPECTED_CODEPLANE_LEAKS" ]]; then
+  pass "no project-identity use of 'fulcrumaxe/fulcrumaxe' outside the documented engine-update reference"
+else
+  fail "unexpected project-identity 'fulcrumaxe/fulcrumaxe' mention(s) found:"
+  echo "$UNEXPECTED_CODEPLANE_LEAKS"
+fi
+
+# The engine-update references must still name the real engine repo after
+# rewriting, not the adopter's own --repo.
+if grep -q '"source_repo": "fulcrumaxe/fulcrumaxe"' "$TARGET/.autonomous-team/engine-install.json" 2>/dev/null; then
+  pass "engine-install.json source_repo still names fulcrumaxe/fulcrumaxe after a foreign-slug bootstrap"
+else
+  fail "engine-install.json source_repo does not name fulcrumaxe/fulcrumaxe (got: $(cat "$TARGET/.autonomous-team/engine-install.json" 2>/dev/null))"
+fi
+if grep -q '_ENGINE_UPSTREAM_OWNER="fulcrumaxe"' "$TARGET/scripts/update-check.sh" 2>/dev/null \
+   && grep -q '_ENGINE_UPSTREAM_NAME="fulcrumaxe"' "$TARGET/scripts/update-check.sh" 2>/dev/null; then
+  pass "installed scripts/update-check.sh still targets fulcrumaxe/fulcrumaxe for engine updates after a foreign-slug bootstrap"
+else
+  fail "installed scripts/update-check.sh's engine-repo constant was rewritten away from fulcrumaxe/fulcrumaxe"
 fi
 
 echo ""

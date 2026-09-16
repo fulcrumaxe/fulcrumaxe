@@ -327,24 +327,65 @@ rsync_bootstrap_dir() {
 # The rewrite is content-gated now, not extension-gated (D#2207): `grep -Iq`
 # (skip binaries) is the real safety check, so do not re-add an extension
 # allowlist here as a "safety" improvement — it only re-opens the gap it closed.
+# D#2598 fix-round item 2(b): this project has used THREE full slugs for
+# itself over time — the pre-rename SOURCE_REPO (autonomous-agent-7/
+# autonomous-forever), the current Discussion-plane slug
+# (autonomous-agent-7/fulcrumaxe), and the code-plane slug (fulcrumaxe/
+# fulcrumaxe) once the two-plane cutover set code_repo. A reviewer's real
+# `acme/widget` install had 79 mentions of autonomous-agent-7/fulcrumaxe
+# in .claude/agents/ alone, because only the pre-rename slug was ever being
+# rewritten. All three (and their split owner/name GraphQL forms) are
+# rewritten to the adopter's single --repo value now — an adopter's project
+# uses one repo for both planes unless its own project.json says otherwise.
+#
+# This intentionally does NOT touch scripts/update-check.sh's
+# DEFAULT_ENGINE_REPO or loop-bootstrap/bootstrap.sh's own ENGINE_CANONICAL_REPO
+# (the latter never ships to a target at all — loop-bootstrap/ isn't part of
+# BOOTSTRAP_PATHS). Both name the actual upstream ENGINE repo an adopter's
+# install should keep checking for updates against, never the adopter's own
+# fork — see update-check.sh's own comment for how it keeps that literal out
+# of this function's reach.
 rewrite_tree_identifiers() {
   local dir="$1"
   [[ -d "$dir" ]] || return 0
   local target_owner="${TARGET_REPO%/*}"
   local target_name="${TARGET_REPO#*/}"
-  local source_owner="${SOURCE_REPO%/*}"
-  local source_name="${SOURCE_REPO#*/}"
-  local f
+
+  # Every full slug this project has used for its own identity, oldest
+  # first. Order matters only in that the full-slug pass runs before the
+  # owner/name passes below (same as before this change) — a full-slug
+  # match consumes the "/"-joined pair before the split forms get a chance
+  # to see the now-already-rewritten pieces, so there is no double rewrite.
+  local -a full_slugs=(
+    "$SOURCE_REPO"
+    "autonomous-agent-7/fulcrumaxe"
+    "fulcrumaxe/fulcrumaxe"
+  )
+  # Distinct owner/name literals across those three slugs, deduplicated by
+  # hand: "autonomous-agent-7" is the owner of both the legacy and current
+  # Discussion-plane slugs; "fulcrumaxe" is the NAME of both the Discussion-
+  # plane and code-plane slugs, and is ALSO the code-plane slug's OWNER
+  # (fulcrumaxe/fulcrumaxe is self-referential — same string, two roles).
+  local -a owners=("${SOURCE_REPO%/*}" "autonomous-agent-7" "fulcrumaxe")
+  local -a names=("${SOURCE_REPO#*/}" "fulcrumaxe")
+
+  local f slug o n
   while IFS= read -r -d '' f; do
     [[ -L "$f" ]] && continue
     grep -Iq . "$f" 2>/dev/null || continue  # skip binaries
-    pc_sed_i "s|${SOURCE_REPO}|${TARGET_REPO}|g" "$f"
-    pc_sed_i "s|owner:\"${source_owner}\"|owner:\"${target_owner}\"|g" "$f"
-    pc_sed_i "s|name:\"${source_name}\"|name:\"${target_name}\"|g" "$f"
-    pc_sed_i "s|owner:\\\\\"${source_owner}\\\\\"|owner:\\\\\"${target_owner}\\\\\"|g" "$f"
-    pc_sed_i "s|name:\\\\\"${source_name}\\\\\"|name:\\\\\"${target_name}\\\\\"|g" "$f"
-    pc_sed_i "s|owner: \"${source_owner}\"|owner: \"${target_owner}\"|g" "$f"
-    pc_sed_i "s|name: \"${source_name}\"|name: \"${target_name}\"|g" "$f"
+    for slug in "${full_slugs[@]}"; do
+      pc_sed_i "s|${slug}|${TARGET_REPO}|g" "$f"
+    done
+    for o in "${owners[@]}"; do
+      pc_sed_i "s|owner:\"${o}\"|owner:\"${target_owner}\"|g" "$f"
+      pc_sed_i "s|owner:\\\\\"${o}\\\\\"|owner:\\\\\"${target_owner}\\\\\"|g" "$f"
+      pc_sed_i "s|owner: \"${o}\"|owner: \"${target_owner}\"|g" "$f"
+    done
+    for n in "${names[@]}"; do
+      pc_sed_i "s|name:\"${n}\"|name:\"${target_name}\"|g" "$f"
+      pc_sed_i "s|name:\\\\\"${n}\\\\\"|name:\\\\\"${target_name}\\\\\"|g" "$f"
+      pc_sed_i "s|name: \"${n}\"|name: \"${target_name}\"|g" "$f"
+    done
   done < <(find "$dir" -type f -print0 2>/dev/null)
 }
 
@@ -416,6 +457,21 @@ if [[ "${#RSYNC_EXCLUDES[@]}" -eq 0 ]]; then
   exit 1
 fi
 
+# memory_is_tier_transferable <file> — true iff <file>'s YAML FRONTMATTER
+# (the region between the first "---" line and the second one) carries a
+# `tier: transferable` line. Fix for a fix-round finding (D#2598): a bare
+# `grep -q '^tier: transferable$' "$f"` matches that string ANYWHERE in the
+# file, including a memory's own BODY prose (e.g. a note that quotes or
+# discusses another file's tier value) — that would ship a
+# hardwire-candidate/tier:project file whose body happens to mention
+# "tier: transferable" as an aside. Extracting just the frontmatter block
+# first (awk counts "---" delimiters; the region between the 1st and 2nd is
+# frontmatter) and grepping only that closes the gap.
+memory_is_tier_transferable() {
+  local f="$1"
+  awk '/^---$/{n++; next} n==1' "$f" 2>/dev/null | grep -q '^tier: transferable$'
+}
+
 # 1. Memories — derived from scripts/memory-triage/ by tier (D#2598), not a
 #    hand-maintained loop-bootstrap/memories/ copy (that directory is gone).
 #    Only files carrying `tier: transferable` frontmatter ship: a
@@ -438,7 +494,7 @@ else
   shopt -s nullglob
   for f in "$MEMORY_TRIAGE_DIR"/*.md; do
     [[ "$(basename "$f")" == "MEMORY.md" ]] && continue
-    grep -q '^tier: transferable$' "$f" 2>/dev/null || continue
+    memory_is_tier_transferable "$f" || continue
     do_install "$f" "$MEMORY_DEST"
   done
   shopt -u nullglob
@@ -1267,7 +1323,13 @@ else
   else
     ENGINE_SOURCE_KIND="export"
   fi
-  ENGINE_CANONICAL_REPO="${LOOP_BOOTSTRAP_ENGINE_REPO:-autonomous-agent-7/fulcrumaxe}"
+  # The public engine repo, not the Discussion-plane slug (D#2598 fix-round
+  # item 2): this used to default to autonomous-agent-7/fulcrumaxe, which is
+  # this project's private Discussions repo, not where its engine source
+  # actually lives. No sed-proofing needed for this literal — unlike
+  # scripts/update-check.sh, this file (loop-bootstrap/bootstrap.sh) is
+  # never copied into a bootstrapped target at all.
+  ENGINE_CANONICAL_REPO="${LOOP_BOOTSTRAP_ENGINE_REPO:-fulcrumaxe/fulcrumaxe}"
   python3 - "$ENGINE_INSTALL_JSON_DST" "$ENGINE_VERSION_VAL" "$ENGINE_COMMIT_VAL" "$ENGINE_SOURCE_KIND" "$ENGINE_CANONICAL_REPO" <<'ENGINE_INSTALL_PY'
 import json, sys
 from datetime import datetime, timezone
