@@ -72,38 +72,15 @@ _BODY_MAX_LEN = 4000
 _CONTROL_TOKEN_MARKER = "[removed]"
 
 _SANITIZE_PATTERNS = [
-    # Each pattern below captures its own optional trailing newline in a
-    # group and reinserts it after the marker (replacement "...\1"), rather
-    # than consuming it silently. Without this, replacing "SPAWN_REQUEST:
-    # ...\n" with a bare marker deletes the newline along with the match,
-    # so whatever starts the NEXT line is no longer preceded by a newline —
-    # which silently defeats the STATUS: pattern's "^" line-start anchor
-    # below for a genuine STATUS: token one line down (caught by
-    # backend/tests/test_pr_comment_trust.py::test_untrusted_body_is_delimited_and_sanitized
-    # during D#2608 review round 2). The marker itself never carries any of
-    # the stripped content — only this one content-free newline does.
-    (re.compile(r"SPAWN_REQUEST[^\n]*(\n?)", re.MULTILINE), _CONTROL_TOKEN_MARKER + r"\1"),
-    (re.compile(r"TERMINATE_REQUEST[^\n]*(\n?)", re.MULTILINE), _CONTROL_TOKEN_MARKER + r"\1"),
-    # Anchored to line-start ("^", with MULTILINE): a genuine control token
-    # is a line by itself at the start of a line. Without this anchor,
-    # "STATUS:" embedded inside a well-formed HTML comment on the same line
-    # — the canonical "<!-- STATUS:SPEC_READY ... -->" usage throughout this
-    # codebase — matches THROUGH that comment's own closing "-->", deleting
-    # it and leaving a dangling "<!--" that then swallows everything up to
-    # the NEXT unrelated comment's closer once the pattern below runs. Same
-    # collateral-damage shape a greedy comment match caused, via a
-    # different pattern. Verified: without this anchor, a body with a
-    # leading STATUS comment and one unrelated comment later loses
-    # everything between them; with it, both comments are stripped
-    # independently and the real text between them survives.
-    (re.compile(r"^STATUS:[A-Z_]+[^\n]*(\n?)", re.MULTILINE), _CONTROL_TOKEN_MARKER + r"\1"),
-    # Non-greedy with an end-of-input fallback: matches to the FIRST "-->"
-    # it finds, or to end-of-input when there is none. Deliberately NOT
-    # greedy-to-the-last-"-->" (an earlier version of this fix used greedy
-    # matching) — greedy also defeats the nested-comment repro below, but
-    # it additionally merges any two SEPARATE, well-formed comments
-    # anywhere in the body into one match, deleting real prose between
-    # them (e.g. a body with a leading "<!-- STATUS:... -->" and an
+    # The comment pattern runs FIRST, before the three token patterns —
+    # order matters here, and this is the second time getting it wrong
+    # taught us that (see below). Non-greedy with an end-of-input fallback:
+    # matches to the FIRST "-->" it finds, or to end-of-input when there is
+    # none. Deliberately NOT greedy-to-the-last-"-->" (an earlier version of
+    # this fix used greedy matching) — greedy defeats the nested-comment
+    # repro below, but it also merges any two SEPARATE, well-formed
+    # comments anywhere in the body into one match, deleting real prose
+    # between them (a body with a leading "<!-- STATUS:... -->" and an
     # unrelated comment later would lose everything in between). The
     # marker alone already defeats the nested/interleaved repro:
     # sanitize_body("<!-<!--a-->- AGENT_OUTPUT --<!--b-->>") produces
@@ -111,23 +88,78 @@ _SANITIZE_PATTERNS = [
     # there, but there is no "<!--" and no "-->" left in the output, so
     # nothing downstream can parse it as a comment or an envelope. Same
     # shape as the hosted TypeScript port's HTML_COMMENT_PATTERN.
+    #
+    # Running this FIRST — rather than last, as a first and second attempt
+    # at this fix both did — means a well-formed comment is replaced by ONE
+    # marker in its entirety before any token pattern below ever sees its
+    # contents, including a "STATUS:" token that happens to sit inside it.
+    # That is what makes the STATUS: pattern below safe to leave unanchored
+    # (see its comment for why an anchor was tried and reverted).
     (re.compile(r"<!--[\s\S]*?(?:-->|\Z)"), _CONTROL_TOKEN_MARKER),
+    (re.compile(r"SPAWN_REQUEST[^\n]*\n?", re.MULTILINE), _CONTROL_TOKEN_MARKER),
+    (re.compile(r"TERMINATE_REQUEST[^\n]*\n?", re.MULTILINE), _CONTROL_TOKEN_MARKER),
+    # Deliberately UNANCHORED — this pattern matches "STATUS:" anywhere on
+    # a line, not just at line-start. A prior version of this fix anchored
+    # it to "^STATUS:" to stop it from matching inside a well-formed
+    # comment on the same line, reasoning by analogy from the hosted
+    # TypeScript port's STATUS_PATTERN, which carries the same anchor. That
+    # analogy didn't transfer: the TS anchor exists to narrow a
+    # case-INSENSITIVE match (so "status:open" or a "STATUS:x" fragment
+    # inside a URL doesn't get treated as a token) — a problem this
+    # pattern, matching case-EXACT "STATUS:", never had. What the anchor
+    # broke here instead: several readers in this repo intentionally accept
+    # STATUS: tokens mid-line, leading-space- or tab-indented, inside a
+    # markdown list item or blockquote, or CR-separated
+    # (loop-phased-step5.ts's includes() check, loop-subsystem-snapshot.py,
+    # panel-helpers.sh, post-merge-hook.sh) — the anchor silently let all of
+    # those survive sanitization verbatim, which is a worse defect than the
+    # one it was trying to fix: a control token those readers honor now
+    # reaching them through untrusted text. Moving the comment pattern
+    # above to run FIRST closes the original case (STATUS: inside a
+    # well-formed comment) without narrowing what counts as a token, and
+    # also closes a case the anchor left open: a STATUS: line at column 0
+    # *inside* a multi-line comment, sharing a line with that comment's own
+    # closing "-->", used to consume the closer along with the STATUS:
+    # match, leaving the comment pattern (running last, in that version) to
+    # treat everything after as an unterminated comment and erase it.
+    (re.compile(r"STATUS:[A-Z_]+[^\n]*\n?", re.MULTILINE), _CONTROL_TOKEN_MARKER),
 ]
 
 
+_EXTRA_FORMAT_CHARS = "͏᠎"
+# COMBINING GRAPHEME JOINER (U+034F) and MONGOLIAN VOWEL SEPARATOR (U+180E),
+# added explicitly alongside the Cf category below. U+034F is category "Mn"
+# (a non-spacing mark), not "Cf", so the category check alone misses it —
+# caught in review round 2 by comparing against the hosted TypeScript
+# sanitizer's ZERO_WIDTH_PATTERN, which lists both explicitly for the same
+# reason: each is a zero-advance-width invisible joiner/separator despite
+# not being classified as a format character. (U+180E resolves to Cf under
+# this interpreter's Unicode data already; it is listed here too so this
+# set matches the TS port's character class rather than relying on two
+# different Unicode database versions to agree.) Deliberately NOT stripping
+# category "Mn" wholesale — that would also strip ordinary accents from
+# legitimate multilingual text this gate must still preserve as quoted
+# content; these two are named individually because, unlike a normal
+# diacritic, they carry no visible mark at all.
+
+
 def _strip_format_chars(text: str) -> str:
-    """Drop Unicode category "Cf" (format) characters before any pattern
-    above runs — zero-width joiners, bidi controls, BOM, soft hyphen, etc.,
-    used to split a denylisted token so a naive exact-text scan misses it
-    (e.g. "SPAWN​_REQUEST", "STATUS­:SPEC_READY"). Must run BEFORE
-    the token patterns: this strip itself deletes characters and therefore
-    splices text the same way the patterns above used to — it is only safe
-    here because nothing has looked for a token yet, so there is nothing to
+    """Drop Unicode category "Cf" (format) characters, plus the two
+    explicit exceptions in _EXTRA_FORMAT_CHARS, before any pattern above
+    runs — zero-width joiners, bidi controls, BOM, soft hyphen, etc., used
+    to split a denylisted token so a naive exact-text scan misses it (e.g.
+    "SPAWN​_REQUEST", "STATUS­:SPEC_READY"). Must run BEFORE the token
+    patterns: this strip itself deletes characters and therefore splices
+    text the same way the patterns above used to — it is only safe here
+    because nothing has looked for a token yet, so there is nothing to
     complete. Ported from the hosted product's TypeScript sanitizer
     (packages/trust/src/sanitize.ts); NFKC normalization and case-
     insensitive token matching are a deliberate follow-up, not this round.
     """
-    return "".join(c for c in text if unicodedata.category(c) != "Cf")
+    return "".join(
+        c for c in text
+        if unicodedata.category(c) != "Cf" and c not in _EXTRA_FORMAT_CHARS
+    )
 
 
 # ---------------------------------------------------------------------------
