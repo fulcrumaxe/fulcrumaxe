@@ -37,12 +37,34 @@ _AUDIT_LOG = _REPO_ROOT / ".autonomous-team" / "route-decisions.jsonl"
 _DEFAULT_CONFIG_PATH = _REPO_ROOT / ".autonomous-team" / "config.json"
 _BODY_MAX_LEN = 4000
 
-# Control-plane tokens stripped from body before passing to executor.
+# D#2608: deleting a matched HTML comment splices the text on either side of
+# it back together, which can reassemble a control token that was never
+# contiguous in the input (e.g. "SPAWN_<!--x-->REQUEST" -> "SPAWN_REQUEST").
+# The comment pattern is therefore replaced with a visible marker instead of
+# deleted, so the two sides stay apart. The marker must not itself contain
+# any of the four sanitized token shapes, and must not contain "<<" or ">>"
+# (external_intake_gate.sanitize_and_delimit_external() wraps this output in
+# <<UNTRUSTED...>> fences).
+_COMMENT_MARKER = "[removed]"
+
+# The other three patterns match a fixed literal token through to end of
+# line, so nothing runs before them that could fragment their own literal
+# text — plain deletion carries no reassembly risk for those.
+#
+# The comment pattern tries the well-formed case first: greedy so a single
+# match spans from the first "<!--" to the LAST "-->" in the remainder, not
+# just the nearest one. That matters for a nested/interleaved forgery like
+# "<!-<!--a-->- X --<!--b-->>" — a lazy, nearest-"-->" match would strip the
+# two inner comments as two separate matches and leave "X" exposed as bare
+# text between them; the greedy match instead treats the whole ambiguous
+# span as one comment. It falls back to matching through end-of-input when
+# no closing "-->" exists at all, so an unterminated "<!--" is bounded
+# rather than left untouched.
 _SANITIZE_PATTERNS = [
-    re.compile(r"SPAWN_REQUEST[^\n]*\n?", re.MULTILINE),
-    re.compile(r"TERMINATE_REQUEST[^\n]*\n?", re.MULTILINE),
-    re.compile(r"STATUS:[A-Z_]+[^\n]*\n?", re.MULTILINE),
-    re.compile(r"<!--.*?-->", re.DOTALL),  # strip all HTML comments (incl. AGENT_OUTPUT blocks)
+    (re.compile(r"SPAWN_REQUEST[^\n]*\n?", re.MULTILINE), ""),
+    (re.compile(r"TERMINATE_REQUEST[^\n]*\n?", re.MULTILINE), ""),
+    (re.compile(r"STATUS:[A-Z_]+[^\n]*\n?", re.MULTILINE), ""),
+    (re.compile(r"<!--.*-->|<!--.*\Z", re.DOTALL), _COMMENT_MARKER),
 ]
 
 
@@ -96,10 +118,18 @@ def sanitize_body(body: str) -> str:
 
     Never modify the discussion body in-place — operates on a copy.
     Called by the wiring layer before embedding body into executor prompt.
+
+    The length cap is applied to the INPUT before the regex loop runs (as
+    well as to the output afterward, unchanged from before) — D#2608: capping
+    only the output let an attacker place content past _BODY_MAX_LEN in the
+    raw body, then have an earlier pattern's deletion shrink the string enough
+    to pull that content into the kept window. Capping first means nothing
+    past _BODY_MAX_LEN in the input can ever reach the regex loop, let alone
+    the output.
     """
-    sanitized = body
-    for pattern in _SANITIZE_PATTERNS:
-        sanitized = pattern.sub("", sanitized)
+    sanitized = body[:_BODY_MAX_LEN]
+    for pattern, replacement in _SANITIZE_PATTERNS:
+        sanitized = pattern.sub(replacement, sanitized)
     return sanitized[:_BODY_MAX_LEN]
 
 
