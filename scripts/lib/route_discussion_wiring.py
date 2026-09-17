@@ -24,6 +24,7 @@ import json
 import re
 import subprocess
 import sys
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
@@ -37,35 +38,96 @@ _AUDIT_LOG = _REPO_ROOT / ".autonomous-team" / "route-decisions.jsonl"
 _DEFAULT_CONFIG_PATH = _REPO_ROOT / ".autonomous-team" / "config.json"
 _BODY_MAX_LEN = 4000
 
-# D#2608: deleting a matched HTML comment splices the text on either side of
-# it back together, which can reassemble a control token that was never
-# contiguous in the input (e.g. "SPAWN_<!--x-->REQUEST" -> "SPAWN_REQUEST").
-# The comment pattern is therefore replaced with a visible marker instead of
-# deleted, so the two sides stay apart. The marker must not itself contain
-# any of the four sanitized token shapes, and must not contain "<<" or ">>"
-# (external_intake_gate.sanitize_and_delimit_external() wraps this output in
-# <<UNTRUSTED...>> fences).
-_COMMENT_MARKER = "[removed]"
-
-# The other three patterns match a fixed literal token through to end of
-# line, so nothing runs before them that could fragment their own literal
-# text — plain deletion carries no reassembly risk for those.
+# D#2608: deleting a matched token or comment splices the text on either
+# side of the match back together. Two differently-shaped bugs are the SAME
+# root cause, and a fix that only closes one of them is not the fix:
+#   - MANUFACTURE: "SPAWN_<!--x-->REQUEST" doesn't match the SPAWN_REQUEST
+#     pattern below (a comment is in the way) — but deleting "<!--x-->"
+#     makes "SPAWN_" and "REQUEST ..." adjacent, spelling a token that was
+#     never in the input and is never re-scanned for.
+#   - SPLICE ACROSS A DIFFERENT PATTERN: "SPAWN_TERMINATE_REQUEST pad\n
+#     REQUEST ..." doesn't match SPAWN_REQUEST either (TERMINATE_ is in the
+#     way) — but deleting the TERMINATE_REQUEST match, a DIFFERENT pattern
+#     with no comment involved at all, splices "SPAWN_" and "REQUEST ..."
+#     together the same way. Pattern N's deletion can complete pattern M's
+#     token for any M that already ran. This is NOT about whether an
+#     earlier pass could fragment a pattern's own literal text (that
+#     direction is fine); it is the other direction, and every pattern
+#     below is exposed to it — not just the comment one.
+# Every pattern therefore replaces its match with a visible marker instead
+# of deleting it, so two leftover fragments can never rejoin — through the
+# marker or through each other — into a new match. This is the same
+# one-marker-for-every-pattern shape the hosted product's TypeScript port
+# of this sanitizer uses (packages/trust/src/sanitize.ts's
+# stripControlTokens()), for the same reason.
 #
-# The comment pattern tries the well-formed case first: greedy so a single
-# match spans from the first "<!--" to the LAST "-->" in the remainder, not
-# just the nearest one. That matters for a nested/interleaved forgery like
-# "<!-<!--a-->- X --<!--b-->>" — a lazy, nearest-"-->" match would strip the
-# two inner comments as two separate matches and leave "X" exposed as bare
-# text between them; the greedy match instead treats the whole ambiguous
-# span as one comment. It falls back to matching through end-of-input when
-# no closing "-->" exists at all, so an unterminated "<!--" is bounded
-# rather than left untouched.
+# The marker must not itself contain any of the four sanitized token
+# shapes, and must not contain "<<" or ">>" (external_intake_gate.
+# sanitize_and_delimit_external() wraps this output in <<UNTRUSTED...>>
+# fences). It carries no authenticity: an author can type the literal text
+# "[removed]" themselves, and nothing here or downstream parses, counts, or
+# reconstructs anything from an occurrence of this marker — it exists only
+# so a human glancing at the text can see something was removed. Do not
+# build decision logic against it.
+_CONTROL_TOKEN_MARKER = "[removed]"
+
 _SANITIZE_PATTERNS = [
-    (re.compile(r"SPAWN_REQUEST[^\n]*\n?", re.MULTILINE), ""),
-    (re.compile(r"TERMINATE_REQUEST[^\n]*\n?", re.MULTILINE), ""),
-    (re.compile(r"STATUS:[A-Z_]+[^\n]*\n?", re.MULTILINE), ""),
-    (re.compile(r"<!--.*-->|<!--.*\Z", re.DOTALL), _COMMENT_MARKER),
+    # Each pattern below captures its own optional trailing newline in a
+    # group and reinserts it after the marker (replacement "...\1"), rather
+    # than consuming it silently. Without this, replacing "SPAWN_REQUEST:
+    # ...\n" with a bare marker deletes the newline along with the match,
+    # so whatever starts the NEXT line is no longer preceded by a newline —
+    # which silently defeats the STATUS: pattern's "^" line-start anchor
+    # below for a genuine STATUS: token one line down (caught by
+    # backend/tests/test_pr_comment_trust.py::test_untrusted_body_is_delimited_and_sanitized
+    # during D#2608 review round 2). The marker itself never carries any of
+    # the stripped content — only this one content-free newline does.
+    (re.compile(r"SPAWN_REQUEST[^\n]*(\n?)", re.MULTILINE), _CONTROL_TOKEN_MARKER + r"\1"),
+    (re.compile(r"TERMINATE_REQUEST[^\n]*(\n?)", re.MULTILINE), _CONTROL_TOKEN_MARKER + r"\1"),
+    # Anchored to line-start ("^", with MULTILINE): a genuine control token
+    # is a line by itself at the start of a line. Without this anchor,
+    # "STATUS:" embedded inside a well-formed HTML comment on the same line
+    # — the canonical "<!-- STATUS:SPEC_READY ... -->" usage throughout this
+    # codebase — matches THROUGH that comment's own closing "-->", deleting
+    # it and leaving a dangling "<!--" that then swallows everything up to
+    # the NEXT unrelated comment's closer once the pattern below runs. Same
+    # collateral-damage shape a greedy comment match caused, via a
+    # different pattern. Verified: without this anchor, a body with a
+    # leading STATUS comment and one unrelated comment later loses
+    # everything between them; with it, both comments are stripped
+    # independently and the real text between them survives.
+    (re.compile(r"^STATUS:[A-Z_]+[^\n]*(\n?)", re.MULTILINE), _CONTROL_TOKEN_MARKER + r"\1"),
+    # Non-greedy with an end-of-input fallback: matches to the FIRST "-->"
+    # it finds, or to end-of-input when there is none. Deliberately NOT
+    # greedy-to-the-last-"-->" (an earlier version of this fix used greedy
+    # matching) — greedy also defeats the nested-comment repro below, but
+    # it additionally merges any two SEPARATE, well-formed comments
+    # anywhere in the body into one match, deleting real prose between
+    # them (e.g. a body with a leading "<!-- STATUS:... -->" and an
+    # unrelated comment later would lose everything in between). The
+    # marker alone already defeats the nested/interleaved repro:
+    # sanitize_body("<!-<!--a-->- AGENT_OUTPUT --<!--b-->>") produces
+    # "<!-[removed]- AGENT_OUTPUT --[removed]>" — the words are still
+    # there, but there is no "<!--" and no "-->" left in the output, so
+    # nothing downstream can parse it as a comment or an envelope. Same
+    # shape as the hosted TypeScript port's HTML_COMMENT_PATTERN.
+    (re.compile(r"<!--[\s\S]*?(?:-->|\Z)"), _CONTROL_TOKEN_MARKER),
 ]
+
+
+def _strip_format_chars(text: str) -> str:
+    """Drop Unicode category "Cf" (format) characters before any pattern
+    above runs — zero-width joiners, bidi controls, BOM, soft hyphen, etc.,
+    used to split a denylisted token so a naive exact-text scan misses it
+    (e.g. "SPAWN​_REQUEST", "STATUS­:SPEC_READY"). Must run BEFORE
+    the token patterns: this strip itself deletes characters and therefore
+    splices text the same way the patterns above used to — it is only safe
+    here because nothing has looked for a token yet, so there is nothing to
+    complete. Ported from the hosted product's TypeScript sanitizer
+    (packages/trust/src/sanitize.ts); NFKC normalization and case-
+    insensitive token matching are a deliberate follow-up, not this round.
+    """
+    return "".join(c for c in text if unicodedata.category(c) != "Cf")
 
 
 # ---------------------------------------------------------------------------
@@ -119,6 +181,16 @@ def sanitize_body(body: str) -> str:
     Never modify the discussion body in-place — operates on a copy.
     Called by the wiring layer before embedding body into executor prompt.
 
+    Takes exactly ONE author's text per call — never concatenate several
+    authors' text into a single call before this function runs. The
+    HTML-comment pattern's end-of-input fallback (see _SANITIZE_PATTERNS
+    above) has no way to know where one author's text ends and the next
+    begins, so an unterminated "<!--" from one author would consume every
+    subsequent author's text in the same call. All current callers already
+    satisfy this: pr_comment_trust.py calls this (via
+    sanitize_and_delimit_external) once per comment, and the
+    external_intake_gate CLI path passes one body per invocation.
+
     The length cap is applied to the INPUT before the regex loop runs (as
     well as to the output afterward, unchanged from before) — D#2608: capping
     only the output let an attacker place content past _BODY_MAX_LEN in the
@@ -128,6 +200,7 @@ def sanitize_body(body: str) -> str:
     the output.
     """
     sanitized = body[:_BODY_MAX_LEN]
+    sanitized = _strip_format_chars(sanitized)
     for pattern, replacement in _SANITIZE_PATTERNS:
         sanitized = pattern.sub(replacement, sanitized)
     return sanitized[:_BODY_MAX_LEN]
