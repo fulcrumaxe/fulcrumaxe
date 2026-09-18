@@ -416,6 +416,15 @@ assert_contains "$COLDSTART_SH" "TEAM_DIR/loop-metrics.jsonl" "loop-metrics in r
 
 echo ""
 echo "--- BUG 5: loop-bootstrap/backend-snapshot/ exists and has Python files ---"
+# NOTE (D#2614): loop-bootstrap/backend-snapshot/ is absent from this repo's
+# git history entirely, so the unguarded `find` two lines down aborts the
+# whole suite under `set -e` before it ever reaches the D#2614 assertions
+# far below (the corpus-wide engine-identity drift check and its neighbors,
+# around the "engine-identity" PORTABILITY blocks). That is a pre-existing,
+# unrelated gap, not something this PR introduces or fixes — but it means
+# those later assertions do not execute in a normal `bash` run of this
+# suite today; they were verified directly against real bootstrap output
+# instead (see the PR body).
 SNAPSHOT_DIR="$REPO_ROOT/loop-bootstrap/backend-snapshot"
 assert_dir "$SNAPSHOT_DIR"
 SNAPSHOT_PY_COUNT=$(find "$SNAPSHOT_DIR" -name "*.py" -type f | wc -l)
@@ -713,34 +722,139 @@ done
 
 echo ""
 echo ""
-echo "--- PORTABILITY: SOURCE_REPO drift check (D#1872 item 8) ---"
-# bootstrap.sh's SOURCE_REPO is a sed search key, not an identity claim — it
-# must equal whatever slug is literally embedded in the do_install-reached
-# corpus (templates/, scripts/, agents/, memories/), or the whole rewrite
-# pass silently stops matching anything. This asserts that invariant
-# directly against source control (not the installed $TARGET), so a future
-# rename that updates one side without the other fails loudly here instead
-# of shipping a corpus that quietly stops getting rewritten.
+echo "--- PORTABILITY: engine-identity drift check, corpus-wide (D#2614, replaces D#1872 item 8's single-canary check) ---"
+# The old check here proved the sed key matched *something* (one canary
+# file) — never that it matched *everything*, which is exactly how a corpus
+# split across multiple slugs went unnoticed. This asserts the property
+# directly against the bootstrap OUTPUT already installed into $TARGET
+# above: no engine-identifying slug survives anywhere in the installed
+# tree except at a path the allowlist explicitly names. It reads the same
+# loop-bootstrap/engine-identity-allowlist.txt rewrite_tree_identifiers
+# reads — one file, two readers, so they cannot disagree.
 BOOTSTRAP_SRC="$REPO_ROOT/loop-bootstrap/bootstrap.sh"
+ALLOWLIST_FILE="$REPO_ROOT/loop-bootstrap/engine-identity-allowlist.txt"
 SOURCE_REPO_LITERAL=$(grep -oP '(?<=SOURCE_REPO="\$\{LOOP_BOOTSTRAP_SOURCE_REPO:-)[^}]+' "$BOOTSTRAP_SRC" || true)
-if [[ -z "$SOURCE_REPO_LITERAL" ]]; then
-  fail "SOURCE_REPO drift: could not extract the fallback literal from bootstrap.sh (did its shape change?)"
+
+if [[ ! -s "$ALLOWLIST_FILE" ]]; then
+  fail "engine-identity allowlist missing or empty: $ALLOWLIST_FILE"
 else
-  pass "SOURCE_REPO drift: extracted fallback literal '$SOURCE_REPO_LITERAL' from bootstrap.sh"
-  # Spot-check against a known do_install-reached file that carries the
-  # full-slug form (Form 1) — same file the PORTABILITY assertions above
-  # already prove gets correctly rewritten at install time.
-  CANARY="$REPO_ROOT/loop-bootstrap/templates/docs-writer.tmpl"
-  if [[ -f "$CANARY" ]]; then
-    if grep -qF "$SOURCE_REPO_LITERAL" "$CANARY"; then
-      pass "SOURCE_REPO drift: fallback literal matches what docs-writer.tmpl actually carries"
-    else
-      fail "SOURCE_REPO drift: bootstrap.sh's SOURCE_REPO ('$SOURCE_REPO_LITERAL') no longer matches docs-writer.tmpl's embedded slug — do_install's sed will silently stop rewriting the corpus. Update SOURCE_REPO (or the corpus) so they match again."
-    fi
-  else
-    fail "SOURCE_REPO drift: canary file docs-writer.tmpl not found"
-  fi
+  pass "engine-identity allowlist present: $ALLOWLIST_FILE"
 fi
+
+ALLOWLIST_ENTRIES=()
+while IFS= read -r _al_line; do
+  [[ -z "$_al_line" || "$_al_line" == \#* ]] && continue
+  ALLOWLIST_ENTRIES+=("$_al_line")
+done < "$ALLOWLIST_FILE"
+
+_d2614_path_allowlisted() {
+  local rel="$1" entry
+  for entry in "${ALLOWLIST_ENTRIES[@]}"; do
+    if [[ "$entry" == */ ]]; then
+      [[ "$rel" == "$entry"* ]] && return 0
+    else
+      [[ "$rel" == $entry ]] && return 0
+    fi
+  done
+  return 1
+}
+
+# Whole-$TARGET scan, "autonomous-agent-7/" only — matches the real-world
+# verification command in the Spec exactly. It deliberately excludes
+# "fulcrumaxe/fulcrumaxe" at this whole-tree scope: .autonomous-team/
+# engine-install.json legitimately, permanently records that string as
+# this install's true engine source_repo (D#2335 PR 1) and is never passed
+# to rewrite_tree_identifiers at all — allowlisting a path outside the
+# rewrite's own reach would be documenting an exception that was never a
+# risk. The narrower .claude/agents/ check right below covers
+# "fulcrumaxe/fulcrumaxe" where it actually matters: nothing legitimately
+# ships an agent card naming the engine's own identity.
+UNALLOWLISTED_HITS=()
+while IFS= read -r -d '' hit_file; do
+  rel="${hit_file#$TARGET/}"
+  _d2614_path_allowlisted "$rel" || UNALLOWLISTED_HITS+=("$rel")
+done < <(grep -rlZ "autonomous-agent-7/" "$TARGET" 2>/dev/null)
+
+if [[ ${#UNALLOWLISTED_HITS[@]} -eq 0 ]]; then
+  pass "engine-identity drift: no unallowlisted hits of autonomous-agent-7/ in \$TARGET"
+else
+  fail "engine-identity drift: unallowlisted hits in \$TARGET: ${UNALLOWLISTED_HITS[*]}"
+fi
+
+if grep -rqn "autonomous-agent-7/\|fulcrumaxe/fulcrumaxe" "$TARGET/.claude/agents/" 2>/dev/null; then
+  fail "engine-identity drift: \$TARGET/.claude/agents/ still names the engine's own identity"
+else
+  pass "engine-identity drift: \$TARGET/.claude/agents/ has no engine-identity hit"
+fi
+
+# The upstream reference itself must survive — a clean sweep here is a FAIL,
+# not a better result (it would point the target's update path at itself).
+FETCH_PY="$TARGET/scripts/engine-sync/fetch.py"
+if [[ -f "$FETCH_PY" ]] && grep -q "autonomous-agent-7/fulcrumaxe" "$FETCH_PY"; then
+  pass "engine-identity drift: scripts/engine-sync/fetch.py still names the real upstream engine"
+else
+  fail "engine-identity drift: scripts/engine-sync/fetch.py no longer names the upstream engine — the update path now points at the adopter's own fork"
+fi
+
+echo ""
+echo "--- PORTABILITY: no engine slug outside rewrite_tree_identifiers's known list (D#2614 criterion 6) ---"
+# rewrite_tree_identifiers's own three-slug list, read from the script text
+# (not duplicated here) plus the SOURCE_REPO literal resolved above for the
+# "$SOURCE_REPO" entry. Scoped to two patterns, deliberately narrower than
+# "any owner/name pair": "autonomous-agent-7" is our own bot/org owner, so
+# ANY repo name after it is worth knowing about; "fulcrumaxe" as an owner
+# is not — it also owns real, distinct sibling repos (fulcrumaxe-internal,
+# gatekeep) that are not this project's own identity and were never meant
+# to be in this list, so only the exact self-referential "fulcrumaxe/
+# fulcrumaxe" is checked there. The name half excludes "." so a prose
+# sentence's trailing period, or a "fulcrumaxe/fulcrumaxe.git" remote URL,
+# is not mistaken for part of the slug.
+KNOWN_SLUGS=("$SOURCE_REPO_LITERAL")
+while IFS= read -r _slug_line; do
+  KNOWN_SLUGS+=("$_slug_line")
+done < <(sed -n '/local -a full_slugs=(/,/^  )$/p' "$BOOTSTRAP_SRC" | grep -oP '"\K[^"$][^"]*(?=")')
+
+UNKNOWN_SLUGS=()
+while IFS= read -r found_slug; do
+  [[ -z "$found_slug" ]] && continue
+  known=false
+  for k in "${KNOWN_SLUGS[@]}"; do
+    [[ "$found_slug" == "$k" ]] && { known=true; break; }
+  done
+  "$known" || UNKNOWN_SLUGS+=("$found_slug")
+done < <(grep -rhoP '(autonomous-agent-7/[A-Za-z0-9_-]+|fulcrumaxe/fulcrumaxe(?![A-Za-z0-9_.-]))' \
+  "$REPO_ROOT/backend" "$REPO_ROOT/scripts" "$REPO_ROOT/hooks" \
+  "$REPO_ROOT/.claude/agents" "$REPO_ROOT/.claude/commands" 2>/dev/null | sort -u)
+
+if [[ ${#UNKNOWN_SLUGS[@]} -eq 0 ]]; then
+  pass "engine-identity: every embedded slug in the installed corpus is in rewrite_tree_identifiers's known list"
+else
+  fail "engine-identity: corpus contains a slug rewrite_tree_identifiers does not know about: ${UNKNOWN_SLUGS[*]}"
+fi
+
+echo ""
+echo "--- PORTABILITY: current-slug corpus file is rewritten on install (D#2614 criterion 5) ---"
+# A uniquely-named throwaway file under a real corpus path (scripts/),
+# carrying the CURRENT slug, so the real rsync + rewrite install path is
+# exercised end to end rather than a copy of it (per the Spec's Implementation
+# Notes — the alternative, bootstrapping from a scratch copy of the corpus,
+# is also acceptable; this suite already runs from a disposable checkout, so
+# writing directly into $REPO_ROOT and cleaning up unconditionally is safe).
+PROBE_FILE="$REPO_ROOT/scripts/d2614_engine_identity_probe_$$.py"
+printf '# throwaway corpus probe (D#2614) — autonomous-agent-7/fulcrumaxe\n' > "$PROBE_FILE"
+trap 'rm -rf "$RUN_TMP" "$PROBE_FILE"' EXIT
+
+bash "$BOOTSTRAP" --repo acme/test-cold-start-v2 --force "$TARGET" > "$RUN_TMP/bootstrap-probe.log" 2>&1
+
+INSTALLED_PROBE="$TARGET/scripts/$(basename "$PROBE_FILE")"
+if [[ -f "$INSTALLED_PROBE" ]]; then
+  assert_not_contains "$INSTALLED_PROBE" "autonomous-agent-7/fulcrumaxe" \
+    "current-slug corpus probe file is rewritten on install"
+else
+  fail "current-slug corpus probe was not installed at $INSTALLED_PROBE"
+fi
+
+rm -f "$PROBE_FILE"
 
 echo ""
 echo "--- NAMING: coldstart.sh's step 3 no longer collides with loop-bootstrap/bootstrap.sh (D#1872 item 15) ---"

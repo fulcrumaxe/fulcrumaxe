@@ -41,6 +41,35 @@ assert_dir() {
   fi
 }
 
+# Shared with rewrite_tree_identifiers (loop-bootstrap/bootstrap.sh) and the
+# drift check in tests/test_loop_bootstrap_extended.sh: one allowlist file,
+# read the same way by all three consumers, so none of them can carry its
+# own, disagreeing copy of "which paths are allowed to keep naming the
+# engine's own identity" (D#2614). A path on this list is a documented,
+# deliberate survivor — scripts/engine-sync/ and scripts/update-check.sh —
+# not a leak the two checks below should be flagging.
+ENGINE_IDENTITY_ALLOWLIST_FILE="$REPO_ROOT/loop-bootstrap/engine-identity-allowlist.txt"
+ENGINE_IDENTITY_ALLOWLIST=()
+if [[ -s "$ENGINE_IDENTITY_ALLOWLIST_FILE" ]]; then
+  while IFS= read -r _eial_line; do
+    [[ -z "$_eial_line" || "$_eial_line" == \#* ]] && continue
+    ENGINE_IDENTITY_ALLOWLIST+=("$_eial_line")
+  done < "$ENGINE_IDENTITY_ALLOWLIST_FILE"
+fi
+
+# _engine_identity_allowlisted <target-relative-path>
+_engine_identity_allowlisted() {
+  local rel="$1" entry
+  for entry in "${ENGINE_IDENTITY_ALLOWLIST[@]}"; do
+    if [[ "$entry" == */ ]]; then
+      [[ "$rel" == "$entry"* ]] && return 0
+    else
+      [[ "$rel" == $entry ]] && return 0
+    fi
+  done
+  return 1
+}
+
 echo ""
 echo "--- memory_is_tier_transferable: matches only inside frontmatter (D#2598 fix-round item 3) ---"
 # A bare `grep -q '^tier: transferable$' "$f"` matches that string ANYWHERE
@@ -318,7 +347,7 @@ UNEXPECTED_LEAKS=""
 while IFS= read -r f; do
   [[ -z "$f" ]] && continue
   rel="${f#"$TARGET"/}"
-  if ! grep -qxF "$rel" <<<"$KNOWN_FIXTURE_EXCEPTIONS"; then
+  if ! grep -qxF "$rel" <<<"$KNOWN_FIXTURE_EXCEPTIONS" && ! _engine_identity_allowlisted "$rel"; then
     UNEXPECTED_LEAKS="${UNEXPECTED_LEAKS}${rel}"$'\n'
   fi
 done <<<"$LEGACY_LEAK_FILES"
@@ -331,17 +360,18 @@ fi
 
 # fulcrumaxe/fulcrumaxe (the code-plane slug) has two roles: this project's
 # own identity (must be rewritten) and the public engine repo an update
-# check must always target (must NOT be rewritten). The only place it
-# should survive is .autonomous-team/engine-install.json's source_repo and
-# the sed-proofed DEFAULT_ENGINE_REPO construction inside
-# scripts/update-check.sh (checked separately below) — anywhere else is a
-# project-identity leak.
+# check must always target (must NOT be rewritten). The only places it
+# should survive are .autonomous-team/engine-install.json's source_repo
+# (never passed to rewrite_tree_identifiers at all) and whatever the
+# engine-identity allowlist names (checked via _engine_identity_allowlisted
+# above, same file scripts/engine-sync/'s fetch.py and scripts/update-
+# check.sh are on) — anywhere else is a project-identity leak.
 CODEPLANE_LEAK_FILES=$(grep -rl "fulcrumaxe/fulcrumaxe" "$TARGET" 2>/dev/null || true)
 UNEXPECTED_CODEPLANE_LEAKS=""
 while IFS= read -r f; do
   [[ -z "$f" ]] && continue
   rel="${f#"$TARGET"/}"
-  if [[ "$rel" != ".autonomous-team/engine-install.json" ]]; then
+  if [[ "$rel" != ".autonomous-team/engine-install.json" ]] && ! _engine_identity_allowlisted "$rel"; then
     UNEXPECTED_CODEPLANE_LEAKS="${UNEXPECTED_CODEPLANE_LEAKS}${rel}"$'\n'
   fi
 done <<<"$CODEPLANE_LEAK_FILES"
