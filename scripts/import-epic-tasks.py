@@ -273,7 +273,12 @@ def find_task_files(repo_path: Path, epic_dir_name: str, epic_filter: Optional[i
     pattern = _epic_dir_pattern(epic_filter)
     files: list[Path] = []
     for epic_dir in sorted(epic_root.iterdir()):
-        if epic_dir.is_symlink() or not epic_dir.is_dir():
+        # Path.is_dir() follows a symlink itself, on purpose: a backlog whose
+        # epic-<N> directory is reachable only through a symlink must still
+        # be walked (D#2451 item 8) — only an individual task FILE symlink is
+        # refused below, for the unrelated reason that it could point outside
+        # the repo entirely.
+        if not epic_dir.is_dir():
             continue
         if not pattern.match(epic_dir.name):
             continue
@@ -536,10 +541,25 @@ def run_import(
     v0_selected, v1_selected = parse_selection(parsed, repo, status_filter, exclude_ids, milestone_filter)
     selected = v0_selected + v1_selected
     print(f"Selected {len(v0_selected)} v0 and {len(v1_selected)} v1 task(s)")
+    # Canonical, pinned line (scripts/lib/coldstart-backlog.sh parses this
+    # exact wording via `_coldstart_backlog_importer_status_count` to ask,
+    # rather than restate, how many files this run would act on — do not
+    # reword without checking that caller). Deliberately independent of the
+    # "Selected ... v0 and ... v1" line above, which is this script's own,
+    # unpinned progress note.
+    print(f"After status filter: {len(selected)} task(s) to process")
 
     # --- Validate the whole selection before creating anything (AC5) -------
+    # v1 only: task_file.validate_task_file's v0 branch requires a field set
+    # (epic/task/title/type/estimated_hours/depends_on/tags) the importer has
+    # never actually treated as load-bearing for a legacy file — it falls
+    # back to "?"/"untitled" and still imports on `status` alone (see
+    # coldstart-backlog.sh's _COLDSTART_BACKLOG_REQUIRED_FIELDS comment, and
+    # the coldstart-backlog-importer-agreement-guard fixture that pins a
+    # status-only v0 file as importable). Only a v1 file's stricter,
+    # documented schema is worth aborting the whole run over.
     invalid = False
-    for item in selected:
+    for item in v1_selected:
         problems = [p for p in task_file.validate_task_file(item["fm"], item["stem"]) if not p.startswith("warning:")]
         if problems:
             invalid = True
@@ -637,7 +657,11 @@ def _create_v1(
     body = build_v1_body(fm, item["file_body"], resolved_refs, parent, sha_hex, now_iso)
 
     if dry_run:
-        print(f"[dry] Would create: {title}")
+        # "would create Discussion" is pinned wording — coldstart-backlog.sh's
+        # classify_is()-style callers grep for this exact substring to tell
+        # "the importer would act on this" from "it would skip it" without
+        # touching the network. Do not reword without checking that caller.
+        print(f"  [dry-run] would create Discussion: {title!r}")
         return None
 
     try:
@@ -682,7 +706,9 @@ def _create_or_drift(
             body = build_v0_body(fm, item["file_body"], parent, sha_hex, now_iso)
 
         if dry_run:
-            print(f"[dry] Would create: {title}")
+            # See the matching comment in _create_v1 — "would create
+            # Discussion" is pinned wording a shell caller greps for.
+            print(f"  [dry-run] would create Discussion: {title!r}")
             return 0
         try:
             number, _node_id = client.create_discussion(title, body)
