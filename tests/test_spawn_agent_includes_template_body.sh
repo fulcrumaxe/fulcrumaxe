@@ -6,7 +6,7 @@
 #
 # What is tested (ACs 1–3 from D#663):
 #   AC1. executor prompt contains "## Bash discipline"
-#   AC2. Same for each of the 11 Bash-using roles
+#   AC2. Same for each of the 8 Bash-using roles
 #   AC3. A role with no .tmpl file produces no spurious "## Bash discipline"
 #        (quality-sweep and feedback-scanner have no .tmpl — use one of those)
 #
@@ -25,6 +25,44 @@
 #      NOT present) passes vacuously when a spawn is refused and produces no
 #      output at all, so AC3 needs the same exit-code check as AC1/AC2 even
 #      though its content assertion runs the opposite direction.
+#
+# D#2164: two more fixture gaps, on top of D#1985's:
+#   1. --pr 999 makes every BASH_ROLES spawn go through spawn-agent.sh's PR
+#      plane resolution (D#2563, scripts/lib/pr-plane.sh), which this suite's
+#      scratch scripts/ dir never staged — sourcing it failed with "No such
+#      file or directory", `pr_plane_resolve` read as "command not found",
+#      and every single role hard-blocked on "could not resolve which plane
+#      PR #999 lives on", not just the two named below. Fix: stage the file
+#      and use its documented PR_PLANE_RESOLVE_OVERRIDE_NAME/_REPO test hatch
+#      (see scripts/lib/pr-plane.sh's header) instead of teaching this stub's
+#      `gh` to answer a plane probe.
+#   2. The executor role alone also reads the Discussion body via
+#      backend/discussion_cache.py's GraphQL fetch (external_docs marker
+#      gate, spawn-agent.sh section 0b) — unrelated to the PM-gate this
+#      suite already bypasses with SPAWN_AGENT_ALLOW_NO_SPEC=1, which that
+#      gate deliberately does not read. The `gh` stub answered only the
+#      /pulls/ shape, so this fetch always failed; discussion_cache.py then
+#      fell back to a stale cached row instead of failing outright, so the
+#      gate read that stale body as unverifiable and refused with "could not
+#      get a live read of Discussion #999". Fix: answer the graphql shape
+#      with a body that carries no MISSING_EXTERNAL_DOCS marker, so the fetch
+#      succeeds outright and the stale-fallback path is never reached.
+#
+#   Fix round 1: this suite left AUTONOMOUS_TEAM_STATE_DIR unset, so
+#   discussion_cache.py resolved its sqlite store to the real
+#   ~/.autonomous-forever-state/discussion_cache.db — the same file every
+#   other agent reads and writes, and #999 is not a throwaway number, it's a
+#   real DONE discussion. Every run of this suite was upserting a synthetic
+#   body into that live row (CLAUDE.md's "AUTONOMOUS_TEAM_STATE_DIR in
+#   tests — export it, always", D#2283). Fixed by exporting a scratch
+#   AUTONOMOUS_TEAM_STATE_DIR before any spawn. That alone would make the
+#   item-2 mutation check (reverting the graphql stub) stop reproducing
+#   "only a stale cached body is available" — with no prior row in a fresh
+#   scratch db, a failed fetch reads as "empty", not "stale_fallback", and
+#   the external-docs gate just no-ops instead of blocking. So this also
+#   seeds one synthetic stale row for #999 directly into the scratch db,
+#   giving `_get_record`'s stale_fallback branch something to fall back to
+#   without ever touching the real cache.
 #
 # Usage:
 #   bash tests/test_spawn_agent_includes_template_body.sh
@@ -48,6 +86,36 @@ fail() { echo "  FAIL: $1 — $2"; FAIL=$((FAIL + 1)); ERRORS+=("$1: $2"); }
 
 TEST_DIR=$(mktemp -d)
 trap 'rm -rf "$TEST_DIR"' EXIT
+
+# Fix round 1 (D#2164): keep discussion_cache.py's sqlite store inside
+# $TEST_DIR so the synthetic Discussion #999 body the `gh` stub answers with
+# (below) can never land in the real
+# ~/.autonomous-forever-state/discussion_cache.db. Cleaned up by the trap
+# above along with everything else in $TEST_DIR.
+export AUTONOMOUS_TEAM_STATE_DIR="$TEST_DIR/state"
+
+# Seed a stale row for #999 into the (now scratch) discussion_cache.db, using
+# the module's own connection/write helpers rather than hand-rolled SQL, so
+# this stays correct if the schema ever changes. This is what lets the
+# item-2 mutation check (revert the `gh` graphql answer below, re-run) keep
+# reproducing "only a stale cached body is available" — discussion_cache.py's
+# stale_fallback path needs a pre-existing row to fall back to, and with
+# AUTONOMOUS_TEAM_STATE_DIR isolated above there is otherwise no row at all.
+python3 -c "
+import sys
+sys.path.insert(0, '$REPO_ROOT')
+from backend import discussion_cache as dc
+con = dc._conn()
+dc._cache_row(con, {
+    'number': 999,
+    'body': 'seed row for D#2164 fixture isolation — not a live Discussion body',
+    'title': 'scratch seed',
+    'labels': [],
+    'updated_at': '2020-01-01T00:00:00Z',
+})
+con.commit()
+con.close()
+"
 
 SCRIPTS_DIR="$TEST_DIR/scripts"
 mkdir -p "$SCRIPTS_DIR"
@@ -87,9 +155,20 @@ chmod +x "$SCRIPTS_DIR/pre-spawn-check.sh"
 # unconditional `exit 0` (no stdout) reads as a gh api failure and hard-blocks
 # docs-writer/runbook-writer (round 3's pr_branch fix). Everything else stays
 # a no-op success.
+#
+# D#2164: also answer `gh api graphql ...` — backend/discussion_cache.py's
+# GraphQL Discussion-body read, used by the executor role's external_docs
+# marker gate (spawn-agent.sh section 0b). A body with no MISSING_EXTERNAL_DOCS
+# marker clears that gate.
 cat > "$TEST_DIR/gh" <<'STUB'
 #!/usr/bin/env bash
 if [[ "$1" == "api" ]]; then
+  if [[ "$2" == "graphql" ]]; then
+    cat <<'JSON'
+{"data":{"repository":{"discussion":{"title":"test discussion","body":"<!-- STATUS:SPEC_READY SINCE:2026-01-01T00:00:00Z -->\n\nplanned_prs: 1\n","updatedAt":"2026-01-01T00:00:00Z","labels":{"nodes":[]}}}}}
+JSON
+    exit 0
+  fi
   for arg in "$@"; do
     if [[ "$arg" == *"/pulls/"* ]]; then
       printf 'deadbeef\tfeature/test-branch\n'
@@ -109,6 +188,18 @@ STUB
 # Copy spawn-agent.sh into temp scripts dir so SCRIPT_DIR resolves to SCRIPTS_DIR
 cp "$SPAWN_SCRIPT" "$SCRIPTS_DIR/spawn-agent.sh"
 SPAWN_COPY="$SCRIPTS_DIR/spawn-agent.sh"
+
+# D#2164: stage pr-plane.sh (D#2563) alongside it — --pr below routes every
+# BASH_ROLES spawn through `source .../lib/pr-plane.sh` and a call to the
+# `pr_plane_resolve` it defines; without the file present, that source fails
+# and every spawn hard-blocks before reaching template injection, regardless
+# of role. Its own repo-resolve.sh dependency is deliberately left unstaged,
+# same as the three siblings noted below: PR_PLANE_RESOLVE_OVERRIDE_NAME/_REPO
+# (exported in run_spawn, below) short-circuits pr_plane_resolve before it
+# ever needs a resolved repo, so the resulting "No such file or directory"
+# noise from that inner source is harmless.
+mkdir -p "$SCRIPTS_DIR/lib"
+cp "$REPO_ROOT/scripts/lib/pr-plane.sh" "$SCRIPTS_DIR/lib/pr-plane.sh"
 
 # Patch copy to accept REPO_ROOT override via env var. Best-effort, and the
 # stderr this discards carries nothing this suite needs: verified directly
@@ -137,6 +228,11 @@ sed -i 's|REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"|REPO_ROOT="${REPO_ROOT:-$(cd
 # spawns a real agent — so the concurrency cap has nothing of this suite's
 # to protect against, and bypassing it here does not touch the live gate
 # other callers rely on (scripts/spawn-agent.sh:245 is unchanged).
+#
+# PR_PLANE_RESOLVE_OVERRIDE_NAME/_REPO (D#2164): pr-plane.sh's own documented
+# test hatch (see its header) for "the plane resolver returned this, full
+# stop" — used here so --pr 999 never needs a real `gh` probe of either
+# plane to resolve.
 run_spawn() {
   local role="$1"; shift
   local err_file
@@ -145,6 +241,8 @@ run_spawn() {
     REPO_ROOT="$REPO_ROOT" \
     PATH="$TEST_DIR:$PATH" \
     SPAWN_AGENT_ALLOW_NO_SPEC=1 \
+    PR_PLANE_RESOLVE_OVERRIDE_NAME="code" \
+    PR_PLANE_RESOLVE_OVERRIDE_REPO="test-org/test-repo" \
       bash "$SPAWN_COPY" \
         --role "$role" \
         --discussion 999 \
@@ -159,11 +257,11 @@ run_spawn() {
   rm -f "$err_file"
 }
 
-# D#1788: always pass --pr — 5 of the 9 BASH_ROLES below (code-reviewer,
+# D#1788: always pass --pr — 5 of the 8 BASH_ROLES below (code-reviewer,
 # security-reviewer, docs-writer, runbook-writer, release-manager) reference
-# {{pr_number}} and now hard-fail without one. Harmless for the other 4
-# (executor, project-manager, incident-commander, impl-coordinator), whose
-# templates never reference it.
+# {{pr_number}} and now hard-fail without one. Harmless for the other 3
+# (executor, project-manager, incident-commander), whose templates never
+# reference it.
 spawn_role() {
   local role="$1"
   run_spawn "$role" --pr 999
@@ -204,19 +302,27 @@ if assert_spawned_ok "executor"; then
   fi
 fi
 
-# ── AC2: all 11 Bash-using roles ─────────────────────────────────────────────
+# ── AC2: all 8 Bash-using roles ───────────────────────────────────────────────
 
 echo ""
-echo "AC2: all 11 Bash-using roles produce prompts with '## Bash discipline'"
+echo "AC2: all 8 Bash-using roles produce prompts with '## Bash discipline'"
 
 # These are the roles that received ## Bash discipline in PR #660 and are in KNOWN_ROLES.
 # browser-tester, run-analyst, and others have extra template vars that require callers
 # to pass them; they are NOT in spawn_templates.KNOWN_ROLES so are silently skipped.
+#
+# D#2164: impl-coordinator dropped from this list — it is a retired role (no
+# .claude/agents/impl-coordinator.md card; commit 415c8c0d / D#899 retired it,
+# reconfirmed by D#2195's tests/test_no_dead_role_refs.py, which asserts zero
+# "impl-coordinator" references anywhere an agent reads from, and by memory
+# feedback_no_impl_coordinator.md — Team Lead orchestrates executor +
+# code-reviewer directly). Creating backend/spawn_templates/impl-coordinator.tmpl
+# just to make this assertion pass would fabricate a role that test actively
+# guards against.
 BASH_ROLES=(
   executor
   code-reviewer
   security-reviewer
-  impl-coordinator
   project-manager
   docs-writer
   incident-commander
@@ -249,7 +355,7 @@ echo "AC3: role with no .tmpl file does not inject '## Bash discipline'"
 # spawn-agent.sh has no role allowlist, so any --role value passes.
 NO_TMPL_ROLE="quality-sweep"
 
-# Override the pm-gate check for non-impl roles (quality-sweep is not in the executor|impl-coordinator case)
+# Override the pm-gate check for non-impl roles (quality-sweep is not in the executor case)
 run_spawn "$NO_TMPL_ROLE"
 
 # This spawn must still succeed — "no .tmpl file" is not "refused". If we
