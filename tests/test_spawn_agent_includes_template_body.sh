@@ -48,6 +48,22 @@
 #      with a body that carries no MISSING_EXTERNAL_DOCS marker, so the fetch
 #      succeeds outright and the stale-fallback path is never reached.
 #
+#   Fix round 1: this suite left AUTONOMOUS_TEAM_STATE_DIR unset, so
+#   discussion_cache.py resolved its sqlite store to the real
+#   ~/.autonomous-forever-state/discussion_cache.db — the same file every
+#   other agent reads and writes, and #999 is not a throwaway number, it's a
+#   real DONE discussion. Every run of this suite was upserting a synthetic
+#   body into that live row (CLAUDE.md's "AUTONOMOUS_TEAM_STATE_DIR in
+#   tests — export it, always", D#2283). Fixed by exporting a scratch
+#   AUTONOMOUS_TEAM_STATE_DIR before any spawn. That alone would make the
+#   item-2 mutation check (reverting the graphql stub) stop reproducing
+#   "only a stale cached body is available" — with no prior row in a fresh
+#   scratch db, a failed fetch reads as "empty", not "stale_fallback", and
+#   the external-docs gate just no-ops instead of blocking. So this also
+#   seeds one synthetic stale row for #999 directly into the scratch db,
+#   giving `_get_record`'s stale_fallback branch something to fall back to
+#   without ever touching the real cache.
+#
 # Usage:
 #   bash tests/test_spawn_agent_includes_template_body.sh
 #
@@ -70,6 +86,36 @@ fail() { echo "  FAIL: $1 — $2"; FAIL=$((FAIL + 1)); ERRORS+=("$1: $2"); }
 
 TEST_DIR=$(mktemp -d)
 trap 'rm -rf "$TEST_DIR"' EXIT
+
+# Fix round 1 (D#2164): keep discussion_cache.py's sqlite store inside
+# $TEST_DIR so the synthetic Discussion #999 body the `gh` stub answers with
+# (below) can never land in the real
+# ~/.autonomous-forever-state/discussion_cache.db. Cleaned up by the trap
+# above along with everything else in $TEST_DIR.
+export AUTONOMOUS_TEAM_STATE_DIR="$TEST_DIR/state"
+
+# Seed a stale row for #999 into the (now scratch) discussion_cache.db, using
+# the module's own connection/write helpers rather than hand-rolled SQL, so
+# this stays correct if the schema ever changes. This is what lets the
+# item-2 mutation check (revert the `gh` graphql answer below, re-run) keep
+# reproducing "only a stale cached body is available" — discussion_cache.py's
+# stale_fallback path needs a pre-existing row to fall back to, and with
+# AUTONOMOUS_TEAM_STATE_DIR isolated above there is otherwise no row at all.
+python3 -c "
+import sys
+sys.path.insert(0, '$REPO_ROOT')
+from backend import discussion_cache as dc
+con = dc._conn()
+dc._cache_row(con, {
+    'number': 999,
+    'body': 'seed row for D#2164 fixture isolation — not a live Discussion body',
+    'title': 'scratch seed',
+    'labels': [],
+    'updated_at': '2020-01-01T00:00:00Z',
+})
+con.commit()
+con.close()
+"
 
 SCRIPTS_DIR="$TEST_DIR/scripts"
 mkdir -p "$SCRIPTS_DIR"
