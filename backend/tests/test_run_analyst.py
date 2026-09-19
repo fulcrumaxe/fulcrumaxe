@@ -1020,6 +1020,112 @@ class TestBranchDriftReadsMainNotCwd(unittest.TestCase):
         self.assertTrue(all(f["severity"] == "high" for f in drift))
 
 
+class TestCorpusPathsAgreeAcrossCheckouts(unittest.TestCase):
+    """D#2482 -- run_analyst.py's module-level corpus paths (AGENT_FEED,
+    LOOP_RUNS_DIR, COST_TRACKER, ROLE_EFFICIENCY, LOOP_METRICS,
+    BLACKBOARD_BUDGET_DIR, SPAWN_QUEUE, WORKTREES_JSON, HOOK_EVENTS_DIR,
+    RUN_REPORTS_DIR) used to derive from REPO_ROOT (repo_root(), this
+    process's own checkout). Spawned agents run in worktrees, so a corpus
+    path built from REPO_ROOT pointed at a location where none of the real
+    run history lives -- the corpus read empty and the analyst reported
+    "Runs analyzed: 0" no matter how much history the main checkout held.
+
+    D#2482 criterion 3 is the binding item and it is deliberately NOT "the
+    count went up": a wrong fix produces a bigger number too. What was false
+    before is AGREEMENT -- a worktree run and a main-checkout run against the
+    identical corpus must report the identical count. These tests spawn the
+    real script as a subprocess against a genuine linked git worktree (not a
+    hand-faked directory layout), because AGENT_FEED etc. are frozen at
+    import time from main_repo_root(), which shells out to real git.
+    """
+
+    RUN_ANALYST_PATH = Path(__file__).resolve().parent.parent / "run_analyst.py"
+
+    def _run_from(self, repo_root: Path) -> dict:
+        env = dict(os.environ)
+        env.pop("PYTEST_CURRENT_TEST", None)
+        env["AUTONOMOUS_TEAM_REPO_ROOT"] = str(repo_root)
+        # Unrelated to the corpus-path fix under test: backend._repo fails
+        # loudly at import time (by design, see its docstring) when it can't
+        # resolve a repo slug, and the fixture main repo has no
+        # .autonomous-team/project.json and no origin remote to fall back
+        # to. Pin it so the subprocess can import run_analyst at all.
+        env["AUTONOMOUS_TEAM_REPO"] = "fixture-org/fixture-repo"
+        with tempfile.TemporaryDirectory() as state_dir:
+            env["AUTONOMOUS_TEAM_STATE_DIR"] = state_dir
+            result = subprocess.run(
+                [sys.executable, str(self.RUN_ANALYST_PATH), "--dry-run", "--since=30d"],
+                capture_output=True, text=True, timeout=60, env=env,
+            )
+        self.assertEqual(
+            result.returncode, 0,
+            f"run_analyst.py exited {result.returncode} from {repo_root}: {result.stderr}",
+        )
+        # --dry-run's honest-zero corpus prints a diagnostic line
+        # ("0 runs analysed — no run-derived findings possible", see
+        # collect_run_derived_findings) ahead of the JSON report -- strip
+        # anything before the report's opening brace rather than assume
+        # stdout is pure JSON.
+        stdout = result.stdout
+        return json.loads(stdout[stdout.index("{"):])
+
+    @staticmethod
+    def _write_feed(main_repo: Path, n_events: int) -> None:
+        team_dir = main_repo / ".autonomous-team"
+        team_dir.mkdir(parents=True, exist_ok=True)
+        lines = [
+            json.dumps(make_event(f"executor run discussion:#{i} -- fixture event", ts_offset_hours=i))
+            for i in range(n_events)
+        ]
+        (team_dir / "agent-feed.jsonl").write_text("\n".join(lines) + "\n")
+
+    def test_worktree_and_main_checkout_report_same_nonzero_count(self):
+        """Criterion 3. Host: this test runner. Scope: a real linked git
+        worktree of a fixture main repo, corpus written only to the main
+        repo's working tree (never checked out into the worktree, exactly
+        like the real .autonomous-team/ directory).
+
+        Mutation: reintroduce `REPO_ROOT` for any of the corpus constants --
+        the worktree invocation goes back to reporting 0 while the
+        main-checkout invocation keeps reporting the fixture count, and this
+        assertion goes red.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            main_repo, worktree = _make_main_and_worktree(Path(tmp))
+            self._write_feed(main_repo, n_events=4)
+
+            from_main = self._run_from(main_repo)
+            from_worktree = self._run_from(worktree)
+
+        self.assertEqual(
+            from_main["runs_analyzed"], from_worktree["runs_analyzed"],
+            "worktree and main-checkout runs disagree on the same corpus",
+        )
+        self.assertGreater(
+            from_main["runs_analyzed"], 0,
+            "fixture wrote 4 feed events; a 0 here means the fixture is "
+            "broken, not that the two checkouts agree",
+        )
+
+    def test_absent_corpus_agrees_at_zero_and_stays_honest(self):
+        """Criterion 4. Same real-worktree fixture, no corpus written at
+        all. Both checkouts must agree at zero, and honest-zero must not
+        regress under the new resolver: neither invocation may emit a
+        finding claiming to be run-derived.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            main_repo, worktree = _make_main_and_worktree(Path(tmp))
+
+            from_main = self._run_from(main_repo)
+            from_worktree = self._run_from(worktree)
+
+        self.assertEqual(from_main["runs_analyzed"], 0)
+        self.assertEqual(from_worktree["runs_analyzed"], 0)
+        for report in (from_main, from_worktree):
+            runs = [f for f in report["findings"] if f.get("provenance") == "runs"]
+            self.assertEqual(runs, [])
+
+
 class TestHonestZeroRunsGate(unittest.TestCase):
     """D#1932 criteria 3, 4, 5 -- the empty-corpus behaviour."""
 

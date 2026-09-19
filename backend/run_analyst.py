@@ -37,16 +37,26 @@ from backend.repo_root import main_repo_root, repo_root
 from backend.snapshot_path import SNAPSHOT_PATH
 
 REPO_ROOT = repo_root()
-RUN_REPORTS_DIR = REPO_ROOT / ".autonomous-team" / "run-reports"
-AGENT_FEED = REPO_ROOT / ".autonomous-team" / "agent-feed.jsonl"
-LOOP_RUNS_DIR = REPO_ROOT / ".autonomous-team" / "loop-runs"
-COST_TRACKER = REPO_ROOT / ".autonomous-team" / "cost-tracker.json"
-ROLE_EFFICIENCY = REPO_ROOT / ".autonomous-team" / "role-efficiency.json"
-LOOP_METRICS = REPO_ROOT / ".autonomous-team" / "loop-metrics.jsonl"
-BLACKBOARD_BUDGET_DIR = REPO_ROOT / ".autonomous-team" / "blackboard" / "budget"
-SPAWN_QUEUE = REPO_ROOT / ".autonomous-team" / "spawn-queue.json"
-WORKTREES_JSON = REPO_ROOT / ".autonomous-team" / "worktrees.json"
-HOOK_EVENTS_DIR = REPO_ROOT / ".autonomous-team" / "hook-events"
+
+# Corpus paths below must resolve against the MAIN checkout, not REPO_ROOT
+# (this process's own checkout). Spawned agents run in worktrees, so a path
+# built from REPO_ROOT points at a location where none of the real run
+# history lives -- that's why the corpus read empty from a worktree while
+# the main checkout's copy had thousands of lines. Same class of bug
+# _MAIN_REPO_ROOT_PATH already fixes lower in this file for the
+# worktree-isolation classifier (D#1997); these sites just hadn't been
+# routed through main_repo_root() yet (D#2482).
+_CORPUS_ROOT = main_repo_root()
+RUN_REPORTS_DIR = _CORPUS_ROOT / ".autonomous-team" / "run-reports"
+AGENT_FEED = _CORPUS_ROOT / ".autonomous-team" / "agent-feed.jsonl"
+LOOP_RUNS_DIR = _CORPUS_ROOT / ".autonomous-team" / "loop-runs"
+COST_TRACKER = _CORPUS_ROOT / ".autonomous-team" / "cost-tracker.json"
+ROLE_EFFICIENCY = _CORPUS_ROOT / ".autonomous-team" / "role-efficiency.json"
+LOOP_METRICS = _CORPUS_ROOT / ".autonomous-team" / "loop-metrics.jsonl"
+BLACKBOARD_BUDGET_DIR = _CORPUS_ROOT / ".autonomous-team" / "blackboard" / "budget"
+SPAWN_QUEUE = _CORPUS_ROOT / ".autonomous-team" / "spawn-queue.json"
+WORKTREES_JSON = _CORPUS_ROOT / ".autonomous-team" / "worktrees.json"
+HOOK_EVENTS_DIR = _CORPUS_ROOT / ".autonomous-team" / "hook-events"
 
 CHUNK_SIZE = 30  # max runs per classification pass
 MAX_FEED_EVENTS = 1000
