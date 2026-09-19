@@ -118,6 +118,55 @@ GENERATED_PATHS_FILE="$SCRIPT_DIR/bootstrap-paths.generated"
 # staleness.
 SOURCE_REPO="${LOOP_BOOTSTRAP_SOURCE_REPO:-autonomous-agent-7/autonomous-forever}"
 
+# Paths that must keep naming the engine's own identity instead of being
+# rewritten to the adopter's --repo value — e.g. scripts/engine-sync/, which
+# is how a target pulls future updates and must keep pointing at the real
+# upstream engine, not at itself. rewrite_tree_identifiers below and
+# tests/test_loop_bootstrap_extended.sh's drift check both read this one
+# file, so the rewrite pass and the test that checks it can never carry two
+# copies of the exception list that quietly disagree (D#2614).
+#
+# Resolved from $SCRIPT_DIR the same way GENERATED_PATHS_FILE is, a few
+# lines above — this file never ships into a target (loop-bootstrap/ isn't
+# in BOOTSTRAP_PATHS), so it stays engine-side only.
+ENGINE_IDENTITY_ALLOWLIST_FILE="$SCRIPT_DIR/engine-identity-allowlist.txt"
+ENGINE_IDENTITY_ALLOWLIST=()
+if [[ ! -s "$ENGINE_IDENTITY_ALLOWLIST_FILE" ]]; then
+  echo "ERROR: missing or empty $ENGINE_IDENTITY_ALLOWLIST_FILE" >&2
+  echo "       the identifier rewrite refuses to run without an explicit" >&2
+  echo "       exception list — a silent blanket rewrite over every" >&2
+  echo "       installed file is exactly the defect this list exists to" >&2
+  echo "       prevent (it would rewrite scripts/engine-sync/'s upstream" >&2
+  echo "       reference to the adopter's own slug, breaking their update" >&2
+  echo "       path)." >&2
+  exit 1
+fi
+while IFS= read -r _engine_allow_line; do
+  [[ -z "$_engine_allow_line" || "$_engine_allow_line" == \#* ]] && continue
+  ENGINE_IDENTITY_ALLOWLIST+=("$_engine_allow_line")
+done < "$ENGINE_IDENTITY_ALLOWLIST_FILE"
+if [[ ${#ENGINE_IDENTITY_ALLOWLIST[@]} -eq 0 ]]; then
+  echo "ERROR: $ENGINE_IDENTITY_ALLOWLIST_FILE has no entries after stripping" >&2
+  echo "       comments and blank lines — refusing to run the identifier" >&2
+  echo "       rewrite without at least one real exception." >&2
+  exit 1
+fi
+
+# _engine_identity_allowlisted <target-relative-path>
+# A trailing "/" on an entry matches the whole subtree under it; anything
+# else is matched (and may itself be a glob) against the full relative path.
+_engine_identity_allowlisted() {
+  local rel="$1" entry
+  for entry in "${ENGINE_IDENTITY_ALLOWLIST[@]}"; do
+    if [[ "$entry" == */ ]]; then
+      [[ "$rel" == "$entry"* ]] && return 0
+    else
+      [[ "$rel" == $entry ]] && return 0
+    fi
+  done
+  return 1
+}
+
 DRY_RUN=false
 FORCE=false
 TARGET=""
@@ -369,9 +418,11 @@ rewrite_tree_identifiers() {
   local -a owners=("${SOURCE_REPO%/*}" "autonomous-agent-7" "fulcrumaxe")
   local -a names=("${SOURCE_REPO#*/}" "fulcrumaxe")
 
-  local f slug o n
+  local f slug o n rel
   while IFS= read -r -d '' f; do
     [[ -L "$f" ]] && continue
+    rel="${f#$TARGET/}"
+    _engine_identity_allowlisted "$rel" && continue
     grep -Iq . "$f" 2>/dev/null || continue  # skip binaries
     for slug in "${full_slugs[@]}"; do
       pc_sed_i "s|${slug}|${TARGET_REPO}|g" "$f"

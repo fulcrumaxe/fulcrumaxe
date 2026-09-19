@@ -1,0 +1,25 @@
+# Paths exempt from bootstrap.sh's engine-identity rewrite (D#2614).
+#
+# rewrite_tree_identifiers rewrites every full slug this project has used
+# for its own identity to the adopter's --repo value, everywhere in the
+# installed tree. The paths below are the deliberate exceptions: they must
+# keep naming the real upstream engine, because that is the identity a
+# target's update path needs to keep pulling from, not the adopter's own
+# fork of it.
+#
+# One path or glob per line, relative to the install target root. A
+# trailing "/" matches the whole subtree under it. Blank lines and lines
+# starting with "#" are ignored. This file is read by both
+# rewrite_tree_identifiers (loop-bootstrap/bootstrap.sh) and the drift
+# check in tests/test_loop_bootstrap_extended.sh, so the two can never
+# carry their own, disagreeing copy of the exception list.
+
+# The engine-sync update channel: fetch.py's docstring names the upstream
+# engine repo on purpose (that's where a target's updates come from), and
+# the rest of the subtree ships alongside it.
+scripts/engine-sync/
+
+# Hand-splits its upstream slug into two variables so no contiguous string
+# ever matches — the one exception already living in the tree before this
+# allowlist existed. Left as-is; not refactored by this change.
+scripts/update-check.sh
