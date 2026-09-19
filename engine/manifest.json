@@ -1,7 +1,7 @@
 {
   "engine_version": "0.3.0",
   "files": {
-    ".claude/agents/acceptance-tester.md": "8d0d395d0d9223c5b9c5cbd3146d31e0060551e9e0d6b7c71e9f8fb2a1291ea4",
+    ".claude/agents/acceptance-tester.md": "5ae64a1abcfb85d08c282fcbd0d833348ef900e9d1366cf52a089007fc5d5c80",
     ".claude/agents/accessibility-reviewer.md": "d84732f77d51ed5dd056826a81f48b7b4737e90069bbc3a4929a9ac618fc6ec6",
     ".claude/agents/analytics-engineer.md": "452a9f1e00ad425b67543a43b5b4e1d8cb6a0741666d343115727cbf4723608a",
     ".claude/agents/browser-tester.md": "619ac71ca33002e79ddb781d3e3550a0e156025cb495288404baf6bcf3dbfef6",
@@ -229,7 +229,7 @@
     "scripts/lib/telemetry.sh": "e399f06a1f9d63bbd553b75da92a6ece0ae7c395d414388438db9e5ebe9eaba2",
     "scripts/lib/tree-capability.sh": "0773910698d04cf521f17f2b4f5c5123f8904e0268606e6299a79ef23cc51d11",
     "scripts/lib/two-gate-check.sh": "3a419d7ad0070b2e5dbec52ef087c77e3503df3497cae576afdea541bd9cbc83",
-    "scripts/lib/verify-tree.sh": "014ce9b364dca7c9b92c8bd2a216d8ca0ee25f104a101558ee7abd86fbb038e7",
+    "scripts/lib/verify-tree.sh": "e48561966d1bbd584556f2d31981100baf78a8bd01da441a27b2ce82a28055f0",
     "scripts/lib/working-principles.sh": "a4c32c00a53065c7114d216419aa9ce1e00e9440b3a05da85690fabe9774eb17",
     "scripts/lib/worktree-claims.sh": "6b7fa514ddda1a51ffe75e3ca8357c48d217a38b91ec5dcbccca124ef51b4c02",
     "scripts/lib/worktree-disk-guard.sh": "b7592597baf348ec4f57497842aae5f9656f18ea9243ff6ecbc8f24e89ecbe6d",
