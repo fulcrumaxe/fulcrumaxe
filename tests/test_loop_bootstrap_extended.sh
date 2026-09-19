@@ -132,7 +132,12 @@ assert_not_contains "$TARGET/CLAUDE.md" "autonomous-agent-7/autonomous-forever" 
 echo ""
 echo "--- Asserting refreshed spawn-agent.sh has D#886 env-scrub ---"
 AGENT_SH="$TARGET/scripts/spawn-agent.sh"
-assert_contains "$AGENT_SH" "SECURITY — run this as your FIRST Bash step" "env-scrub injection block"
+# D#1956 removed the prompt-injected "unset as your first Bash step" lane --
+# it was denied by the permission classifier on every observed spawn, and
+# a fresh shell per Bash call meant it never enforced anything durable
+# anyway. Only the process-level scrub remains, so check for that instead
+# of the marker text that described the removed lane.
+assert_contains "$AGENT_SH" "_ENV_SCRUB_ALLOWLIST" "env-scrub allowlist (D#1956 process-level scrub)"
 assert_contains "$AGENT_SH" "_ENV_SCRUB_VARS" "env-scrub var list"
 assert_contains "$AGENT_SH" "DRY_RUN_ENV_DUMP" "DRY_RUN_ENV_DUMP flag"
 assert_contains "$AGENT_SH" "OVERRIDE_CAP" "OVERRIDE_CAP flag"
@@ -152,16 +157,22 @@ assert_contains "$STD_SH" "project.json" "reads project.json"
 assert_not_contains "$STD_SH" "autonomous-forever-state" "no hardcoded state dir"
 
 echo ""
-echo "--- Asserting merge-and-hook.sh reads from project.json ---"
+echo "--- Asserting merge-and-hook.sh resolves repo config and merges the PR ---"
 MAH_SH="$TARGET/scripts/merge-and-hook.sh"
-assert_contains "$MAH_SH" "project.json" "reads project.json"
-assert_contains "$MAH_SH" 'gh pr merge' "calls gh pr merge"
+# Repo/config resolution was centralized into repo-resolve.sh (which reads
+# config.json) rather than each script grepping project.json directly.
+assert_contains "$MAH_SH" "repo-resolve.sh" "sources repo-resolve.sh"
+# The merge call itself moved into ci_merge_sha_pinned (scripts/lib/ci-status-check.sh)
+# for SHA-pinning safety (D#1614/D#2149) instead of an inline `gh pr merge`.
+assert_contains "$MAH_SH" "ci_merge_sha_pinned" "merges via ci_merge_sha_pinned"
 
 echo ""
-echo "--- Asserting post-merge-hook.sh reads from project.json ---"
+echo "--- Asserting post-merge-hook.sh resolves repo config ---"
 PMH_SH="$TARGET/scripts/post-merge-hook.sh"
-assert_contains "$PMH_SH" "project.json" "reads project.json"
-assert_contains "$PMH_SH" "audit.jsonl" "writes audit.jsonl"
+assert_contains "$PMH_SH" "repo-resolve.sh" "sources repo-resolve.sh"
+# Audit-row writing lives in merge-and-hook.sh (the merge orchestrator that
+# calls this hook), not in post-merge-hook.sh itself.
+assert_contains "$MAH_SH" "AUDIT_FILE" "merge-and-hook.sh writes the audit row"
 
 echo ""
 echo "--- Asserting generate-initial-plan.py ---"
@@ -375,8 +386,11 @@ rm -rf "$E2E_STATE_DIR"
 # --- 6-fix bundle assertions (projectb pilot regressions) ---
 
 echo ""
-echo "--- BUG 1: hook-event.sh present in loop-bootstrap/scripts/lib/ ---"
-HOOK_EVENT_SRC="$REPO_ROOT/loop-bootstrap/scripts/lib/hook-event.sh"
+echo "--- BUG 1: hook-event.sh present in scripts/lib/ ---"
+# bootstrap.sh no longer hand-carries this via a loop-bootstrap/ mirror --
+# it derives the install from the live scripts/lib/ tree, so that's what
+# this checks now.
+HOOK_EVENT_SRC="$REPO_ROOT/scripts/lib/hook-event.sh"
 assert_file "$HOOK_EVENT_SRC"
 if [[ -x "$HOOK_EVENT_SRC" ]]; then
   pass "hook-event.sh is executable"
@@ -415,33 +429,21 @@ assert_contains "$COLDSTART_SH" "loop-metrics.jsonl" "loop-metrics.jsonl placeho
 assert_contains "$COLDSTART_SH" "TEAM_DIR/loop-metrics.jsonl" "loop-metrics in repo .autonomous-team"
 
 echo ""
-echo "--- BUG 5: loop-bootstrap/backend-snapshot/ exists and has Python files ---"
-# NOTE (D#2614): loop-bootstrap/backend-snapshot/ is absent from this repo's
-# git history entirely, so the unguarded `find` two lines down aborts the
-# whole suite under `set -e` before it ever reaches the D#2614 assertions
-# far below (the corpus-wide engine-identity drift check and its neighbors,
-# around the "engine-identity" PORTABILITY blocks). That is a pre-existing,
-# unrelated gap, not something this PR introduces or fixes — but it means
-# those later assertions do not execute in a normal `bash` run of this
-# suite today; they were verified directly against real bootstrap output
-# instead (see the PR body).
-SNAPSHOT_DIR="$REPO_ROOT/loop-bootstrap/backend-snapshot"
-assert_dir "$SNAPSHOT_DIR"
-SNAPSHOT_PY_COUNT=$(find "$SNAPSHOT_DIR" -name "*.py" -type f | wc -l)
-if [[ "$SNAPSHOT_PY_COUNT" -ge 100 ]]; then
-  pass "backend-snapshot has $SNAPSHOT_PY_COUNT .py files (>= 100)"
-else
-  fail "backend-snapshot has only $SNAPSHOT_PY_COUNT .py files (expected >= 100)"
-fi
-# Key modules must be present
+echo "--- BUG 5: bootstrap installs a full backend/ into the target ---"
+# D#1890 archived the old hand-maintained backend mirror on purpose —
+# bootstrap now derives installs from the live backend/ tree instead, so
+# there is nothing left to assert about a separate mirror directory.
+# What's still worth checking is that the install itself is complete: the
+# target ends up with a real backend/, not a partial one.
+# Key modules must be present in the installed target
 for mod in budget.py circuit_breaker.py context_manager.py discussion_cache.py agent_run.py; do
-  if [[ -f "$SNAPSHOT_DIR/$mod" ]]; then
-    pass "backend-snapshot: $mod present"
+  if [[ -f "$TARGET/backend/$mod" ]]; then
+    pass "installed backend: $mod present"
   else
-    fail "backend-snapshot: $mod MISSING"
+    fail "installed backend: $mod MISSING"
   fi
 done
-# Verify bootstrap installed backend snapshot into target (no-clobber)
+# Verify bootstrap installed a complete backend/ into target
 TARGET_BACKEND_COUNT=$(find "$TARGET/backend" -name "*.py" -type f | wc -l)
 if [[ "$TARGET_BACKEND_COUNT" -ge 100 ]]; then
   pass "installed backend has $TARGET_BACKEND_COUNT .py files (>= 100)"
@@ -476,8 +478,11 @@ assert_contains "$COLDSTART_SH" '"version"' "sentinel includes version"
 
 
 echo ""
-echo "--- GUARD: loop-bootstrap/hooks/ present with sandbox files (C2) ---"
-HOOKS_BOOTSTRAP_DIR="$REPO_ROOT/loop-bootstrap/hooks"
+echo "--- GUARD: hooks/ present with sandbox files (C2) ---"
+# bootstrap.sh installs hooks/ from the live tree now (the BOOTSTRAP_PATHS
+# loop), not from a hand-carried loop-bootstrap/hooks/ mirror -- see
+# loop-bootstrap/bootstrap.sh's own "hooks/ install note".
+HOOKS_BOOTSTRAP_DIR="$REPO_ROOT/hooks"
 assert_dir "$HOOKS_BOOTSTRAP_DIR"
 assert_file "$HOOKS_BOOTSTRAP_DIR/sandbox.py"
 assert_file "$HOOKS_BOOTSTRAP_DIR/sandbox_rules.py"
@@ -515,30 +520,30 @@ assert_contains "$LABELS_SCRIPT" "code-review-passed" "creates code-review-passe
 assert_contains "$LABELS_SCRIPT" "SPEC_READY" "creates SPEC_READY label"
 assert_contains "$LABELS_SCRIPT" "team-log" "creates team-log label"
 assert_contains "$LABELS_SCRIPT" "repo-resolve.sh" "sources repo-resolve.sh"
-# Also verify it's in loop-bootstrap/scripts/ for forked installs
-LABELS_BOOTSTRAP="$REPO_ROOT/loop-bootstrap/scripts/bootstrap-github-labels.sh"
-assert_file "$LABELS_BOOTSTRAP"
-if [[ -x "$LABELS_BOOTSTRAP" ]]; then
-  pass "loop-bootstrap/scripts/bootstrap-github-labels.sh is executable"
-else
-  fail "loop-bootstrap/scripts/bootstrap-github-labels.sh is NOT executable"
-fi
+# A second copy under loop-bootstrap/scripts/ used to be hand-carried for
+# forked installs; bootstrap.sh derives from the live scripts/ tree now
+# (same live-tree-derivation as the rest of this suite's stale mirror
+# checks), so there is no separate loop-bootstrap/ copy to assert on --
+# $LABELS_SCRIPT above already covers the one real source.
 # Verify installed into target
 assert_file "$TARGET/scripts/bootstrap-github-labels.sh"
 
 echo ""
-echo "--- GUARD: hook subdirs present in loop-bootstrap and installed in target (C4) ---"
+echo "--- GUARD: hook subdirs present in source and installed in target (C4) ---"
+# bootstrap.sh derives scripts/hooks/ from the live tree, not a
+# loop-bootstrap/scripts/hooks/ mirror -- same live-tree derivation as the
+# rest of this suite's stale mirror checks.
 # Source dirs
-assert_dir "$REPO_ROOT/loop-bootstrap/scripts/hooks/post-merge.d"
-assert_dir "$REPO_ROOT/loop-bootstrap/scripts/hooks/post-agent.d"
-assert_file "$REPO_ROOT/loop-bootstrap/scripts/hooks/post-merge.d/cross-file-pattern-check.sh"
-assert_file "$REPO_ROOT/loop-bootstrap/scripts/hooks/post-merge.d/tui-tester-sweep.sh"
-assert_file "$REPO_ROOT/loop-bootstrap/scripts/hooks/post-agent.d/cost-summary.sh"
+assert_dir "$REPO_ROOT/scripts/hooks/post-merge.d"
+assert_dir "$REPO_ROOT/scripts/hooks/post-agent.d"
+assert_file "$REPO_ROOT/scripts/hooks/post-merge.d/cross-file-pattern-check.sh"
+assert_file "$REPO_ROOT/scripts/hooks/post-merge.d/tui-tester-sweep.sh"
+assert_file "$REPO_ROOT/scripts/hooks/post-agent.d/cost-summary.sh"
 # Executable bits in source
 for hook_sh in \
-  "$REPO_ROOT/loop-bootstrap/scripts/hooks/post-merge.d/cross-file-pattern-check.sh" \
-  "$REPO_ROOT/loop-bootstrap/scripts/hooks/post-merge.d/tui-tester-sweep.sh" \
-  "$REPO_ROOT/loop-bootstrap/scripts/hooks/post-agent.d/cost-summary.sh"; do
+  "$REPO_ROOT/scripts/hooks/post-merge.d/cross-file-pattern-check.sh" \
+  "$REPO_ROOT/scripts/hooks/post-merge.d/tui-tester-sweep.sh" \
+  "$REPO_ROOT/scripts/hooks/post-agent.d/cost-summary.sh"; do
   if [[ -x "$hook_sh" ]]; then
     pass "executable: ${hook_sh##$REPO_ROOT/}"
   else
@@ -562,37 +567,14 @@ assert_not_contains \
   "cross-file-pattern-check has no hardcoded repo"
 
 echo ""
-echo "--- GUARD: cross-file-detector.py present in loop-bootstrap/scripts/lib/ (C5) ---"
-assert_file "$REPO_ROOT/loop-bootstrap/scripts/lib/cross-file-detector.py"
+echo "--- GUARD: cross-file-detector.py present in scripts/lib/ (C5) ---"
+assert_file "$REPO_ROOT/scripts/lib/cross-file-detector.py"
 assert_file "$TARGET/scripts/lib/cross-file-detector.py"
 # Verify the installed version uses project.json for repo resolution (not hardcoded)
 assert_not_contains \
   "$TARGET/scripts/lib/cross-file-detector.py" \
   "autonomous-agent-7/autonomous-forever" \
   "cross-file-detector.py has no hardcoded repo"
-
-echo ""
-echo "--- GUARD: backend-snapshot must mirror backend/ (no drift) ---"
-# Every .py file in loop-bootstrap/backend-snapshot/ must match the corresponding
-# file in backend/. This catches future snapshot-mirror misses before they reach prod.
-SNAPSHOT_PY_DRIFT=0
-while IFS= read -r snap_file; do
-  rel="${snap_file#$REPO_ROOT/loop-bootstrap/backend-snapshot/}"
-  live_file="$REPO_ROOT/backend/$rel"
-  if [[ ! -f "$live_file" ]]; then
-    fail "snapshot-drift: $rel exists in snapshot but NOT in backend/"
-    SNAPSHOT_PY_DRIFT=1
-  elif ! diff -q "$snap_file" "$live_file" 2>&1 | grep -q differ; then
-    : # identical
-  else
-    fail "snapshot-drift: $rel differs between snapshot and backend/"
-    SNAPSHOT_PY_DRIFT=1
-  fi
-done < <(find "$REPO_ROOT/loop-bootstrap/backend-snapshot" -name "*.py" -type f | sort)
-if [[ "$SNAPSHOT_PY_DRIFT" -eq 0 ]]; then
-  SNAP_COUNT=$(find "$REPO_ROOT/loop-bootstrap/backend-snapshot" -name "*.py" -type f | wc -l)
-  pass "backend-snapshot: all $SNAP_COUNT .py files mirror backend/ (no drift)"
-fi
 
 echo ""
 echo "--- GUARD: coldstart writes dashboard_port to state-side sentinel ---"
@@ -655,13 +637,16 @@ fi
 rm -rf "$GATE2_TMP"
 
 echo ""
-echo "--- PORTABILITY: rotate-team-log.sh present in loop-bootstrap/scripts/ ---"
-ROTATE_BOOTSTRAP="$REPO_ROOT/loop-bootstrap/scripts/rotate-team-log.sh"
+echo "--- PORTABILITY: rotate-team-log.sh present in scripts/ ---"
+# bootstrap.sh derives this from the live scripts/ tree, not a
+# loop-bootstrap/scripts/ mirror -- same live-tree derivation as the rest
+# of this suite's stale mirror checks.
+ROTATE_BOOTSTRAP="$REPO_ROOT/scripts/rotate-team-log.sh"
 assert_file "$ROTATE_BOOTSTRAP"
 if [[ -x "$ROTATE_BOOTSTRAP" ]]; then
-  pass "loop-bootstrap/scripts/rotate-team-log.sh is executable"
+  pass "rotate-team-log.sh is executable"
 else
-  fail "loop-bootstrap/scripts/rotate-team-log.sh is NOT executable"
+  fail "rotate-team-log.sh is NOT executable"
 fi
 # Must source repo-resolve.sh (not hardcode the repo)
 assert_contains "$ROTATE_BOOTSTRAP" "repo-resolve.sh" "sources repo-resolve.sh"
@@ -885,19 +870,6 @@ assert_contains "$STPY" "_load_repo" "_load_repo() function present"
 assert_contains "$STPY" "project.json" "reads project.json"
 assert_contains "$STPY" "_make_repo_scope" "_make_repo_scope() present"
 assert_contains "$STPY" '"REPO"' "REPO var added to render defaults"
-
-echo ""
-echo "--- PORTABILITY: backend-snapshot mirrors updated spawn_templates.py ---"
-SNAP_ST="$REPO_ROOT/loop-bootstrap/backend-snapshot/spawn_templates.py"
-if [[ -f "$SNAP_ST" ]]; then
-  if diff -q "$STPY" "$SNAP_ST" > /dev/null 2>&1; then
-    pass "backend-snapshot/spawn_templates.py matches backend/spawn_templates.py"
-  else
-    fail "backend-snapshot/spawn_templates.py DRIFTS from backend/spawn_templates.py"
-  fi
-else
-  fail "backend-snapshot/spawn_templates.py missing"
-fi
 
 # --- Wave C: I1-I6 bootstrap completeness assertions ---
 
