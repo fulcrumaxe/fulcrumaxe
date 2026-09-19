@@ -739,6 +739,10 @@ try:
 except Exception as e:
     print(f'    (dial_registry unavailable: {e})')
 " 2>/dev/null || echo "    (dial_registry unavailable)"
+
+  echo ""
+  echo "  Shared-lib staleness (scripts/lib vs code plane, advisory-only, D#2534):"
+  bash "$REPO_ROOT/scripts/check-shared-lib-staleness.sh" scripts/lib 2>&1 | sed 's/^/    /' || true
 fi
 
 # ── Auto-generate today's plan if absent ─────────────────────────────────────
