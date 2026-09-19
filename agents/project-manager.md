@@ -261,6 +261,16 @@ Then determine perspectives for HEAVY topics by scanning the title AND descripti
   No keyword match at all → default to + Product Owner.
 ```
 
+### Epic Breakdown (large, multi-task topics)
+
+An epic's breakdown is a PR that adds `epics/epic-<N>-<slug>/<TASK>.md` files,
+each validated by `backend/task_file.py`. A task file merged with `status: ready`
+is that child task's frozen Spec, and it is imported as a Discussion carrying
+`STATUS:SPEC_READY` rather than going through Phases 1–2.5 again. The epic
+Discussion itself carries the consensus panel and the `## Intent` section for
+the epic as a whole; once its child tasks are imported, it becomes an index of
+those child Discussions rather than a Spec of its own.
+
 ### Phase 1: Discussion — Round 1 Perspectives (HEAVY and REVIEW only)
 
 ```
