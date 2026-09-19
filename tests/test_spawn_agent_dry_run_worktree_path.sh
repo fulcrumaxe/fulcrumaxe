@@ -131,9 +131,10 @@ run_dry_run() {
 echo ""
 echo "AC1: success path exports a clean worktree_path"
 
-OUT=$(run_dry_run "$SPAWN_COPY" 2>/tmp/ac1-stderr.$$)
+AC1_ERR_FILE="$TEST_DIR/ac1-stderr.log"
+OUT=$(run_dry_run "$SPAWN_COPY" 2>"$AC1_ERR_FILE")
 RC=$?
-rm -f /tmp/ac1-stderr.$$
+rm -f "$AC1_ERR_FILE"
 
 if [[ $RC -ne 0 ]]; then
   fail "AC1 exit code" "expected 0, got $RC"
