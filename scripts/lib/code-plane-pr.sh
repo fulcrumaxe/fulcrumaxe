@@ -19,9 +19,11 @@
 #
 # Or invoke directly:
 #   bash scripts/lib/code-plane-pr.sh build --target-ref <ref> --base-ref <ref> \
-#     --branch <name> --message <msg> <repo-path>=<local-file> [...]
+#     --branch <name> --message <msg> [--skip-guards <reason>] \
+#     <repo-path>=<local-file> [...]
 #   bash scripts/lib/code-plane-pr.sh extract --ref <ref>
-#   bash scripts/lib/code-plane-pr.sh push --remote <name> --branch <name> --commit <sha>
+#   bash scripts/lib/code-plane-pr.sh push --remote <name> --branch <name> \
+#     --commit <sha> [--skip-guards <reason>]
 #
 # Three disciplines this file enforces so an agent never has to remember them:
 #
@@ -45,7 +47,9 @@
 #      present on --target-ref) has no target mode to read; rather than
 #      defaulting blind, it reads the one real signal available — the local
 #      source file's own executable bit — and writes 100755 or 100644
-#      accordingly.
+#      accordingly. A derived file this step regenerates itself (a mirror or
+#      the manifest) is never executable, so it falls back to the target's
+#      recorded mode, or 100644 if the path is brand new.
 #
 #   3. The scratch/index path is private and per-invocation. Every call uses
 #      its own `mktemp -d` — never a fixed location — so two concurrent
@@ -55,22 +59,88 @@
 #
 # `build` also self-verifies its own scope before returning a commit sha:
 # it diffs the built commit against its parent and refuses (exit 4) unless
-# the changed-path set is exactly the set of paths it was asked to write.
-# That is the property that keeps a second round from silently widening —
-# rebuilding the tree from a --target-ref that moved since a first round
-# would otherwise fold in every intervening change to main as if it were
-# part of this change.
+# the changed-path set is exactly the set of paths it was asked to write,
+# UNION any path this step itself regenerated (see below).
+#
+# Derived files (D#2578)
+# -----------------------
+# Every code-plane commit goes through this helper, so this is the one place
+# that can regenerate the derived files it can regenerate safely — before the
+# commit exists, in a tree CI would actually see — instead of a human
+# remembering to run a command after the fact and finding out from a red CI
+# check. After the requested paths are staged (tree T1), and before
+# commit-tree, `build`:
+#
+#   1. Extracts T1 into a private, per-invocation scratch tree (never the
+#      caller's worktree — `detect_wrong_plane()` in manifest.py would refuse
+#      there anyway, since it never has a populated archive/).
+#   2. Regenerates the `agents/` and `commands/` mirrors for any written
+#      `.claude/agents/*.md` / `.claude/commands/*.md` path, skipping any
+#      pair listed in scripts/ci/twin-divergence-allowlist.json.
+#   3. Regenerates engine/manifest.json by running
+#      scripts/engine-sync/manifest.py generate (by absolute path) against
+#      that same scratch tree. The regeneration is refused (exit 5) if it
+#      would change a manifest entry for a path outside the union of what
+#      the caller wrote and what this step itself regenerated — the "bounded
+#      regeneration" guarantee: a full regenerate's diff is otherwise
+#      unreviewably large, which is why this only ever widens the diff to
+#      cover paths that are already part of this change.
+#   4. Runs the three CI guards that check derived files
+#      (scripts/ci/engine-manifest-guard.py, scripts/ci/ruff-ratchet.py,
+#      scripts/ci/commands-twin-divergence-guard.sh) against the regenerated
+#      scratch tree, and refuses (exit 5) if any of them would redden CI —
+#      except `ruff-ratchet.py` exiting something other than 0 or 1 (for
+#      example, no `ruff` on PATH), which is a loud WARN, not a refusal: a
+#      guard that blocks real work over an environment gap gets disabled.
+#      `engine-manifest-guard.py` and `commands-twin-divergence-guard.sh`
+#      each refuse on ANY non-zero exit. A guard script absent from the
+#      materialized tree (an old --target-ref, or a fixture that doesn't
+#      carry it) is a stderr NOTE and is skipped — CI cannot run a guard the
+#      tree doesn't have either.
+#   5. Never regenerates scripts/ruff-known-findings.txt. Lowering it is a
+#      judgement call ("this finding is fixed, not moved"), not a mechanical
+#      derivation — see ruff-ratchet.py's own header. A finding that stops
+#      reproducing refuses (exit 5) and names the exact baseline line to
+#      change.
+#
+# `--skip-guards "<reason>"` on `build` or `push` skips steps 1-4 above (a
+# loud WARN on stderr quoting the reason) and, on `push`, skips the
+# re-verification before the network call. This exists so a guard red on
+# main itself can never block the PR that fixes it. An empty or missing
+# reason is a usage error (exit 2).
 #
 # Exit codes from `build`:
 #   0  success — commit sha printed on stdout
-#   2  usage error (bad args, unresolvable ref, missing local file)
+#   2  usage error (bad args, unresolvable ref, missing local file, a
+#      derived-files step that could not even run — for example
+#      manifest.py itself failing)
 #   3  byte-identity divergence between --base-ref and --target-ref
 #   4  scope check failed — built commit touches more/fewer paths than asked
+#      (asked = the requested paths union whatever this step regenerated)
+#   5  a derived-file guard refused the commit (bounded-regeneration
+#      overflow, a failing CI guard, or a ruff-baseline over-allowance);
+#      stderr names the offending path. --skip-guards bypasses this.
 #
-# This file never runs `gh`, never pushes, and never resolves a repo slug —
-# that stays in the caller's hands (see scripts/lib/repo-resolve.sh and
-# `_resolve_code_repo`), matching the repo-scope card's boundary between
-# "build the commit" and "open the PR".
+# Exit codes from `push`:
+#   0  pushed (or, with --skip-guards, attempted the push regardless of
+#      guard state — a real transport failure still exits non-zero)
+#   2  usage error
+#   5  the commit being pushed fails a derived-file guard; refused before
+#      any network call ("push: REFUSED" on stderr). --skip-guards bypasses
+#      this and proceeds straight to the transport.
+#
+# This file never runs `gh`, never pushes except via the `push` command
+# above, and never resolves a repo slug — that stays in the caller's hands
+# (see scripts/lib/repo-resolve.sh and `_resolve_code_repo`), matching the
+# repo-scope card's boundary between "build the commit" and "open the PR".
+#
+# This file stays a single, self-contained script — executors copy it alone
+# into a scratch directory — so it never `source`s a sibling file. It may
+# still *run* scripts out of the materialized tree as subprocesses
+# (`bash "$tree/scripts/lib/agents-plugin-mirror.sh" ...`,
+# `python3 "$tree/scripts/engine-sync/manifest.py" generate`), which is not
+# the same thing: those run in a private scratch tree that this process
+# happens to have built, not as part of this file's own definition.
 
 set -uo pipefail
 
@@ -80,9 +150,16 @@ scripts/lib/code-plane-pr.sh — build a code-plane commit without touching a
 local ref, branch, index, or working tree.
 
   build   --target-ref <ref> --base-ref <ref> --branch <name>
-          --message <msg> <repo-path>=<local-file> [<repo-path>=<local-file> ...]
+          --message <msg> [--skip-guards <reason>]
+          <repo-path>=<local-file> [<repo-path>=<local-file> ...]
           --base-ref is required (pass the sha `extract` printed on stderr,
           or --target-ref's own value again for the genuine no-gap case).
+          Regenerates engine/manifest.json and the agents//commands/
+          mirrors from the tree it just built, and refuses (exit 5) if the
+          result would still redden CI for a derived-file reason.
+          --skip-guards "<reason>" skips that regeneration and refusal
+          entirely (loud WARN on stderr) — an empty/missing reason is a
+          usage error (exit 2).
           Prints the built commit sha on stdout on success.
 
   extract --ref <ref>
@@ -90,6 +167,11 @@ local ref, branch, index, or working tree.
           (mktemp -d) and prints that directory's path.
 
   push    --remote <name> --branch <name> --commit <sha>
+          [--skip-guards <reason>]
+          Re-verifies <sha>'s tree against the three derived-file guards
+          before pushing, and refuses (exit 5, "push: REFUSED") if one
+          fails — before any network call. --skip-guards "<reason>" skips
+          the re-verification (loud WARN) and proceeds to the transport.
           Pushes <sha> to refs/heads/<branch> on <remote>. Network call —
           never exercised by the hermetic test suite.
 
@@ -110,18 +192,309 @@ _cpp_resolve_commit() {
   printf '%s\n' "$sha"
 }
 
+_cpp_array_contains() {
+  # _cpp_array_contains <needle> <haystack...>
+  local needle="$1"; shift
+  local e
+  for e in "$@"; do
+    [[ "$e" == "$needle" ]] && return 0
+  done
+  return 1
+}
+
+_cpp_resolve_mode() {
+  # _cpp_resolve_mode <target-sha> <repo-path>
+  # Reads the mode for <repo-path> from <target-sha> if it exists there;
+  # otherwise 100644 — every derived file this script writes (a mirror, the
+  # manifest) is plain text, never executable, so there is no local-file
+  # executable bit to fall back on the way the main pairs loop does for a
+  # genuinely new caller-supplied file.
+  local target_sha="$1" repo_path="$2" line mode
+  line="$(git ls-tree "$target_sha" -- "$repo_path" 2>/dev/null)"
+  if [[ -n "$line" ]]; then
+    read -r mode _type _blob _rest <<<"$line"
+    printf '%s\n' "$mode"
+  else
+    printf '100644\n'
+  fi
+}
+
+_cpp_twin_allowlisted() {
+  # _cpp_twin_allowlisted <dtree> <family> <name>
+  local dtree="$1" family="$2" name="$3"
+  local allowlist="$dtree/scripts/ci/twin-divergence-allowlist.json"
+  [[ -f "$allowlist" ]] || return 1
+  python3 -c '
+import json, sys
+
+allowlist_path, family, name = sys.argv[1:4]
+try:
+    data = json.load(open(allowlist_path))
+except Exception:
+    sys.exit(1)
+key = family + ":" + name
+for e in data.get("entries", []):
+    if isinstance(e, dict) and e.get("pair") == key:
+        sys.exit(0)
+sys.exit(1)
+' "$allowlist" "$family" "$name"
+}
+
+_cpp_apply_derived() {
+  # _cpp_apply_derived <idx> <target-sha> <dtree> <repo-path> <content-file> <already-written 0|1>
+  # Stages <content-file>'s bytes at <repo-path> in both the git index <idx>
+  # and the scratch tree <dtree> (so a later guard run sees the regenerated
+  # content), unless <dtree>/<repo-path> already matches byte-for-byte.
+  # Prints one of: "" (no-op), "regenerated", "replaced" — or "ERROR".
+  local idx="$1" target_sha="$2" dtree="$3" repo_path="$4" content_file="$5" already="$6"
+  local dest="$dtree/$repo_path"
+  if [[ -f "$dest" ]] && cmp -s "$dest" "$content_file"; then
+    printf '\n'
+    return 0
+  fi
+  mkdir -p "$(dirname "$dest")" || { printf 'ERROR\n'; return 1; }
+  cp "$content_file" "$dest" || { printf 'ERROR\n'; return 1; }
+  local mode blob
+  mode="$(_cpp_resolve_mode "$target_sha" "$repo_path")"
+  blob="$(git hash-object -w "$content_file" 2>/dev/null)" || { printf 'ERROR\n'; return 1; }
+  if ! GIT_INDEX_FILE="$idx" git update-index --add --cacheinfo "$mode,$blob,$repo_path" 2>/dev/null; then
+    printf 'ERROR\n'
+    return 1
+  fi
+  if [[ "$already" == "1" ]]; then
+    printf 'replaced\n'
+  else
+    printf 'regenerated\n'
+  fi
+}
+
+_cpp_run_guards() {
+  # _cpp_run_guards <dtree>
+  # Runs the three CI guards that check derived files against <dtree>.
+  # Returns 0 if nothing refuses (a guard absent from <dtree> is a NOTE and
+  # is skipped; ruff-ratchet.py exiting anything other than 0 or 1 is a
+  # WARN, not a refusal). Returns 5 if any guard refuses.
+  local dtree="$1" refused=0 out rc l
+
+  local mg="$dtree/scripts/ci/engine-manifest-guard.py"
+  if [[ -f "$mg" ]]; then
+    out="$(python3 "$mg" 2>&1)"; rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+      _cpp_err "build: guard refused: engine-manifest-guard.py (exit $rc)"
+      while IFS= read -r l; do _cpp_err "build:   $l"; done <<<"$out"
+      refused=1
+    fi
+  else
+    _cpp_err "build: NOTE: scripts/ci/engine-manifest-guard.py absent from the materialized tree — skipped"
+  fi
+
+  local tg="$dtree/scripts/ci/commands-twin-divergence-guard.sh"
+  if [[ -f "$tg" ]]; then
+    out="$(bash "$tg" 2>&1)"; rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+      _cpp_err "build: guard refused: commands-twin-divergence-guard.sh (exit $rc)"
+      while IFS= read -r l; do _cpp_err "build:   $l"; done <<<"$out"
+      refused=1
+    fi
+  else
+    _cpp_err "build: NOTE: scripts/ci/commands-twin-divergence-guard.sh absent from the materialized tree — skipped"
+  fi
+
+  local rr="$dtree/scripts/ci/ruff-ratchet.py"
+  if [[ -f "$rr" ]]; then
+    out="$(python3 "$rr" 2>&1)"; rc=$?
+    if [[ "$rc" -eq 1 ]]; then
+      _cpp_err "build: guard refused: ruff-ratchet.py (exit $rc)"
+      while IFS= read -r l; do _cpp_err "build:   $l"; done <<<"$out"
+      refused=1
+    elif [[ "$rc" -ne 0 ]]; then
+      _cpp_err "build: WARN: ruff-ratchet.py did not run cleanly (exit $rc) — treated as advisory, not a refusal"
+      while IFS= read -r l; do _cpp_err "build:   $l"; done <<<"$out"
+    fi
+  else
+    _cpp_err "build: NOTE: scripts/ci/ruff-ratchet.py absent from the materialized tree — skipped"
+  fi
+
+  [[ "$refused" -eq 0 ]]
+}
+
+_cpp_regenerate_derived_files() {
+  # _cpp_regenerate_derived_files <idx> <target-sha> <tree-sha> <dtree> <written-paths-file>
+  # Extracts <tree-sha> into <dtree>, regenerates the agents/ and commands/
+  # mirrors and engine/manifest.json, staging changes into <idx> and onto
+  # disk under <dtree>. Prints regenerated-or-replaced repo paths (one per
+  # line, "regenerated" ones only) to stdout on success. Returns 2 on a
+  # hard failure (nothing usable to build from), 5 on a guard/bounds
+  # refusal, 0 on success (including "nothing to do").
+  local idx="$1" target_sha="$2" tree_sha="$3" dtree="$4" written_file="$5"
+  local -a written_set=()
+  local wline
+  while IFS= read -r wline; do
+    [[ -n "$wline" ]] && written_set+=("$wline")
+  done <"$written_file"
+
+  local scratch
+  scratch="$(dirname "$dtree")"
+
+  mkdir -p "$dtree" || { _cpp_err "build: derived-files: mkdir $dtree failed"; return 2; }
+  if ! git archive "$tree_sha" | tar -x -C "$dtree"; then
+    _cpp_err "build: derived-files: git archive | tar -x failed for tree $tree_sha"
+    return 2
+  fi
+
+  local -a regenerated_paths=()
+
+  # ── mirrors: agents/ and commands/ ──────────────────────────────────────
+  # Each family's regeneration is gated independently: the "agents" family
+  # needs scripts/lib/agents-plugin-mirror.sh to run the generator; the
+  # "commands" family is a plain byte copy and needs nothing beyond the
+  # source file itself. A fixture (or an old --target-ref) missing the
+  # agents generator must not also silently skip the unrelated commands
+  # family, and vice versa.
+  local wp family mname mirror_path already result content_tmp e
+  for wp in "${written_set[@]}"; do
+    family=""
+    case "$wp" in
+      .claude/agents/*.md)
+        family="agents"; mname="$(basename "$wp")"; mirror_path="agents/$mname" ;;
+      .claude/commands/*.md)
+        family="commands"; mname="$(basename "$wp")"; mirror_path="commands/$mname" ;;
+      *) continue ;;
+    esac
+    if [[ "$family" == "agents" && ! -f "$dtree/scripts/lib/agents-plugin-mirror.sh" ]]; then
+      _cpp_err "build: NOTE: scripts/lib/agents-plugin-mirror.sh absent from the materialized tree — $mirror_path not regenerated"
+      continue
+    fi
+    if _cpp_twin_allowlisted "$dtree" "$family" "$mname"; then
+      _cpp_err "build: NOTE: $mirror_path is an allowlisted deliberate variant — not regenerated"
+      continue
+    fi
+    content_tmp="$scratch/derived-$family-$mname"
+    if [[ "$family" == "agents" ]]; then
+      if ! bash "$dtree/scripts/lib/agents-plugin-mirror.sh" "$dtree/.claude/agents/$mname" >"$content_tmp" 2>"$scratch/derived-err"; then
+        _cpp_err "build: derived-files: agents-plugin-mirror.sh failed for $mname: $(cat "$scratch/derived-err")"
+        return 2
+      fi
+    else
+      if ! cp "$dtree/.claude/commands/$mname" "$content_tmp" 2>/dev/null; then
+        _cpp_err "build: derived-files: could not read $dtree/.claude/commands/$mname"
+        return 2
+      fi
+    fi
+    already=0
+    _cpp_array_contains "$mirror_path" "${written_set[@]}" && already=1
+    result="$(_cpp_apply_derived "$idx" "$target_sha" "$dtree" "$mirror_path" "$content_tmp" "$already")"
+    case "$result" in
+      regenerated)
+        regenerated_paths+=("$mirror_path")
+        _cpp_err "build: regenerated $mirror_path (from .claude/$family/$mname)"
+        ;;
+      replaced)
+        _cpp_err "build: replaced $mirror_path with the regenerated content (from .claude/$family/$mname) — the caller-supplied copy was stale"
+        ;;
+      ERROR)
+        _cpp_err "build: derived-files: failed to stage $mirror_path"
+        return 2
+        ;;
+      *) : ;;
+    esac
+  done
+
+  # ── engine/manifest.json ─────────────────────────────────────────────────
+  if [[ -f "$dtree/scripts/engine-sync/manifest.py" ]]; then
+    local old_manifest="$scratch/manifest-old.json"
+    if [[ -f "$dtree/engine/manifest.json" ]]; then
+      cp "$dtree/engine/manifest.json" "$old_manifest"
+    else
+      printf '{}' >"$old_manifest"
+    fi
+
+    local gen_out gen_rc
+    gen_out="$(python3 "$dtree/scripts/engine-sync/manifest.py" generate 2>&1)"
+    gen_rc=$?
+    if [[ "$gen_rc" -ne 0 ]]; then
+      _cpp_err "build: derived-files: manifest.py generate failed (exit $gen_rc): $gen_out"
+      return 2
+    fi
+
+    local allowed_file="$scratch/manifest-allowed.txt"
+    { printf '%s\n' "${written_set[@]}"; printf '%s\n' "${regenerated_paths[@]}"; } >"$allowed_file"
+    local written_file2="$scratch/manifest-written.txt"
+    printf '%s\n' "${written_set[@]}" >"$written_file2"
+
+    local check_out
+    check_out="$(python3 - "$old_manifest" "$dtree/engine/manifest.json" "$allowed_file" "$written_file2" <<'PYEOF'
+import json
+import sys
+
+old_path, new_path, allowed_path, written_path = sys.argv[1:5]
+old = json.load(open(old_path)).get("files", {})
+new = json.load(open(new_path)).get("files", {})
+allowed = {l.strip() for l in open(allowed_path) if l.strip()}
+written = {l.strip() for l in open(written_path) if l.strip()}
+
+changed = {k for k in set(old) | set(new) if old.get(k) != new.get(k)}
+for p in sorted(changed - allowed):
+    print(f"OUTSIDE:{p}")
+for p in sorted(changed & written):
+    print(f"TRIGGER:{p}")
+PYEOF
+)"
+
+    local outside triggers
+    outside="$(printf '%s\n' "$check_out" | grep '^OUTSIDE:' | sed 's/^OUTSIDE://')"
+    triggers="$(printf '%s\n' "$check_out" | grep '^TRIGGER:' | sed 's/^TRIGGER://')"
+
+    if [[ -n "$outside" ]]; then
+      _cpp_err "build: derived-files: regenerating engine/manifest.json would change an entry outside the requested write set:"
+      while IFS= read -r p; do
+        [[ -n "$p" ]] && _cpp_err "build:   $p"
+      done <<<"$outside"
+      return 5
+    fi
+
+    if cmp -s "$old_manifest" "$dtree/engine/manifest.json"; then
+      : # unchanged — quiet, no-op
+    else
+      local already=0
+      _cpp_array_contains "engine/manifest.json" "${written_set[@]}" && already=1
+      local mode blob
+      mode="$(_cpp_resolve_mode "$target_sha" "engine/manifest.json")"
+      blob="$(git hash-object -w "$dtree/engine/manifest.json" 2>/dev/null)" || {
+        _cpp_err "build: derived-files: hash-object failed for engine/manifest.json"
+        return 2
+      }
+      if ! GIT_INDEX_FILE="$idx" git update-index --add --cacheinfo "$mode,$blob,engine/manifest.json" 2>/dev/null; then
+        _cpp_err "build: derived-files: failed to stage engine/manifest.json"
+        return 2
+      fi
+      if [[ "$already" == "1" ]]; then
+        _cpp_err "build: replaced engine/manifest.json with the regenerated content — the caller-supplied copy was stale"
+      else
+        regenerated_paths+=("engine/manifest.json")
+        _cpp_err "build: regenerated engine/manifest.json ($(printf '%s ' $triggers))"
+      fi
+    fi
+  fi
+
+  printf '%s\n' "${regenerated_paths[@]}"
+  return 0
+}
+
 # ── build ─────────────────────────────────────────────────────────────────────
 
 code_plane_pr_build() {
   local base_ref="" target_ref="" branch="" message=""
+  local skip_guards_given=false skip_guards_reason=""
   local -a pairs=()
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --base-ref)   base_ref="$2";   shift 2 ;;
-      --target-ref) target_ref="$2"; shift 2 ;;
-      --branch)     branch="$2";     shift 2 ;;
-      --message)    message="$2";    shift 2 ;;
+      --base-ref)     base_ref="$2";     shift 2 ;;
+      --target-ref)   target_ref="$2";   shift 2 ;;
+      --branch)       branch="$2";       shift 2 ;;
+      --message)      message="$2";      shift 2 ;;
+      --skip-guards)  skip_guards_given=true; skip_guards_reason="$2"; shift 2 ;;
       --) shift; pairs+=("$@"); break ;;
       -*) _cpp_err "build: unknown flag '$1'"; return 2 ;;
       *) pairs+=("$1"); shift ;;
@@ -134,6 +507,10 @@ code_plane_pr_build() {
   fi
   if [[ -z "$base_ref" ]]; then
     _cpp_err "build: --base-ref is required — pass the sha 'extract' printed on stderr for the tree you started from, or --target-ref's own value again if you genuinely have no prior base"
+    return 2
+  fi
+  if [[ "$skip_guards_given" == true && -z "$skip_guards_reason" ]]; then
+    _cpp_err "build: --skip-guards requires a non-empty reason"
     return 2
   fi
 
@@ -217,12 +594,48 @@ code_plane_pr_build() {
     written_paths+=("$repo_path")
   done
 
-  local tree commit_sha
+  local tree
   tree="$(GIT_INDEX_FILE="$idx" git write-tree 2>/dev/null)" || {
     _cpp_err "build: write-tree failed"
     rm -rf "$scratch"
     return 2
   }
+
+  # ── derived-files step (D#2578) ─────────────────────────────────────────
+  local -a regenerated_paths=()
+  if [[ "$skip_guards_given" == true ]]; then
+    _cpp_err "build: WARN --skip-guards: $skip_guards_reason (derived-files regeneration and guard checks skipped)"
+  else
+    local written_file="$scratch/written-paths.txt"
+    printf '%s\n' "${written_paths[@]}" >"$written_file"
+    local dtree="$scratch/tree"
+    local regen_out regen_rc
+    regen_out="$(_cpp_regenerate_derived_files "$idx" "$target_sha" "$tree" "$dtree" "$written_file")"
+    regen_rc=$?
+    if [[ "$regen_rc" -ne 0 ]]; then
+      rm -rf "$scratch"
+      return "$regen_rc"
+    fi
+    while IFS= read -r line; do
+      [[ -n "$line" ]] && regenerated_paths+=("$line")
+    done <<<"$regen_out"
+
+    if [[ "${#regenerated_paths[@]}" -gt 0 ]]; then
+      tree="$(GIT_INDEX_FILE="$idx" git write-tree 2>/dev/null)" || {
+        _cpp_err "build: write-tree failed after derived-files regeneration"
+        rm -rf "$scratch"
+        return 2
+      }
+    fi
+
+    if ! _cpp_run_guards "$dtree"; then
+      _cpp_err "build: REFUSED — a derived-file guard failed against the regenerated tree; see the guard: lines above"
+      rm -rf "$scratch"
+      return 5
+    fi
+  fi
+
+  local commit_sha
   commit_sha="$(git commit-tree "$tree" -p "$target_sha" -m "$message" 2>/dev/null)" || {
     _cpp_err "build: commit-tree failed"
     rm -rf "$scratch"
@@ -230,14 +643,16 @@ code_plane_pr_build() {
   }
 
   # Self-verify scope: refuse to hand back a commit that touches anything
-  # other than exactly the paths it was asked to write. Guards against a
-  # --target-ref that moved further than the caller realized.
+  # other than exactly the paths it was asked to write, union whatever the
+  # derived-files step itself regenerated. Guards against a --target-ref
+  # that moved further than the caller realized.
   local actual expected
   actual="$(git diff --name-only "$target_sha" "$commit_sha" | sort -u)"
-  expected="$(printf '%s\n' "${written_paths[@]}" | sort -u)"
+  expected="$(printf '%s\n' "${written_paths[@]}" "${regenerated_paths[@]}" | sort -u)"
   if [[ "$actual" != "$expected" ]]; then
     _cpp_err "build: scope check failed — commit touches a different path set than requested"
     _cpp_err "build:   requested: $(printf '%s ' "${written_paths[@]}")"
+    _cpp_err "build:   regenerated: $(printf '%s ' "${regenerated_paths[@]}")"
     _cpp_err "build:   actual:    $(printf '%s ' $actual)"
     rm -rf "$scratch"
     return 4
@@ -291,12 +706,14 @@ code_plane_pr_extract() {
 
 code_plane_pr_push() {
   local remote="" branch="" commit="" force=false
+  local skip_guards_given=false skip_guards_reason=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --remote) remote="$2"; shift 2 ;;
-      --branch) branch="$2"; shift 2 ;;
-      --commit) commit="$2"; shift 2 ;;
-      --force)  force=true;  shift ;;
+      --remote)      remote="$2"; shift 2 ;;
+      --branch)      branch="$2"; shift 2 ;;
+      --commit)      commit="$2"; shift 2 ;;
+      --force)       force=true;  shift ;;
+      --skip-guards) skip_guards_given=true; skip_guards_reason="$2"; shift 2 ;;
       -*) _cpp_err "push: unknown flag '$1'"; return 2 ;;
       *) _cpp_err "push: unexpected argument '$1'"; return 2 ;;
     esac
@@ -305,6 +722,39 @@ code_plane_pr_push() {
     _cpp_err "push: --remote, --branch and --commit are required"
     return 2
   fi
+  if [[ "$skip_guards_given" == true && -z "$skip_guards_reason" ]]; then
+    _cpp_err "push: --skip-guards requires a non-empty reason"
+    return 2
+  fi
+
+  if [[ "$skip_guards_given" == true ]]; then
+    _cpp_err "push: WARN --skip-guards: $skip_guards_reason (re-verification skipped)"
+  else
+    local commit_sha
+    commit_sha="$(_cpp_resolve_commit commit "$commit")" || {
+      _cpp_err "push: cannot resolve --commit '$commit'"
+      return 2
+    }
+    local scratch
+    scratch="$(mktemp -d)" || {
+      _cpp_err "push: mktemp -d failed"
+      return 2
+    }
+    local dtree="$scratch/tree"
+    mkdir -p "$dtree"
+    if ! git archive "$commit_sha" | tar -x -C "$dtree"; then
+      _cpp_err "push: could not extract commit '$commit_sha' for re-verification"
+      rm -rf "$scratch"
+      return 2
+    fi
+    if ! _cpp_run_guards "$dtree"; then
+      _cpp_err "push: REFUSED — the commit being pushed fails a derived-file guard; see the guard: lines above. Re-run 'build' to regenerate, or pass --skip-guards \"<reason>\" to push anyway."
+      rm -rf "$scratch"
+      return 5
+    fi
+    rm -rf "$scratch"
+  fi
+
   # Every `build` starts fresh from --target-ref rather than the previous
   # round's commit (see the header comment), so a second round's commit is a
   # sibling of the first, not a descendant — plain push is never a

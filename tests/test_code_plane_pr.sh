@@ -553,6 +553,447 @@ else
 fi
 rm -rf "$FX_D2498_9"
 
+# ── D#2578 fixture helpers: derived-files regeneration ───────────────────────
+# These build small, hermetic repos containing REAL derived-file infra
+# (copied from this checkout's own working tree — never generated ad hoc),
+# so the cases below exercise the helper's actual regeneration/guard logic
+# rather than a parallel reimplementation of it.
+
+_d2578_stage_and_commit() {
+  # _d2578_stage_and_commit <dir> <message> <relpath...>
+  local dir="$1" message="$2"; shift 2
+  local idx="$TEST_SCRATCH/d2578-idx-$RANDOM-$RANDOM"
+  local f blob
+  for f in "$@"; do
+    blob="$(git -C "$dir" hash-object -w "$dir/$f")"
+    GIT_INDEX_FILE="$idx" git -C "$dir" update-index --add --cacheinfo "100644,$blob,$f"
+  done
+  local tree
+  tree="$(GIT_INDEX_FILE="$idx" git -C "$dir" write-tree)"
+  git -C "$dir" commit-tree "$tree" -m "$message"
+}
+
+RUFF_ON_PATH=true
+if ! command -v ruff >/dev/null 2>&1; then
+  RUFF_ON_PATH=false
+fi
+if $RUFF_ON_PATH; then
+  RUFF_HOST_VERSION="$(ruff --version | awk '{print $2}')"
+  RUFF_BASELINE_VERSION="$(grep -m1 '^# ruff-version:' "$REPO_ROOT/scripts/ruff-known-findings.txt" | sed 's/^# ruff-version: *//')"
+  if [[ "$RUFF_HOST_VERSION" != "$RUFF_BASELINE_VERSION" ]]; then
+    RUFF_ON_PATH=false
+  fi
+fi
+
+# ── Case: manifest regeneration (item 3) ──────────────────────────────────────
+echo ""
+echo "=== D#2578 Case: build regenerates engine/manifest.json for a manifest-scoped write (item 3) ==="
+FX_MANIFEST="$(_fixture_repo)"
+mkdir -p "$FX_MANIFEST/scripts/engine-sync" "$FX_MANIFEST/scripts/lib" "$FX_MANIFEST/engine"
+cp "$REPO_ROOT/scripts/engine-sync/manifest.py" "$FX_MANIFEST/scripts/engine-sync/manifest.py"
+cp "$REPO_ROOT/scripts/engine-sync/allowlist.txt" "$FX_MANIFEST/scripts/engine-sync/allowlist.txt"
+cp "$REPO_ROOT/engine/VERSION" "$FX_MANIFEST/engine/VERSION"
+printf '#!/usr/bin/env bash\necho existing\n' > "$FX_MANIFEST/scripts/lib/existing.sh"
+# Generate the manifest for the base tree FIRST (as if a prior commit had
+# already regenerated it), so the base tree starts clean.
+python3 "$FX_MANIFEST/scripts/engine-sync/manifest.py" generate >/dev/null
+COMMIT_MANIFEST_BASE="$(_d2578_stage_and_commit "$FX_MANIFEST" "base, manifest already clean" \
+  scripts/engine-sync/manifest.py scripts/engine-sync/allowlist.txt engine/VERSION \
+  scripts/lib/existing.sh engine/manifest.json)"
+
+LOCAL_NEWTHING="$TEST_SCRATCH/d2578-newthing.sh"
+printf '#!/usr/bin/env bash\necho new\n' > "$LOCAL_NEWTHING"
+OUT_MANIFEST="$(cd "$FX_MANIFEST" && code_plane_pr build --target-ref "$COMMIT_MANIFEST_BASE" --base-ref "$COMMIT_MANIFEST_BASE" \
+  --branch test --message "add newthing" "scripts/lib/newthing.sh=$LOCAL_NEWTHING" 2>"$TEST_SCRATCH/d2578-manifest.err")"
+RC_MANIFEST=$?
+
+if [[ "$RC_MANIFEST" -eq 0 && "$OUT_MANIFEST" =~ ^[0-9a-f]{40}$ ]]; then
+  _pass "item3: build exits 0 and prints a commit sha for a manifest-scoped write"
+else
+  _fail "item3: expected exit 0 with a commit sha, got rc=$RC_MANIFEST stdout='$OUT_MANIFEST': $(cat "$TEST_SCRATCH/d2578-manifest.err")"
+fi
+if grep -qE '^code-plane-pr\.sh: build: regenerated engine/manifest\.json' "$TEST_SCRATCH/d2578-manifest.err" \
+   && grep -q "scripts/lib/newthing.sh" "$TEST_SCRATCH/d2578-manifest.err"; then
+  _pass "item3: stderr names engine/manifest.json as regenerated and names the triggering path"
+else
+  _fail "item3: stderr missing the expected regenerated-manifest line: $(cat "$TEST_SCRATCH/d2578-manifest.err")"
+fi
+if [[ "$RC_MANIFEST" -eq 0 ]]; then
+  BUILT_MANIFEST="$TEST_SCRATCH/d2578-built-manifest.json"
+  git -C "$FX_MANIFEST" show "$OUT_MANIFEST:engine/manifest.json" > "$BUILT_MANIFEST" 2>/dev/null
+  REGEN_DIR="$(cd "$FX_MANIFEST" && code_plane_pr extract --ref "$OUT_MANIFEST" 2>/dev/null)"
+  python3 "$REGEN_DIR/scripts/engine-sync/manifest.py" generate >/dev/null
+  if cmp -s "$BUILT_MANIFEST" "$REGEN_DIR/engine/manifest.json"; then
+    _pass "item3: built manifest.json is byte-identical to regenerating it fresh against the built commit's own tree"
+  else
+    _fail "item3: built manifest.json does not match a fresh regeneration of the built commit's tree"
+  fi
+  rm -rf "$REGEN_DIR"
+  CHANGED_MANIFEST="$(git -C "$FX_MANIFEST" diff --name-only "$COMMIT_MANIFEST_BASE" "$OUT_MANIFEST" | sort -u)"
+  EXPECTED_MANIFEST="$(printf '%s\n' engine/manifest.json scripts/lib/newthing.sh | sort -u)"
+  if [[ "$CHANGED_MANIFEST" == "$EXPECTED_MANIFEST" ]]; then
+    _pass "item3: changed-path set is exactly the requested path plus engine/manifest.json"
+  else
+    _fail "item3: changed-path set was '$CHANGED_MANIFEST', expected '$EXPECTED_MANIFEST'"
+  fi
+fi
+
+# ── Case: bounded regeneration refuses on out-of-scope drift (item 4) ────────
+echo ""
+echo "=== D#2578 Case: bounded regeneration refuses when the target's own manifest is already stale (item 4) ==="
+FX_BOUNDED="$(_fixture_repo)"
+mkdir -p "$FX_BOUNDED/scripts/engine-sync" "$FX_BOUNDED/scripts/lib" "$FX_BOUNDED/engine"
+cp "$REPO_ROOT/scripts/engine-sync/manifest.py" "$FX_BOUNDED/scripts/engine-sync/manifest.py"
+cp "$REPO_ROOT/scripts/engine-sync/allowlist.txt" "$FX_BOUNDED/scripts/engine-sync/allowlist.txt"
+cp "$REPO_ROOT/engine/VERSION" "$FX_BOUNDED/engine/VERSION"
+printf '#!/usr/bin/env bash\necho existing\n' > "$FX_BOUNDED/scripts/lib/existing.sh"
+python3 "$FX_BOUNDED/scripts/engine-sync/manifest.py" generate >/dev/null
+# Drift existing.sh AFTER generating the manifest -- a path the caller below
+# never writes, matching D#2578's "target's own manifest is already stale
+# for a path the caller did not write" scenario.
+printf '#!/usr/bin/env bash\necho existing, drifted unrelated to this change\n' > "$FX_BOUNDED/scripts/lib/existing.sh"
+COMMIT_BOUNDED_BASE="$(_d2578_stage_and_commit "$FX_BOUNDED" "existing.sh drifted vs its own pin" \
+  scripts/engine-sync/manifest.py scripts/engine-sync/allowlist.txt engine/VERSION \
+  scripts/lib/existing.sh engine/manifest.json)"
+
+LOCAL_BOUNDED_NEW="$TEST_SCRATCH/d2578-bounded-newthing.sh"
+printf '#!/usr/bin/env bash\necho new\n' > "$LOCAL_BOUNDED_NEW"
+OUT_BOUNDED="$(cd "$FX_BOUNDED" && code_plane_pr build --target-ref "$COMMIT_BOUNDED_BASE" --base-ref "$COMMIT_BOUNDED_BASE" \
+  --branch test --message "add newthing" "scripts/lib/newthing.sh=$LOCAL_BOUNDED_NEW" 2>"$TEST_SCRATCH/d2578-bounded.err")"
+RC_BOUNDED=$?
+
+if [[ "$RC_BOUNDED" -eq 5 ]]; then
+  _pass "item4: build exits 5 when the target's own manifest is already stale for an unwritten path"
+else
+  _fail "item4: expected exit 5, got $RC_BOUNDED (stdout='$OUT_BOUNDED')"
+fi
+if [[ -z "$OUT_BOUNDED" ]]; then
+  _pass "item4: build prints no commit sha on the bounded-regeneration refusal"
+else
+  _fail "item4: expected empty stdout, got '$OUT_BOUNDED'"
+fi
+if grep -q "scripts/lib/existing.sh" "$TEST_SCRATCH/d2578-bounded.err"; then
+  _pass "item4: stderr names the out-of-scope drifted path"
+else
+  _fail "item4: stderr does not name scripts/lib/existing.sh: $(cat "$TEST_SCRATCH/d2578-bounded.err")"
+fi
+
+# ── Case: agents/ mirror regeneration (item 5) ────────────────────────────────
+echo ""
+echo "=== D#2578 Case: build regenerates the agents/ mirror for a written .claude/agents/*.md (item 5) ==="
+FX_AGENTS="$(_fixture_repo)"
+mkdir -p "$FX_AGENTS/scripts/lib" "$FX_AGENTS/.claude/agents" "$FX_AGENTS/agents"
+cp "$REPO_ROOT/scripts/lib/agents-plugin-mirror.sh" "$FX_AGENTS/scripts/lib/agents-plugin-mirror.sh"
+printf 'You ONLY interact with autonomous-agent-7/fulcrumaxe.\n' > "$FX_AGENTS/.claude/agents/roleA.md"
+printf 'STALE OLD MIRROR CONTENT\n' > "$FX_AGENTS/agents/roleA.md"
+COMMIT_AGENTS_BASE="$(_d2578_stage_and_commit "$FX_AGENTS" "base with a stale agents/ mirror" \
+  scripts/lib/agents-plugin-mirror.sh .claude/agents/roleA.md agents/roleA.md)"
+
+LOCAL_NEW_ROLE="$TEST_SCRATCH/d2578-roleA-new.md"
+printf 'You ONLY interact with autonomous-agent-7/fulcrumaxe.\nAlso: gh issue view 5 --repo autonomous-agent-7/fulcrumaxe\n' > "$LOCAL_NEW_ROLE"
+OUT_AGENTS="$(cd "$FX_AGENTS" && code_plane_pr build --target-ref "$COMMIT_AGENTS_BASE" --base-ref "$COMMIT_AGENTS_BASE" \
+  --branch test --message "edit roleA" ".claude/agents/roleA.md=$LOCAL_NEW_ROLE" 2>"$TEST_SCRATCH/d2578-agents.err")"
+RC_AGENTS=$?
+
+if [[ "$RC_AGENTS" -eq 0 ]]; then
+  _pass "item5: build exits 0 for a written .claude/agents/*.md path"
+else
+  _fail "item5: expected exit 0, got $RC_AGENTS: $(cat "$TEST_SCRATCH/d2578-agents.err")"
+fi
+if grep -q "regenerated agents/roleA.md" "$TEST_SCRATCH/d2578-agents.err"; then
+  _pass "item5: stderr names agents/roleA.md as regenerated"
+else
+  _fail "item5: stderr does not name agents/roleA.md as regenerated: $(cat "$TEST_SCRATCH/d2578-agents.err")"
+fi
+if [[ "$RC_AGENTS" -eq 0 ]]; then
+  EXPECTED_AGENTS="$(bash "$REPO_ROOT/scripts/lib/agents-plugin-mirror.sh" "$LOCAL_NEW_ROLE")"
+  ACTUAL_AGENTS="$(git -C "$FX_AGENTS" show "$OUT_AGENTS:agents/roleA.md" 2>/dev/null)"
+  if [[ "$ACTUAL_AGENTS" == "$EXPECTED_AGENTS" ]]; then
+    _pass "item5: built agents/roleA.md equals agents-plugin-mirror.sh run on the new source"
+  else
+    _fail "item5: built agents/roleA.md does not match the expected mirror output"
+  fi
+fi
+
+# ── Case: commands/ mirror regeneration (item 6) ──────────────────────────────
+echo ""
+echo "=== D#2578 Case: build regenerates the commands/ mirror as a byte copy (item 6) ==="
+FX_COMMANDS="$(_fixture_repo)"
+mkdir -p "$FX_COMMANDS/.claude/commands" "$FX_COMMANDS/commands"
+printf 'command body\n' > "$FX_COMMANDS/.claude/commands/cmdA.md"
+cp "$FX_COMMANDS/.claude/commands/cmdA.md" "$FX_COMMANDS/commands/cmdA.md"
+COMMIT_COMMANDS_BASE="$(_d2578_stage_and_commit "$FX_COMMANDS" "base with matching commands/ mirror" \
+  .claude/commands/cmdA.md commands/cmdA.md)"
+
+LOCAL_NEW_CMD="$TEST_SCRATCH/d2578-cmdA-new.md"
+printf 'command body v2\n' > "$LOCAL_NEW_CMD"
+OUT_COMMANDS="$(cd "$FX_COMMANDS" && code_plane_pr build --target-ref "$COMMIT_COMMANDS_BASE" --base-ref "$COMMIT_COMMANDS_BASE" \
+  --branch test --message "edit cmdA" ".claude/commands/cmdA.md=$LOCAL_NEW_CMD" 2>"$TEST_SCRATCH/d2578-commands.err")"
+RC_COMMANDS=$?
+
+if [[ "$RC_COMMANDS" -eq 0 ]]; then
+  _pass "item6: build exits 0 for a written .claude/commands/*.md path"
+else
+  _fail "item6: expected exit 0, got $RC_COMMANDS: $(cat "$TEST_SCRATCH/d2578-commands.err")"
+fi
+if [[ "$RC_COMMANDS" -eq 0 ]]; then
+  ACTUAL_COMMANDS="$(git -C "$FX_COMMANDS" show "$OUT_COMMANDS:commands/cmdA.md" 2>/dev/null)"
+  if [[ "$ACTUAL_COMMANDS" == "command body v2" ]]; then
+    _pass "item6: built commands/cmdA.md is a byte copy of the new .claude/commands/cmdA.md"
+  else
+    _fail "item6: built commands/cmdA.md = '$ACTUAL_COMMANDS', expected 'command body v2'"
+  fi
+fi
+
+# ── Case: allowlisted twin is left untouched (item 7) ─────────────────────────
+echo ""
+echo "=== D#2578 Case: an allowlisted twin pair is not regenerated even though its source changes (item 7) ==="
+FX_ALLOWLIST="$(_fixture_repo)"
+mkdir -p "$FX_ALLOWLIST/scripts/lib" "$FX_ALLOWLIST/scripts/ci" "$FX_ALLOWLIST/.claude/agents" "$FX_ALLOWLIST/agents"
+cp "$REPO_ROOT/scripts/lib/agents-plugin-mirror.sh" "$FX_ALLOWLIST/scripts/lib/agents-plugin-mirror.sh"
+printf '{"entries": [{"pair": "agents:stable.md", "date": "2026-09-19", "reason": "deliberate allowlisted variant for test"}]}' \
+  > "$FX_ALLOWLIST/scripts/ci/twin-divergence-allowlist.json"
+printf 'ORIGINAL AGENT CARD FOR STABLE\n' > "$FX_ALLOWLIST/.claude/agents/stable.md"
+printf 'DELIBERATELY DIFFERENT MIRROR CONTENT\n' > "$FX_ALLOWLIST/agents/stable.md"
+COMMIT_ALLOWLIST_BASE="$(_d2578_stage_and_commit "$FX_ALLOWLIST" "base with an allowlisted deliberate variant" \
+  scripts/lib/agents-plugin-mirror.sh scripts/ci/twin-divergence-allowlist.json \
+  .claude/agents/stable.md agents/stable.md)"
+
+LOCAL_NEW_STABLE="$TEST_SCRATCH/d2578-stable-new.md"
+printf 'CHANGED STABLE CONTENT — should NOT be regenerated\n' > "$LOCAL_NEW_STABLE"
+OUT_ALLOWLIST="$(cd "$FX_ALLOWLIST" && code_plane_pr build --target-ref "$COMMIT_ALLOWLIST_BASE" --base-ref "$COMMIT_ALLOWLIST_BASE" \
+  --branch test --message "edit stable" ".claude/agents/stable.md=$LOCAL_NEW_STABLE" 2>"$TEST_SCRATCH/d2578-allowlist.err")"
+RC_ALLOWLIST=$?
+
+if [[ "$RC_ALLOWLIST" -eq 0 ]]; then
+  _pass "item7: build exits 0 when the only affected mirror is allowlisted"
+else
+  _fail "item7: expected exit 0, got $RC_ALLOWLIST: $(cat "$TEST_SCRATCH/d2578-allowlist.err")"
+fi
+if [[ "$RC_ALLOWLIST" -eq 0 ]]; then
+  ORIG_STABLE_BLOB="$(git -C "$FX_ALLOWLIST" rev-parse "$COMMIT_ALLOWLIST_BASE:agents/stable.md" 2>/dev/null)"
+  BUILT_STABLE_BLOB="$(git -C "$FX_ALLOWLIST" rev-parse "$OUT_ALLOWLIST:agents/stable.md" 2>/dev/null)"
+  if [[ -n "$ORIG_STABLE_BLOB" && "$ORIG_STABLE_BLOB" == "$BUILT_STABLE_BLOB" ]]; then
+    _pass "item7: agents/stable.md's blob is unchanged (allowlisted, not regenerated)"
+  else
+    _fail "item7: agents/stable.md blob changed despite being allowlisted"
+  fi
+fi
+if grep -qi "allowlisted" "$TEST_SCRATCH/d2578-allowlist.err"; then
+  _pass "item7: stderr names the allowlisted pair"
+else
+  _fail "item7: stderr does not mention the allowlisted pair: $(cat "$TEST_SCRATCH/d2578-allowlist.err")"
+fi
+
+# ── Case: ruff refusal on baseline over-allowance (item 8) ────────────────────
+echo ""
+echo "=== D#2578 Case: ruff-ratchet refusal when a baselined finding no longer reproduces (item 8) ==="
+if ! $RUFF_ON_PATH; then
+  echo "SKIP: item8 — ruff is absent from PATH, or its version does not match scripts/ruff-known-findings.txt's baseline; cannot exercise the real ruff refusal path on this host"
+else
+  FX_RUFF="$(_fixture_repo)"
+  mkdir -p "$FX_RUFF/scripts/ci" "$FX_RUFF/backend" "$FX_RUFF/tests" "$FX_RUFF/scripts"
+  cp "$REPO_ROOT/scripts/ci/ruff-ratchet.py" "$FX_RUFF/scripts/ci/ruff-ratchet.py"
+  cp "$REPO_ROOT/ruff.toml" "$FX_RUFF/ruff.toml"
+  : > "$FX_RUFF/backend/__init__.py"
+  : > "$FX_RUFF/tests/__init__.py"
+  printf '"""Fixture file - clean."""\n\n\ndef noop() -> None:\n    return None\n' > "$FX_RUFF/scripts/fixture_lint_target.py"
+  BASELINE_LINE_8=$'scripts/fixture_lint_target.py\tF401\t1\t`os` imported but unused'
+  {
+    printf '# RUFF-RATCHET-V1\n#\n# ruff-version: %s\n' "$RUFF_HOST_VERSION"
+    printf '# scope: backend/ tests/ scripts/ (must match Makefile'"'"'s `lint` target)\n#\n'
+    printf '%s\n' "$BASELINE_LINE_8"
+  } > "$FX_RUFF/scripts/ruff-known-findings.txt"
+  COMMIT_RUFF_BASE="$(_d2578_stage_and_commit "$FX_RUFF" "base with a stale ruff baseline over-allowance" \
+    scripts/ci/ruff-ratchet.py ruff.toml backend/__init__.py tests/__init__.py \
+    scripts/fixture_lint_target.py scripts/ruff-known-findings.txt)"
+
+  LOCAL_UNRELATED_8="$TEST_SCRATCH/d2578-ruff-unrelated.sh"
+  printf 'echo unrelated\n' > "$LOCAL_UNRELATED_8"
+  OUT_RUFF="$(cd "$FX_RUFF" && code_plane_pr build --target-ref "$COMMIT_RUFF_BASE" --base-ref "$COMMIT_RUFF_BASE" \
+    --branch test --message "unrelated change" "scripts/unrelated.sh=$LOCAL_UNRELATED_8" 2>"$TEST_SCRATCH/d2578-ruff.err")"
+  RC_RUFF=$?
+
+  if [[ "$RC_RUFF" -eq 5 && -z "$OUT_RUFF" ]]; then
+    _pass "item8: build exits 5 with no sha when a baselined ruff finding no longer reproduces"
+  else
+    _fail "item8: expected exit 5 with no sha, got rc=$RC_RUFF stdout='$OUT_RUFF'"
+  fi
+  if grep -qF "$BASELINE_LINE_8" "$TEST_SCRATCH/d2578-ruff.err" && grep -q "delete this line" "$TEST_SCRATCH/d2578-ruff.err"; then
+    _pass "item8: stderr contains the verbatim baseline line followed by 'delete this line'"
+  else
+    _fail "item8: stderr missing the verbatim baseline line or 'delete this line': $(cat "$TEST_SCRATCH/d2578-ruff.err")"
+  fi
+  if ! grep -q "^scripts/ruff-known-findings.txt$" <(git -C "$FX_RUFF" diff --name-only "$COMMIT_RUFF_BASE" 2>/dev/null); then
+    _pass "item8: scripts/ruff-known-findings.txt is not touched by the refusal"
+  fi
+fi
+
+# ── Case: ruff unavailable is a WARN, not a refusal (item 9) ──────────────────
+echo ""
+echo "=== D#2578 Case: ruff absent from PATH is a WARN, not a refusal (item 9) ==="
+FX_RUFF9="$(_fixture_repo)"
+mkdir -p "$FX_RUFF9/scripts/ci" "$FX_RUFF9/backend" "$FX_RUFF9/tests" "$FX_RUFF9/scripts"
+cp "$REPO_ROOT/scripts/ci/ruff-ratchet.py" "$FX_RUFF9/scripts/ci/ruff-ratchet.py"
+cp "$REPO_ROOT/ruff.toml" "$FX_RUFF9/ruff.toml"
+: > "$FX_RUFF9/backend/__init__.py"
+: > "$FX_RUFF9/tests/__init__.py"
+printf '"""Fixture file - clean."""\n\n\ndef noop() -> None:\n    return None\n' > "$FX_RUFF9/scripts/fixture_lint_target.py"
+{
+  printf '# RUFF-RATCHET-V1\n#\n# ruff-version: 999.999.999\n'
+  printf '# scope: backend/ tests/ scripts/ (must match Makefile'"'"'s `lint` target)\n#\n'
+} > "$FX_RUFF9/scripts/ruff-known-findings.txt"
+COMMIT_RUFF9_BASE="$(_d2578_stage_and_commit "$FX_RUFF9" "base, ruff baseline present but irrelevant to this case" \
+  scripts/ci/ruff-ratchet.py ruff.toml backend/__init__.py tests/__init__.py \
+  scripts/fixture_lint_target.py scripts/ruff-known-findings.txt)"
+
+NOPATH_9=""
+IFS=':' read -ra _D2578_PDIRS <<<"$PATH"
+for _d2578_dir in "${_D2578_PDIRS[@]}"; do
+  [[ -x "$_d2578_dir/ruff" ]] && continue
+  NOPATH_9="${NOPATH_9:+$NOPATH_9:}$_d2578_dir"
+done
+LOCAL_UNRELATED_9="$TEST_SCRATCH/d2578-ruff9-unrelated.sh"
+printf 'echo unrelated\n' > "$LOCAL_UNRELATED_9"
+OUT_RUFF9="$(cd "$FX_RUFF9" && PATH="$NOPATH_9" code_plane_pr build --target-ref "$COMMIT_RUFF9_BASE" --base-ref "$COMMIT_RUFF9_BASE" \
+  --branch test --message "unrelated change" "scripts/unrelated9.sh=$LOCAL_UNRELATED_9" 2>"$TEST_SCRATCH/d2578-ruff9.err")"
+RC_RUFF9=$?
+
+if [[ "$RC_RUFF9" -eq 0 ]]; then
+  _pass "item9: build exits 0 when ruff is absent from PATH"
+else
+  _fail "item9: expected exit 0 with ruff absent, got $RC_RUFF9: $(cat "$TEST_SCRATCH/d2578-ruff9.err")"
+fi
+if grep -q "WARN" "$TEST_SCRATCH/d2578-ruff9.err" && grep -q "ruff-ratchet" "$TEST_SCRATCH/d2578-ruff9.err"; then
+  _pass "item9: stderr contains WARN and names ruff-ratchet"
+else
+  _fail "item9: stderr missing WARN/ruff-ratchet: $(cat "$TEST_SCRATCH/d2578-ruff9.err")"
+fi
+
+# ── Case: quiet path (item 10) ─────────────────────────────────────────────────
+echo ""
+echo "=== D#2578 Case: a write with no derived-file source stays quiet (item 10) ==="
+FX_QUIET="$(_fixture_repo)"
+mkdir -p "$FX_QUIET/tests"
+printf 'echo old\n' > "$FX_QUIET/tests/existing_test.sh"
+COMMIT_QUIET_BASE="$(_d2578_stage_and_commit "$FX_QUIET" "base for the quiet path" tests/existing_test.sh)"
+
+LOCAL_NEW_TEST="$TEST_SCRATCH/d2578-newtest.sh"
+printf 'echo new test\n' > "$LOCAL_NEW_TEST"
+OUT_QUIET="$(cd "$FX_QUIET" && code_plane_pr build --target-ref "$COMMIT_QUIET_BASE" --base-ref "$COMMIT_QUIET_BASE" \
+  --branch test --message "add a test" "tests/newtest.sh=$LOCAL_NEW_TEST" 2>"$TEST_SCRATCH/d2578-quiet.err")"
+RC_QUIET=$?
+
+if [[ "$RC_QUIET" -eq 0 ]]; then
+  _pass "item10: build exits 0 for a tests/-only write"
+else
+  _fail "item10: expected exit 0, got $RC_QUIET: $(cat "$TEST_SCRATCH/d2578-quiet.err")"
+fi
+if ! grep -qE 'regenerated|replaced|WARN' "$TEST_SCRATCH/d2578-quiet.err"; then
+  _pass "item10: stderr contains no regenerated/replaced/WARN line"
+else
+  _fail "item10: stderr is not quiet: $(cat "$TEST_SCRATCH/d2578-quiet.err")"
+fi
+if [[ "$RC_QUIET" -eq 0 ]]; then
+  CHANGED_QUIET="$(git -C "$FX_QUIET" diff --name-only "$COMMIT_QUIET_BASE" "$OUT_QUIET")"
+  if [[ "$CHANGED_QUIET" == "tests/newtest.sh" ]]; then
+    _pass "item10: changed-path set equals the requested set exactly"
+  else
+    _fail "item10: changed-path set was '$CHANGED_QUIET'"
+  fi
+fi
+
+# ── Case: push re-verifies before the network call (item 11) ─────────────────
+echo ""
+echo "=== D#2578 Case: push refuses a guard-failing commit before any network call (item 11) ==="
+if ! $RUFF_ON_PATH; then
+  echo "SKIP: item11 — needs the same real-ruff fixture as item8"
+else
+  FX_PUSH="$(_fixture_repo)"
+  mkdir -p "$FX_PUSH/scripts/ci" "$FX_PUSH/backend" "$FX_PUSH/tests" "$FX_PUSH/scripts"
+  cp "$REPO_ROOT/scripts/ci/ruff-ratchet.py" "$FX_PUSH/scripts/ci/ruff-ratchet.py"
+  cp "$REPO_ROOT/ruff.toml" "$FX_PUSH/ruff.toml"
+  : > "$FX_PUSH/backend/__init__.py"
+  : > "$FX_PUSH/tests/__init__.py"
+  printf '"""Fixture file - clean."""\n\n\ndef noop() -> None:\n    return None\n' > "$FX_PUSH/scripts/fixture_lint_target.py"
+  {
+    printf '# RUFF-RATCHET-V1\n#\n# ruff-version: %s\n' "$RUFF_HOST_VERSION"
+    printf '# scope: backend/ tests/ scripts/ (must match Makefile'"'"'s `lint` target)\n#\n'
+    printf 'scripts/fixture_lint_target.py\tF401\t1\t`os` imported but unused\n'
+  } > "$FX_PUSH/scripts/ruff-known-findings.txt"
+  COMMIT_PUSH="$(_d2578_stage_and_commit "$FX_PUSH" "commit whose tree fails the ruff guard" \
+    scripts/ci/ruff-ratchet.py ruff.toml backend/__init__.py tests/__init__.py \
+    scripts/fixture_lint_target.py scripts/ruff-known-findings.txt)"
+
+  OUT_PUSH="$(cd "$FX_PUSH" && code_plane_pr push --remote /nonexistent/path/does-not-exist --branch x --commit "$COMMIT_PUSH" 2>"$TEST_SCRATCH/d2578-push.err")"
+  RC_PUSH=$?
+  if [[ "$RC_PUSH" -ne 0 ]] && grep -q "push: REFUSED" "$TEST_SCRATCH/d2578-push.err"; then
+    _pass "item11: push refuses a guard-failing commit and says 'push: REFUSED'"
+  else
+    _fail "item11: expected a 'push: REFUSED' refusal, got rc=$RC_PUSH: $(cat "$TEST_SCRATCH/d2578-push.err")"
+  fi
+  if ! grep -qiE "could not read from remote|does not appear to be a git repository" "$TEST_SCRATCH/d2578-push.err"; then
+    _pass "item11: no git transport error leaked through — refusal happened before the network call"
+  else
+    _fail "item11: a git transport error appeared, meaning the refusal did not happen first: $(cat "$TEST_SCRATCH/d2578-push.err")"
+  fi
+
+  OUT_PUSH_SKIP="$(cd "$FX_PUSH" && code_plane_pr push --remote /nonexistent/path/does-not-exist --branch x --commit "$COMMIT_PUSH" --skip-guards "testing bypass" 2>"$TEST_SCRATCH/d2578-push-skip.err")"
+  if grep -q 'WARN --skip-guards: testing bypass' "$TEST_SCRATCH/d2578-push-skip.err"; then
+    _pass "item11: --skip-guards prints a loud WARN quoting the reason"
+  else
+    _fail "item11: --skip-guards did not print the expected WARN: $(cat "$TEST_SCRATCH/d2578-push-skip.err")"
+  fi
+  if ! grep -q "push: REFUSED" "$TEST_SCRATCH/d2578-push-skip.err"; then
+    _pass "item11: --skip-guards proceeds to the transport instead of refusing"
+  else
+    _fail "item11: --skip-guards still refused: $(cat "$TEST_SCRATCH/d2578-push-skip.err")"
+  fi
+
+  OUT_PUSH_EMPTY="$(cd "$FX_PUSH" && code_plane_pr push --remote /nonexistent/path/does-not-exist --branch x --commit "$COMMIT_PUSH" --skip-guards "" 2>"$TEST_SCRATCH/d2578-push-empty.err")"
+  RC_PUSH_EMPTY=$?
+  if [[ "$RC_PUSH_EMPTY" -eq 2 ]]; then
+    _pass "item11: --skip-guards with an empty reason is a usage error (exit 2)"
+  else
+    _fail "item11: expected exit 2 for an empty --skip-guards reason, got $RC_PUSH_EMPTY"
+  fi
+fi
+
+# ── Case: containment (item 12) ────────────────────────────────────────────────
+echo ""
+echo "=== D#2578 Case: containment — no source/dot-source, no --write-baseline, cwd unchanged (item 12) ==="
+if grep -nE '^[[:space:]]*(source|\.)[[:space:]]' "$HELPER" >/dev/null; then
+  _fail "item12: helper sources a sibling file (must stay self-contained)"
+else
+  _pass "item12: helper contains no 'source'/'.' line (self-contained, per grep -nE)"
+fi
+if [[ "$(grep -c -- '--write-baseline' "$HELPER")" -eq 0 ]]; then
+  _pass "item12: helper never invokes --write-baseline"
+else
+  _fail "item12: helper's source mentions --write-baseline"
+fi
+
+FX_CONTAIN="$(_fixture_repo)"
+mkdir -p "$FX_CONTAIN/scripts/lib"
+printf 'echo v1\n' > "$FX_CONTAIN/scripts/lib/thing.sh"
+COMMIT_CONTAIN_BASE="$(_d2578_stage_and_commit "$FX_CONTAIN" "base for containment case" scripts/lib/thing.sh)"
+
+CALLER_CWD="$(mktemp -d)"
+CWD_LISTING_BEFORE="$(ls -A "$CALLER_CWD")"
+LOCAL_CONTAIN="$TEST_SCRATCH/d2578-contain.sh"
+printf 'echo v2\n' > "$LOCAL_CONTAIN"
+(cd "$CALLER_CWD" && cd "$FX_CONTAIN" && code_plane_pr build --target-ref "$COMMIT_CONTAIN_BASE" --base-ref "$COMMIT_CONTAIN_BASE" \
+  --branch test --message "edit thing" "scripts/lib/thing.sh=$LOCAL_CONTAIN" >/dev/null 2>&1) || true
+CWD_LISTING_AFTER="$(ls -A "$CALLER_CWD")"
+if [[ "$CWD_LISTING_BEFORE" == "$CWD_LISTING_AFTER" ]]; then
+  _pass "item12: a directory unrelated to the fixture is untouched by the run"
+else
+  _fail "item12: an unrelated directory's listing changed: before='$CWD_LISTING_BEFORE' after='$CWD_LISTING_AFTER'"
+fi
+rm -rf "$CALLER_CWD"
+rm -rf "$FX_MANIFEST" "$FX_BOUNDED" "$FX_AGENTS" "$FX_COMMANDS" "$FX_ALLOWLIST" \
+       "${FX_RUFF:-}" "$FX_RUFF9" "$FX_QUIET" "${FX_PUSH:-}" "$FX_CONTAIN"
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 rm -rf "$FX4" "$FX6" "$FX8"
 
