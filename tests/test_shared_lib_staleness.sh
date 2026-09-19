@@ -9,6 +9,15 @@
 # this test writes into its own scratch dir. Local-file lookups are pointed
 # at a scratch checkout via CHECK_SHARED_LIB_STALENESS_ROOT, never at this
 # repo's real scripts/lib/.
+#
+# The checker also resolves a code-repo slug (scripts/lib/repo-resolve.sh's
+# _require_code_repo) before it ever calls `gh` — reading this checkout's
+# own .autonomous-team/config.json, or AUTONOMOUS_TEAM_REPO, if config.json
+# is absent. That file is untracked (a clean clone of this repo has none),
+# so this suite must not depend on it being present: export a fixture value
+# so resolution succeeds the same way in every checkout, matching
+# tests/test_gate1_receipt.sh's convention for the identical problem.
+export AUTONOMOUS_TEAM_REPO="fixture/repo"
 
 set -uo pipefail
 
