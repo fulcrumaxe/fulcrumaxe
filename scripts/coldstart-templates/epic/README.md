@@ -10,11 +10,62 @@ epics/epic-<N>-<slug>/
   02.md
 ```
 
-`epic.md` is the overview a human reads. The numbered files are the tasks, and
-they are what `scripts/import-epic-tasks.py` reads to create one GitHub
-Discussion per task.
+`epic.md` is the overview a human reads. The numbered/lettered files are the
+tasks. `epic.md` and `README.md` are the two reserved non-task names in an
+epic directory — nothing else in it is skipped when a task file is read.
 
-## The part that has to be exact
+## Schema v1
+
+New task files should use schema v1, validated by `backend/task_file.py`:
+
+```
+python3 backend/task_file.py validate epics/epic-<N>-<slug>/<TASK>.md
+```
+
+Exits 0 when the file is valid, 1 otherwise — one line printed per problem.
+`scripts/import-epic-tasks.py` does not read schema v1 yet (a separate
+follow-up task teaches it to); today it still reads the v0 field set
+documented further down in this file.
+
+| Field | Required | Allowed values |
+|---|---|---|
+| `schema_version` | yes | `1` |
+| `epic` | yes | integer ≥ 1 (the parent Discussion number) |
+| `task` | yes | string matching `^[A-Za-z0-9][A-Za-z0-9-]*$`, equal to the filename stem |
+| `title` | yes | non-empty string |
+| `type` | yes | `feature`, `bug`, `doc`, `infra`, `process` or `security` |
+| `status` | yes | `draft`, `ready`, `superseded` or `completed` (authoring states only) |
+| `estimated_hours` | yes | number > 0 and ≤ 40 |
+| `complexity_points` | yes | 1, 2, 3, 5 or 8 |
+| `planned_prs` | yes | integer ≥ 0 (0 means operational, and needs `planned_prs_reason`) |
+| `planned_prs_reason` | yes when `planned_prs` is 0 | non-empty string |
+| `milestone` | yes | `stage-1`, `stage-2`, `launch` or `post-launch` |
+| `security_review` | yes | `true` or `false` |
+| `depends_on` | yes (may be `[]`) | each item is a same-epic task ID (`H08`), a cross-epic `<epic>.<task>` (`2.H13`), `D#<n>` or `#<n>` |
+| `acceptance_files` | yes when `status: ready` and `planned_prs` ≥ 1 | non-empty list of repo-relative paths |
+| `repo` | no | `owner/name`; defaults to the importing repo |
+| `discussion` | no | integer — this task's Discussion already exists, so never import it |
+| `tags` | no | free-form list |
+| `priority` | no | free-form |
+| `parallel` | no | free-form |
+| `conflicts_with` | no | free-form |
+| `parent_task` | no | for a task split out of another one |
+| `supersedes` | no | for a task that replaces an earlier one |
+| `created` | no | ISO 8601 date |
+
+Any other key in a v1 file is an error (catches typos such as
+`estimate_hours`). The body below the frontmatter is Markdown, same as in v0.
+A task migrated from elsewhere should start its body with a `Source: ...`
+line (content, not itself validated).
+
+`epic.md` may carry its own frontmatter with a single `parent_discussion: <N>`
+field; it never carries task fields.
+
+A file with no `schema_version` field is a v0 file — see the next section.
+`validate` never fails a v0 file just for lacking v1-only fields; it prints a
+`warning:` line for each one instead.
+
+## Schema v0 (legacy — what the importer reads today)
 
 Everything in a task file above the second `---` is YAML frontmatter, and the
 importer parses these fields out of it:
