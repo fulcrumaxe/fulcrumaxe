@@ -2,926 +2,906 @@
 """
 scripts/import-epic-tasks.py — import epic task files into GitHub Discussions.
 
-Usage:
+Reads task files under ``<repo-path>/<epic_dir>/epic-<N>[-<slug>]/<TASK>.md``
+(``epic_dir`` defaults to ``epics``, overridable via ``task_source.epic_dir``
+in ``.autonomous-team/project.json``) and creates one Discussion per task.
+
+Frontmatter is parsed exclusively through ``backend.task_file`` — this module
+never parses YAML itself. A file with a ``schema_version`` field is a v1 file
+(validated against ``backend.task_file.SCHEMA_V1``); one without is a legacy
+v0 file (validated against the smaller v0 field set).
+
+v1 files are imported only when ``status: ready``, never when they carry a
+``discussion`` field, never when ``repo`` names a different repo than
+``--repo``, and never when their ``<epic>.<task>`` id is in ``--exclude``.
+``--milestone`` further restricts v1 files. v0 files are filtered by
+``--status`` instead (the only filter that applies to them) and never carry
+BLOCKED-BY — that mechanism is v1-only.
+
+Idempotency and drift detection use the ``epic-<N>.<TASK> — `` title-prefix
+substring — not an exact title match — so retitling a file's ``title`` field
+never creates a duplicate Discussion. Every created body ends with a
+``<!-- TASK-FILE-SHA:<sha256> -->`` marker; a later run compares that against
+the file's current hash to detect drift.
+
+All GraphQL calls go through an injected client (see ``GraphQLClient`` below)
+so tests can supply a fake with no network access.
+
+CLI:
     python3 scripts/import-epic-tasks.py <repo-path> --repo <owner/name>
-            [--status not-started,in_progress]
-            [--dry-run]
-            [--epic <N>]
-            [--include-empty-epics]
-            [--exclude-epic epic-22-vcs-agentblame,epic-99-foo]
-
-Idempotent — checks for an existing Discussion with the same title before
-creating.  Rate-limited: on 403 secondary-rate-limit, remaining tasks are
-written to .autonomous-team/pending-imports.json and the script exits cleanly.
-
-Frontmatter fields parsed:
-    epic, task, title, type, status, estimated_hours, depends_on, tags,
-    parent_task, supersedes
-
-Discussion title format:
-    [<Type>] epic-<N>.<task> — <title>
-
-Labels created (if missing):
-    epic-<N>, <type>, est-<estimated_hours>h
-
-Empty-epic overview Discussion title format (--include-empty-epics):
-    [Epic] epic-<N> — <title>
+            [--status draft,ready] [--dry-run] [--epic <N>]
+            [--exclude <epic.task>[,<epic.task>...]]
+            [--milestone <m>[,<m>...]]
+            [--parent-index <N>]
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
-import random
 import re
 import subprocess
 import sys
-import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_REPO_ROOT))
+
+from backend import task_file  # noqa: E402
+from backend.discussion_status import extract_status_anchored  # noqa: E402
 
 # ---------------------------------------------------------------------------
-# GraphQL call instrumentation (D#1526 AC#12 — timing/call summary)
+# Constants
 # ---------------------------------------------------------------------------
 
-_GRAPHQL_CALLS = 0
+RESERVED_TASK_STEMS = {"epic", "README"}
+DEFAULT_EPIC_DIR = "epics"
+DEFAULT_V0_STATUS_FILTER = "not-started,in_progress"
 
-# ---------------------------------------------------------------------------
-# Rate-limit retry tuning (D#1526 AC#11 — capped exponential backoff + jitter)
-# ---------------------------------------------------------------------------
+# Dependency-ref grammar (mirrors backend.task_file's private regexes — kept
+# separate on purpose: those are that module's internals, not a published
+# contract this script should reach into).
+_D_HASH_RE = re.compile(r"^D#\d+$")
+_HASH_RE = re.compile(r"^#\d+$")
+_CROSS_EPIC_RE = re.compile(r"^\d+\.[A-Za-z0-9][A-Za-z0-9-]*$")
 
-MAX_RETRY_ATTEMPTS = 5
-BASE_BACKOFF_SECONDS = 2.0
-MAX_BACKOFF_SECONDS = 60.0
+_SHA_MARKER_RE = re.compile(r"<!--\s*TASK-FILE-SHA:([0-9a-f]{64})\s*-->")
+_TITLE_PREFIX_RE = re.compile(r"epic-(\d+)\.([A-Za-z0-9-]+) — ")
 
-
-def _capped_backoff_sleep(attempt: int) -> None:
-    """Sleep with capped exponential backoff + jitter before retry `attempt` (0-indexed)."""
-    backoff = min(BASE_BACKOFF_SECONDS * (2 ** attempt), MAX_BACKOFF_SECONDS)
-    jitter = random.uniform(0, backoff * 0.25)
-    time.sleep(backoff + jitter)
-
-try:
-    import yaml
-except ImportError:
-    print("Error: PyYAML is required. Install with: pip install pyyaml", file=sys.stderr)
-    sys.exit(1)
-
-
-# ---------------------------------------------------------------------------
-# Frontmatter parser
-# ---------------------------------------------------------------------------
-
-def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
-    """Split YAML frontmatter from body.
-
-    Returns
-    -------
-    (frontmatter_dict, body_text)
-    """
-    if not text.startswith("---"):
-        return {}, text
-
-    # Find closing ---
-    rest = text[3:]
-    match = re.search(r"^---\s*$", rest, re.MULTILINE)
-    if not match:
-        return {}, text
-
-    fm_text = rest[: match.start()].strip()
-    body = rest[match.end():].lstrip("\n")
-
-    try:
-        fm = yaml.safe_load(fm_text) or {}
-    except yaml.YAMLError:
-        fm = {}
-
-    return fm, body
-
-
-# ---------------------------------------------------------------------------
-# Title formatter
-# ---------------------------------------------------------------------------
-
-def format_title(fm: dict[str, Any]) -> str:
-    """Build the Discussion title from frontmatter fields.
-
-    Format: [<Type>] epic-<N>.<task> — <title>
-    """
-    type_raw = str(fm.get("type", "task"))
-    # Capitalise first letter only
-    type_cap = type_raw[0].upper() + type_raw[1:] if type_raw else "Task"
-
-    epic = fm.get("epic", "?")
-    task = fm.get("task", "?")
-    title = fm.get("title", "untitled")
-
-    return f"[{type_cap}] epic-{epic}.{task} — {title}"
-
-
-# ---------------------------------------------------------------------------
-# gh CLI helpers
-# ---------------------------------------------------------------------------
-
-def gh(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    """Run a gh CLI command."""
-    global _GRAPHQL_CALLS
-    if "graphql" in args:
-        _GRAPHQL_CALLS += 1
-    cmd = ["gh"] + list(args)
-    return subprocess.run(cmd, capture_output=True, text=True, check=check)
-
-
-def gh_json(*args: str) -> Any:
-    """Run gh and parse JSON output."""
-    result = gh(*args, check=False)
-    if result.returncode != 0:
-        return None
-    try:
-        return json.loads(result.stdout)
-    except json.JSONDecodeError:
-        return None
-
-
-def ensure_label(repo: str, label: str, dry_run: bool = False) -> None:
-    """Create label if it doesn't exist."""
-    if dry_run:
-        print(f"  [dry-run] would ensure label: {label}")
-        return
-
-    result = gh("label", "list", "--repo", repo, "--json", "name", check=False)
-    if result.returncode == 0:
-        existing = {item["name"] for item in json.loads(result.stdout or "[]")}
-        if label in existing:
-            return
-
-    # Create with a neutral colour
-    gh("label", "create", label, "--repo", repo, "--color", "ededed", "--force", check=False)
-
-
-def get_discussion_category_id(repo: str) -> str | None:
-    """Return the node ID for the 'General' discussion category (or first available)."""
-    owner, name = repo.split("/", 1)
-    query = """
-    query($owner: String!, $name: String!) {
-      repository(owner: $owner, name: $name) {
-        discussionCategories(first: 20) {
-          nodes { id name }
-        }
-      }
-    }
-    """
-    result = gh(
-        "api", "graphql",
-        "-f", f"query={query}",
-        "-f", f"owner={owner}",
-        "-f", f"name={name}",
-        check=False,
-    )
-    if result.returncode != 0:
-        return None
-    try:
-        data = json.loads(result.stdout)
-        cats = data["data"]["repository"]["discussionCategories"]["nodes"]
-        # Prefer "General", else take first
-        for cat in cats:
-            if cat["name"].lower() == "general":
-                return cat["id"]
-        if cats:
-            return cats[0]["id"]
-    except (KeyError, TypeError, json.JSONDecodeError):
-        pass
-    return None
-
-
-def get_repo_node_id(repo: str) -> str | None:
-    """Return the repository node ID needed for createDiscussion."""
-    owner, name = repo.split("/", 1)
-    query = """
-    query($owner: String!, $name: String!) {
-      repository(owner: $owner, name: $name) { id }
-    }
-    """
-    result = gh(
-        "api", "graphql",
-        "-f", f"query={query}",
-        "-f", f"owner={owner}",
-        "-f", f"name={name}",
-        check=False,
-    )
-    if result.returncode != 0:
-        return None
-    try:
-        return json.loads(result.stdout)["data"]["repository"]["id"]
-    except (KeyError, TypeError, json.JSONDecodeError):
-        return None
-
-
-def list_existing_discussion_titles(repo: str) -> dict[str, int]:
-    """Return {title: number} for all open discussions in the repo (paginates)."""
-    owner, name = repo.split("/", 1)
-    titles: dict[str, int] = {}
-    cursor = None
-
-    while True:
-        # Use $after variable (nullable String) to support pagination without
-        # injecting the cursor value into the query string.
-        query = """
-        query($owner: String!, $name: String!, $after: String) {
-          repository(owner: $owner, name: $name) {
-            discussions(first: 100, after: $after) {
-              nodes { number title }
-              pageInfo { hasNextPage endCursor }
-            }
-          }
-        }
-        """
-        gh_args = [
-            "api", "graphql",
-            "-f", f"query={query}",
-            "-f", f"owner={owner}",
-            "-f", f"name={name}",
-        ]
-        if cursor:
-            gh_args += ["-f", f"after={cursor}"]
-        result = gh(*gh_args, check=False)
-        if result.returncode != 0:
-            break
-        try:
-            data = json.loads(result.stdout)
-            disc = data["data"]["repository"]["discussions"]
-            for node in disc["nodes"]:
-                titles[node["title"]] = node["number"]
-            page_info = disc["pageInfo"]
-            if page_info["hasNextPage"]:
-                cursor = page_info["endCursor"]
-            else:
-                break
-        except (KeyError, TypeError, json.JSONDecodeError):
-            break
-
-    return titles
-
-
-def create_discussion(
-    repo_id: str,
-    category_id: str,
-    title: str,
-    body: str,
-    repo: str,
-    dry_run: bool = False,
-) -> tuple[int, str] | None:
-    """Create a GitHub Discussion via GraphQL. Returns (number, node_id) or None.
-
-    The node id is selected here (instead of a second per-Discussion query
-    later) so callers — e.g. add_labels_to_discussion — can reuse it directly.
-    """
-    if dry_run:
-        print(f"  [dry-run] would create Discussion: {title!r}")
-        return None
-
-    mutation = """
-    mutation($repoId: ID!, $catId: ID!, $title: String!, $body: String!) {
-      createDiscussion(input: {repositoryId: $repoId, categoryId: $catId, title: $title, body: $body}) {
-        discussion { number id }
-      }
-    }
-    """
-    global _GRAPHQL_CALLS
-    _GRAPHQL_CALLS += 1
-    result = subprocess.run(
-        [
-            "gh", "api", "graphql",
-            "-f", f"query={mutation}",
-            "-f", f"repoId={repo_id}",
-            "-f", f"catId={category_id}",
-            "-f", f"title={title}",
-            "-f", f"body={body}",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    if result.returncode != 0:
-        # Check for rate limit
-        if "secondary rate limit" in result.stderr.lower() or "403" in result.stderr:
-            raise RateLimitError(result.stderr)
-        print(f"  [warn] Failed to create discussion {title!r}: {result.stderr.strip()}", file=sys.stderr)
-        return None
-
-    try:
-        data = json.loads(result.stdout)
-        disc = data["data"]["createDiscussion"]["discussion"]
-        return disc["number"], disc["id"]
-    except (KeyError, TypeError, json.JSONDecodeError) as exc:
-        print(f"  [warn] Unexpected createDiscussion response: {exc}", file=sys.stderr)
-        return None
-
-
-def create_discussion_with_backoff(
-    repo_id: str,
-    category_id: str,
-    title: str,
-    body: str,
-    repo: str,
-    dry_run: bool = False,
-    max_attempts: int = MAX_RETRY_ATTEMPTS,
-) -> tuple[int, str] | None:
-    """create_discussion with capped exponential backoff + jitter on rate-limit.
-
-    Retries up to `max_attempts` times total (bounded — never an unbounded
-    loop). Re-raises RateLimitError only after the final attempt also hits
-    a rate limit; the caller then falls through to save_pending.
-    """
-    last_exc: RateLimitError | None = None
-    for attempt in range(max_attempts):
-        try:
-            return create_discussion(
-                repo_id=repo_id,
-                category_id=category_id,
-                title=title,
-                body=body,
-                repo=repo,
-                dry_run=dry_run,
-            )
-        except RateLimitError as exc:
-            last_exc = exc
-            if attempt < max_attempts - 1:
-                _capped_backoff_sleep(attempt)
-    assert last_exc is not None
-    raise last_exc
-
-
-def add_labels_to_discussion(
-    repo: str,
-    discussion_number: int,
-    labels: list[str],
-    disc_id: str | None = None,
-    dry_run: bool = False,
-) -> None:
-    """Add labels to a discussion using its already-known node id.
-
-    `disc_id` is threaded in from create_discussion's response (D#1526 AC#10)
-    — this used to run its own per-Discussion node-id lookup query; that
-    O(n) round-trip is gone now that the id is already in hand from the
-    createDiscussion mutation.
-    """
-    if dry_run or not labels:
-        return
-    if not disc_id:
-        print(f"  [warn] add_labels_to_discussion: no disc_id for #{discussion_number}, skipping", file=sys.stderr)
-        return
-
-    owner, name = repo.split("/", 1)
-
-    # Get label node IDs
-    label_ids = []
-    label_query = """
-    query($owner: String!, $name: String!, $label: String!) {
-      repository(owner: $owner, name: $name) {
-        label(name: $label) { id }
-      }
-    }
-    """
-    for label_name in labels:
-        r = gh(
-            "api", "graphql",
-            "-f", f"query={label_query}",
-            "-f", f"owner={owner}",
-            "-f", f"name={name}",
-            "-f", f"label={label_name}",
-            check=False,
-        )
-        if r.returncode == 0:
-            try:
-                lid = json.loads(r.stdout)["data"]["repository"]["label"]["id"]
-                if lid:
-                    label_ids.append(lid)
-            except (KeyError, TypeError, json.JSONDecodeError):
-                pass
-
-    if not label_ids:
-        return
-
-    ids_fragment = " ".join(f'"{lid}"' for lid in label_ids)
-    mutation = f"""
-    mutation {{
-      addLabelsToLabelable(input: {{
-        labelableId: "{disc_id}",
-        labelIds: [{ids_fragment}]
-      }}) {{
-        labelable {{ ... on Discussion {{ number }} }}
-      }}
-    }}
-    """
-    gh("api", "graphql", "-f", f"query={mutation}", check=False)
-
-
-def update_discussion_body(
-    repo: str,
-    discussion_number: int,
-    new_body: str,
-    dry_run: bool = False,
-) -> None:
-    """Update the body of an existing Discussion (for depends_on backfill)."""
-    if dry_run:
-        return
-
-    owner, name = repo.split("/", 1)
-    # Get node ID
-    query = """
-    query($owner: String!, $name: String!, $number: Int!) {
-      repository(owner: $owner, name: $name) {
-        discussion(number: $number) { id body }
-      }
-    }
-    """
-    result = gh(
-        "api", "graphql",
-        "-f", f"query={query}",
-        "-f", f"owner={owner}",
-        "-f", f"name={name}",
-        "-F", f"number={discussion_number}",
-        check=False,
-    )
-    if result.returncode != 0:
-        return
-
-    try:
-        data = json.loads(result.stdout)["data"]["repository"]["discussion"]
-        disc_id = data["id"]
-    except (KeyError, TypeError, json.JSONDecodeError):
-        return
-
-    mutation = """
-    mutation($discussionId: ID!, $body: String!) {
-      updateDiscussion(input: {discussionId: $discussionId, body: $body}) {
-        discussion { number }
-      }
-    }
-    """
-    subprocess.run(
-        [
-            "gh", "api", "graphql",
-            "-f", f"query={mutation}",
-            "-f", f"discussionId={disc_id}",
-            "-f", f"body={new_body}",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Rate-limit sentinel
-# ---------------------------------------------------------------------------
 
 class RateLimitError(Exception):
     pass
 
 
 # ---------------------------------------------------------------------------
+# GraphQL client — the only place that shells out to `gh`
+# ---------------------------------------------------------------------------
+
+
+class GraphQLClient:
+    """Thin wrapper over ``gh api graphql`` for the four operations this
+    script needs. Injected so tests can supply a fake with no network I/O.
+    """
+
+    def __init__(self, repo: str):
+        self.repo = repo
+        self.calls = 0
+        self._repo_id: Optional[str] = None
+        self._category_id: Optional[str] = None
+
+    def _run(self, *args: str) -> subprocess.CompletedProcess[str]:
+        self.calls += 1
+        return subprocess.run(["gh", *args], capture_output=True, text=True, check=False)
+
+    def _owner_name(self) -> tuple[str, str]:
+        owner, _, name = self.repo.partition("/")
+        return owner, name
+
+    def _resolve_repo_id(self) -> str:
+        if self._repo_id is not None:
+            return self._repo_id
+        owner, name = self._owner_name()
+        query = "query($owner:String!,$name:String!){repository(owner:$owner,name:$name){id}}"
+        result = self._run(
+            "api", "graphql", "-f", f"query={query}", "-f", f"owner={owner}", "-f", f"name={name}"
+        )
+        data = json.loads(result.stdout or "{}")
+        self._repo_id = data["data"]["repository"]["id"]
+        return self._repo_id
+
+    def _resolve_category_id(self) -> str:
+        if self._category_id is not None:
+            return self._category_id
+        owner, name = self._owner_name()
+        query = (
+            "query($owner:String!,$name:String!){repository(owner:$owner,name:$name){"
+            "discussionCategories(first:20){nodes{id name}}}}"
+        )
+        result = self._run(
+            "api", "graphql", "-f", f"query={query}", "-f", f"owner={owner}", "-f", f"name={name}"
+        )
+        data = json.loads(result.stdout or "{}")
+        cats = data["data"]["repository"]["discussionCategories"]["nodes"]
+        for cat in cats:
+            if cat["name"].lower() == "general":
+                self._category_id = cat["id"]
+                return self._category_id
+        self._category_id = cats[0]["id"] if cats else ""
+        return self._category_id
+
+    def list_discussion_titles(self) -> dict[str, int]:
+        """Return {title: number} for every Discussion in the repo (paginated)."""
+        owner, name = self._owner_name()
+        titles: dict[str, int] = {}
+        cursor: Optional[str] = None
+        while True:
+            query = (
+                "query($owner:String!,$name:String!,$after:String){repository(owner:$owner,name:$name){"
+                "discussions(first:100, after:$after){nodes{number title}"
+                "pageInfo{hasNextPage endCursor}}}}"
+            )
+            args = ["api", "graphql", "-f", f"query={query}", "-f", f"owner={owner}", "-f", f"name={name}"]
+            if cursor:
+                args += ["-f", f"after={cursor}"]
+            result = self._run(*args)
+            if result.returncode != 0:
+                break
+            try:
+                data = json.loads(result.stdout)
+                disc = data["data"]["repository"]["discussions"]
+                for node in disc["nodes"]:
+                    titles[node["title"]] = node["number"]
+                page_info = disc["pageInfo"]
+                if page_info["hasNextPage"]:
+                    cursor = page_info["endCursor"]
+                else:
+                    break
+            except (KeyError, TypeError, json.JSONDecodeError):
+                break
+        return titles
+
+    def get_discussion(self, number: int) -> Optional[dict[str, Any]]:
+        owner, name = self._owner_name()
+        query = (
+            "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){"
+            "discussion(number:$number){id body}}}"
+        )
+        result = self._run(
+            "api",
+            "graphql",
+            "-f",
+            f"query={query}",
+            "-f",
+            f"owner={owner}",
+            "-f",
+            f"name={name}",
+            "-F",
+            f"number={number}",
+        )
+        if result.returncode != 0:
+            return None
+        try:
+            data = json.loads(result.stdout)["data"]["repository"]["discussion"]
+        except (KeyError, TypeError, json.JSONDecodeError):
+            return None
+        if data is None:
+            return None
+        return {"id": data["id"], "body": data.get("body", "")}
+
+    def create_discussion(self, title: str, body: str) -> tuple[int, str]:
+        """Create a Discussion. Raises RateLimitError on a secondary rate limit."""
+        repo_id = self._resolve_repo_id()
+        category_id = self._resolve_category_id()
+        mutation = (
+            "mutation($repoId:ID!,$catId:ID!,$title:String!,$body:String!){"
+            "createDiscussion(input:{repositoryId:$repoId,categoryId:$catId,title:$title,body:$body}){"
+            "discussion{number id}}}"
+        )
+        result = self._run(
+            "api",
+            "graphql",
+            "-f",
+            f"query={mutation}",
+            "-f",
+            f"repoId={repo_id}",
+            "-f",
+            f"catId={category_id}",
+            "-f",
+            f"title={title}",
+            "-f",
+            f"body={body}",
+        )
+        if result.returncode != 0:
+            if "secondary rate limit" in result.stderr.lower() or "403" in result.stderr:
+                raise RateLimitError(result.stderr)
+            raise RuntimeError(f"createDiscussion failed: {result.stderr.strip()}")
+        data = json.loads(result.stdout)["data"]["createDiscussion"]["discussion"]
+        return data["number"], data["id"]
+
+    def update_discussion_body(self, number: int, new_body: str) -> None:
+        disc = self.get_discussion(number)
+        if disc is None:
+            raise RuntimeError(f"update_discussion_body: #{number} not found")
+        mutation = (
+            "mutation($discussionId:ID!,$body:String!){updateDiscussion(input:"
+            "{discussionId:$discussionId,body:$body}){discussion{number}}}"
+        )
+        result = self._run(
+            "api", "graphql", "-f", f"query={mutation}", "-f", f"discussionId={disc['id']}", "-f", f"body={new_body}"
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"updateDiscussion failed: {result.stderr.strip()}")
+
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+
+
+def load_epic_dir_name(repo_path: Path) -> str:
+    """Return ``task_source.epic_dir`` from .autonomous-team/project.json, or the default."""
+    project_json = repo_path / ".autonomous-team" / "project.json"
+    try:
+        data = json.loads(project_json.read_text(encoding="utf-8"))
+        name = data.get("task_source", {}).get("epic_dir")
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+    except (OSError, json.JSONDecodeError):
+        pass
+    return DEFAULT_EPIC_DIR
+
+
+# ---------------------------------------------------------------------------
 # Walk epics dir
 # ---------------------------------------------------------------------------
 
-def find_task_files(repo_path: Path, epic_filter: int | None = None) -> list[Path]:
-    """Walk epics/epic-*/<N>.md files, skipping overview files."""
-    epic_root = repo_path / "epics"
+
+def _epic_dir_pattern(epic_filter: Optional[int]) -> re.Pattern[str]:
+    if epic_filter is not None:
+        return re.compile(rf"^epic-{epic_filter}(-.*)?$")
+    return re.compile(r"^epic-\d+(-.*)?$")
+
+
+def find_task_files(repo_path: Path, epic_dir_name: str, epic_filter: Optional[int] = None) -> list[Path]:
+    """Walk <epic_dir>/epic-*/<TASK>.md files, skipping epic.md, README.md, and symlinks."""
+    epic_root = repo_path / epic_dir_name
     if not epic_root.exists():
         return []
 
+    pattern = _epic_dir_pattern(epic_filter)
     files: list[Path] = []
-    pattern = f"epic-{epic_filter}" if epic_filter is not None else "epic-*"
-
-    for epic_dir in sorted(epic_root.glob(pattern)):
+    for epic_dir in sorted(epic_root.iterdir()):
+        # Path.is_dir() follows a symlink itself, on purpose: a backlog whose
+        # epic-<N> directory is reachable only through a symlink must still
+        # be walked (D#2451 item 8) — only an individual task FILE symlink is
+        # refused below, for the unrelated reason that it could point outside
+        # the repo entirely.
         if not epic_dir.is_dir():
             continue
-        for task_file in sorted(epic_dir.glob("*.md")):
-            # Skip overview files
-            if task_file.stem == "epic":
+        if not pattern.match(epic_dir.name):
+            continue
+        for task_file_path in sorted(epic_dir.glob("*.md")):
+            if task_file_path.stem in RESERVED_TASK_STEMS:
                 continue
-            # Skip symlinks — they could point to sensitive files outside the repo
-            if task_file.is_symlink():
-                print(f"  [warn] Skipping symlink: {task_file}", file=sys.stderr)
+            if task_file_path.is_symlink():
+                print(f"  [warn] Skipping symlink: {task_file_path}", file=sys.stderr)
                 continue
-            # Only numeric stems (e.g. 1.md, 25b.md) or alphanumeric task IDs
-            files.append(task_file)
-
+            files.append(task_file_path)
     return files
 
 
-def epic_title_from_md(epic_md_path: Path) -> str:
-    """Extract the first # heading from epic.md; fall back to dirname."""
-    try:
-        text = epic_md_path.read_text(encoding="utf-8", errors="replace")
-        for line in text.splitlines():
-            stripped = line.strip()
-            if stripped.startswith("# "):
-                return stripped[2:].strip()
-    except OSError:
-        pass
-    # Fallback: use the parent directory name
-    return epic_md_path.parent.name
-
-
-def find_empty_epic_dirs(
-    repo_path: Path,
-    exclude_epics: set[str],
-    epic_filter: int | None = None,
-) -> list[Path]:
-    """Return epic dirs that have an epic.md but NO numeric task files.
-
-    A dir is considered empty if, after skipping:
-      - epic.md (the overview file)
-      - symlinks
-    there are zero remaining *.md files.
-
-    Args:
-        repo_path: root of the project repo
-        exclude_epics: set of dirname strings to skip (e.g. {"epic-22-vcs-agentblame"})
-        epic_filter: if set, only check epic-<epic_filter>-* dirs
-    """
-    epic_root = repo_path / "epics"
+def find_epic_dir_by_parent_discussion(repo_path: Path, epic_dir_name: str, parent_number: int) -> Optional[Path]:
+    epic_root = repo_path / epic_dir_name
     if not epic_root.exists():
-        return []
-
-    pattern = f"epic-{epic_filter}-*" if epic_filter is not None else "epic-*"
-    empty_dirs: list[Path] = []
-
-    for epic_dir in sorted(epic_root.glob(pattern)):
-        if not epic_dir.is_dir():
+        return None
+    for epic_dir in sorted(epic_root.iterdir()):
+        if not epic_dir.is_dir() or epic_dir.is_symlink():
             continue
-        if epic_dir.name in exclude_epics:
-            continue
-        # Skip symlinked dirs
-        if epic_dir.is_symlink():
-            continue
-
         epic_md = epic_dir / "epic.md"
         if not epic_md.exists():
             continue
+        fm, _ = task_file.parse_task_file(epic_md)
+        if fm.get("parent_discussion") == parent_number:
+            return epic_dir
+    return None
 
-        # Check for task files (non-epic.md, non-symlink .md files)
-        has_tasks = any(
-            f for f in epic_dir.glob("*.md")
-            if f.stem != "epic" and not f.is_symlink()
-        )
-        if not has_tasks:
-            empty_dirs.append(epic_dir)
 
-    return empty_dirs
+_PARENT_DISCUSSION_CACHE: dict[Path, Optional[int]] = {}
+
+
+def load_parent_discussion(epic_dir: Path) -> Optional[int]:
+    """Return epic.md's ``parent_discussion`` field for *epic_dir*, or None. Cached per dir."""
+    if epic_dir in _PARENT_DISCUSSION_CACHE:
+        return _PARENT_DISCUSSION_CACHE[epic_dir]
+    epic_md = epic_dir / "epic.md"
+    value: Optional[int] = None
+    if epic_md.exists():
+        fm, _ = task_file.parse_task_file(epic_md)
+        raw = fm.get("parent_discussion")
+        if isinstance(raw, int) and not isinstance(raw, bool):
+            value = raw
+    _PARENT_DISCUSSION_CACHE[epic_dir] = value
+    return value
 
 
 # ---------------------------------------------------------------------------
-# Save pending imports on rate-limit
+# Title formatting / title-prefix idempotency key
 # ---------------------------------------------------------------------------
 
-def save_pending(repo_path: Path, remaining: list[dict[str, Any]]) -> None:
-    pending_file = repo_path / ".autonomous-team" / "pending-imports.json"
-    pending_file.parent.mkdir(parents=True, exist_ok=True)
-    pending_file.write_text(json.dumps(remaining, indent=2))
-    print(f"\n[!] Rate limited — saved {len(remaining)} pending tasks to {pending_file}")
+
+def format_title(fm: dict[str, Any]) -> str:
+    """Build the Discussion title: ``[<Type>] epic-<N>.<task> — <title>``."""
+    type_raw = str(fm.get("type", "task"))
+    type_cap = type_raw[0].upper() + type_raw[1:] if type_raw else "Task"
+    epic = fm.get("epic", "?")
+    task = fm.get("task", "?")
+    title = fm.get("title", "untitled")
+    return f"[{type_cap}] epic-{epic}.{task} — {title}"
+
+
+def existing_by_key(existing_titles: dict[str, int]) -> dict[str, int]:
+    """Map ``{"<epic>.<task>": number}`` from a title->number listing, via prefix match."""
+    out: dict[str, int] = {}
+    for title, number in existing_titles.items():
+        m = _TITLE_PREFIX_RE.search(title)
+        if m:
+            out[f"{m.group(1)}.{m.group(2)}"] = number
+    return out
 
 
 # ---------------------------------------------------------------------------
-# Main importer
+# Frontmatter block rendering (flow-style lists, so extract_file_list's
+# inline-array strategy always matches acceptance_files regardless of what
+# style the source file used).
 # ---------------------------------------------------------------------------
+
+import yaml  # noqa: E402
+
+
+class _FlowList(list):
+    pass
+
+
+def _flow_list_representer(dumper: Any, data: Any) -> Any:
+    return dumper.represent_sequence("tag:yaml.org,2002:seq", data, flow_style=True)
+
+
+yaml.add_representer(_FlowList, _flow_list_representer, Dumper=yaml.SafeDumper)
+
+
+def format_frontmatter_block(fm: dict[str, Any]) -> str:
+    """Render *fm* as a ``---\\n...\\n---`` block, list values in flow style."""
+    fm2 = {k: (_FlowList(v) if isinstance(v, list) else v) for k, v in fm.items()}
+    dumped = yaml.safe_dump(fm2, default_flow_style=False, sort_keys=False).rstrip("\n")
+    return f"---\n{dumped}\n---"
+
+
+# ---------------------------------------------------------------------------
+# Body construction
+# ---------------------------------------------------------------------------
+
+
+def file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def build_v1_body(
+    fm: dict[str, Any],
+    file_body: str,
+    blocked_refs: list[str],
+    parent_discussion: Optional[int],
+    sha_hex: str,
+    now_iso: str,
+) -> str:
+    line1 = f"<!-- STATUS:SPEC_READY SINCE:{now_iso}"
+    if blocked_refs:
+        line1 += f" BLOCKED-BY:{','.join(blocked_refs)}"
+    line1 += " -->"
+    return _assemble_body(line1, fm, file_body, parent_discussion, sha_hex)
+
+
+def build_v0_body(
+    fm: dict[str, Any],
+    file_body: str,
+    parent_discussion: Optional[int],
+    sha_hex: str,
+    now_iso: str,
+) -> str:
+    line1 = f"<!-- STATUS:DISCUSSING SINCE:{now_iso} -->"
+    return _assemble_body(line1, fm, file_body, parent_discussion, sha_hex)
+
+
+def _assemble_body(
+    line1: str,
+    fm: dict[str, Any],
+    file_body: str,
+    parent_discussion: Optional[int],
+    sha_hex: str,
+) -> str:
+    fm_block = format_frontmatter_block(fm)
+    segments = [line1 + "\n" + fm_block]
+    if parent_discussion is not None:
+        segments.append(f"Parent: D#{parent_discussion}")
+    if file_body.strip():
+        segments.append(file_body.strip())
+    body = "\n\n".join(segments)
+    body += f"\n\n<!-- TASK-FILE-SHA:{sha_hex} -->"
+    return body
+
+
+def _utc_now_iso() -> str:
+    import datetime
+
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# ---------------------------------------------------------------------------
+# Dependency classification
+# ---------------------------------------------------------------------------
+
+
+def classify_dependency(dep: str, epic: Any) -> tuple[str, str]:
+    """Return ("absolute", ref) for a #<n>/D#<n> ref (passed through unchanged),
+    or ("keyed", "<epic>.<task>") for a same-epic or cross-epic task reference.
+    """
+    dep_str = str(dep)
+    if _D_HASH_RE.match(dep_str) or _HASH_RE.match(dep_str):
+        return "absolute", dep_str
+    if _CROSS_EPIC_RE.match(dep_str):
+        return "keyed", dep_str
+    return "keyed", f"{epic}.{dep_str}"
+
+
+# ---------------------------------------------------------------------------
+# Selection / filtering
+# ---------------------------------------------------------------------------
+
+
+def _normalize_status(raw: Any) -> str:
+    return str(raw or "").strip().replace("_", "-").lower()
+
+
+def parse_selection(
+    parsed_files: list[dict[str, Any]],
+    repo: str,
+    status_filter: set[str],
+    exclude_ids: set[str],
+    milestone_filter: Optional[set[str]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Split parsed files into (v0_selected, v1_selected) per the filter rules."""
+    v0_selected, v1_selected = [], []
+    norm_status_filter = {_normalize_status(s) for s in status_filter}
+
+    for item in parsed_files:
+        fm = item["fm"]
+        if "schema_version" in fm:
+            if fm.get("status") != "ready":
+                continue
+            if "discussion" in fm:
+                continue
+            item_repo = fm.get("repo")
+            if item_repo and item_repo != repo:
+                continue
+            key = f'{fm.get("epic")}.{fm.get("task")}'
+            if key in exclude_ids:
+                continue
+            if milestone_filter is not None and fm.get("milestone") not in milestone_filter:
+                continue
+            v1_selected.append(item)
+        else:
+            if _normalize_status(fm.get("status")) not in norm_status_filter:
+                continue
+            v0_selected.append(item)
+
+    return v0_selected, v1_selected
+
+
+# ---------------------------------------------------------------------------
+# Main import
+# ---------------------------------------------------------------------------
+
 
 def run_import(
     repo_path: Path,
     repo: str,
+    client: GraphQLClient,
     status_filter: set[str],
     dry_run: bool,
-    epic_filter: int | None,
-    include_empty_epics: bool = False,
-    exclude_epics: set[str] | None = None,
-) -> None:
-    if exclude_epics is None:
-        exclude_epics = set()
-
-    global _GRAPHQL_CALLS
-    _GRAPHQL_CALLS = 0
-    _start_time = time.time()
+    epic_filter: Optional[int],
+    exclude_ids: Optional[set[str]] = None,
+    milestone_filter: Optional[set[str]] = None,
+    epic_dir_name: Optional[str] = None,
+) -> int:
+    """Run one import pass. Returns the process exit code (0 or 1)."""
+    exclude_ids = exclude_ids or set()
+    epic_dir_name = epic_dir_name or load_epic_dir_name(repo_path)
 
     print(f"=== import-epic-tasks: {repo} ===")
     print(f"    repo_path: {repo_path}")
-    print(f"    status filter: {sorted(status_filter)}")
     print(f"    dry_run: {dry_run}")
-    if epic_filter is not None:
-        print(f"    epic filter: {epic_filter}")
-    if include_empty_epics:
-        print(f"    include_empty_epics: True")
-    if exclude_epics:
-        print(f"    exclude_epics: {sorted(exclude_epics)}")
-    print("")
 
-    task_files = find_task_files(repo_path, epic_filter)
-    if not task_files and not include_empty_epics:
-        print("[!] No task files found. Check that <repo-path>/epics/epic-*/<N>.md files exist.")
-        return
+    task_paths = find_task_files(repo_path, epic_dir_name, epic_filter)
+    parsed: list[dict[str, Any]] = []
+    for path in task_paths:
+        fm, body = task_file.parse_task_file(path)
+        parsed.append(
+            {
+                "path": path,
+                "fm": fm,
+                "file_body": body,
+                "stem": path.stem,
+                "epic_dir": path.parent,
+            }
+        )
 
-    print(f"Found {len(task_files)} task file(s) in epics/")
+    print(f"Found {len(parsed)} task file(s) under {epic_dir_name}/")
 
-    # Parse all task files
-    tasks: list[dict[str, Any]] = []
-    for fpath in task_files:
-        text = fpath.read_text(encoding="utf-8", errors="replace")
-        fm, body = parse_frontmatter(text)
-        status = str(fm.get("status", "")).replace("-", "_").replace(" ", "_").lower()
-        # Normalise: "not-started" and "not_started" both accepted
-        status_norm = status.replace("_", "-")
+    v0_selected, v1_selected = parse_selection(parsed, repo, status_filter, exclude_ids, milestone_filter)
+    selected = v0_selected + v1_selected
+    print(f"Selected {len(v0_selected)} v0 and {len(v1_selected)} v1 task(s)")
+    # Canonical, pinned line (scripts/lib/coldstart-backlog.sh parses this
+    # exact wording via `_coldstart_backlog_importer_status_count` to ask,
+    # rather than restate, how many files this run would act on — do not
+    # reword without checking that caller). Deliberately independent of the
+    # "Selected ... v0 and ... v1" line above, which is this script's own,
+    # unpinned progress note.
+    print(f"After status filter: {len(selected)} task(s) to process")
 
-        # Apply status filter
-        filter_normalised = {s.replace("_", "-") for s in status_filter}
-        if status_norm not in filter_normalised:
-            continue
+    # --- Validate the whole selection before creating anything (AC5) -------
+    # v1 only: task_file.validate_task_file's v0 branch requires a field set
+    # (epic/task/title/type/estimated_hours/depends_on/tags) the importer has
+    # never actually treated as load-bearing for a legacy file — it falls
+    # back to "?"/"untitled" and still imports on `status` alone (see
+    # coldstart-backlog.sh's _COLDSTART_BACKLOG_REQUIRED_FIELDS comment, and
+    # the coldstart-backlog-importer-agreement-guard fixture that pins a
+    # status-only v0 file as importable). Only a v1 file's stricter,
+    # documented schema is worth aborting the whole run over.
+    invalid = False
+    for item in v1_selected:
+        problems = [p for p in task_file.validate_task_file(item["fm"], item["stem"]) if not p.startswith("warning:")]
+        if problems:
+            invalid = True
+            for p in problems:
+                print(f"[invalid] {item['path']}: {p}", file=sys.stderr)
+    if invalid:
+        print("[!] Validation failed — nothing created.", file=sys.stderr)
+        return 1
 
-        tasks.append({
-            "path": str(fpath),
-            "fm": fm,
-            "body": text,  # full file content is the body per spec
-            "title": format_title(fm),
-        })
+    if not selected:
+        print("Nothing to import.")
+        return 0
 
-    print(f"After status filter: {len(tasks)} task(s) to process")
-    if not tasks and not include_empty_epics:
-        return
+    existing_titles = client.list_discussion_titles()
+    created_map = existing_by_key(existing_titles)
 
-    # Fetch existing discussions to skip duplicates
-    if not dry_run:
-        print("Fetching existing discussions …")
-        existing = list_existing_discussion_titles(repo)
-        print(f"  {len(existing)} existing discussions found")
-    else:
-        existing = {}
+    # key -> file info, across ALL parsed files (not just selected), so a
+    # dependency on a file that's e.g. status:completed but wasn't selected
+    # this run can still be recognised and omitted.
+    key_to_file = {f'{p["fm"].get("epic")}.{p["fm"].get("task")}': p for p in parsed}
 
-    # Fetch repo & category IDs (needed for createDiscussion)
-    repo_id = category_id = None
-    if not dry_run:
-        repo_id = get_repo_node_id(repo)
-        category_id = get_discussion_category_id(repo)
-        if not repo_id or not category_id:
-            print("[error] Could not resolve repo ID or category ID from GitHub API.", file=sys.stderr)
-            sys.exit(1)
+    exit_code = 0
+    now_iso = _utc_now_iso()
 
-    # First pass: create discussions
-    # title -> discussion_number (for newly created + already-existing)
-    title_to_number: dict[str, int] = dict(existing)
-    created: list[dict[str, Any]] = []
-    pending: list[dict[str, Any]] = []
+    # --- v0: no dependency graph, no BLOCKED-BY -----------------------------
+    for item in v0_selected:
+        exit_code |= _create_or_drift(item, client, created_map, dry_run, now_iso, blocked_refs=None)
 
-    for task in tasks:
-        title = task["title"]
-        fm = task["fm"]
-
-        if title in existing:
-            print(f"[=] Skip (exists #{existing[title]}): {title}")
-            continue
-
-        # Ensure labels exist
-        labels = []
-        epic_num = fm.get("epic")
-        if epic_num is not None:
-            labels.append(f"epic-{epic_num}")
-        task_type = str(fm.get("type", "")).lower()
-        if task_type:
-            labels.append(task_type)
-        est = fm.get("estimated_hours")
-        if est is not None:
-            labels.append(f"est-{est}h")
-
-        for label in labels:
-            try:
-                ensure_label(repo, label, dry_run=dry_run)
-            except Exception as exc:
-                print(f"  [warn] label {label!r}: {exc}", file=sys.stderr)
-
-        # Create discussion — capped exponential backoff + jitter on 403,
-        # then fall through to save_pending once attempts are exhausted.
-        try:
-            result = create_discussion_with_backoff(
-                repo_id=repo_id or "",
-                category_id=category_id or "",
-                title=title,
-                body=task["body"],
-                repo=repo,
-                dry_run=dry_run,
-            )
-        except RateLimitError:
-            # Save remaining and exit cleanly
-            remaining_indices = tasks.index(task)
-            remaining = [
-                {"title": t["title"], "path": t["path"]} for t in tasks[remaining_indices:]
-            ]
-            save_pending(repo_path, remaining)
-            return
-
-        disc_number, disc_node_id = result if result is not None else (None, None)
-
-        if disc_number is not None:
-            print(f"[+] Created #{disc_number}: {title}")
-            title_to_number[title] = disc_number
-            created.append({"title": title, "number": disc_number, "fm": fm})
-            # Add labels to discussion — reuses the node id from create_discussion,
-            # no extra per-Discussion id query.
-            if labels:
-                add_labels_to_discussion(repo, disc_number, labels, disc_id=disc_node_id, dry_run=dry_run)
-            # Polite delay to stay under secondary rate limit
-            time.sleep(1)
+    # --- v1: topological creation order + BLOCKED-BY ------------------------
+    # Items whose Discussion already exists just need the idempotent
+    # create-or-drift path, not dependency resolution.
+    pending = []
+    for item in v1_selected:
+        key = f'{item["fm"].get("epic")}.{item["fm"].get("task")}'
+        if key in created_map:
+            exit_code |= _create_or_drift(item, client, created_map, dry_run, now_iso, blocked_refs=[])
         else:
-            if dry_run:
-                print(f"[dry] Would create: {title}")
-            else:
-                print(f"[!] Failed to create: {title}")
-                pending.append({"title": title, "path": task["path"]})
+            pending.append(item)
 
-    # Second pass: depends_on backfill
-    # Build a task-number → discussion-number map (using epic+task as key)
-    print("\nRunning depends_on backfill …")
-    # Map: (epic, task_id) -> disc_number
-    task_key_map: dict[str, int] = {}
-    for task in tasks:
-        fm = task["fm"]
-        epic = fm.get("epic")
-        task_id = fm.get("task")
-        title = task["title"]
-        if epic is not None and task_id is not None and title in title_to_number:
-            task_key_map[f"{epic}.{task_id}"] = title_to_number[title]
-
-    for item in created:
-        fm = item["fm"]
-        depends_on = fm.get("depends_on", [])
-        if not depends_on:
-            continue
-
-        # Resolve depends_on values to discussion numbers
-        resolved_refs = []
-        epic = fm.get("epic")
-        for dep in (depends_on if isinstance(depends_on, list) else [depends_on]):
-            dep_str = str(dep)
-            # Try same-epic relative reference first: "25" → epic-N.25
-            same_epic_key = f"{epic}.{dep_str}"
-            if same_epic_key in task_key_map:
-                resolved_refs.append(f"#{task_key_map[same_epic_key]}")
-            else:
-                # Try as absolute epic.task key
-                if dep_str in task_key_map:
-                    resolved_refs.append(f"#{task_key_map[dep_str]}")
-
-        if not resolved_refs:
-            continue
-
-        deps_line = f"\nDepends on: {', '.join(resolved_refs)}"
-        # Prepend to body
-        new_body = item.get("body", "") + deps_line if "body" in item else deps_line
-
-        if dry_run:
-            print(f"  [dry-run] Would update #{item['number']} with: Depends on: {', '.join(resolved_refs)}")
-        else:
-            update_discussion_body(repo, item["number"], new_body, dry_run=dry_run)
-            print(f"  [backfill] #{item['number']}: Depends on {', '.join(resolved_refs)}")
-
-    if pending:
-        save_pending(repo_path, pending)
-
-    # ---------------------------------------------------------------------------
-    # Empty-epic overview Discussions
-    # ---------------------------------------------------------------------------
-    created_overviews: list[dict[str, Any]] = []
-
-    if include_empty_epics:
-        print("\nScanning for empty epics (no task files) …")
-        empty_epic_dirs = find_empty_epic_dirs(repo_path, exclude_epics, epic_filter)
-        print(f"  Found {len(empty_epic_dirs)} empty epic dir(s)")
-
-        # Re-fetch existing titles (may have grown during task import above)
-        if not dry_run:
-            existing_after = list_existing_discussion_titles(repo)
-        else:
-            existing_after = {}
-
-        for epic_dir in empty_epic_dirs:
-            epic_md = epic_dir / "epic.md"
-            # Extract N from dirname like "epic-27-typescript-conversion"
-            dir_name = epic_dir.name  # e.g. "epic-27-typescript-conversion"
-            m = re.match(r"epic-(\d+)", dir_name)
-            epic_n = m.group(1) if m else dir_name
-
-            title_text = epic_title_from_md(epic_md)
-            overview_title = f"[Epic] epic-{epic_n} — {title_text}"
-
-            if overview_title in existing_after:
-                print(f"[=] Skip overview (exists #{existing_after[overview_title]}): {overview_title}")
+    made_progress = True
+    while pending and made_progress:
+        made_progress = False
+        still_pending = []
+        for item in pending:
+            fm = item["fm"]
+            epic = fm.get("epic")
+            deps = fm.get("depends_on") or []
+            resolved_refs: list[str] = []
+            blocked_on: list[str] = []
+            for dep in deps:
+                kind, value = classify_dependency(dep, epic)
+                if kind == "absolute":
+                    resolved_refs.append(value)
+                    continue
+                dep_file = key_to_file.get(value)
+                if dep_file is not None and _normalize_status(dep_file["fm"].get("status")) == "completed":
+                    continue
+                if value in created_map:
+                    resolved_refs.append(f"D#{created_map[value]}")
+                else:
+                    blocked_on.append(str(dep))
+            if blocked_on:
+                still_pending.append((item, blocked_on))
                 continue
 
-            epic_body_raw = epic_md.read_text(encoding="utf-8", errors="replace")
-            context_header = (
-                "<!-- STATUS:SCOPING --> "
-                "This epic has no individual task files yet. "
-                "Operators: file sub-task Discussions under this epic as scope solidifies.\n\n"
-            )
-            overview_body = context_header + epic_body_raw
+            key = f'{epic}.{fm.get("task")}'
+            new_number = _create_v1(item, client, dry_run, now_iso, resolved_refs)
+            if new_number is not None:
+                created_map[key] = new_number
+            made_progress = True
 
-            # Ensure labels
-            overview_labels = [f"epic-{epic_n}", "epic-overview"]
-            for label in overview_labels:
-                try:
-                    ensure_label(repo, label, dry_run=dry_run)
-                except Exception as exc:
-                    print(f"  [warn] label {label!r}: {exc}", file=sys.stderr)
+        pending = [item for item, _ in still_pending]
+        if not made_progress:
+            for item, blocked_on in still_pending:
+                fm = item["fm"]
+                key_label = f'{fm.get("epic")}.{fm.get("task")}'
+                for ref in blocked_on:
+                    print(f"unresolved dependency {ref} for {key_label}")
+            exit_code = 1
 
-            try:
-                ov_result = create_discussion_with_backoff(
-                    repo_id=repo_id or "",
-                    category_id=category_id or "",
-                    title=overview_title,
-                    body=overview_body,
-                    repo=repo,
-                    dry_run=dry_run,
-                )
-            except RateLimitError:
-                print(f"[!] Rate limited during empty-epic overview import at {overview_title!r}")
-                break
+    return exit_code
 
-            ov_number, ov_node_id = ov_result if ov_result is not None else (None, None)
 
-            if ov_number is not None:
-                print(f"[+] Created epic overview #{ov_number}: {overview_title}")
-                existing_after[overview_title] = ov_number
-                created_overviews.append({"title": overview_title, "number": ov_number, "epic_dir": str(epic_dir)})
-                add_labels_to_discussion(repo, ov_number, overview_labels, disc_id=ov_node_id, dry_run=dry_run)
-                time.sleep(1)
-            else:
-                if dry_run:
-                    print(f"[dry] Would create overview: {overview_title}")
-                else:
-                    print(f"[!] Failed to create overview: {overview_title}")
+def _create_v1(
+    item: dict[str, Any],
+    client: GraphQLClient,
+    dry_run: bool,
+    now_iso: str,
+    resolved_refs: list[str],
+) -> Optional[int]:
+    fm = item["fm"]
+    title = format_title(fm)
+    parent = load_parent_discussion(item["epic_dir"])
+    sha_hex = file_sha256(item["path"])
+    body = build_v1_body(fm, item["file_body"], resolved_refs, parent, sha_hex, now_iso)
 
-    print(f"\nDone. Created {len(created)} task discussion(s), {len(created_overviews)} epic overview(s).")
+    if dry_run:
+        # "would create Discussion" is pinned wording — coldstart-backlog.sh's
+        # classify_is()-style callers grep for this exact substring to tell
+        # "the importer would act on this" from "it would skip it" without
+        # touching the network. Do not reword without checking that caller.
+        print(f"  [dry-run] would create Discussion: {title!r}")
+        return None
 
-    elapsed = time.time() - _start_time
-    total_created = len(created) + len(created_overviews)
-    print(f"seeded {total_created} discussions in {elapsed:.1f}s ({_GRAPHQL_CALLS} graphql calls)")
+    try:
+        number, _node_id = client.create_discussion(title, body)
+    except RateLimitError:
+        print(f"[!] Rate limited creating: {title}", file=sys.stderr)
+        return None
+    except RuntimeError as exc:
+        print(f"[!] Failed to create {title}: {exc}", file=sys.stderr)
+        return None
+
+    print(f"[+] Created #{number}: {title}")
+    return number
+
+
+def _create_or_drift(
+    item: dict[str, Any],
+    client: GraphQLClient,
+    created_map: dict[str, int],
+    dry_run: bool,
+    now_iso: str,
+    blocked_refs: Optional[list[str]],
+) -> int:
+    """Create a fresh Discussion, or — if one already exists for this
+    epic.task key — check for content drift and update in place if the
+    existing Discussion is still SPEC_READY. Returns 0 or 1 (exit code
+    contribution)."""
+    fm = item["fm"]
+    epic = fm.get("epic")
+    task = fm.get("task")
+    key = f"{epic}.{task}"
+    is_v1 = "schema_version" in fm
+    parent = load_parent_discussion(item["epic_dir"])
+    sha_hex = file_sha256(item["path"])
+
+    existing_number = created_map.get(key)
+    if existing_number is None:
+        title = format_title(fm)
+        if is_v1:
+            body = build_v1_body(fm, item["file_body"], blocked_refs or [], parent, sha_hex, now_iso)
+        else:
+            body = build_v0_body(fm, item["file_body"], parent, sha_hex, now_iso)
+
+        if dry_run:
+            # See the matching comment in _create_v1 — "would create
+            # Discussion" is pinned wording a shell caller greps for.
+            print(f"  [dry-run] would create Discussion: {title!r}")
+            return 0
+        try:
+            number, _node_id = client.create_discussion(title, body)
+        except RateLimitError:
+            print(f"[!] Rate limited creating: {title}", file=sys.stderr)
+            return 1
+        except RuntimeError as exc:
+            print(f"[!] Failed to create {title}: {exc}", file=sys.stderr)
+            return 1
+        print(f"[+] Created #{number}: {title}")
+        created_map[key] = number
+        return 0
+
+    # Already exists — drift check.
+    existing = client.get_discussion(existing_number)
+    if existing is None:
+        print(f"[!] #{existing_number} for {key} could not be fetched — skipping drift check", file=sys.stderr)
+        return 1
+    existing_body = existing["body"]
+    m = _SHA_MARKER_RE.search(existing_body)
+    old_sha = m.group(1) if m else None
+
+    if old_sha == sha_hex:
+        print(f"[=] Up to date (#{existing_number}): {key}")
+        return 0
+
+    old_status = extract_status_anchored(existing_body)
+    if old_status != "SPEC_READY":
+        print(f"drift: {key} changed after spawn (D#{existing_number})")
+        return 0
+
+    line1 = existing_body.splitlines()[0] if existing_body else ""
+    fm_block = format_frontmatter_block(fm)
+    segments = [line1 + "\n" + fm_block]
+    if parent is not None:
+        segments.append(f"Parent: D#{parent}")
+    if item["file_body"].strip():
+        segments.append(item["file_body"].strip())
+    new_body = "\n\n".join(segments) + f"\n\n<!-- TASK-FILE-SHA:{sha_hex} -->"
+
+    if dry_run:
+        print(f"[dry] Would update #{existing_number} for drift: {key}")
+        return 0
+    client.update_discussion_body(existing_number, new_body)
+    print(f"[~] Updated #{existing_number} for drift: {key}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# --parent-index
+# ---------------------------------------------------------------------------
+
+
+def _sort_key(item: dict[str, Any]) -> tuple[int, Any]:
+    task = item["fm"].get("task", "")
+    try:
+        return (0, int(re.match(r"^\d+", str(task)).group()))  # type: ignore[union-attr]
+    except (AttributeError, ValueError):
+        return (1, str(task))
+
+
+def build_parent_index(
+    epic_dir: Path,
+    epic_number: int,
+    parent_line1: str,
+    created_map: dict[str, int],
+    epic_dir_name: str = DEFAULT_EPIC_DIR,
+) -> str:
+    """Build the index body for the parent Discussion of *epic_dir*."""
+    tasks_path = f"{epic_dir_name}/{epic_dir.name}"
+    fm_block = format_frontmatter_block(
+        {
+            "planned_prs": 0,
+            "planned_prs_reason": (
+                "epic index: the Team Lead closes it when every task in "
+                f"{tasks_path}/ is completed or superseded"
+            ),
+        }
+    )
+
+    tasks: list[dict[str, Any]] = []
+    for path in sorted(epic_dir.glob("*.md")):
+        if path.stem in RESERVED_TASK_STEMS or path.is_symlink():
+            continue
+        fm, _ = task_file.parse_task_file(path)
+        tasks.append({"fm": fm})
+
+    tasks.sort(key=_sort_key)
+
+    lines = []
+    for t in tasks:
+        fm = t["fm"]
+        task_id = fm.get("task", "?")
+        title = fm.get("title", "untitled")
+        epic = fm.get("epic", epic_number)
+        key = f"{epic}.{task_id}"
+        if _normalize_status(fm.get("status")) == "completed":
+            status_text = "completed"
+        elif key in created_map:
+            status_text = f"D#{created_map[key]}"
+        else:
+            status_text = "not imported"
+        lines.append(f"- {task_id} — {title} — {status_text}")
+
+    parts = [
+        parent_line1 + "\n" + fm_block,
+        f"Tasks: {tasks_path}/",
+        "\n".join(lines),
+    ]
+    return "\n\n".join(p for p in parts if p)
+
+
+def run_parent_index(
+    repo_path: Path,
+    client: GraphQLClient,
+    parent_number: int,
+    dry_run: bool,
+    epic_dir_name: Optional[str] = None,
+) -> int:
+    epic_dir_name = epic_dir_name or load_epic_dir_name(repo_path)
+    epic_dir = find_epic_dir_by_parent_discussion(repo_path, epic_dir_name, parent_number)
+    if epic_dir is None:
+        print(f"[!] No epic dir declares parent_discussion: {parent_number}", file=sys.stderr)
+        return 1
+
+    m = re.match(r"epic-(\d+)", epic_dir.name)
+    epic_number = int(m.group(1)) if m else 0
+
+    existing = client.get_discussion(parent_number)
+    if existing is None:
+        print(f"[!] Parent Discussion #{parent_number} could not be fetched", file=sys.stderr)
+        return 1
+    parent_line1 = existing["body"].splitlines()[0] if existing["body"] else ""
+
+    existing_titles = client.list_discussion_titles()
+    created_map = existing_by_key(existing_titles)
+
+    body = build_parent_index(epic_dir, epic_number, parent_line1, created_map, epic_dir_name)
+
+    if dry_run:
+        print(f"[dry] Would write parent index for D#{parent_number}:")
+        print(body)
+        return 0
+
+    client.update_discussion_body(parent_number, body)
+    print(f"[+] Wrote parent index for D#{parent_number}")
+    return 0
 
 
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Import epic task files into GitHub Discussions.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__,
-    )
+
+def main(argv: Optional[list[str]] = None) -> int:
+    parser = argparse.ArgumentParser(description="Import epic task files into GitHub Discussions.")
     parser.add_argument("repo_path", help="Path to the repository")
-    parser.add_argument("--repo", required=True, help="GitHub owner/name (e.g. example-org/example-project)")
-    parser.add_argument(
-        "--status",
-        default="not-started,in_progress",
-        help="Comma-separated list of statuses to import (default: not-started,in_progress)",
-    )
-    parser.add_argument("--dry-run", action="store_true", help="Print what would be created, no API calls")
+    parser.add_argument("--repo", required=True, help="GitHub owner/name")
+    parser.add_argument("--status", default=DEFAULT_V0_STATUS_FILTER, help="Comma-separated v0 status filter")
+    parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--epic", type=int, default=None, help="Restrict to a single epic number")
-    parser.add_argument(
-        "--include-empty-epics",
-        action="store_true",
-        default=False,
-        help=(
-            "After task-file import, also create one overview Discussion per epic dir "
-            "that has an epic.md but no numeric task files. Labels: epic-<N>, epic-overview."
-        ),
-    )
-    parser.add_argument(
-        "--exclude-epic",
-        default="epic-22-vcs-agentblame",
-        help=(
-            "Comma-separated epic dirnames to skip when --include-empty-epics is set. "
-            "Default: epic-22-vcs-agentblame (merged stub)."
-        ),
-    )
-    args = parser.parse_args()
+    parser.add_argument("--exclude", default="", help="Comma-separated epic.task ids to skip (v1 only)")
+    parser.add_argument("--milestone", default="", help="Comma-separated milestones to include (v1 only)")
+    parser.add_argument("--parent-index", type=int, default=None, help="Write the index body for parent D#<N>")
+    args = parser.parse_args(argv)
 
     repo_path = Path(args.repo_path).resolve()
     if not repo_path.exists():
         print(f"Error: repo-path does not exist: {repo_path}", file=sys.stderr)
-        sys.exit(1)
+        return 1
 
+    client = GraphQLClient(args.repo)
     status_filter = {s.strip() for s in args.status.split(",") if s.strip()}
-    exclude_epics = {s.strip() for s in args.exclude_epic.split(",") if s.strip()}
+    exclude_ids = {s.strip() for s in args.exclude.split(",") if s.strip()}
+    milestone_filter = {s.strip() for s in args.milestone.split(",") if s.strip()} or None
 
-    run_import(
+    exit_code = run_import(
         repo_path=repo_path,
         repo=args.repo,
+        client=client,
         status_filter=status_filter,
         dry_run=args.dry_run,
         epic_filter=args.epic,
-        include_empty_epics=args.include_empty_epics,
-        exclude_epics=exclude_epics,
+        exclude_ids=exclude_ids,
+        milestone_filter=milestone_filter,
     )
+
+    if args.parent_index is not None:
+        idx_code = run_parent_index(repo_path, client, args.parent_index, args.dry_run)
+        exit_code = exit_code or idx_code
+
+    return exit_code
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -301,9 +301,6 @@ backend/tests/test_human_verification.py	F401	1	`time` imported but unused
 backend/tests/test_human_verification.py	F841	1	Local variable `init_run_id` is assigned to but never used
 backend/tests/test_ideas_api.py	F401	1	`pathlib.Path` imported but unused
 backend/tests/test_ideas_api.py	F401	1	`pytest` imported but unused
-backend/tests/test_import_epic_tasks.py	E402	1	Module level import not at top of file
-backend/tests/test_import_epic_tasks.py	F401	1	`unittest.mock.MagicMock` imported but unused
-backend/tests/test_import_epic_tasks.py	F841	1	Local variable `mock_label` is assigned to but never used
 backend/tests/test_innovate_persist.py	F401	1	`pathlib.Path` imported but unused
 backend/tests/test_jsonl_rotator.py	F401	1	`backend.jsonl_rotator._count_lines` imported but unused
 backend/tests/test_jsonl_rotator.py	F401	1	`backend.jsonl_rotator._file_age_days` imported but unused
@@ -563,7 +560,6 @@ scripts/corpus-drift-audit.py	F841	1	Local variable `rendered` is assigned to bu
 scripts/engine-sync/tests/test_apply.py	E741	1	Ambiguous variable name: `l`
 scripts/engine-sync/tests/test_inbound_changeset.py	F841	1	Local variable `seed` is assigned to but never used
 scripts/engine-sync/tests/test_resolver.py	E741	2	Ambiguous variable name: `l`
-scripts/import-epic-tasks.py	F541	1	f-string without any placeholders
 scripts/lib/cross-file-detector.py	F401	1	`pathlib.Path` imported but unused
 scripts/lib/external_intake_gate.py	E741	2	Ambiguous variable name: `l`
 scripts/lib/route_discussion_wiring.py	F401	1	`datetime.datetime` imported but unused
