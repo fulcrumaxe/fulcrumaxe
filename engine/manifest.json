@@ -8,7 +8,7 @@
     ".claude/agents/code-reviewer.md": "8dc0e39734b103e260183aa158062b8a60ce19bddf348a496a7d8da2f4fa1ff5",
     ".claude/agents/cost-analyst.md": "b53bb7ec4ff961036b77d9bdb67171f5186f838338a6ae8fb8b1f686630c646f",
     ".claude/agents/debater.md": "a5c736383fee35607ec8b7ac6eb7a453e6db34b9cd8eeabf70202bdec6d8a67c",
-    ".claude/agents/docs-writer.md": "ceec7aefe01aec8bf16069121485781e8cb0bf6c03c33965d8c5b6de9674537d",
+    ".claude/agents/docs-writer.md": "6119a6ff7fa0019bb83ea2041eb9597723d87914d9c8c1164db8d31b5c586016",
     ".claude/agents/executor.md": "ec91345afd0c2f1bddb9bd0a3e05e13cb9396ec9e6d23c3c2d0248399c5debfe",
     ".claude/agents/feedback-scanner.md": "2e016e53fe83ff514423076fb16790e38539804b260574076c39ebb94b32f37f",
     ".claude/agents/incident-commander.md": "c608a372467530e81aa164c2b114badff6fb4af804c8e7377e1eb7e174911090",

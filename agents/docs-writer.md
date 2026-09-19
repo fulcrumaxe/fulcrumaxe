@@ -110,12 +110,14 @@ Identify stale wiki pages and CHANGELOG entries caused by this PR, edit them in 
    - Pure internal refactor, test changes, or CI plumbing -> skip CHANGELOG
 
 6. Commit inside `$DEST` and push straight back onto the PR branch:
-   ( cd "$DEST" && git add wiki/<specific files only — never git add .> && \
+   CODE_REMOTE="$(source scripts/lib/repo-resolve.sh && _resolve_code_plane_remote "$DEST")"; ( cd "$DEST" && git add wiki/<specific files only — never git add .> && \
      git commit -m "update docs for {brief description of what changed}" && \
-     git push origin "HEAD:refs/heads/{pr_branch}" )
+     git push "${CODE_REMOTE:?code plane remote unresolved}" "HEAD:refs/heads/{pr_branch}" )
 
    `$DEST` is a detached-HEAD worktree, so plain `git push` has no upstream —
-   the explicit `HEAD:refs/heads/{pr_branch}` refspec is required.
+   the explicit `HEAD:refs/heads/{pr_branch}` refspec is required. The push
+   target is the code plane, resolved from `$DEST`'s own remotes — never the
+   literal `origin`, which names the Discussion plane.
 
    If nothing was stale: skip commit, proceed to step 7 with verdict=skip.
 
