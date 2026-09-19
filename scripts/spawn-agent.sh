@@ -265,13 +265,15 @@ if [[ -n "$DRY_RUN_ENV_DUMP" ]]; then
       source "$SCRIPT_DIR/lib/pr-tree.sh"
       _DRP_EVENT_ID="${ROLE:-agent}-${DISCUSSION:-nod}-$(date +%s)-dryrun"
       _DRP_DEST="$REPO_ROOT/.claude/worktrees/pr-${PR_ARG}-${ROLE:-agent}-${_DRP_EVENT_ID}"
-      if worktree_path=$(pr_tree_provision "$PR_ARG" "$_DRP_SHA" "$_DRP_DEST" "$PR_PLANE_NAME" 2>&1); then
+      _DRP_ERR="$(mktemp)"
+      if worktree_path=$(pr_tree_provision "$PR_ARG" "$_DRP_SHA" "$_DRP_DEST" "$PR_PLANE_NAME" 2>"$_DRP_ERR"); then
         export worktree_path
       else
-        echo "WARN: dry-run pr-tree provisioning failed: $worktree_path" >&2
+        echo "WARN: dry-run pr-tree provisioning failed: $(cat "$_DRP_ERR")" >&2
         unset worktree_path
       fi
-      unset _DRP_EVENT_ID _DRP_DEST
+      rm -f "$_DRP_ERR"
+      unset _DRP_ERR _DRP_EVENT_ID _DRP_DEST
     else
       echo "WARN: dry-run could not resolve PR #${PR_ARG} head sha for pr-tree provisioning" >&2
     fi
