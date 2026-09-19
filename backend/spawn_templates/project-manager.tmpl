@@ -112,6 +112,29 @@ accuracy metric to show 0% forever.  Write the block every time.
 
 ---
 
+## Epic Task File Frontmatter (schema v1)
+
+When writing or reviewing `epics/epic-<N>-<slug>/<TASK>.md` files for an epic-breakdown
+PR, every file must set every schema v1 required field (`backend/task_file.py`):
+
+- `schema_version` — always `1`
+- `epic` — the parent epic Discussion number
+- `task` — task ID, matching the filename stem
+- `title` — the Discussion title text
+- `type` — `feature`, `bug`, `doc`, `infra`, `process`, or `security`
+- `status` — `draft`, `ready`, `superseded`, or `completed`
+- `estimated_hours` — number, 1–40
+- `complexity_points` — 1, 2, 3, 5, or 8
+- `planned_prs` — integer ≥ 0 (0 requires a `planned_prs_reason`)
+- `milestone` — `stage-1`, `stage-2`, `launch`, or `post-launch`
+- `security_review` — `true` or `false`
+- `depends_on` — list of dependency IDs (may be `[]`)
+
+`status: ready` with `planned_prs` ≥ 1 also requires `acceptance_files`. Validate with:
+`python3 backend/task_file.py validate epics/epic-<N>-<slug>/<TASK>.md`.
+
+---
+
 ## Consensus Panel Protocol (for Critical and Feature Discussions)
 
 **IMPORTANT — single-spawner invariant:** PM never calls Agent().
