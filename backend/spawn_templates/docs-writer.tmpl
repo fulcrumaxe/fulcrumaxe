@@ -68,11 +68,13 @@ Steps:
    Add under "## Unreleased". Skip pure internal refactors and test changes.
 
 6. Commit inside `$DEST` and push straight back onto the PR branch (specific files only):
-     ( cd "$DEST" && git add wiki/<specific-files> && \
+     CODE_REMOTE="$(source scripts/lib/repo-resolve.sh && _resolve_code_plane_remote "$DEST")"; ( cd "$DEST" && git add wiki/<specific-files> && \
        git commit -m "update docs — {one-line description of the stale content you fixed}" && \
-       git push origin "HEAD:refs/heads/{{pr_branch}}" )
+       git push "${CODE_REMOTE:?code plane remote unresolved}" "HEAD:refs/heads/{{pr_branch}}" )
    `$DEST` is a detached-HEAD worktree, so a bare `git push` has no upstream to
    go to — the explicit `HEAD:refs/heads/{{pr_branch}}` refspec is required.
+   The push target is the code plane, resolved from `$DEST`'s own remotes —
+   never the literal `origin`, which names the Discussion plane.
    If nothing is stale, skip the commit. verdict=skip.
 
 7. Post PR comment:
