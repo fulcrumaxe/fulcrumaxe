@@ -1,3 +1,13 @@
+---
+# Optional. If this epic was created from a Discussion, record it so tooling
+# can trace the epic back to where it came from:
+# parent_discussion: <N>
+#
+# epic.md never carries task fields (schema_version, task, complexity_points,
+# etc.) — those belong only in the numbered/lettered task files. epic.md and
+# README.md are the two reserved non-task names in an epic directory.
+---
+
 # Epic <N>: <Epic title>
 
 > **Epic location:** `epics/epic-<N>-<slug>/epic.md`

@@ -25,6 +25,10 @@ sqlalchemy>=2.0.49
 # dependency is a separate follow-up since it's a behavioural/CI-exposure
 # change, not a comment fix.
 structlog>=25.5.0
+# backend/task_file.py parses task-file YAML frontmatter (schema v1).
+# PyYAML was already present only as some other package's transitive
+# dependency — same ambient-only gap as duckdb/sqlalchemy/structlog above.
+pyyaml>=6.0.3
 # FastAPI strangler-fig stack (P1 — pinned to installed versions; bump acceptable)
 fastapi>=0.135.3
 uvicorn[standard]>=0.44.0

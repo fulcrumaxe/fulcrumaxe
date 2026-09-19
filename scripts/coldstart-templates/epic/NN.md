@@ -1,35 +1,52 @@
 ---
-# Every field below is read by scripts/import-epic-tasks.py. Delete the
-# comments once you have filled the values in — they are here for the first
-# read, not for the file's whole life.
+# Every field below is read by backend/task_file.py's schema-v1 validator.
+# Delete the comments once you have filled the values in — they are here for
+# the first read, not for the file's whole life. Validate with:
+#   python3 backend/task_file.py validate <this file>
 #
-# epic / task    the epic number and the task number within it. `epic` must
+# schema_version   always 1 for a new task file.
+schema_version: 1
+# epic / task    the epic number and this task's ID within it. `epic` must
 #                match the number in the directory name and in epic.md's H1.
-#                `task` should match this file's basename (03.md -> task: 3).
-#                Together they become the Discussion title and the key that
-#                other tasks' `depends_on` resolves against.
+#                `task` must match this file's basename (rename this file
+#                to your task's ID, e.g. H08.md, and set task: H08 here) and
+#                contain only letters, digits and dashes. Together they
+#                become the Discussion title and the key that other tasks'
+#                `depends_on` resolves against.
 epic: 1
-task: 1
+task: NN
 # title          one line, no trailing period. Quote it — titles with a colon
 #                or a leading bracket are not valid unquoted YAML.
 title: "<one line — what this task delivers>"
-# type           becomes a label verbatim, and is capitalised into the
-#                Discussion title as [Feature], [Enhancement], and so on.
-#                Common values: feature, enhancement, bugfix, refactoring,
-#                testing, spec.
+# type           feature | bug | doc | infra | process | security
 type: feature
-# status         not-started | in_progress | completed | superseded.
-#                Only not-started and in_progress are imported by default.
-#                A task that is already done stays in the file with
-#                status: completed — it is history, not clutter.
-status: not-started
-# estimated_hours  a number, becomes the est-<N>h label. Estimate the whole
-#                task including tests. If it is over about 12, it is two tasks.
+# status         draft | ready | superseded | completed — authoring states,
+#                not run states. `ready` is the point a task is considered
+#                import-ready.
+status: draft
+# estimated_hours  a number > 0 and <= 40, including tests. If it is over
+#                about 12, it is probably two tasks.
 estimated_hours: 4
-# depends_on     task numbers within this same epic, as a list. [] if none.
-#                The importer rewrites these into Discussion links after all
-#                the tasks in a run have been created.
+# complexity_points  1, 2, 3, 5 or 8.
+complexity_points: 3
+# planned_prs    how many PRs this task expects. 0 means operational work
+#                with no PR — set planned_prs_reason instead of
+#                acceptance_files below in that case.
+planned_prs: 1
+# planned_prs_reason  required only when planned_prs is 0.
+# planned_prs_reason: "<why this task has no PR>"
+# milestone      stage-1 | stage-2 | launch | post-launch
+milestone: stage-1
+# security_review  true or false.
+security_review: false
+# depends_on     each item is a same-epic task ID (H08), a cross-epic
+#                <epic>.<task> id (2.H13), a Discussion (D#123), or an Issue
+#                (#123). [] if none.
 depends_on: []
+# acceptance_files  required when status is ready and planned_prs is >= 1 —
+#                a non-empty list of repo-relative paths that show the work
+#                is done.
+# acceptance_files: []
 # tags           free-form. Keep epic-<N> first so a tag search finds the
 #                whole epic, then the areas this task touches.
 tags: [epic-1, area]
