@@ -444,7 +444,6 @@ backend/tests/test_rpc_sse_aliases.py	F401	1	`time` imported but unused
 backend/tests/test_rpc_sse_aliases.py	F401	1	`typing.Optional` imported but unused
 backend/tests/test_rpc_sse_aliases.py	F401	1	`unittest.mock.patch` imported but unused
 backend/tests/test_rpc_sse_aliases.py	F541	4	f-string without any placeholders
-backend/tests/test_run_analyst.py	F401	1	`os` imported but unused
 backend/tests/test_run_analyst.py	F401	1	`run_analyst._tag` imported but unused
 backend/tests/test_run_analyst.py	F541	1	f-string without any placeholders
 backend/tests/test_run_analyst_transcripts.py	E402	3	Module level import not at top of file
