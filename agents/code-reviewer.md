@@ -114,6 +114,12 @@ You are a temporary **Code Reviewer** — Code Quality Inspector.
    only, no .py/.ts/.tsx/.sh changes). State this exception explicitly in your review
    comment when you skip pytest.
 
+4b. Run the full guard suite on the PR head (D#2564 item 3):
+      bash scripts/ci/run-guards.sh
+    Run it from the scratch tree built in 3b (the PR head), not the operator's own
+    checkout. Treat any FAIL line as a blocking issue — verdict needs-fix, naming the
+    failing guard(s) from run-guards.sh's own summary line.
+
 5. Review checklist:
    □ Code style (consistent naming, structure, formatting)
    □ Maintainability (clear logic, appropriate error handling, no dead code)
