@@ -418,25 +418,35 @@ rewrite_tree_identifiers() {
   local -a owners=("${SOURCE_REPO%/*}" "autonomous-agent-7" "fulcrumaxe")
   local -a names=("${SOURCE_REPO#*/}" "fulcrumaxe")
 
-  local f slug o n rel
+  # Build the whole rewrite as one ';'-joined sed script instead of forking
+  # a separate `sed -i` per pattern per file (D#2624): each substitution
+  # below is line-local, so running them in this fixed order in a single
+  # pass over each line produces the same result as running each one as
+  # its own whole-file pass in the same order — there is no interaction
+  # between them to preserve or break. Built once, outside the per-file
+  # loop, since it does not depend on $f.
+  local slug o n expr=""
+  for slug in "${full_slugs[@]}"; do
+    expr+="s|${slug}|${TARGET_REPO}|g;"
+  done
+  for o in "${owners[@]}"; do
+    expr+="s|owner:\"${o}\"|owner:\"${target_owner}\"|g;"
+    expr+="s|owner:\\\\\"${o}\\\\\"|owner:\\\\\"${target_owner}\\\\\"|g;"
+    expr+="s|owner: \"${o}\"|owner: \"${target_owner}\"|g;"
+  done
+  for n in "${names[@]}"; do
+    expr+="s|name:\"${n}\"|name:\"${target_name}\"|g;"
+    expr+="s|name:\\\\\"${n}\\\\\"|name:\\\\\"${target_name}\\\\\"|g;"
+    expr+="s|name: \"${n}\"|name: \"${target_name}\"|g;"
+  done
+
+  local f rel
   while IFS= read -r -d '' f; do
     [[ -L "$f" ]] && continue
     rel="${f#$TARGET/}"
     _engine_identity_allowlisted "$rel" && continue
     grep -Iq . "$f" 2>/dev/null || continue  # skip binaries
-    for slug in "${full_slugs[@]}"; do
-      pc_sed_i "s|${slug}|${TARGET_REPO}|g" "$f"
-    done
-    for o in "${owners[@]}"; do
-      pc_sed_i "s|owner:\"${o}\"|owner:\"${target_owner}\"|g" "$f"
-      pc_sed_i "s|owner:\\\\\"${o}\\\\\"|owner:\\\\\"${target_owner}\\\\\"|g" "$f"
-      pc_sed_i "s|owner: \"${o}\"|owner: \"${target_owner}\"|g" "$f"
-    done
-    for n in "${names[@]}"; do
-      pc_sed_i "s|name:\"${n}\"|name:\"${target_name}\"|g" "$f"
-      pc_sed_i "s|name:\\\\\"${n}\\\\\"|name:\\\\\"${target_name}\\\\\"|g" "$f"
-      pc_sed_i "s|name: \"${n}\"|name: \"${target_name}\"|g" "$f"
-    done
+    pc_sed_i "$expr" "$f"
   done < <(find "$dir" -type f -print0 2>/dev/null)
 }
 
