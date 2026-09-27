@@ -4886,13 +4886,127 @@ class TestD2483PR171CompoundRedirectStillBlocked:
         d = classify_bash(cmd, _WT_CLAUDE)
         assert d.allow is False
 
-    def test_glued_plain_redirect_still_the_preexisting_d2541_gap(self) -> None:
-        # Not this PR's regression and not this PR's fix -- `>foo` with no
-        # leading `&` is untouched by the `&>`/`&>>` normalisation above.
-        # Documented here so a future change to this gap notices this test.
+    def test_glued_plain_redirect_now_blocked_by_d2541(self) -> None:
+        # This WAS the pre-existing D#2541 gap this class's docstring warned
+        # about: `>foo` with no leading `&` was untouched by the `&>`/`&>>`
+        # normalisation above, and stayed ALLOW. D#2541 closed it with a
+        # separate, general glued-redirect-operator split
+        # (`_GLUED_REDIRECT_OP_RE` / `_split_glued_redirect_operands`) that
+        # runs independently of the `&`-prefixed handling in this class. See
+        # TestD2541GluedRedirectOperator below for the full acceptance-table
+        # coverage; this one assertion just flips in place so this specific
+        # tripwire (linked from the comment above) keeps testing the same
+        # command it always has.
         cmd = f"echo x >{_D2483_REGISTRY_BASENAME}"
         d = classify_bash(cmd, _WT_CLAUDE)
-        assert d.allow is True
+        assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+        assert _D2483_REGISTRY_BASENAME in d.reason
+
+
+_D2541_PROTECTED_BASENAMES = (_D2483_REGISTRY_BASENAME, _DIAL_PROTECTED_SUFFIXES[2])
+
+
+class TestD2541GluedRedirectOperator:
+    """A redirect operator glued (no space) directly onto a relative,
+    dial-protected basename reached neither of this module's two
+    basename-matching sites: step 1d's operand scan
+    (`_protected_basename_operand`, via `_all_path_operands`) and the
+    relative-path check in `_scan_command_segments` both compare a WHOLE
+    shlex token's basename, and shlex is a plain word-splitter with no
+    notion that `<`/`>` are shell metacharacters -- a glued operator+path
+    never tokenises apart on its own. Six spellings measured ALLOW against
+    the code-plane classifier before this fix: `>`, `>>`, `2>`, `2>>`, `1>>`
+    glued to `audit.jsonl`, plus `>` glued to `dial-registry.json`.
+
+    Fixed structurally with `_GLUED_REDIRECT_OP_RE` /
+    `_split_glued_redirect_operands` (hooks/sandbox_rules.py), which splits
+    ANY digit-prefixed `<`/`>` operator off a glued target before either
+    site tokenises -- not a list of the six spellings above, so an fd this
+    table never enumerated (`10>`) is covered by the same mechanism for
+    free, exercised below rather than merely asserted.
+    """
+
+    @pytest.mark.parametrize("suffix", list(_D2541_PROTECTED_BASENAMES))
+    @pytest.mark.parametrize("operator", [">", ">>", "2>", "2>>", "1>>"])
+    def test_glued_redirect_blocked(self, suffix: str, operator: str) -> None:
+        cmd = f"echo x {operator}{suffix}"
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+        assert suffix in d.reason
+
+    def test_glued_fd_above_nine_also_blocked(self) -> None:
+        # Not one of the six measured gaps -- a digit-prefixed operator with
+        # more than one digit -- but the same mechanism, so this is free
+        # coverage the general regex buys over an enumerated operator list.
+        cmd = f"echo x 10>{_D2483_REGISTRY_BASENAME}"
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+
+    def test_dotdot_relative_glued_still_blocked(self) -> None:
+        # Regression guard: this one already blocked before the fix -- the
+        # token contains a `/`, so `Path(...).name` isolates the basename
+        # regardless of what's glued in front of it -- and must keep
+        # blocking now that the operand text is pre-split.
+        cmd = f"echo x >scripts/../{_D2541_PROTECTED_BASENAMES[1]}"
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+
+    @pytest.mark.parametrize(
+        "cmd_template",
+        [
+            "echo x >|{suffix}",
+            "echo x >| {suffix}",
+            "echo x &>{suffix}",
+            "echo x &> {suffix}",
+            "echo x | tee {suffix}",
+        ],
+    )
+    def test_preexisting_blocked_forms_unaffected(self, cmd_template: str) -> None:
+        # Every row that already blocked keeps blocking, by a reason no
+        # less specific -- a regression here is worse than the bug.
+        cmd = cmd_template.format(suffix=_D2483_REGISTRY_BASENAME)
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+        assert _D2483_REGISTRY_BASENAME in d.reason
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "echo hi >output.txt",
+            "echo hi >>output.txt",
+            "echo hi 2>output.txt",
+            "echo hi 1>>output.txt",
+            "cat file.txt >combined.txt",
+        ],
+    )
+    def test_ordinary_glued_write_still_allowed(self, cmd: str) -> None:
+        # Over-blocking is the failure mode CLAUDE.md says is worse here --
+        # a glued redirect to a file that ISN'T dial-protected must still
+        # sail through untouched.
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is True, f"expected ALLOW for `{cmd}`, got reason={d.reason!r}"
+
+    def test_fd_dup_not_mistaken_for_a_path_write(self) -> None:
+        # `2>&1` duplicates a file descriptor -- it names no path at all,
+        # and must not be split the way `2>audit.jsonl` now is.
+        d = classify_bash("echo hi >/dev/null 2>&1", _WT_CLAUDE)
+        assert d.allow is True, f"expected ALLOW, got reason={d.reason!r}"
+
+    def test_process_substitution_not_mangled(self) -> None:
+        d = classify_bash("diff <(sort a.txt) <(sort b.txt)", _WT_CLAUDE)
+        assert d.allow is True, f"expected ALLOW, got reason={d.reason!r}"
+
+    def test_heredoc_marker_not_mangled(self) -> None:
+        d = classify_bash("cat <<EOF\nhello\nEOF", _WT_CLAUDE)
+        assert d.allow is True, f"expected ALLOW, got reason={d.reason!r}"
+
+    def test_herestring_not_mangled(self) -> None:
+        d = classify_bash('cat <<<"hello"', _WT_CLAUDE)
+        assert d.allow is True, f"expected ALLOW, got reason={d.reason!r}"
+
+    def test_control_still_allowed(self) -> None:
+        d = classify_bash("echo hello", _WT_CLAUDE)
+        assert d.allow is True, f"expected ALLOW, got reason={d.reason!r}"
 
 
 class TestD2483PR171InterpreterVersionToleranceStillBlocked:

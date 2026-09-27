@@ -225,6 +225,70 @@ _REDIRECT_PATTERN = re.compile(
 # rewriting it here would widen the blast radius of this fix for no gain
 # (see B1 in the round-2 security review of PR #1901).
 
+# D#2541: the class of token step 1d's operand scan (_all_path_operands /
+# _protected_basename_operand) and the relative-basename check in
+# _scan_command_segments both fail to see. Both of those sites match on a
+# WHOLE shlex token's basename (`Path(tok).name == "audit.jsonl"`). A
+# redirect operator is a shell METACHARACTER — real bash treats it as its
+# own token whether or not whitespace surrounds it — but shlex (a plain
+# word-splitter) does not know that, so `>audit.jsonl` with no space stays
+# ONE token whose "basename" is the literal string `">audit.jsonl"`, which
+# never equals the protected name. This is the same shape SEC-6/SEC-8
+# already fixed twice for verbs and for path spellings, one token-production
+# layer further upstream: the fix belongs where tokens are produced, not in
+# a list of blocked redirect spellings (`>`, `>>`, `2>`, `2>>`, `1>>`, ... —
+# enumerating those just moves the goalpost to the next digit or the next
+# fd, which is exactly the round-4-then-round-5 pattern this Discussion
+# calls out by name).
+#
+# The general shape: zero or more leading digits (a file-descriptor number —
+# unbounded, so an fd above 9 is covered for free, not enumerated), then `<`
+# or `>` (the latter doubled at most once), immediately followed by a
+# non-whitespace character that is not itself part of a DIFFERENT operator
+# this module already handles elsewhere:
+#   - `&`  — `N>&M` (fd-dup, e.g. `2>&1`) is not a path target at all, and
+#     `&>` / `&>>` are already split into their own tokens by the dedicated
+#     substitution in _scan_command_segments, run before this one.
+#   - `(`  — process substitution (`>(cmd)`, `<(cmd)`) is a subshell, not a
+#     path write; deliberately left alone (named as a residual gap, not
+#     fixed here — see the PR body).
+#   - `|`  — `>|` (bash's "clobber" force-overwrite) already reaches the
+#     dial-registry basename check today via the PRE-EXISTING, UNRELATED
+#     `[;&|]` separator-padding pass in _scan_command_segments (that pass
+#     treats the glued `|` as a pipe separator, which happens to isolate the
+#     target as its own token as a side effect). Splitting `>|` here too
+#     would double-split it into `>`, `|`, `<target>` — harmless in practice
+#     but redundant with a mechanism this fix does not need to touch, so
+#     `|` is excluded to keep the two mechanisms independent.
+# A second `<` right after the first (`<<`, `<<<`) is also excluded — those
+# are the heredoc and here-string operators, an entirely different construct
+# (already handled by `_strip_heredoc_bodies_capturing` upstream of this
+# scan), not a file-path redirect at all.
+#
+# What this deliberately does NOT cover, because it is a different
+# character class rather than a `<`/`>` glued to a path: `|&` (bash's
+# "pipe both stdout and stderr" shorthand — pipes to a command, not to a
+# file, so it is out of scope for a *path*-target scan) and the process
+# substitution / heredoc / here-string forms named above. See the PR body
+# for the full enumeration (Spec D#2541 item 6).
+_GLUED_REDIRECT_OP_RE = re.compile(r"(?<![<>&|])([0-9]*>{1,2}|[0-9]*<(?!<))(?=[^\s&(|])")
+
+
+def _split_glued_redirect_operands(text: str) -> str:
+    """Insert a space between a redirect operator and a target glued to it.
+
+    Pure text substitution, run BEFORE shlex tokenises *text* — see
+    `_GLUED_REDIRECT_OP_RE`'s module comment for exactly which operator
+    shapes this does and does not touch. Only ever WIDENS token boundaries
+    (never merges two tokens into one), so it cannot hide a candidate that
+    was visible before; at worst it is a no-op on text that had nothing to
+    split. Safe to run unconditionally, including on text that lives inside
+    a quoted argument — the inserted space stays inside the same quote
+    pair, so shlex still folds it into one token, same as today.
+    """
+    return _GLUED_REDIRECT_OP_RE.sub(lambda m: f"{m.group()} ", text)
+
+
 # Kernel virtual devices that are never real file writes.
 # Redirects to these paths are always safe and must never be blocked.
 _KERNEL_DEVICE_PREFIXES: tuple[str, ...] = (
@@ -3310,13 +3374,14 @@ def _scan_command_segments(
     # below (`Path('>audit.jsonl').name` is the whole glued string, not
     # `audit.jsonl`). `&>>` must be matched before `&>` or the second `>`
     # would stay glued to the target the same way. This is deliberately
-    # scoped to the `&`-prefixed compound forms only — plain `>`/`>>` are
-    # left untouched here (see `_all_path_operands`'s own scan for those; a
-    # bare unspaced `>audit.jsonl` with no leading `&` is D#2541, a
-    # pre-existing gap this fix does not touch).
+    # scoped to the `&`-prefixed compound forms only — plain `>`/`>>` (and
+    # `N>`/`N>>`) are handled by the separate, general `_GLUED_REDIRECT_OP_RE`
+    # pass below (D#2541), which runs after this `&`-prefixed one so it never
+    # touches a `>` that's already been split off its own `&`.
     normalised = stripped.replace("\r\n", "\n").replace("\r", "\n").replace("\n", " ; ")
     normalised = re.sub(r"&>>", " & >> ", normalised)
     normalised = re.sub(r"&>", " & > ", normalised)
+    normalised = _split_glued_redirect_operands(normalised)
     normalised = re.sub(r"[;&|]", lambda m: f" {m.group()} ", normalised)
     normalised = re.sub(r" +", " ", normalised).strip()
 
@@ -3570,10 +3635,16 @@ def _all_path_operands(command: str) -> list[str]:
     # Every token in the command, not just specific commands' destination
     # args, and not filtered to absolute-shaped tokens (SEC-8) — a relative,
     # `~`-prefixed, or dotdot-relative token is just as real an operand.
+    #
+    # D#2541: split a glued redirect operator (`>audit.jsonl`, `2>>audit.jsonl`,
+    # ...) off its target BEFORE tokenising, so the target reaches
+    # `_protected_basename_operand()` as its own token instead of hiding
+    # inside a single "operator+path" blob — see `_GLUED_REDIRECT_OP_RE`.
+    operand_scan_text = _split_glued_redirect_operands(command)
     try:
-        tokens = _shlex_split(command)
+        tokens = _shlex_split(operand_scan_text)
     except ValueError:
-        tokens = command.split()
+        tokens = operand_scan_text.split()
 
     for tok in tokens:
         if tok in _SHELL_SEPARATORS:
