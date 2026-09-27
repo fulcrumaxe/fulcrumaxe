@@ -110,14 +110,23 @@
 #      one of the seven verbs (checkout/switch/branch/reset/clean/worktree/
 #      restore) this script is never allowed to touch. AUTONOMOUS_TEAM_REPO
 #      and AUTONOMOUS_TEAM_STATE_DIR are set explicitly for that one
-#      subprocess call — resolved from the materialized tree's OWN
-#      .autonomous-team/config.json, never inherited from the caller's
-#      environment or state dir — and the run is bounded (`timeout 300`); a
-#      timeout is a refusal, not a pass. Refuses (exit 5) naming the failing
-#      guard(s) on any non-zero exit. scripts/ci/run-guards.sh absent from
-#      the materialized tree (an old --target-ref, or a fixture that
-#      doesn't carry it) is a stderr NOTE and is skipped, same discipline as
-#      step 4.
+#      subprocess call. AUTONOMOUS_TEAM_REPO comes from the caller's
+#      `--code-repo <owner/name>` argument to `build` — never resolved from
+#      the tree, because the code plane ships no
+#      .autonomous-team/config.json for a tree-local resolution to read, and
+#      never inherited from this shell's own AUTONOMOUS_TEAM_REPO either, so
+#      an unrelated value already exported by the caller's shell can't reach
+#      the guards by accident (D#2622 fix round 1 — the first cut tried to
+#      resolve from the tree's own config, which can never exist, and so
+#      silently fell through to whatever the caller's shell happened to have
+#      set). `build` refuses (exit 2) if the runner is present in the tree
+#      but `--code-repo` was not given. AUTONOMOUS_TEAM_STATE_DIR always
+#      points at a scratch dir under the build's own scratch. The run is
+#      bounded (`timeout 300`); a timeout is a refusal, not a pass. Refuses
+#      (exit 5) naming the failing guard(s) on any non-zero exit.
+#      scripts/ci/run-guards.sh absent from the materialized tree (an old
+#      --target-ref, or a fixture that doesn't carry it) is a stderr NOTE
+#      and is skipped, same discipline as step 4.
 #   6. Never regenerates scripts/ruff-known-findings.txt. Lowering it is a
 #      judgement call ("this finding is fixed, not moved"), not a mechanical
 #      derivation — see ruff-ratchet.py's own header. A finding that stops
@@ -152,16 +161,16 @@
 #      any network call ("push: REFUSED" on stderr). --skip-guards bypasses
 #      this and proceeds straight to the transport.
 #
-# This file never runs `gh` and never pushes except via the `push` command
-# above. It also never resolves a repo slug for its OWN routing purposes —
-# which repo a PR opens against always stays in the caller's hands (see
-# scripts/lib/repo-resolve.sh and `_resolve_code_repo`), matching the
+# This file never runs `gh`, never pushes except via the `push` command
+# above, and never resolves a repo slug — that stays in the caller's hands
+# (see scripts/lib/repo-resolve.sh and `_resolve_code_repo`), matching the
 # repo-scope card's boundary between "build the commit" and "open the PR".
-# One exception (D#2622, step 5 above): the full guard run resolves the code
-# repo from the materialized tree's OWN config purely to set
-# AUTONOMOUS_TEAM_REPO for that one subprocess, because the guards need it
-# for their own checks. That resolution never feeds `push`, never picks a
-# remote, and never influences where the caller opens the PR.
+# `--code-repo` on `build` (D#2622, step 5 above) does not change this: it is
+# a plain string the caller already resolved for its own purposes (the same
+# slug it uses to open the PR), handed to this file only so the one
+# `run-guards.sh` subprocess can see it as AUTONOMOUS_TEAM_REPO. This file
+# still performs no resolution of its own, feeds nothing to `push`, and
+# picks no remote from it.
 #
 # This file stays a single, self-contained script — executors copy it alone
 # into a scratch directory — so it never `source`s a sibling file. It may
@@ -179,7 +188,7 @@ scripts/lib/code-plane-pr.sh — build a code-plane commit without touching a
 local ref, branch, index, or working tree.
 
   build   --target-ref <ref> --base-ref <ref> --branch <name>
-          --message <msg> [--skip-guards <reason>]
+          --message <msg> [--skip-guards <reason>] [--code-repo <owner/name>]
           <repo-path>=<local-file> [<repo-path>=<local-file> ...]
           --base-ref is required (pass the sha `extract` printed on stderr,
           or --target-ref's own value again for the genuine no-gap case).
@@ -188,6 +197,15 @@ local ref, branch, index, or working tree.
           scripts/ci/run-guards.sh suite against that same tree, and
           refuses (exit 5) if the result would still redden CI for a
           derived-file reason or if any behavioural guard fails.
+          --code-repo <owner/name> is the repo slug the CALLER already
+          resolved (the same slug it uses to open the PR — see
+          scripts/lib/repo-resolve.sh's _resolve_code_repo, run from the
+          caller's own checkout). It is required whenever
+          scripts/ci/run-guards.sh exists in the tree being built: the code
+          plane ships no .autonomous-team/config.json, so a tree-local
+          resolution can never succeed, and this file never falls back to
+          its own shell's AUTONOMOUS_TEAM_REPO — omitting --code-repo in
+          that case is a refusal (exit 2), not a silent pass.
           --skip-guards "<reason>" skips that regeneration and both guard
           checks entirely (loud WARN on stderr) — an empty/missing reason
           is a usage error (exit 2).
@@ -389,34 +407,38 @@ _cpp_materialize_git_index() {
 }
 
 _cpp_run_full_guards() {
-  # _cpp_run_full_guards <dtree>
+  # _cpp_run_full_guards <dtree> <code-repo>
   # Runs scripts/ci/run-guards.sh from <dtree> — which must already carry a
   # git index matching the tree, via _cpp_materialize_git_index — covering
   # behavioural guards (D#2622), not just the three derived-file guards
-  # _cpp_run_guards checks above. Hermetic: AUTONOMOUS_TEAM_REPO is resolved
-  # from <dtree>'s OWN config (never the caller's environment) and
-  # AUTONOMOUS_TEAM_STATE_DIR points at a private scratch dir under the
-  # build's own scratch, never the operator's real state dir. Bounded at
-  # 300s; a timeout is a refusal, not a pass. Relays run-guards.sh's own
-  # stdout/stderr onto this script's stderr, prefixed. Returns 0 on a clean
-  # run (or a NOTE-skip when the runner is absent from <dtree>), 2 if the
-  # code repo cannot be resolved, 5 if the runner fails or times out.
-  local dtree="$1"
+  # _cpp_run_guards checks above.
+  #
+  # <code-repo> is a plain string the CALLER resolved before calling `build`
+  # (the same way it resolves the repo it opens the PR against — see
+  # scripts/lib/repo-resolve.sh's _resolve_code_repo, run from the caller's
+  # own checkout) and passed in via --code-repo. This function does not
+  # resolve a repo slug itself and does not read this shell's own
+  # AUTONOMOUS_TEAM_REPO: the materialized tree ships no
+  # .autonomous-team/config.json (the code plane never carries one), so a
+  # tree-local resolution can never succeed there, and falling back to
+  # whatever the calling shell happened to have exported would run the
+  # guards against an unrelated repo with no signal that it happened (the
+  # bug this replaces, D#2622 fix round 1). AUTONOMOUS_TEAM_STATE_DIR always
+  # points at a private scratch dir under the build's own scratch, never the
+  # operator's real state dir. Bounded at 300s; a timeout is a refusal, not
+  # a pass. Relays run-guards.sh's own stdout/stderr onto this script's
+  # stderr, prefixed. Returns 0 on a clean run (or a NOTE-skip when the
+  # runner is absent from <dtree>), 2 if the runner is present but
+  # <code-repo> is empty, 5 if the runner fails or times out.
+  local dtree="$1" code_repo="$2"
   local runner="$dtree/scripts/ci/run-guards.sh"
   if [[ ! -f "$runner" ]]; then
     _cpp_err "build: NOTE: scripts/ci/run-guards.sh absent from the materialized tree — full guard run skipped"
     return 0
   fi
 
-  local resolver="$dtree/scripts/lib/repo-resolve.sh"
-  if [[ ! -f "$resolver" ]]; then
-    _cpp_err "build: derived-files: scripts/lib/repo-resolve.sh absent from the materialized tree — cannot resolve the code repo for the guard run"
-    return 2
-  fi
-  local code_repo
-  code_repo="$(cd "$dtree" && source scripts/lib/repo-resolve.sh && _resolve_code_repo 2>/dev/null)"
   if [[ -z "$code_repo" ]]; then
-    _cpp_err "build: derived-files: could not resolve the code repo from the materialized tree's own config for the guard run"
+    _cpp_err "build: REFUSED — scripts/ci/run-guards.sh is present in the tree but no --code-repo was supplied; the code plane ships no .autonomous-team/config.json, so this step cannot resolve one from the tree itself. Pass --code-repo <owner/name>, resolved by the caller the same way it resolves the repo to open the PR — this step never falls back to its own shell's AUTONOMOUS_TEAM_REPO."
     return 2
   fi
 
@@ -607,7 +629,7 @@ PYEOF
 # ── build ─────────────────────────────────────────────────────────────────────
 
 code_plane_pr_build() {
-  local base_ref="" target_ref="" branch="" message=""
+  local base_ref="" target_ref="" branch="" message="" code_repo=""
   local skip_guards_given=false skip_guards_reason=""
   local -a pairs=()
 
@@ -617,6 +639,7 @@ code_plane_pr_build() {
       --target-ref)   target_ref="$2";   shift 2 ;;
       --branch)       branch="$2";       shift 2 ;;
       --message)      message="$2";      shift 2 ;;
+      --code-repo)    code_repo="$2";    shift 2 ;;
       --skip-guards)  skip_guards_given=true; skip_guards_reason="$2"; shift 2 ;;
       --) shift; pairs+=("$@"); break ;;
       -*) _cpp_err "build: unknown flag '$1'"; return 2 ;;
@@ -764,7 +787,7 @@ code_plane_pr_build() {
       return 2
     fi
     local full_guards_rc
-    _cpp_run_full_guards "$dtree"
+    _cpp_run_full_guards "$dtree" "$code_repo"
     full_guards_rc=$?
     if [[ "$full_guards_rc" -ne 0 ]]; then
       rm -rf "$scratch"
