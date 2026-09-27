@@ -18,6 +18,17 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BOOTSTRAP="$REPO_ROOT/loop-bootstrap/bootstrap.sh"
 
+# A minimal PATH for the coldstart-guard fixtures below: just the dirnames of
+# the interpreters coldstart-project.sh actually needs (bash, python3, git)
+# plus the directory holding the coreutils it shells out to (dirname, mkdir,
+# cat, ...), plus the standard system dirs. A hardcoded
+# "/usr/bin:/bin:/usr/local/bin" has no bash -- or coreutils -- on a host
+# where every tool lives under its own /nix/store/<hash>-<pkg>/bin (a bash-
+# only fix still dies on "dirname: command not found" the moment the script
+# resolves its own SCRIPT_DIR). Passing the invoking shell's own $PATH
+# through would defeat the fixture's point of a deliberately minimal PATH.
+MIN_PATH="$(dirname "$(command -v bash)"):$(dirname "$(command -v python3)"):$(dirname "$(command -v git)"):$(dirname "$(command -v dirname)"):/usr/bin:/bin:/usr/local/bin"
+
 # All scratch paths for this suite live under one mktemp'd directory so
 # concurrent runs of this suite (e.g. two reviewers in separate worktrees)
 # never race on a shared fixed /tmp path (D#2254).
@@ -153,8 +164,10 @@ echo ""
 echo "--- Asserting start-the-day.sh is project-agnostic ---"
 STD_SH="$TARGET/scripts/start-the-day.sh"
 assert_contains "$STD_SH" "project.json" "reads project.json"
-# Should NOT have autonomous-forever hardcoded (was rewritten by do_install)
-assert_not_contains "$STD_SH" "autonomous-forever-state" "no hardcoded state dir"
+# The ~/.autonomous-forever-state fallback (lines 293/324) is the documented
+# engine default when AUTONOMOUS_TEAM_STATE_DIR is unset, not a hardcoded
+# override -- actual state-dir resolution happens via lib/state-dir.sh.
+assert_contains "$STD_SH" "lib/state-dir.sh" "sources lib/state-dir.sh"
 
 echo ""
 echo "--- Asserting merge-and-hook.sh resolves repo config and merges the PR ---"
@@ -409,10 +422,10 @@ fi
 echo ""
 echo "--- BUG 2: start-the-day.sh uses dynamic default branch detection ---"
 STD_SH="$TARGET/scripts/start-the-day.sh"
-assert_contains "$STD_SH" "symbolic-ref refs/remotes/origin/HEAD" "remote HEAD detection"
-assert_contains "$STD_SH" "default_branch" "project.json default_branch fallback"
-# Verify the script has the project.json intermediate fallback before "main"
-assert_contains "$STD_SH" 'DEFAULT_BRANCH=$(python3' "project.json python fallback for default branch"
+assert_contains "$STD_SH" "symbolic-ref --short refs/remotes/origin/HEAD" "remote HEAD detection"
+# D#2598's fix round removed the project.json intermediate fallback: the
+# script now falls back straight to "main" when refs/remotes/origin/HEAD is
+# absent, so there is no project.json default_branch step left to assert.
 
 echo ""
 echo "--- BUG 3: coldstart-project.sh initializes valid DuckDB ---"
@@ -486,9 +499,12 @@ HOOKS_BOOTSTRAP_DIR="$REPO_ROOT/hooks"
 assert_dir "$HOOKS_BOOTSTRAP_DIR"
 assert_file "$HOOKS_BOOTSTRAP_DIR/sandbox.py"
 assert_file "$HOOKS_BOOTSTRAP_DIR/sandbox_rules.py"
-# sandbox_rules.py must have the _load_main_repo_root helper
-assert_contains "$HOOKS_BOOTSTRAP_DIR/sandbox_rules.py" "_load_main_repo_root" "_load_main_repo_root helper"
-assert_contains "$HOOKS_BOOTSTRAP_DIR/sandbox_rules.py" "project.json" "reads project.json"
+# The repo-root lookup moved into hooks/repo_root.py, which derives the root
+# from __file__ plus the .git entry instead of reading project.json --
+# SANDBOX_MAIN_REPO_ROOT is a test-only override that cannot lift that
+# derived floor. Assert against the current mechanism, not the removed one.
+assert_contains "$HOOKS_BOOTSTRAP_DIR/sandbox_rules.py" "from hooks.repo_root import" "imports repo-root resolver from hooks/repo_root.py"
+assert_contains "$HOOKS_BOOTSTRAP_DIR/repo_root.py" "def resolve_main_repo_root" "repo_root.py defines resolve_main_repo_root"
 # sandbox.py must use timezone-aware datetime (not deprecated utcnow)
 assert_contains "$HOOKS_BOOTSTRAP_DIR/sandbox.py" "timezone.utc" "uses timezone-aware datetime"
 assert_not_contains "$HOOKS_BOOTSTRAP_DIR/sandbox.py" "utcnow()" "no deprecated utcnow()"
@@ -584,7 +600,7 @@ CS_TMP="$RUN_TMP/coldstart-guard-test"
 CS_HOME="$RUN_TMP/coldstart-guard-home"
 mkdir -p "$CS_TMP" "$CS_HOME"
 git -C "$CS_TMP" init -q 2>&1 || true
-CS_OUT=$(cd /tmp && HOME="$CS_HOME" COLDSTART_STATE_ROOT="$CS_HOME" PATH="/usr/bin:/bin:/usr/local/bin" bash "$REPO_ROOT/scripts/coldstart-project.sh" "$CS_TMP" coldstart-guard --language python 2>&1) || true
+CS_OUT=$(cd /tmp && HOME="$CS_HOME" COLDSTART_STATE_ROOT="$CS_HOME" PATH="$MIN_PATH" bash "$REPO_ROOT/scripts/coldstart-project.sh" "$CS_TMP" coldstart-guard --language python 2>&1) || true
 CS_SENTINEL="$CS_HOME/.coldstart-guard-state/project.json"
 if [[ -f "$CS_SENTINEL" ]]; then
   CS_PORT=$(python3 -c "import json; print(json.load(open('$CS_SENTINEL')).get('dashboard_port','MISSING'))" 2>&1 || echo ERROR)
@@ -620,11 +636,12 @@ fi
 
 echo ""
 echo "--- PORTABILITY: repo-resolve.sh resolution order ---"
-# Gate 2: source from a stub project with project.json repo="test/proj"
+# Gate 2: source from a stub project with config.json repo="test/proj" --
+# _resolve_repo reads .autonomous-team/config.json, not project.json.
 GATE2_TMP="$(mktemp -d)"
 mkdir -p "$GATE2_TMP/scripts/lib" "$GATE2_TMP/.autonomous-team"
 cp "$REPO_RESOLVE_SRC" "$GATE2_TMP/scripts/lib/repo-resolve.sh"
-echo '{"repo":"test/proj"}' > "$GATE2_TMP/.autonomous-team/project.json"
+echo '{"repo":"test/proj"}' > "$GATE2_TMP/.autonomous-team/config.json"
 GATE2_RUNNER="$GATE2_TMP/runner.sh"
 printf '#!/usr/bin/env bash\nsource "$(dirname "$0")/scripts/lib/repo-resolve.sh"\n_resolve_repo\n' > "$GATE2_RUNNER"
 chmod +x "$GATE2_RUNNER"
@@ -964,7 +981,7 @@ I5_TMP_REPO="$RUN_TMP/i5-test-repo"
 I5_HOME="$RUN_TMP/i5-test-home"
 mkdir -p "$I5_TMP_REPO" "$I5_HOME"
 git -C "$I5_TMP_REPO" init -q
-I5_OUT=$(cd /tmp && HOME="$I5_HOME" COLDSTART_STATE_ROOT="$I5_HOME" PATH="/usr/bin:/bin:/usr/local/bin" bash "$COLDSTART_SH" "$I5_TMP_REPO" i5test --language python 2>&1) || true
+I5_OUT=$(cd /tmp && HOME="$I5_HOME" COLDSTART_STATE_ROOT="$I5_HOME" PATH="$MIN_PATH" bash "$COLDSTART_SH" "$I5_TMP_REPO" i5test --language python 2>&1) || true
 I5_STATE="$I5_HOME/.i5test-state"
 if [[ -f "$I5_STATE/agent-feed.jsonl" ]]; then
   pass "I5: coldstart creates agent-feed.jsonl"
