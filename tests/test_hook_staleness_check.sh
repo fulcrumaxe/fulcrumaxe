@@ -56,6 +56,9 @@ set -uo pipefail
 if [[ "${1:-}" == "api" ]]; then
   path="${2:-}"
   if [[ "$path" == *"/git/trees/main?recursive=true" ]]; then
+    if [[ "${FAKE_GH_SLEEP_TREE:-0}" != "0" ]]; then
+      sleep "${FAKE_GH_SLEEP_TREE}"
+    fi
     [[ "${FAKE_GH_TREE_FAIL:-0}" == "1" ]] && { echo "fake gh: simulated failure" >&2; exit 1; }
     cat "$FAKE_GH_TREE_JSON"
     exit 0
@@ -68,6 +71,9 @@ if [[ "${1:-}" == "api" ]]; then
     exit 1
   fi
   if [[ "$path" == *"/commits?path="* ]]; then
+    if [[ "${FAKE_GH_SLEEP_COMMITS:-0}" != "0" ]]; then
+      sleep "${FAKE_GH_SLEEP_COMMITS}"
+    fi
     encoded="${path#*commits?path=}"
     encoded="${encoded%%&*}"
     commits_file="${FAKE_GH_COMMITS_DIR:-/nonexistent}/${encoded//\//_}.json"
@@ -76,6 +82,9 @@ if [[ "${1:-}" == "api" ]]; then
     exit 0
   fi
   if [[ "$path" == *"/commits/"* ]]; then
+    if [[ "${FAKE_GH_SLEEP_COMMIT:-0}" != "0" ]]; then
+      sleep "${FAKE_GH_SLEEP_COMMIT}"
+    fi
     sha="${path##*/}"
     commit_file="${FAKE_GH_COMMIT_DIR:-/nonexistent}/$sha.json"
     if [[ -f "$commit_file" ]]; then cat "$commit_file"; exit 0; fi
@@ -95,6 +104,12 @@ run_staleness() {
   PATH="$FAKE_BIN:$PATH" \
     HOOK_STALENESS_CHECK_ROOT="$1" \
     HOOK_STALENESS_HOME="$2" \
+    FAKE_GH_SLEEP_TREE="${FAKE_GH_SLEEP_TREE:-0}" \
+    FAKE_GH_SLEEP_COMMITS="${FAKE_GH_SLEEP_COMMITS:-0}" \
+    FAKE_GH_SLEEP_COMMIT="${FAKE_GH_SLEEP_COMMIT:-0}" \
+    HOOK_STALENESS_GH_API_TIMEOUT="${HOOK_STALENESS_GH_API_TIMEOUT:-20}" \
+    HOOK_STALENESS_SHARED_LIB_TIMEOUT="${HOOK_STALENESS_SHARED_LIB_TIMEOUT:-30}" \
+    HOOK_STALENESS_BUDGET_SECONDS="${HOOK_STALENESS_BUDGET_SECONDS:-60}" \
     HOOK_STALENESS_SHARED_LIB_SCRIPT="$SHARED_LIB" \
     FAKE_GH_TREE_JSON="${FAKE_GH_TREE_JSON:-}" \
     FAKE_GH_BLOBS_DIR="${FAKE_GH_BLOBS_DIR:-}" \
@@ -287,6 +302,91 @@ RC_D=$?
   && echo "$OUT_D" | grep -q "UNREACHABLE" \
   && ! echo "$OUT_D" | grep -q "CURRENT"
 check "T4 code-plane unreachable -> exit0, UNREACHABLE, never a false CURRENT" $?
+
+# ---------------------------------------------------------------------------
+# T5: the code-plane read hangs (fake `gh` sleeps 30s on the recursive tree
+# listing that check-shared-lib-staleness.sh issues). `gh` has no timeout of
+# its own, so without a wrapper this would hang the whole script. The
+# HOOK_STALENESS_SHARED_LIB_TIMEOUT wrapper around that invocation (line 285
+# in the reviewed diff) kills it well before the fake sleep would return,
+# and the script degrades to a single UNREACHABLE report instead — never a
+# false CURRENT, and it returns in well under the fake gh's 30s sleep.
+# ---------------------------------------------------------------------------
+ROOT_E="$ROOT_A"
+START_T5=$(date +%s)
+OUT_E="$(FAKE_GH_SLEEP_TREE=30 \
+  HOOK_STALENESS_GH_API_TIMEOUT=1 \
+  HOOK_STALENESS_SHARED_LIB_TIMEOUT=1 \
+  HOOK_STALENESS_BUDGET_SECONDS=1 \
+  run_staleness "$ROOT_E" "$TMP_ROOT/empty-home")"
+RC_E=$?
+ELAPSED_T5=$(( $(date +%s) - START_T5 ))
+[ "$RC_E" = "0" ] \
+  && [ "$ELAPSED_T5" -lt 15 ] \
+  && echo "$OUT_E" | grep -q "HOOK-STALENESS: UNREACHABLE" \
+  && echo "$OUT_E" | grep -q "did not complete within" \
+  && ! echo "$OUT_E" | grep -q "CURRENT"
+check "T5 code-plane read hangs (fake gh sleeps 30s) -> exit0 in well under the sleep, UNREACHABLE, never a false CURRENT" $?
+
+# ---------------------------------------------------------------------------
+# T6: a single per-commit `gh api .../commits/<sha>` call hangs inside the
+# per-stale-file commit walk (line 213 in the reviewed diff — the call that
+# can run up to HOOK_STALENESS_MAX_COMMITS times for one stale file). The
+# per-call timeout kills it well before the fake gh's 30s sleep returns, so
+# the walk stops for this file instead of hanging; foo.py is still reported
+# stale (never promoted to a false CURRENT), and the whole run finishes
+# quickly.
+# ---------------------------------------------------------------------------
+ROOT_F="$TMP_ROOT/f"
+write_hooks_package "$ROOT_F/hooks" "old"
+write_settings "$ROOT_F" "foo.py"
+
+SHA_INIT_F="$(git hash-object "$ROOT_F/hooks/__init__.py")"
+SHA_BAR_F="$(git hash-object "$ROOT_F/hooks/bar_lib.py")"
+
+TREE_F="$TMP_ROOT/tree-f.json"
+write_tree_json "$TREE_F" \
+  "hooks/__init__.py=$SHA_INIT_F" \
+  "hooks/foo.py=$SHA_FOO_NEW" \
+  "hooks/bar_lib.py=$SHA_BAR_F"
+
+COMMITS_DIR_F="$TMP_ROOT/commits-list-f"
+mkdir -p "$COMMITS_DIR_F"
+write_commits_list_json "$COMMITS_DIR_F/hooks_foo.py.json" "$ONE_COMMIT_SHA"
+
+START_T6=$(date +%s)
+OUT_F="$(FAKE_GH_TREE_JSON="$TREE_F" FAKE_GH_BLOBS_DIR="$BLOBS_B" \
+  FAKE_GH_COMMITS_DIR="$COMMITS_DIR_F" FAKE_GH_SLEEP_COMMIT=30 \
+  HOOK_STALENESS_GH_API_TIMEOUT=1 \
+  HOOK_STALENESS_SHARED_LIB_TIMEOUT=5 \
+  HOOK_STALENESS_BUDGET_SECONDS=5 \
+  run_staleness "$ROOT_F" "$TMP_ROOT/empty-home")"
+RC_F=$?
+ELAPSED_T6=$(( $(date +%s) - START_T6 ))
+[ "$RC_F" = "0" ] \
+  && [ "$ELAPSED_T6" -lt 15 ] \
+  && echo "$OUT_F" | grep -q "STALE.*hooks/foo.py  behind=" \
+  && echo "$OUT_F" | grep -q "CURRENT.*hooks/bar_lib.py" \
+  && ! echo "$OUT_F" | grep -q "hooks/foo.py.*CURRENT"
+check "T6 per-commit gh api call hangs (fake gh sleeps 30s) -> exit0 in well under the sleep, foo.py stays STALE not a false CURRENT" $?
+
+# ---------------------------------------------------------------------------
+# T7: the overall wall-clock budget is already exhausted
+# (HOOK_STALENESS_BUDGET_SECONDS=0) before the per-stale-file commit walk
+# starts. Deterministic — no sleep or timing race needed to prove it: the
+# walk is skipped outright with an explicit degrade note, and foo.py is
+# still reported stale, never promoted to a false CURRENT.
+# ---------------------------------------------------------------------------
+OUT_G="$(FAKE_GH_TREE_JSON="$TREE_B" FAKE_GH_BLOBS_DIR="$BLOBS_B" \
+  FAKE_GH_COMMITS_DIR="$COMMITS_DIR_B" FAKE_GH_COMMIT_DIR="$COMMIT_DIR_B" \
+  HOOK_STALENESS_BUDGET_SECONDS=0 \
+  run_staleness "$ROOT_B" "$TMP_ROOT/empty-home")"
+RC_G=$?
+[ "$RC_G" = "0" ] \
+  && echo "$OUT_G" | grep -q "STALE.*hooks/foo.py  behind=unknown (skipped: wall-clock budget" \
+  && echo "$OUT_G" | grep -q "CURRENT.*hooks/bar_lib.py" \
+  && ! echo "$OUT_G" | grep -q "hooks/foo.py.*CURRENT"
+check "T7 wall-clock budget already exhausted -> commit walk skipped outright, behind=unknown, never a false CURRENT" $?
 
 # ---------------------------------------------------------------------------
 # Summary

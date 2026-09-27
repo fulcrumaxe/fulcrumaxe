@@ -49,6 +49,19 @@
 # ~/.claude/settings.json — it is wired into scripts/start-the-day.sh
 # instead. It never installs or registers anything; it only reads.
 #
+# `gh` has no request timeout of its own and hangs indefinitely against a
+# black-holed network, so every network-touching call — each `gh api` call
+# in the per-stale-file commit walk, and the check-shared-lib-staleness.sh
+# invocation this script reuses for the code-plane read — is wrapped in
+# `timeout --kill-after=5s`, matching the import-closure subprocess's own
+# pattern above. On top of the per-call timeouts, the whole per-stale-file
+# commit walk is bounded by an overall wall-clock budget
+# (HOOK_STALENESS_BUDGET_SECONDS), so a run with many stale files cannot sum
+# per-call timeouts into a long stall. A timeout or an exhausted budget
+# degrades that one file (or the whole run, for the shared-lib call) to a
+# `behind=unknown` / `UNREACHABLE` line — never a false CURRENT — and this
+# script still always exits 0.
+#
 # Usage:
 #   bash scripts/hook-staleness-check.sh
 #
@@ -68,6 +81,25 @@
 #   HOOK_STALENESS_MAX_COMMITS    how many commits of code-plane history per
 #                                 stale file to walk before giving up and
 #                                 reporting a lower bound. Defaults to 50.
+#   HOOK_STALENESS_GH_API_TIMEOUT  soft timeout, in seconds, for a single
+#                                 `gh api` call in the per-stale-file commit
+#                                 walk, paired with a 5s --kill-after.
+#                                 Defaults to 20.
+#   HOOK_STALENESS_SHARED_LIB_TIMEOUT  soft timeout, in seconds, for the
+#                                 whole check-shared-lib-staleness.sh
+#                                 invocation, paired with a 5s --kill-after.
+#                                 Defaults to 30.
+#   HOOK_STALENESS_BUDGET_SECONDS  overall wall-clock budget, in seconds,
+#                                 measured from script start, spent on the
+#                                 per-stale-file commit-history walk. Once
+#                                 exhausted, any file still to be walked is
+#                                 reported behind=unknown instead of spending
+#                                 more time on it. Never affects the
+#                                 CURRENT/STALE classification itself, which
+#                                 is decided earlier by the shared-lib
+#                                 content comparison — a slow or unreachable
+#                                 network can only cost detail, never produce
+#                                 a false CURRENT. Defaults to 60.
 
 set -uo pipefail
 
@@ -80,6 +112,21 @@ CHECK_ROOT="${HOOK_STALENESS_CHECK_ROOT:-$LIB_ROOT}"
 SETTINGS_HOME="${HOOK_STALENESS_HOME:-$HOME}"
 SHARED_LIB_SCRIPT="${HOOK_STALENESS_SHARED_LIB_SCRIPT:-$SCRIPT_DIR/check-shared-lib-staleness.sh}"
 MAX_COMMITS="${HOOK_STALENESS_MAX_COMMITS:-50}"
+GH_API_TIMEOUT="${HOOK_STALENESS_GH_API_TIMEOUT:-20}"
+SHARED_LIB_TIMEOUT="${HOOK_STALENESS_SHARED_LIB_TIMEOUT:-30}"
+BUDGET_SECONDS="${HOOK_STALENESS_BUDGET_SECONDS:-60}"
+START_EPOCH="$(date +%s)"
+
+# _budget_exceeded — true once HOOK_STALENESS_BUDGET_SECONDS have elapsed
+# since script start. Checked before each network-touching step of the
+# per-stale-file commit walk so a black-holed network degrades to a bounded
+# report instead of many stale files each burning their own full per-call
+# timeout in turn.
+_budget_exceeded() {
+  local elapsed
+  elapsed=$(( $(date +%s) - START_EPOCH ))
+  [[ $elapsed -ge $BUDGET_SECONDS ]]
+}
 
 # _registered_names — hooks/*.py basenames referenced by a "command" string
 # in any of the three settings files, one per line, sorted+unique. Mirrors
@@ -171,6 +218,12 @@ for k in sorted(sys.modules):
 # path since the local blob last matched, and their subject lines.
 _report_stale() {
   local code_repo="$1" rel_path="$2" local_path local_sha
+
+  if _budget_exceeded; then
+    echo "STALE      ${rel_path}  behind=unknown (skipped: wall-clock budget of ${BUDGET_SECONDS}s exceeded)"
+    return
+  fi
+
   local_path="$CHECK_ROOT/$rel_path"
 
   if [[ ! -f "$local_path" ]]; then
@@ -184,7 +237,7 @@ _report_stale() {
   fi
 
   local commits_json
-  if ! commits_json="$(gh api "repos/${code_repo}/commits?path=${rel_path}&per_page=${MAX_COMMITS}" 2>&1)"; then
+  if ! commits_json="$(timeout --kill-after=5s "$GH_API_TIMEOUT" gh api "repos/${code_repo}/commits?path=${rel_path}&per_page=${MAX_COMMITS}" 2>&1)"; then
     echo "STALE      ${rel_path}  behind=unknown (could not list code-plane commits for this path)"
     return
   fi
@@ -206,11 +259,15 @@ for c in data:
     return
   fi
 
-  local behind=0 matched=0 sha commit_json blob_sha subject
+  local behind=0 matched=0 sha commit_json blob_sha subject budget_hit=0
   local -a subjects=()
   while IFS= read -r sha; do
     [[ -z "$sha" ]] && continue
-    if ! commit_json="$(gh api "repos/${code_repo}/commits/${sha}" 2>&1)"; then
+    if _budget_exceeded; then
+      budget_hit=1
+      break
+    fi
+    if ! commit_json="$(timeout --kill-after=5s "$GH_API_TIMEOUT" gh api "repos/${code_repo}/commits/${sha}" 2>&1)"; then
       break
     fi
     blob_sha="$(printf '%s' "$commit_json" | python3 -c '
@@ -247,7 +304,9 @@ print(msg.splitlines()[0] if msg.splitlines() else "")
   for s in "${subjects[@]}"; do
     echo "             - ${s}"
   done
-  if [[ $matched -eq 0 && $behind -gt 0 ]]; then
+  if [[ $budget_hit -eq 1 ]]; then
+    echo "             (stopped: wall-clock budget of ${BUDGET_SECONDS}s exceeded after ${behind} commit(s) checked — behind count is a lower bound)"
+  elif [[ $matched -eq 0 && $behind -gt 0 ]]; then
     echo "             (local content not found within the last ${MAX_COMMITS} commits checked for this path — behind count is a lower bound)"
   fi
 }
@@ -281,8 +340,16 @@ main() {
     done < <(_import_closure_names "$name")
   done <<<"$direct"
 
-  local shared_out
-  shared_out="$(CHECK_SHARED_LIB_STALENESS_ROOT="$CHECK_ROOT" bash "$SHARED_LIB_SCRIPT" hooks 2>&1)"
+  local shared_out shared_rc
+  shared_out="$(CHECK_SHARED_LIB_STALENESS_ROOT="$CHECK_ROOT" timeout --kill-after=5s "$SHARED_LIB_TIMEOUT" bash "$SHARED_LIB_SCRIPT" hooks 2>&1)"
+  shared_rc=$?
+
+  if [[ $shared_rc -ne 0 ]]; then
+    echo "HOOK-STALENESS: UNREACHABLE reason=\"shared-lib staleness check did not complete within ${SHARED_LIB_TIMEOUT}s (exit ${shared_rc})\""
+    echo ""
+    echo "HOOK-STALENESS SUMMARY host=$(hostname 2>/dev/null || echo unknown) registered=${#scope[@]} current=0 stale=0"
+    exit 0
+  fi
 
   if printf '%s\n' "$shared_out" | grep -q "^STALENESS: UNREACHABLE"; then
     echo "HOOK-STALENESS: UNREACHABLE reason=\"code-plane read failed: $(printf '%s\n' "$shared_out" | grep "^STALENESS: UNREACHABLE" | head -1)\""
