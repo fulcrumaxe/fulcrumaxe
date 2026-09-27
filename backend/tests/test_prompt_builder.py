@@ -439,6 +439,26 @@ class TestUnprovisionedPrAmendReason:
         assert "checkout" in result.lower()
         assert "always-blocked" in result.lower()
 
+    def test_route_commands_are_delimited_for_verbatim_extraction(self):
+        # D#2546: an e2e test needs to pull the actual fetch commands out of
+        # real rendered stdout and execute them, without regexing prose. The
+        # two route commands must sit between a stable marker pair, in order,
+        # with nothing else on the marker lines themselves.
+        sp = _make_prompt(
+            worktree_path=None,
+            worktree_unprovisioned=True,
+            worktree_unprovisioned_reason="pr_amend",
+            pr=167,
+        )
+        result = sp.render()
+        lines = result.splitlines()
+        begin = lines.index("<!-- PR_AMEND_ROUTE:BEGIN -->")
+        end = lines.index("<!-- PR_AMEND_ROUTE:END -->")
+        assert begin < end
+        route_lines = lines[begin + 1:end]
+        assert any("_resolve_code_repo" in line for line in route_lines)
+        assert any("git fetch" in line and "pull/167/head" in line for line in route_lines)
+
     def test_handles_missing_pr_number_gracefully(self):
         sp = _make_prompt(
             worktree_path=None,
