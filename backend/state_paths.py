@@ -34,7 +34,7 @@ Resolution timing (D#1810)
 ---------------------------
 ``STATE_DIR``, ``STATS_DB``, ``STATE_DB``, ``AUDIT_LOG``,
 ``CIRCUIT_BREAKER_HISTORY``, ``BLACKBOARD_DIR``, ``EXTERNAL_INTAKE_BASELINES``,
-``PR_HEAD_BASELINES`` and ``PARITY_HISTORY`` are **not** module-level constants — they are resolved
+``PR_HEAD_BASELINES``, ``AGENT_RETROS`` and ``PARITY_HISTORY`` are **not** module-level constants — they are resolved
 on every attribute access via :pep:`562` module ``__getattr__``. Binding one
 of them to a name at import time (``from backend.state_paths import STATS_DB``
 at module scope, or ``X = state_paths.STATS_DB`` at module scope) freezes it
@@ -242,6 +242,21 @@ def _pr_head_baselines() -> Path:
     return _state_dir("PR_HEAD_BASELINES") / "pr-head-baselines.json"
 
 
+def _agent_retros() -> Path:
+    """Self-observe retro log (backend/agent_retros.py, scripts/lib/self-observe-gate.sh).
+
+    D#2532: this used to be templated as ``<repo_root>/.autonomous-team/agent-retros.jsonl``
+    by each caller individually — a path inside the repo tree, which a worktree-isolated
+    executor cannot write to (the sandbox hook blocks any write outside the agent's own
+    worktree). Moving it under STATE_DIR, alongside every other piece of mutable runtime
+    state, is what backend/agent_retros.py and self-observe-gate.sh now resolve through
+    instead of templating a path of their own. The ``AF_RETROS_FILE`` env override stays
+    the caller's job (same precedent as ``STATS_DB_PATH`` for ``_stats_db()`` above) —
+    this resolver only supplies the default.
+    """
+    return _state_dir("AGENT_RETROS") / "agent-retros.jsonl"
+
+
 def _parity_history() -> Path:
     """Append-only parity-experiment run history (parity_experiment.py).
 
@@ -264,6 +279,7 @@ _RESOLVERS = {
     "BLACKBOARD_DIR": _blackboard_dir,
     "EXTERNAL_INTAKE_BASELINES": _external_intake_baselines,
     "PR_HEAD_BASELINES": _pr_head_baselines,
+    "AGENT_RETROS": _agent_retros,
     "PARITY_HISTORY": _parity_history,
 }
 

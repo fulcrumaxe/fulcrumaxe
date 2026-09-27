@@ -587,24 +587,43 @@ def _errors_from_snapshot(snapshot: dict | None) -> list[str]:
 
 
 def _retros_summary() -> dict:
-    """Load recent retro summary from agent-retros.jsonl."""
-    retros_path = Path(".autonomous-team/agent-retros.jsonl")
-    if not retros_path.exists():
-        return {"total": 0, "recent_24h": 0, "corrected": 0, "shadow": 0, "top_classifiers": []}
-    entries = []
+    """Load recent retro summary from agent-retros.jsonl.
+
+    Reads both the legacy in-repo path (rows written before D#2532 moved the
+    default write target into $AUTONOMOUS_TEAM_STATE_DIR — production state
+    with no cleanup path, so a reader that ignores it loses history) and the
+    current backend.state_paths.AGENT_RETROS location. Every legacy row
+    predates every new-location row (the cutover is a single point in time),
+    so concatenating legacy-then-current keeps entries in chronological order.
+    """
+    from backend import state_paths  # noqa: PLC0415
+
+    paths = [Path(".autonomous-team/agent-retros.jsonl")]
     try:
-        from datetime import datetime, timedelta, timezone
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
-        with open(retros_path) as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entries.append(json.loads(line))
-                except json.JSONDecodeError:
-                    pass
-    except OSError:
+        new_path = state_paths.AGENT_RETROS
+        if new_path.resolve() != paths[0].resolve():
+            paths.append(new_path)
+    except Exception:
+        pass
+
+    entries = []
+    for retros_path in paths:
+        if not retros_path.exists():
+            continue
+        try:
+            with open(retros_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entries.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        pass
+        except OSError:
+            continue
+
+    if not entries:
         return {"total": 0, "recent_24h": 0, "corrected": 0, "shadow": 0, "top_classifiers": []}
 
     total = len(entries)

@@ -224,7 +224,7 @@
     "scripts/lib/run-analyst-sweep.sh": "138f5d286622dae672e54e4e7e34bfc30a5559d33ed8ca72c6bfb58af7641ee3",
     "scripts/lib/sanitize-echo.sh": "354da6bbef4c3d7f0e7b4e8481930d810e19e9e60b48aae60e4be09edc41bfb3",
     "scripts/lib/security-trigger.sh": "97cb941f4c928161475753054ad3dc7f72f81a8aed8b112a064eb6ff80661bde",
-    "scripts/lib/self-observe-gate.sh": "3ae54ae3a7f69a4ebd3e30436e6d2f121d0e4d928224ebf6327a7c6ddf968a6e",
+    "scripts/lib/self-observe-gate.sh": "82e103e24e27d49b1f463bbd8ecb1f813166d84b05b3291af1039aaef177c778",
     "scripts/lib/spec-ready-gate.sh": "cd4e2be3ea92cfd450d8986f8a49b167dc421fea149dd9aa4f5ed4f2e20786ec",
     "scripts/lib/stuck-pr-detect.sh": "5ad6fdaa5891b71a38e614aeac85167789fe2374571f158d2c0264b6da8322ec",
     "scripts/lib/subshell-mutation-scan.sh": "3adb7615f9cf829d3b7d7bb7454965fc7676f4986b2793bb8f7acdb8adeac64c",

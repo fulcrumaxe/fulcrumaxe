@@ -171,10 +171,19 @@ echo "--- Test 5: checkout path is interpolated, not hardcoded ---"
 CHECKOUT_PATH_RE='/home/(agent|jp)'
 source "$REPO_ROOT/scripts/lib/repo-root-resolve.sh"
 SELF_OBSERVE_ROOT="$(_resolve_repo_root)"
-
-# Positive half: interpolation actually happened. Without this, stripping the
-# root below would make the negative half vacuous for an empty block.
-assert_contains "T5a: shadow block interpolates this checkout" "$SHADOW_BLOCK" "$SELF_OBSERVE_ROOT"
+# D#2532: run_analyst.py / agent_retros.py no longer get the caller's raw
+# $REPO_ROOT interpolated into them (see Test 7 below). The active block
+# still legitimately contains the raw root once, via the budget.py check
+# (untouched, out of scope for D#2532) — but the shadow block no longer has
+# ANY site where the raw root appears, only its slug form ("/" -> "-"), via
+# the transcript-discovery line. So the two variants need different positive
+# checks now: shadow against the slug (needle prefixed with
+# ".claude/projects/", same shape as T3a — a bare needle starting with "-",
+# which a slug always is, would be parsed as a grep flag by assert_contains's
+# `grep -qF "$needle"`, which has no `--` before the pattern unlike
+# assert_not_contains right above it; not fixed here, to keep this change
+# scoped to the D#2532 templating fix), active against the raw root as before.
+assert_contains "T5a: shadow block interpolates this checkout (slug)" "$SHADOW_BLOCK" ".claude/projects/$EXPECTED_SLUG"
 assert_contains "T5b: active block interpolates this checkout" "$ACTIVE_BLOCK" "$SELF_OBSERVE_ROOT"
 
 # Negative half: with the legitimately-interpolated root removed, nothing that
@@ -238,27 +247,57 @@ else
   fail "T6c-active: CLASSIFIER= assignment precedes --classifier use" "assign_line=$ACTIVE_CLASSIFIER_ASSIGN_LINE use_line=$ACTIVE_CLASSIFIER_USE_LINE"
 fi
 
-# ── Test 7: generated commands interpolate the real $REPO_ROOT and point at
-# existing files ────────────────────────────────────────────────────────────
-# Checking only "does this file exist on disk", independent of the generated
-# block text, does not test the generator at all: a mutation to the active
-# variant's budget.py path interpolation (e.g. dropping the __REPO_ROOT__
-# substitution for that one line, or hardcoding a stale path) leaves
-# backend/budget.py sitting on disk exactly as before, so the old
-# disk-existence-only check passed regardless. Assert the actual generated
-# text contains the real interpolated path, per script per variant, and keep
-# the disk-existence check as a secondary sanity check (both must hold).
-echo "--- Test 7: generated blocks interpolate real \$REPO_ROOT paths that exist on disk ---"
+# ── Test 7: run_analyst.py / agent_retros.py resolve via AGENT_REPO_ROOT at
+# RUN time, not the caller's generation-time $REPO_ROOT (D#2532) ───────────
+# Before D#2532, these two lines DID get the caller's raw $REPO_ROOT
+# interpolated in, same as budget.py below — and that is exactly what made
+# the retro write sandbox-blocked from inside a worktree-isolated executor:
+# hooks/sandbox_rules.py's deny-by-default unenumerated-write scan flags any
+# absolute path outside the agent's own worktree, and a caller-interpolated
+# $REPO_ROOT (the MAIN checkout, not the worktree) is exactly that. The fix
+# is for each block to compute AGENT_REPO_ROOT live, via `git rev-parse
+# --show-toplevel` run in the AGENT's own shell (a read-only git verb,
+# always allowed) — which resolves to the worktree's own root for a
+# worktree-isolated executor. Checking only "does this file exist on disk",
+# independent of the generated block text, would not test the generator at
+# all — assert the actual generated text references $AGENT_REPO_ROOT (not a
+# caller-baked absolute path), and keep the disk-existence check as a
+# secondary sanity check.
+echo "--- Test 7: run_analyst.py / agent_retros.py resolve via \$AGENT_REPO_ROOT, not \$REPO_ROOT ---"
 
 for f in backend/run_analyst.py backend/agent_retros.py; do
-  assert_contains "T7-shadow: generated shadow block interpolates \$REPO_ROOT/$f" "$SHADOW_BLOCK" "$REPO_ROOT/$f"
-  assert_contains "T7-active: generated active block interpolates \$REPO_ROOT/$f" "$ACTIVE_BLOCK" "$REPO_ROOT/$f"
+  assert_contains "T7-shadow: generated shadow block references \$AGENT_REPO_ROOT/$f" "$SHADOW_BLOCK" "AGENT_REPO_ROOT/$f"
+  assert_contains "T7-active: generated active block references \$AGENT_REPO_ROOT/$f" "$ACTIVE_BLOCK" "AGENT_REPO_ROOT/$f"
+  assert_not_contains "T7-shadow: generated shadow block does NOT hardcode caller's \$REPO_ROOT/$f" "$SHADOW_BLOCK" "$REPO_ROOT/$f"
+  assert_not_contains "T7-active: generated active block does NOT hardcode caller's \$REPO_ROOT/$f" "$ACTIVE_BLOCK" "$REPO_ROOT/$f"
   if [[ -f "$REPO_ROOT/$f" ]]; then
     pass "T7: $f exists on disk"
   else
     fail "T7: $f exists on disk" "not found at $REPO_ROOT/$f"
   fi
 done
+
+# AGENT_REPO_ROOT must be an actual ASSIGNMENT computed via `git rev-parse
+# --show-toplevel`, not just mentioned — same shape as the T6b CLASSIFIER=
+# check above, and for the same reason (a bare *use* with no assignment is
+# an unbound variable under `set -u`, or silently resolves to whatever the
+# caller's environment happens to leave in an unset var).
+SHADOW_AGENT_ROOT_ASSIGN_LINE=$(echo "$SHADOW_FENCE_FOR_T6B" | grep -nE '^\s*AGENT_REPO_ROOT=.*git rev-parse --show-toplevel' | head -1 | cut -d: -f1)
+ACTIVE_AGENT_ROOT_ASSIGN_LINE=$(echo "$ACTIVE_FENCE_FOR_T6B" | grep -nE '^\s*AGENT_REPO_ROOT=.*git rev-parse --show-toplevel' | head -1 | cut -d: -f1)
+SHADOW_AGENT_ROOT_USE_LINE=$(echo "$SHADOW_FENCE_FOR_T6B" | grep -nF 'AGENT_REPO_ROOT/backend/run_analyst.py' | head -1 | cut -d: -f1)
+ACTIVE_AGENT_ROOT_USE_LINE=$(echo "$ACTIVE_FENCE_FOR_T6B" | grep -nF 'AGENT_REPO_ROOT/backend/run_analyst.py' | head -1 | cut -d: -f1)
+
+if [[ -n "$SHADOW_AGENT_ROOT_ASSIGN_LINE" && -n "$SHADOW_AGENT_ROOT_USE_LINE" && "$SHADOW_AGENT_ROOT_ASSIGN_LINE" -lt "$SHADOW_AGENT_ROOT_USE_LINE" ]]; then
+  pass "T7b-shadow: AGENT_REPO_ROOT= (via git rev-parse --show-toplevel) precedes its use"
+else
+  fail "T7b-shadow: AGENT_REPO_ROOT= (via git rev-parse --show-toplevel) precedes its use" "assign_line=$SHADOW_AGENT_ROOT_ASSIGN_LINE use_line=$SHADOW_AGENT_ROOT_USE_LINE"
+fi
+
+if [[ -n "$ACTIVE_AGENT_ROOT_ASSIGN_LINE" && -n "$ACTIVE_AGENT_ROOT_USE_LINE" && "$ACTIVE_AGENT_ROOT_ASSIGN_LINE" -lt "$ACTIVE_AGENT_ROOT_USE_LINE" ]]; then
+  pass "T7b-active: AGENT_REPO_ROOT= (via git rev-parse --show-toplevel) precedes its use"
+else
+  fail "T7b-active: AGENT_REPO_ROOT= (via git rev-parse --show-toplevel) precedes its use" "assign_line=$ACTIVE_AGENT_ROOT_ASSIGN_LINE use_line=$ACTIVE_AGENT_ROOT_USE_LINE"
+fi
 
 # backend/budget.py is only referenced in the active variant (the BUDGET_PCT
 # check) — shadow mode never calls it.
