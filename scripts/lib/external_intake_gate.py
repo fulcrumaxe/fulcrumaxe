@@ -214,7 +214,24 @@ def _load_config(config_path: Optional[Path] = None) -> dict:
 #: MUST always be in the trust set (TA Risk 1) — even if the collaborators API
 #: call fails or returns an empty list. Resolved from config/env (D#1905),
 #: not hard-coded — see _resolve_bot_account() above.
-BOT_ACCOUNT = _resolve_bot_account()
+#:
+#: D#2618: resolved lazily, at first use, instead of at import time. Nothing
+#: in the trust set is derived until something actually asks for it, so a
+#: clean checkout with neither the env var nor .autonomous-team/config.json
+#: can still import this module (and the two that depend on it) — the raise
+#: in _resolve_bot_account() still fires, just on first access instead of on
+#: `import`. `BOT_ACCOUNT` stays readable as a plain module attribute for
+#: existing callers and tests via the module-level __getattr__ (PEP 562)
+#: below; it is never cached, so an env/config change between calls is
+#: always seen and a monkeypatch in a test always takes effect.
+def _bot_account() -> str:
+    return _resolve_bot_account()
+
+
+def __getattr__(name: str):  # PEP 562 — lazy module attribute
+    if name == "BOT_ACCOUNT":
+        return _bot_account()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _default_cache_path() -> Path:
@@ -332,7 +349,7 @@ def resolve_allowlist(
     boss = cfg.get("boss_github_username") or ""
     maintainer_allowlist = set(cfg.get("maintainer_allowlist") or [])
 
-    base = {BOT_ACCOUNT} | maintainer_allowlist
+    base = {_bot_account()} | maintainer_allowlist
     if boss:
         base.add(boss)
 
@@ -452,7 +469,7 @@ def resolve_trust_allowlist(
     boss = cfg.get("boss_github_username") or ""
     maintainer_allowlist = set(cfg.get("maintainer_allowlist") or [])
 
-    base = {BOT_ACCOUNT} | maintainer_allowlist
+    base = {_bot_account()} | maintainer_allowlist
     if boss:
         base.add(boss)
 
@@ -552,7 +569,7 @@ def resolve_allowlist_ids(
     #    deadlocks the loop). ABSENT -> contribute nothing, log loudly.
     #    UNKNOWN -> last-known-good ID from the trust store, log loudly.
     #    Never a login fallback, never persisted as a login-keyed result.
-    bot_login = BOT_ACCOUNT
+    bot_login = _bot_account()
     bot_id = cfg.get("bot_account_id")
     if not bot_id:
         res = resolve_fn(bot_login)
