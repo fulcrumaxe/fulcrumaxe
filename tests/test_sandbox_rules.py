@@ -45,6 +45,12 @@ from hooks.sandbox_rules import (
     is_worktree,
     resolve_effective_cwd,
     _worktree_root_from_cwd,
+    # D#2483 PR-b: appended here (not alphabetized into the block above) so
+    # this diff doesn't shift every subsequent line — ruff-known-findings.txt
+    # keys the F811 finding on _worktree_root_from_cwd's line 47 by exact
+    # message text, line number included.
+    _DIAL_INVOCATION_PROTECTED_SUFFIXES,
+    _DIAL_WRITE_PROTECTED_SUFFIXES,
 )
 import hooks.sandbox_rules as sandbox_rules
 from testsupport.fixture_paths import FIXTURE_HOME, FIXTURE_MAIN_REPO
@@ -5097,3 +5103,147 @@ class TestD2483PR171Round4Site2OnlyReachable:
             f"expected site 2's unenumerated-write reason, got {d.reason!r} "
             "-- this no longer isolates site 2 from site 1"
         )
+
+
+# ---------------------------------------------------------------------------
+# D#2483 PR-b -- the tuple split. _DIAL_PROTECTED_SUFFIXES used to be
+# consulted, unmodified, by both classify_bash()'s Bash-operand scan and
+# classify_path_write()'s Edit/Write check. Blocking provision-dial-
+# allowlist.sh as a Bash operand (SEC-1) is correct; blocking an Edit/Write to
+# a WORKTREE-LOCAL copy of that same script is not -- it froze the script's
+# source against the agents whose job is to fix it. See the module comment
+# above _DIAL_PROTECTED_SUFFIXES in hooks/sandbox_rules.py for the full
+# rationale.
+# ---------------------------------------------------------------------------
+
+
+class TestD2483PRbTupleSplitShape:
+    """Item 8: the tuple is split into an invocation-protected set (Bash
+    operand only) and a write-protected set (Edit/Write only), with no entry
+    lost or duplicated across the split."""
+
+    def test_invocation_protected_is_exactly_the_script(self) -> None:
+        assert _DIAL_INVOCATION_PROTECTED_SUFFIXES == ("provision-dial-allowlist.sh",)
+
+    def test_write_protected_excludes_the_script(self) -> None:
+        assert "provision-dial-allowlist.sh" not in _DIAL_WRITE_PROTECTED_SUFFIXES
+
+    def test_write_protected_keeps_every_live_state_file(self) -> None:
+        for name in (
+            "dial-registry.json",
+            "dial-directive-allowlist.json",
+            "audit.jsonl",
+            "external-intake-baselines.json",
+            ".external-intake-baselines.json.initialized",
+        ):
+            assert name in _DIAL_WRITE_PROTECTED_SUFFIXES
+
+    def test_split_is_a_partition_of_the_original_union(self) -> None:
+        # Item 7 (PR-a) required _DIAL_PROTECTED_SUFFIXES itself untouched by
+        # this Discussion's PR-a; item 8 now splits it for PR-b without
+        # dropping or duplicating any entry.
+        invocation = set(_DIAL_INVOCATION_PROTECTED_SUFFIXES)
+        write = set(_DIAL_WRITE_PROTECTED_SUFFIXES)
+        assert invocation & write == set()
+        assert invocation | write == set(_DIAL_PROTECTED_SUFFIXES)
+
+
+class TestD2483PRbEditWriteNowAllowedForTheScript:
+    """Item 9: an Edit to a worktree-local provision-dial-allowlist.sh is
+    allowed after the split. Watched to go red on the pre-split code, where
+    classify_path_write()'s own _is_dial_protected_path() call consulted the
+    full union and refused this exact case."""
+
+    def test_relative_path_allowed(self) -> None:
+        d = classify_path_write("scripts/provision-dial-allowlist.sh", _WT_CLAUDE)
+        assert d.allow is True, f"expected ALLOW, got reason={d.reason!r}"
+
+    def test_absolute_worktree_local_path_allowed(self) -> None:
+        target = f"{_WT_CLAUDE}/scripts/provision-dial-allowlist.sh"
+        d = classify_path_write(target, _WT_CLAUDE)
+        assert d.allow is True, f"expected ALLOW, got reason={d.reason!r}"
+
+    def test_bare_basename_allowed(self) -> None:
+        d = classify_path_write("provision-dial-allowlist.sh", _WT_CLAUDE)
+        assert d.allow is True, f"expected ALLOW, got reason={d.reason!r}"
+
+    def test_state_files_still_refused_by_classify_path_write(self) -> None:
+        # The narrowing is specific to the script -- every write-protected
+        # entry must still block via the Edit/Write path.
+        for name in _DIAL_WRITE_PROTECTED_SUFFIXES:
+            d = classify_path_write(name, _WT_CLAUDE)
+            assert d.allow is False, f"expected BLOCK for Edit of {name!r}"
+            assert name in d.reason
+
+
+class TestD2483PRbBashInvocationBlockUnaffected:
+    """Item 10: the Bash-invocation block on the script stays refused in both
+    directions -- this is the regression PR-b is most likely to cause, since
+    classify_bash() step 1d (_protected_basename_operand) must keep checking
+    the full union, not the narrowed write-protected set."""
+
+    def test_protected_basename_operand_still_matches_the_script(self) -> None:
+        assert _protected_basename_operand("provision-dial-allowlist.sh") is True
+
+    def test_protected_basename_operand_still_matches_every_state_file(self) -> None:
+        for name in _DIAL_WRITE_PROTECTED_SUFFIXES:
+            assert _protected_basename_operand(name) is True
+
+    def test_direct_invocation_still_blocked(self) -> None:
+        d = classify_bash("bash scripts/provision-dial-allowlist.sh", _WT_CLAUDE)
+        assert d.allow is False
+
+    def test_mention_as_a_read_operand_still_blocked(self) -> None:
+        cmd = f"cat {_WT_CLAUDE}/scripts/provision-dial-allowlist.sh"
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False
+
+    def test_sed_in_place_on_the_script_still_blocked(self) -> None:
+        # The exact D#2483 Spec measurement table row this item guards:
+        # `sed -i s/a/b/ scripts/provision-dial-allowlist.sh` blocked via the
+        # operand scan ("access blocked"), not the write-target scan -- must
+        # be unaffected by classify_path_write() narrowing separately.
+        d = classify_bash("sed -i s/a/b/ scripts/provision-dial-allowlist.sh", _WT_CLAUDE)
+        assert d.allow is False
+
+
+class TestD2483PRbPositiveControl:
+    """Item 11: each new tuple gets its own positive control -- confirm the
+    guard blocks exactly the expected calls and no others when a set is
+    empty, calling the checking functions directly with an explicit
+    `suffixes=` argument (this suite's existing style for exercising a scan
+    function's parameters -- see TestDialProtectedSuffixes above) rather than
+    mutating module globals."""
+
+    def test_empty_write_protected_set_allows_every_state_file_by_name(self) -> None:
+        for name in _DIAL_WRITE_PROTECTED_SUFFIXES:
+            assert _is_dial_protected_path(name, suffixes=()) is False
+
+    def test_real_write_protected_set_blocks_only_its_own_members(self) -> None:
+        for name in _DIAL_WRITE_PROTECTED_SUFFIXES:
+            assert _is_dial_protected_path(name, suffixes=_DIAL_WRITE_PROTECTED_SUFFIXES) is True
+        # And nothing else -- the script is deliberately not a member.
+        assert _is_dial_protected_path(
+            "provision-dial-allowlist.sh", suffixes=_DIAL_WRITE_PROTECTED_SUFFIXES
+        ) is False
+
+    def test_real_invocation_protected_set_blocks_only_the_script(self) -> None:
+        assert _is_dial_protected_path(
+            "provision-dial-allowlist.sh", suffixes=_DIAL_INVOCATION_PROTECTED_SUFFIXES
+        ) is True
+        for name in _DIAL_WRITE_PROTECTED_SUFFIXES:
+            assert _is_dial_protected_path(
+                name, suffixes=_DIAL_INVOCATION_PROTECTED_SUFFIXES
+            ) is False
+
+    def test_classify_path_write_default_behaviour_unchanged_by_the_parameter(
+        self,
+    ) -> None:
+        # _is_dial_protected_path()'s default `suffixes=_DIAL_PROTECTED_SUFFIXES`
+        # (the full union) must still cover both callers that were never
+        # supposed to change: the unenumerated-write scan's absolute-candidate
+        # check and classify_bash() step 4a's output-redirect check both call
+        # it with no suffixes argument.
+        assert _is_dial_protected_path("provision-dial-allowlist.sh") is True
+        for name in _DIAL_WRITE_PROTECTED_SUFFIXES:
+            assert _is_dial_protected_path(name) is True
