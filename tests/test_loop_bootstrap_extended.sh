@@ -625,11 +625,12 @@ fi
 
 echo ""
 echo "--- PORTABILITY: repo-resolve.sh resolution order ---"
-# Gate 2: source from a stub project with project.json repo="test/proj"
+# Gate 2: source from a stub project with config.json repo="test/proj" --
+# _resolve_repo reads .autonomous-team/config.json, not project.json.
 GATE2_TMP="$(mktemp -d)"
 mkdir -p "$GATE2_TMP/scripts/lib" "$GATE2_TMP/.autonomous-team"
 cp "$REPO_RESOLVE_SRC" "$GATE2_TMP/scripts/lib/repo-resolve.sh"
-echo '{"repo":"test/proj"}' > "$GATE2_TMP/.autonomous-team/project.json"
+echo '{"repo":"test/proj"}' > "$GATE2_TMP/.autonomous-team/config.json"
 GATE2_RUNNER="$GATE2_TMP/runner.sh"
 printf '#!/usr/bin/env bash\nsource "$(dirname "$0")/scripts/lib/repo-resolve.sh"\n_resolve_repo\n' > "$GATE2_RUNNER"
 chmod +x "$GATE2_RUNNER"
