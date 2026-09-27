@@ -324,6 +324,7 @@ _ci_kill_switch_state() {
   local repo="$1"
 
   if [ "${CI_STATUS_TEST_MODE:-}" = "1" ] && [ -n "${CI_KILL_SWITCH_OVERRIDE+set}" ]; then
+    _ci_note_seam_used "CI_KILL_SWITCH_OVERRIDE"
     case "${CI_KILL_SWITCH_OVERRIDE}" in
       HTTP_404)                       printf 'enabled' ;;
       HTTP_403|HTTP_500|GH_API_ERROR) printf 'unknown' ;;
@@ -355,6 +356,7 @@ _ci_fetch_head_sha() {
   local mock_var="CI_STATUS_HEAD_SHA_${pr}"
   if [ -n "${!mock_var:-}" ]; then
     if [ "${CI_STATUS_TEST_MODE:-}" = "1" ]; then
+      _ci_note_seam_used "_ci_fetch_head_sha"
       printf '%s' "${!mock_var}"
       return 0
     fi
@@ -368,6 +370,7 @@ _ci_fetch_check_runs_json() {
   local mock_var="CI_STATUS_OVERRIDE_${pr}"
   if [ -n "${!mock_var:-}" ]; then
     if [ "${CI_STATUS_TEST_MODE:-}" = "1" ]; then
+      _ci_note_seam_used "_ci_fetch_check_runs_json"
       local mock_val="${!mock_var}"
       if [ "$mock_val" = "GH_API_ERROR" ]; then
         return 1
@@ -1138,13 +1141,15 @@ ci_report_conflict() {
   return 0
 }
 
-# ── Public: ci_write_audit <kind> <pr> <head_sha> <failing> <run_url> <reason>
-# Durable signal (AC-13) + the audited-bypass trail (AC-12), same shape as
-# the existing manual_merge_two_gate_bypass row in merge-and-hook.sh.
-ci_write_audit() {
-  local kind="$1" pr="$2" head_sha="$3" failing="$4" run_url="$5" reason="$6"
-  local ts
-  ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "")
+# ── Internal: _ci_write_audit_row <path> <kind> <pr> <head_sha> <failing> <run_url> <reason> <ts>
+# The actual JSON-build-and-append, given an ALREADY-RESOLVED destination.
+# ci_write_audit (below) resolves the path itself via _ci_resolve_audit_dest
+# and then calls this. _ci_audit_path's own test-seam note (further down)
+# also calls this directly, with the path it already has in hand — it cannot
+# ask ci_write_audit / _ci_resolve_audit_dest to resolve the path for it
+# without running that resolution a second time for no reason.
+_ci_write_audit_row() {
+  local path="$1" kind="$2" pr="$3" head_sha="$4" failing="$5" run_url="$6" reason="$7" ts="$8"
   local entry
   entry=$(python3 -c "
 import json, sys
@@ -1160,7 +1165,37 @@ print(json.dumps({
 " "$kind" "$pr" "$head_sha" "$failing" "$run_url" "$reason" "$ts" 2>/dev/null)
   [ -z "$entry" ] && return 0
 
-  printf '%s\n' "$entry" >> "$(_ci_audit_path)" 2>/dev/null || true
+  printf '%s\n' "$entry" >> "$path" 2>/dev/null || true
+}
+
+# ── Public: ci_write_audit <kind> <pr> <head_sha> <failing> <run_url> <reason>
+# Durable signal (AC-13) + the audited-bypass trail (AC-12), same shape as
+# the existing manual_merge_two_gate_bypass row in merge-and-hook.sh.
+ci_write_audit() {
+  local kind="$1" pr="$2" head_sha="$3" failing="$4" run_url="$5" reason="$6"
+  local ts
+  ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "")
+  _ci_write_audit_row "$(_ci_resolve_audit_dest)" "$kind" "$pr" "$head_sha" "$failing" "$run_url" "$reason" "$ts"
+}
+
+# ── Test-seam audit (D#2028) ────────────────────────────────────────────────
+# Deferred from D#2019 on reasoning that inverted the threat model: the seams
+# above are only reachable with CI_STATUS_TEST_MODE=1, and that is precisely
+# where an in-process actor forging a merge decision would set it — not a
+# place the forgery is absent. This writes one ci_status_test_seam_used row
+# each time one of the four seams is actually consulted, naming which one.
+# That row follows $CI_STATUS_TEST_AUDIT_FILE exactly like the decision it is
+# reporting on, so it is not a channel a redirect can't also carry away —
+# pointing that same redirect at /dev/null silences this row along with
+# everything else. Whether that gap needs closing is tracked separately
+# (D#2627). Purely observational either way — no branch here can change
+# check_ci_status's STATUS or exit code.
+CI_STATUS_TEST_SEAM_USED_KIND="ci_status_test_seam_used"
+_ci_note_seam_used() {
+  # Goes through ci_write_audit — same redirect-aware destination every other
+  # audit row uses — so a caller that also points CI_STATUS_TEST_AUDIT_FILE
+  # at a scratch file never has one of these land in the real ledger either.
+  ci_write_audit "$CI_STATUS_TEST_SEAM_USED_KIND" "" "" "" "" "$1"
 }
 
 # ── Public: ci_note_merge_if_unverified <pr> <sha> [audit_already_written] ──
@@ -1190,11 +1225,23 @@ ci_note_merge_if_unverified() {
     "merge proceeded with CI_STATUS_STATE=${CI_STATUS_STATE:-unset} and no other audit row recorded for it"
 }
 
-# ── Public: _ci_audit_path ─────────────────────────────────────────────────
+# ── Internal: _ci_resolve_audit_dest ────────────────────────────────────────
 # Where audit rows go. Honours $CI_STATUS_TEST_AUDIT_FILE so a test can point
 # the whole trail at a tmpfile. Shared with scripts/set-ci-kill-switch.sh so
 # the two writers cannot drift onto different files.
-_ci_audit_path() {
+#
+# This is the plumbing every writer uses to find its destination — every
+# ci_write_audit call routes through here, of any kind, whether it is a real
+# event or another seam's own note. Resolving a destination is not itself
+# "a seam that changed a gate outcome"; it is what keeps every one of this
+# codebase's own test suites off the production ledger, on every write, all
+# the time. Fixed in D#2028 fix-round 1: the note used to live here, which
+# meant it fired on every write that happened to occur under test mode,
+# including the writes made to record one of the OTHER three seams firing —
+# a single kill-switch-override consultation would double-count itself, once
+# for the real note and once more for the path lookup the note's own write
+# needed. See _ci_audit_path below for the note-emitting entry point.
+_ci_resolve_audit_dest() {
   if [ -n "${CI_STATUS_TEST_AUDIT_FILE:-}" ]; then
     if [ "${CI_STATUS_TEST_MODE:-}" = "1" ]; then
       printf '%s' "$CI_STATUS_TEST_AUDIT_FILE"
@@ -1211,4 +1258,29 @@ try:
 except Exception:
     print('$_CI_REPO_ROOT/.autonomous-team/audit.jsonl')
 " 2>/dev/null || printf '%s' "$_CI_REPO_ROOT/.autonomous-team/audit.jsonl"
+}
+
+# ── Public: _ci_audit_path ─────────────────────────────────────────────────
+# The seam a test drives DIRECTLY to prove the redirect itself took effect
+# (tests/test_ci_status_check.sh CS-25d) — distinct from _ci_resolve_audit_dest
+# above, which every ordinary write (real event or another seam's note) uses
+# internally and which never notes anything. Calling this function, rather
+# than routing through ci_write_audit's internal resolution, is what "using
+# the audit-path seam" means here.
+#
+# The row this writes follows $CI_STATUS_TEST_AUDIT_FILE like every other row
+# in test mode — it is not a channel a redirect can't also carry away. See
+# D#2627 for the open question of whether a decision made through this seam
+# needs a trace that survives the redirect being pointed at /dev/null too.
+_ci_audit_path() {
+  local path
+  path="$(_ci_resolve_audit_dest)"
+  if [ -n "${CI_STATUS_TEST_AUDIT_FILE:-}" ] && [ "${CI_STATUS_TEST_MODE:-}" = "1" ]; then
+    # Write directly to the already-known path (never call back into
+    # ci_write_audit / _ci_resolve_audit_dest here — both already ran above;
+    # doing it again would just repeat the same resolution).
+    _ci_write_audit_row "$path" "$CI_STATUS_TEST_SEAM_USED_KIND" "" "" "" "" \
+      "_ci_audit_path" "$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "")"
+  fi
+  printf '%s' "$path"
 }

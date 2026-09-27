@@ -90,6 +90,16 @@ assert r["old"] == "true" and r["new"] == "false", r
 else
   fail "KS-3: wrong row — $(cat "$AUDIT3")"
 fi
+# D#2028 fix-round 1: set-ci-kill-switch.sh resolves its destination through
+# _ci_resolve_audit_dest (silent plumbing), not _ci_audit_path (the seam a
+# test drives directly) — so this file holds exactly the one row this
+# assertion is about, and row [0] above is not filtering out any noise.
+ROWS3=$(grep -c '"kind"' "$AUDIT3" 2>/dev/null || true)
+if [ "${ROWS3:-0}" -eq 1 ]; then
+  pass "KS-3: exactly 1 kind-bearing row total"
+else
+  fail "KS-3: expected exactly 1 kind-bearing row total, got ${ROWS3:-0}: $(cat "$AUDIT3")"
+fi
 rm -f "$AUDIT3"
 
 # ── KS-4: a bad or missing value is refused ─────────────────────────────────

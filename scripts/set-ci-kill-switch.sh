@@ -136,7 +136,7 @@ print(json.dumps({
 }))
 ' "$OLD_VALUE" "$NEW_VALUE" "$_ACTOR" "$_REPO" "$REASON" "$_TS")"
 
-_AUDIT_PATH="$(_ci_audit_path)"
+_AUDIT_PATH="$(_ci_resolve_audit_dest)"
 mkdir -p "$(dirname "$_AUDIT_PATH")" 2>/dev/null || true
 printf '%s\n' "$_ROW" >> "$_AUDIT_PATH"
 echo "[set-ci-kill-switch] Audit row written: kind=ci_kill_switch_changed $OLD_VALUE -> $NEW_VALUE (actor=$_ACTOR)"
