@@ -4886,13 +4886,285 @@ class TestD2483PR171CompoundRedirectStillBlocked:
         d = classify_bash(cmd, _WT_CLAUDE)
         assert d.allow is False
 
-    def test_glued_plain_redirect_still_the_preexisting_d2541_gap(self) -> None:
-        # Not this PR's regression and not this PR's fix -- `>foo` with no
-        # leading `&` is untouched by the `&>`/`&>>` normalisation above.
-        # Documented here so a future change to this gap notices this test.
+    def test_glued_plain_redirect_now_blocked_by_d2541(self) -> None:
+        # This WAS the pre-existing D#2541 gap this class's docstring warned
+        # about: `>foo` with no leading `&` was untouched by the `&>`/`&>>`
+        # normalisation above, and stayed ALLOW. D#2541 closed it with a
+        # separate, general glued-redirect-operator split
+        # (`_GLUED_REDIRECT_OP_RE` / `_split_glued_redirect_operands`) that
+        # runs independently of the `&`-prefixed handling in this class. See
+        # TestD2541GluedRedirectOperator below for the full acceptance-table
+        # coverage; this one assertion just flips in place so this specific
+        # tripwire (linked from the comment above) keeps testing the same
+        # command it always has.
         cmd = f"echo x >{_D2483_REGISTRY_BASENAME}"
         d = classify_bash(cmd, _WT_CLAUDE)
-        assert d.allow is True
+        assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+        assert _D2483_REGISTRY_BASENAME in d.reason
+
+
+_D2541_PROTECTED_BASENAMES = (_D2483_REGISTRY_BASENAME, _DIAL_PROTECTED_SUFFIXES[2])
+
+
+class TestD2541GluedRedirectOperator:
+    """A redirect operator glued (no space) directly onto a relative,
+    dial-protected basename reached neither of this module's two
+    basename-matching sites: step 1d's operand scan
+    (`_protected_basename_operand`, via `_all_path_operands`) and the
+    relative-path check in `_scan_command_segments` both compare a WHOLE
+    shlex token's basename, and shlex is a plain word-splitter with no
+    notion that `<`/`>` are shell metacharacters -- a glued operator+path
+    never tokenises apart on its own. Six spellings measured ALLOW against
+    the code-plane classifier before this fix: `>`, `>>`, `2>`, `2>>`, `1>>`
+    glued to `audit.jsonl`, plus `>` glued to `dial-registry.json`.
+
+    Fixed structurally with `_GLUED_REDIRECT_OP_RE` /
+    `_split_glued_redirect_operands` (hooks/sandbox_rules.py), which splits
+    ANY digit-prefixed `<`/`>` operator off a glued target before either
+    site tokenises -- not a list of the six spellings above, so an fd this
+    table never enumerated (`10>`) is covered by the same mechanism for
+    free, exercised below rather than merely asserted.
+    """
+
+    @pytest.mark.parametrize("suffix", list(_D2541_PROTECTED_BASENAMES))
+    @pytest.mark.parametrize("operator", [">", ">>", "2>", "2>>", "1>>"])
+    def test_glued_redirect_blocked(self, suffix: str, operator: str) -> None:
+        cmd = f"echo x {operator}{suffix}"
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+        assert suffix in d.reason
+
+    def test_glued_fd_above_nine_also_blocked(self) -> None:
+        # Not one of the six measured gaps -- a digit-prefixed operator with
+        # more than one digit -- but the same mechanism, so this is free
+        # coverage the general regex buys over an enumerated operator list.
+        cmd = f"echo x 10>{_D2483_REGISTRY_BASENAME}"
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+
+    def test_dotdot_relative_glued_still_blocked(self) -> None:
+        # Regression guard: this one already blocked before the fix -- the
+        # token contains a `/`, so `Path(...).name` isolates the basename
+        # regardless of what's glued in front of it -- and must keep
+        # blocking now that the operand text is pre-split.
+        cmd = f"echo x >scripts/../{_D2541_PROTECTED_BASENAMES[1]}"
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+
+    @pytest.mark.parametrize(
+        "cmd_template",
+        [
+            "echo x >|{suffix}",
+            "echo x >| {suffix}",
+            "echo x &>{suffix}",
+            "echo x &> {suffix}",
+            "echo x | tee {suffix}",
+        ],
+    )
+    def test_preexisting_blocked_forms_unaffected(self, cmd_template: str) -> None:
+        # Every row that already blocked keeps blocking, by a reason no
+        # less specific -- a regression here is worse than the bug.
+        cmd = cmd_template.format(suffix=_D2483_REGISTRY_BASENAME)
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+        assert _D2483_REGISTRY_BASENAME in d.reason
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "echo hi >output.txt",
+            "echo hi >>output.txt",
+            "echo hi 2>output.txt",
+            "echo hi 1>>output.txt",
+            "cat file.txt >combined.txt",
+        ],
+    )
+    def test_ordinary_glued_write_still_allowed(self, cmd: str) -> None:
+        # Over-blocking is the failure mode CLAUDE.md says is worse here --
+        # a glued redirect to a file that ISN'T dial-protected must still
+        # sail through untouched.
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is True, f"expected ALLOW for `{cmd}`, got reason={d.reason!r}"
+
+    def test_fd_dup_not_mistaken_for_a_path_write(self) -> None:
+        # `2>&1` duplicates a file descriptor -- it names no path at all,
+        # and must not be split the way `2>audit.jsonl` now is.
+        d = classify_bash("echo hi >/dev/null 2>&1", _WT_CLAUDE)
+        assert d.allow is True, f"expected ALLOW, got reason={d.reason!r}"
+
+    def test_process_substitution_not_mangled(self) -> None:
+        d = classify_bash("diff <(sort a.txt) <(sort b.txt)", _WT_CLAUDE)
+        assert d.allow is True, f"expected ALLOW, got reason={d.reason!r}"
+
+    def test_heredoc_marker_not_mangled(self) -> None:
+        d = classify_bash("cat <<EOF\nhello\nEOF", _WT_CLAUDE)
+        assert d.allow is True, f"expected ALLOW, got reason={d.reason!r}"
+
+    def test_herestring_not_mangled(self) -> None:
+        d = classify_bash('cat <<<"hello"', _WT_CLAUDE)
+        assert d.allow is True, f"expected ALLOW, got reason={d.reason!r}"
+
+    def test_control_still_allowed(self) -> None:
+        d = classify_bash("echo hello", _WT_CLAUDE)
+        assert d.allow is True, f"expected ALLOW, got reason={d.reason!r}"
+
+
+class TestD2541FixRound1HeredocBodyNotScannedForGluedRedirects:
+    """Fix round 1 (code review finding #1): `_all_path_operands` called
+    `_split_glued_redirect_operands` on the RAW command text, before heredoc
+    bodies were stripped -- unlike `_scan_command_segments`, which already
+    ran `_strip_heredoc_bodies_capturing` first. A heredoc body is never
+    interpreted by bash as a redirect; it's plain text handed to whatever
+    reads the heredoc's stdin. But once the glue-split ran over the raw
+    command, a body LINE that merely mentions a protected-basename-shaped
+    substring glued to `<`/`>` -- documentation, a commit message, this D#2541
+    PR's own review thread -- got a bare `audit.jsonl` token split out of it,
+    and that token then read as a real write target. The write actually
+    intended (the heredoc's own redirect, `cat > note.txt`) was to an
+    unrelated, unprotected file, and got blocked as collateral.
+
+    Fixed by stripping heredoc bodies with the same
+    `_strip_heredoc_bodies_capturing` helper `_scan_command_segments` already
+    used, before running the split, in `_all_path_operands`.
+    """
+
+    def test_quoted_delimiter_heredoc_body_not_scanned(self) -> None:
+        cmd = (
+            "cat > note.txt <<'EOF2'\n"
+            f"see >{_D2483_REGISTRY_BASENAME} for the gap\n"
+            "EOF2"
+        )
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is True, f"expected ALLOW, got reason={d.reason!r}"
+
+    def test_unquoted_delimiter_heredoc_body_not_scanned(self) -> None:
+        cmd = (
+            "cat > note.txt <<EOF2\n"
+            f"see >>{_D2483_REGISTRY_BASENAME} for the gap\n"
+            "EOF2"
+        )
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is True, f"expected ALLOW, got reason={d.reason!r}"
+
+    def test_tab_stripping_heredoc_body_not_scanned(self) -> None:
+        # `<<-` strips leading tabs from the delimiter line (and the body's
+        # own leading tabs), a spelling distinct enough from a plain `<<`
+        # that it needs its own case -- `_HEREDOC_START_RE` handles the `-`
+        # flag, but only if `_all_path_operands` actually routes through it.
+        cmd = (
+            "cat > note.txt <<-'EOF2'\n"
+            f"\tsee >{_D2483_REGISTRY_BASENAME} for the gap\n"
+            "\tEOF2"
+        )
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is True, f"expected ALLOW, got reason={d.reason!r}"
+
+    def test_gh_body_file_heredoc_not_scanned(self) -> None:
+        # The realistic shape this bug bites hardest: a `gh ... --body-file`
+        # heredoc whose body is itself PR/commit prose describing this exact
+        # class of bug -- e.g. quoting a glued redirect as an example.
+        cmd = (
+            "gh pr comment 252 --body-file - <<'EOF2'\n"
+            f"a glued redirect like >{_D2483_REGISTRY_BASENAME} used to slip past the guard\n"
+            "EOF2"
+        )
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is True, f"expected ALLOW, got reason={d.reason!r}"
+
+    def test_real_redirect_on_the_heredoc_line_itself_still_blocked(self) -> None:
+        # Non-regression: stripping the BODY must not blind the scan to a
+        # real glued redirect that sits on the heredoc's own opening line,
+        # outside the stripped region.
+        cmd = f"cat >{_D2483_REGISTRY_BASENAME} <<'EOF2'\nhello\nEOF2"
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+        assert _D2483_REGISTRY_BASENAME in d.reason
+
+
+class TestD2541FixRound1GlueReadWriteOpen:
+    """Security re-review, item (b): `<>audit.jsonl` (bash's glued
+    read-write-open redirect, no space) still allowed after the original
+    fix, because `_GLUED_REDIRECT_OP_RE`'s single shared lookbehind treated
+    a preceding `<` the same as a preceding `>`/`&`/`|` and refused to split
+    the `>` that immediately follows a just-matched `<`. Fixed by giving the
+    `>` and `<` alternatives their own lookbehinds."""
+
+    def test_glued_read_write_open_now_blocked(self) -> None:
+        cmd = f"echo x <>{_D2483_REGISTRY_BASENAME}"
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+        assert _D2483_REGISTRY_BASENAME in d.reason
+
+    def test_herestring_and_process_substitution_still_unaffected(self) -> None:
+        # Non-regression: the lookbehind split must not reopen `<<`/`<<<` or
+        # touch process substitution -- these stay excluded by the `<`
+        # alternative's own (unchanged) four-character exclusion set.
+        d = classify_bash("cat <<<'hello'", _WT_CLAUDE)
+        assert d.allow is True, f"expected ALLOW, got reason={d.reason!r}"
+        d = classify_bash("diff <(sort a.txt) <(sort b.txt)", _WT_CLAUDE)
+        assert d.allow is True, f"expected ALLOW, got reason={d.reason!r}"
+
+
+class TestD2541FixRound2RawCommandScanRestored:
+    """Security re-review of fix round 1: moving `_all_path_operands`'s only
+    scan onto heredoc-STRIPPED text (round 1) discarded the raw-command scan
+    main always ran there, so a write or delete sitting inside text
+    `_HEREDOC_START_RE` treats as heredoc territory silently stopped being
+    caught. Two distinct mechanisms feed this:
+
+    1. An interpreter heredoc (`bash <<EOF`, `sh <<EOF`) whose body really
+       executes. The body is captured by `_strip_heredoc_bodies_capturing`
+       but the payload was thrown away instead of scanned.
+    2. `_HEREDOC_START_RE` false-matching arithmetic `<<` (`$((1<<2))`), a
+       here-string's `<<<`, and `<<EOF` inside a quoted string -- each of
+       these drops every line that follows from the stripped-text scan
+       entirely, real command line included.
+
+    Each of the four commands below writes or deletes the file for real when
+    run in actual bash, and each blocks on `main` today. Fixed by restoring
+    main's original raw-command scan (`_REDIRECT_PATTERN` + `_shlex_split`
+    against the unstripped `command`) as an unconditional first pass in
+    `_all_path_operands`, and unioning its operands with fix round 0/1's
+    glued-redirect scan on heredoc-stripped text, rather than one scan
+    replacing the other.
+    """
+
+    def test_interpreter_heredoc_body_write_blocked(self) -> None:
+        cmd = f"bash <<'EOF2'\necho x > {_D2483_REGISTRY_BASENAME}\nEOF2"
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+        assert _D2483_REGISTRY_BASENAME in d.reason
+
+    def test_arithmetic_shift_false_heredoc_opener_does_not_hide_next_line(self) -> None:
+        cmd = f"echo $((1<<2))\nrm {_D2483_REGISTRY_BASENAME}"
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+        assert _D2483_REGISTRY_BASENAME in d.reason
+
+    def test_herestring_false_heredoc_opener_does_not_hide_next_line(self) -> None:
+        cmd = f"cat <<<word\nrm {_D2483_REGISTRY_BASENAME}"
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+        assert _D2483_REGISTRY_BASENAME in d.reason
+
+    def test_quoted_heredoc_marker_false_opener_does_not_hide_next_line(self) -> None:
+        cmd = f"echo 'use <<EOF'\nrm {_D2483_REGISTRY_BASENAME}"
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+        assert _D2483_REGISTRY_BASENAME in d.reason
+
+    def test_heredoc_overblock_fix_from_round0_still_holds(self) -> None:
+        # Non-regression: restoring the raw-command scan must not resurrect
+        # round 0's over-block. A GLUED mention inside a heredoc body stays a
+        # single token on the raw pass (no glue-split runs there), so it
+        # still can't match the protected basename exactly.
+        cmd = (
+            "cat > note.txt <<'EOF2'\n"
+            f"see >{_D2483_REGISTRY_BASENAME} for the gap\n"
+            "EOF2"
+        )
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is True, f"expected ALLOW, got reason={d.reason!r}"
 
 
 class TestD2483PR171InterpreterVersionToleranceStillBlocked:
