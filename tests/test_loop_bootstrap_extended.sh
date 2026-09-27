@@ -153,8 +153,10 @@ echo ""
 echo "--- Asserting start-the-day.sh is project-agnostic ---"
 STD_SH="$TARGET/scripts/start-the-day.sh"
 assert_contains "$STD_SH" "project.json" "reads project.json"
-# Should NOT have autonomous-forever hardcoded (was rewritten by do_install)
-assert_not_contains "$STD_SH" "autonomous-forever-state" "no hardcoded state dir"
+# The ~/.autonomous-forever-state fallback (lines 293/324) is the documented
+# engine default when AUTONOMOUS_TEAM_STATE_DIR is unset, not a hardcoded
+# override -- actual state-dir resolution happens via lib/state-dir.sh.
+assert_contains "$STD_SH" "lib/state-dir.sh" "sources lib/state-dir.sh"
 
 echo ""
 echo "--- Asserting merge-and-hook.sh resolves repo config and merges the PR ---"
@@ -409,10 +411,10 @@ fi
 echo ""
 echo "--- BUG 2: start-the-day.sh uses dynamic default branch detection ---"
 STD_SH="$TARGET/scripts/start-the-day.sh"
-assert_contains "$STD_SH" "symbolic-ref refs/remotes/origin/HEAD" "remote HEAD detection"
-assert_contains "$STD_SH" "default_branch" "project.json default_branch fallback"
-# Verify the script has the project.json intermediate fallback before "main"
-assert_contains "$STD_SH" 'DEFAULT_BRANCH=$(python3' "project.json python fallback for default branch"
+assert_contains "$STD_SH" "symbolic-ref --short refs/remotes/origin/HEAD" "remote HEAD detection"
+# D#2598's fix round removed the project.json intermediate fallback: the
+# script now falls back straight to "main" when refs/remotes/origin/HEAD is
+# absent, so there is no project.json default_branch step left to assert.
 
 echo ""
 echo "--- BUG 3: coldstart-project.sh initializes valid DuckDB ---"
