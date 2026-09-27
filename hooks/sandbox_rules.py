@@ -271,7 +271,21 @@ _REDIRECT_PATTERN = re.compile(
 # file, so it is out of scope for a *path*-target scan) and the process
 # substitution / heredoc / here-string forms named above. See the PR body
 # for the full enumeration (Spec D#2541 item 6).
-_GLUED_REDIRECT_OP_RE = re.compile(r"(?<![<>&|])([0-9]*>{1,2}|[0-9]*<(?!<))(?=[^\s&(|])")
+#
+# D#2541 fix round 1 (security re-review): the `>` alternative and the `<`
+# alternative need DIFFERENT lookbehind exclusions, not the shared one this
+# started with. A preceding `<` must still block a second `<` from matching
+# (that is what keeps `<<`/`<<<` alone), but it must NOT block a `>` that
+# immediately follows a just-matched `<` — `<>audit.jsonl` (bash's glued
+# read-write-open redirect) was staying fully glued because the `>`
+# alternative's shared lookbehind treated the preceding `<` the same as a
+# preceding `>`/`&`/`|`. Splitting the alternatives' lookbehinds lets the
+# `>` of `<>` split on its own merits (nothing but `>`/`&`/`|` immediately
+# before it) while the `<` alternative keeps excluding all four characters,
+# including its own kind, exactly as before.
+_GLUED_REDIRECT_OP_RE = re.compile(
+    r"(?:(?<![>&|])([0-9]*>{1,2})|(?<![<>&|])([0-9]*<(?!<)))(?=[^\s&(|])"
+)
 
 
 def _split_glued_redirect_operands(text: str) -> str:
@@ -3623,11 +3637,26 @@ def _all_path_operands(command: str) -> list[str]:
     """
     paths: list[str] = []
 
+    # D#2541 fix round 1: strip heredoc bodies FIRST, before anything below
+    # scans *command* — matching the order `_scan_command_segments` already
+    # uses (`_strip_heredoc_bodies_capturing` runs before its own
+    # `_split_glued_redirect_operands` call). Without this, a heredoc body
+    # line that merely CONTAINS a protected-basename-shaped substring glued
+    # to a `<`/`>` character — documentation text, a `gh ... --body-file`
+    # heredoc, this very module's own commit message — gets that glue
+    # split too, and the resulting bare basename token reads as a real
+    # write target even though bash never treats heredoc body text as a
+    # redirect at all. The captured payloads are discarded here exactly as
+    # `_strip_heredoc_bodies` already discarded them for this function
+    # before D#2541 — this function has never deep-scanned inside a
+    # heredoc/python payload the way `_scan_command_segments` does.
+    stripped, _heredoc_payloads = _strip_heredoc_bodies_capturing(command)
+
     # Redirect targets — same extraction as _absolute_path_targets. The
     # regex itself only matches targets beginning with `/`, so this stays
     # absolute-only; that's a narrower surface than the deletion forms SEC-8
     # is about, and out of scope for this round.
-    for match in _REDIRECT_PATTERN.finditer(command):
+    for match in _REDIRECT_PATTERN.finditer(stripped):
         candidate = match.group(1)
         if not _is_kernel_device(candidate):
             paths.append(candidate)
@@ -3640,7 +3669,8 @@ def _all_path_operands(command: str) -> list[str]:
     # ...) off its target BEFORE tokenising, so the target reaches
     # `_protected_basename_operand()` as its own token instead of hiding
     # inside a single "operator+path" blob — see `_GLUED_REDIRECT_OP_RE`.
-    operand_scan_text = _split_glued_redirect_operands(command)
+    # Runs on the heredoc-stripped text, not the raw command (fix round 1).
+    operand_scan_text = _split_glued_redirect_operands(stripped)
     try:
         tokens = _shlex_split(operand_scan_text)
     except ValueError:

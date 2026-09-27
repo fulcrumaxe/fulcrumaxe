@@ -5009,6 +5009,102 @@ class TestD2541GluedRedirectOperator:
         assert d.allow is True, f"expected ALLOW, got reason={d.reason!r}"
 
 
+class TestD2541FixRound1HeredocBodyNotScannedForGluedRedirects:
+    """Fix round 1 (code review finding #1): `_all_path_operands` called
+    `_split_glued_redirect_operands` on the RAW command text, before heredoc
+    bodies were stripped -- unlike `_scan_command_segments`, which already
+    ran `_strip_heredoc_bodies_capturing` first. A heredoc body is never
+    interpreted by bash as a redirect; it's plain text handed to whatever
+    reads the heredoc's stdin. But once the glue-split ran over the raw
+    command, a body LINE that merely mentions a protected-basename-shaped
+    substring glued to `<`/`>` -- documentation, a commit message, this D#2541
+    PR's own review thread -- got a bare `audit.jsonl` token split out of it,
+    and that token then read as a real write target. The write actually
+    intended (the heredoc's own redirect, `cat > note.txt`) was to an
+    unrelated, unprotected file, and got blocked as collateral.
+
+    Fixed by stripping heredoc bodies with the same
+    `_strip_heredoc_bodies_capturing` helper `_scan_command_segments` already
+    used, before running the split, in `_all_path_operands`.
+    """
+
+    def test_quoted_delimiter_heredoc_body_not_scanned(self) -> None:
+        cmd = (
+            "cat > note.txt <<'EOF2'\n"
+            f"see >{_D2483_REGISTRY_BASENAME} for the gap\n"
+            "EOF2"
+        )
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is True, f"expected ALLOW, got reason={d.reason!r}"
+
+    def test_unquoted_delimiter_heredoc_body_not_scanned(self) -> None:
+        cmd = (
+            "cat > note.txt <<EOF2\n"
+            f"see >>{_D2483_REGISTRY_BASENAME} for the gap\n"
+            "EOF2"
+        )
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is True, f"expected ALLOW, got reason={d.reason!r}"
+
+    def test_tab_stripping_heredoc_body_not_scanned(self) -> None:
+        # `<<-` strips leading tabs from the delimiter line (and the body's
+        # own leading tabs), a spelling distinct enough from a plain `<<`
+        # that it needs its own case -- `_HEREDOC_START_RE` handles the `-`
+        # flag, but only if `_all_path_operands` actually routes through it.
+        cmd = (
+            "cat > note.txt <<-'EOF2'\n"
+            f"\tsee >{_D2483_REGISTRY_BASENAME} for the gap\n"
+            "\tEOF2"
+        )
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is True, f"expected ALLOW, got reason={d.reason!r}"
+
+    def test_gh_body_file_heredoc_not_scanned(self) -> None:
+        # The realistic shape this bug bites hardest: a `gh ... --body-file`
+        # heredoc whose body is itself PR/commit prose describing this exact
+        # class of bug -- e.g. quoting a glued redirect as an example.
+        cmd = (
+            "gh pr comment 252 --body-file - <<'EOF2'\n"
+            f"a glued redirect like >{_D2483_REGISTRY_BASENAME} used to slip past the guard\n"
+            "EOF2"
+        )
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is True, f"expected ALLOW, got reason={d.reason!r}"
+
+    def test_real_redirect_on_the_heredoc_line_itself_still_blocked(self) -> None:
+        # Non-regression: stripping the BODY must not blind the scan to a
+        # real glued redirect that sits on the heredoc's own opening line,
+        # outside the stripped region.
+        cmd = f"cat >{_D2483_REGISTRY_BASENAME} <<'EOF2'\nhello\nEOF2"
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+        assert _D2483_REGISTRY_BASENAME in d.reason
+
+
+class TestD2541FixRound1GlueReadWriteOpen:
+    """Security re-review, item (b): `<>audit.jsonl` (bash's glued
+    read-write-open redirect, no space) still allowed after the original
+    fix, because `_GLUED_REDIRECT_OP_RE`'s single shared lookbehind treated
+    a preceding `<` the same as a preceding `>`/`&`/`|` and refused to split
+    the `>` that immediately follows a just-matched `<`. Fixed by giving the
+    `>` and `<` alternatives their own lookbehinds."""
+
+    def test_glued_read_write_open_now_blocked(self) -> None:
+        cmd = f"echo x <>{_D2483_REGISTRY_BASENAME}"
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+        assert _D2483_REGISTRY_BASENAME in d.reason
+
+    def test_herestring_and_process_substitution_still_unaffected(self) -> None:
+        # Non-regression: the lookbehind split must not reopen `<<`/`<<<` or
+        # touch process substitution -- these stay excluded by the `<`
+        # alternative's own (unchanged) four-character exclusion set.
+        d = classify_bash("cat <<<'hello'", _WT_CLAUDE)
+        assert d.allow is True, f"expected ALLOW, got reason={d.reason!r}"
+        d = classify_bash("diff <(sort a.txt) <(sort b.txt)", _WT_CLAUDE)
+        assert d.allow is True, f"expected ALLOW, got reason={d.reason!r}"
+
+
 class TestD2483PR171InterpreterVersionToleranceStillBlocked:
     """The exact-name frozenset `_PY_INTERPRETER_NAMES` (`{"python3",
     "python"}`) lost the segment-text write-detection layer for any other
