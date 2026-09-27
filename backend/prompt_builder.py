@@ -114,7 +114,11 @@ _PR_TREE_READONLY_ROLES = frozenset({"code-reviewer", "acceptance-tester"})
 #       carving out a --pr exception to its own reasoning). Not a failure:
 #       the agent resolves its own root and is told how to reach the PR's
 #       head content from there — fetch by URL, never checkout (an
-#       always-blocked verb in every worktree, not just outside one).
+#       always-blocked verb in every worktree, not just outside one). The
+#       two commands of that route are wrapped in a
+#       "<!-- PR_AMEND_ROUTE:BEGIN/END -->" marker pair (D#2546) so an e2e
+#       test can extract them verbatim from the script's real stdout
+#       instead of regexing prose — see tests/test_spawn_agent_pr_amend_e2e.sh.
 _WT_REASON_AGENT_TOOL_PROVISIONS = "agent_tool_provisions"
 _WT_REASON_PR_RESOLUTION_FAILED = "pr_resolution_failed"
 _WT_REASON_PR_AMEND = "pr_amend"
@@ -157,8 +161,10 @@ def _build_unprovisioned_worktree_block(
             "your tree starts from main, unrelated to the PR's branch. To reach it from",
             "inside your own tree, fetch it explicitly (never `gh pr checkout` or any other",
             "checkout — always-blocked, in this tree or any other):",
+            "<!-- PR_AMEND_ROUTE:BEGIN -->",
             "  CODE_REPO=\"$(source scripts/lib/repo-resolve.sh && _resolve_code_repo)\"",
             f"  git fetch \"https://github.com/${{CODE_REPO}}.git\" \"pull/{pr or '<N>'}/head\"",
+            "<!-- PR_AMEND_ROUTE:END -->",
             "Read a file as it stands on the PR with `git show FETCH_HEAD:<path>` (safe,",
             "read-only). To push a fix, build the new commit with",
             "scripts/lib/code-plane-pr.sh — it edits via git plumbing (read-tree,",
