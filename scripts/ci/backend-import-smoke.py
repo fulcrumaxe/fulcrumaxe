@@ -41,33 +41,16 @@ EXCLUDE = {
     # socket at import time, add it here with a one-line reason.)
 }
 
-# Same idea, scoped to scripts/lib/*.py. Unlike backend/*.py, this set is
-# NOT empty (D#2588): three modules resolve BOT_ACCOUNT at module import
-# time (external_intake_gate.py's `_resolve_bot_account()`, D#1905) via
-# AUTONOMOUS_TEAM_BOT_ACCOUNT or .autonomous-team/config.json's
-# "bot_account" field only — no git-config-style fallback the way
-# backend/_repo.py has for the repo slug. .autonomous-team/config.json is
-# gitignored, so a clean checkout (this repo's own CI included) has
-# neither, and importing these three raises there every time. Widening the
-# check to cover them anyway would turn the required "backend
-# (import-smoke)" job red on the code plane's own clean HEAD, so per
-# D#2588 they are excluded here instead, with the reason each is excluded
-# rather than a silent try/except — see the PR body for the measurement.
-SCRIPTS_LIB_EXCLUDE = {
-    "external_intake_gate": (
-        "resolves BOT_ACCOUNT at module level with no fallback beyond an "
-        "env var / .autonomous-team/config.json, both absent on a clean "
-        "checkout — see D#2588"
-    ),
-    "pr_comment_trust": (
-        "imports external_intake_gate at module level and inherits its "
-        "BOT_ACCOUNT resolution failure on a clean checkout — see D#2588"
-    ),
-    "pr_intake_gate": (
-        "imports external_intake_gate at module level and inherits its "
-        "BOT_ACCOUNT resolution failure on a clean checkout — see D#2588"
-    ),
-}
+# Same idea, scoped to scripts/lib/*.py. D#2588 excluded three modules here
+# (external_intake_gate, pr_comment_trust, pr_intake_gate) because
+# external_intake_gate.py resolved BOT_ACCOUNT at module import time with
+# no fallback beyond AUTONOMOUS_TEAM_BOT_ACCOUNT / .autonomous-team/
+# config.json's "bot_account" field, both absent on a clean checkout. D#2618
+# made that resolution lazy (first use, not import time), so all three now
+# import cleanly with no bot account configured and the exclusion is gone.
+# Kept as an empty dict, with this comment, so the mechanism is here again
+# for a future module that genuinely can't be import-smoke-tested standalone.
+SCRIPTS_LIB_EXCLUDE = {}
 
 
 def discover_modules():

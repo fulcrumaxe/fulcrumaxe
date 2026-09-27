@@ -24,16 +24,17 @@ from pathlib import Path
 
 import pytest
 
-# D#2443: external_intake_gate.py resolves BOT_ACCOUNT at *import* time and
-# raises when neither AUTONOMOUS_TEAM_BOT_ACCOUNT nor .autonomous-team/
-# config.json's "bot_account" field is set — true of every code-plane tree,
-# which ships neither. Unlike the other env vars this suite exercises via
-# monkeypatch, that raise happens before any fixture runs, so it can't be
-# fixed per-test — it has to be set before the import below. setdefault()
-# only supplies a value when nothing already configured one, so a real
-# operator's env var or config.json still wins; the module's own resolver
-# (exercised directly by TestBotAccountResolution below) is unchanged and
-# still fails loudly for an unconfigured real caller.
+# D#2443/D#2618: external_intake_gate.py raises when neither
+# AUTONOMOUS_TEAM_BOT_ACCOUNT nor .autonomous-team/config.json's
+# "bot_account" field is set — true of every code-plane tree, which ships
+# neither. Resolution is lazy (first access, D#2618), not at import time, but
+# most of this suite still reads gate.BOT_ACCOUNT as a live attribute, so a
+# default has to be in place before those tests run. setdefault() only
+# supplies a value when nothing already configured one, so a real operator's
+# env var or config.json still wins; the module's own resolver (exercised
+# directly by TestBotAccountResolution, and deliberately bypassed by
+# TestFailClosedUnconfigured, below) is unchanged and still fails loudly for
+# an unconfigured real caller.
 os.environ.setdefault("AUTONOMOUS_TEAM_BOT_ACCOUNT", "ci-test-bot")
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -166,10 +167,10 @@ class TestAllowlistUnion:
 
 # ---------------------------------------------------------------------------
 # D#1905 — BOT_ACCOUNT resolved from configuration, not a hard-coded literal.
-# gate.BOT_ACCOUNT itself is resolved once at import time from this repo's
-# real .autonomous-team/config.json, so these tests exercise the resolver
-# function directly with an explicit config/env instead of relying on
-# process-wide monkeypatching of already-imported module state.
+# gate.BOT_ACCOUNT is resolved fresh on every access (D#2618) from this
+# process's real env / .autonomous-team/config.json, so these tests exercise
+# the resolver function directly with an explicit config/env instead of
+# relying on process-wide monkeypatching of already-imported module state.
 # ---------------------------------------------------------------------------
 
 
@@ -198,13 +199,13 @@ class TestBotAccountResolution:
         resolved = gate._resolve_bot_account({"bot_account": "acme-ci-bot"})
         assert resolved == "acme-ci-bot"
 
-        # resolve_allowlist() itself always unions in the process-wide
-        # gate.BOT_ACCOUNT (resolved once at import time for THIS process),
-        # so it can't be used here to exercise a second, different adopter
-        # identity within the same test run. classify_provenance() is the
-        # actual decision function resolve_allowlist() feeds into, so we
-        # exercise it directly against an allowlist built from the
-        # adopter-shaped resolved value.
+        # resolve_allowlist() itself always unions in gate.BOT_ACCOUNT
+        # (resolved fresh, from this process's real env/config, on every
+        # access — D#2618), so it can't be used here to exercise a second,
+        # different adopter identity within the same test run.
+        # classify_provenance() is the actual decision function
+        # resolve_allowlist() feeds into, so we exercise it directly against
+        # an allowlist built from the adopter-shaped resolved value.
         allowlist = {resolved, "acme-owner"}
         assert gate.classify_provenance(resolved, allowlist) == gate.PROVENANCE_INTERNAL
         # A DIFFERENT bot account (e.g. this framework's own, on someone
@@ -212,6 +213,44 @@ class TestBotAccountResolution:
         # be a hard-coded literal here — it's simply not in this adopter's
         # allowlist.
         assert gate.classify_provenance("some-other-projects-bot", allowlist) == gate.PROVENANCE_EXTERNAL
+
+
+# ---------------------------------------------------------------------------
+# D#2618 — BOT_ACCOUNT resolution moved from import time to first use (a
+# module-level __getattr__, PEP 562). A clean checkout with neither the env
+# var nor .autonomous-team/config.json must still fail closed the moment
+# something actually needs a trust set — never fall back to a literal, and
+# never build a set that silently excludes the bot.
+# ---------------------------------------------------------------------------
+
+
+class TestFailClosedUnconfigured:
+    def test_fails_closed_when_bot_account_unconfigured(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("AUTONOMOUS_TEAM_BOT_ACCOUNT", raising=False)
+        # Points config resolution at a file that doesn't exist — _load_config()'s
+        # own try/except returns {} for it, same as a clean checkout with no
+        # .autonomous-team/ directory at all.
+        monkeypatch.setattr(gate, "_DEFAULT_CONFIG_PATH", tmp_path / "config.json")
+
+        calls = (
+            (gate.resolve_allowlist, dict(cache_path=tmp_path / "a.json", collaborators_fetcher=_empty_fetcher)),
+            (
+                gate.resolve_trust_allowlist,
+                dict(cache_path=tmp_path / "b.json", collaborators_fetcher=_empty_fetcher),
+            ),
+            (
+                gate.resolve_allowlist_ids,
+                dict(id_cache_path=tmp_path / "c.json", collaborator_id_fetcher=_empty_fetcher),
+            ),
+        )
+        for fn, kwargs in calls:
+            with pytest.raises(RuntimeError, match="could not resolve BOT_ACCOUNT"):
+                fn(**kwargs)
+
+        # gate.BOT_ACCOUNT is no longer a value fixed at import time —
+        # reading it must raise the same way a builder call does.
+        with pytest.raises(RuntimeError, match="could not resolve BOT_ACCOUNT"):
+            gate.BOT_ACCOUNT  # noqa: B018 - attribute access is the point of this assertion
 
 
 # ---------------------------------------------------------------------------
