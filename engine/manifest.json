@@ -56,7 +56,7 @@
     "scripts/api-integration-test.sh": "08c04914fe7d6ef7758258dd5553ff6ba05bc11d3c9191745d5108eb7e66207a",
     "scripts/append-loop-metrics.sh": "688e3b67b8d203645ccaf6ef610fcd2451049e1f3b03ceac4a97c8dcf8edfc1b",
     "scripts/archive-test-spawned-metrics.sh": "dae4ff11244fdc559cdd89ae8534b4c362ed190306492aca29624d2a0fb52cc3",
-    "scripts/audit-registered-hooks.sh": "5d3d9f9126f39a450b219f4d7676ade97244a049664a3648896389d189a0ce19",
+    "scripts/audit-registered-hooks.sh": "2207dd11a3e159b6ab4d8f9a134d567c75ba8931c4f98bafd239e2efc867d977",
     "scripts/audit-replay.sh": "b27b766caa0d0fc89114ec9381eeeb319ad2bdc5ae5cf9d77e5a860c42818856",
     "scripts/auto-plan.sh": "46fbfd0f6fbbc82f2e30fbf4ba393be02bd36f07380525d6f77508e14a9774e8",
     "scripts/backfill-agent-runs.sh": "657a9d1cf1fcfba3d92e0edf63b7bbe2e0276422ba672401d1d852b05a254611",

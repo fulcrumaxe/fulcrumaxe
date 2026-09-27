@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # tests/test_audit_registered_hooks.sh
 #
-# Tests scripts/audit-registered-hooks.sh (D#2344): a read-only report of
-# every hook registered against this repo's tool calls, from both the
-# user-global and the project-local settings files.
+# Tests scripts/audit-registered-hooks.sh (D#2344, extended D#2533): a
+# read-only report of every hook registered against this repo's tool calls,
+# from both the user-global and the project-local settings files.
 #
 # Covers the acceptance criteria:
 #   1. Every hook entry is reported with event, matcher, command as written,
-#      resolved path, and a content hash.
+#      the deciding token, its resolved path, and a content hash.
 #   2. The liveness assertion is on the RESOLVED path, not on presence of
 #      the string "PreToolUse" -- a foreign-only fixture is reported as
 #      foreign and names the path; an in-repo-only fixture reports none.
@@ -17,6 +17,21 @@
 #   4. Exit status is 0 in every one of those cases.
 #   5. Degenerate inputs (missing file, invalid JSON, no "hooks" key) each
 #      produce a stated result and exit 0.
+#   6. (D#2533) Every absolute-path token in a command is classified, not
+#      just the last one, and FOREIGN wins over IN-REPO -- a wrapper
+#      command must not report the wrapped file's hash under a FOREIGN or
+#      IN-REPO verdict that belongs to a different token.
+#   7. (D#2533) A trailing value-less flag fails fast instead of hanging.
+#   8. (D#2533) A FOREIGN/UNRESOLVED entry raises a [WARN] marker line,
+#      distinct from the entry dump line; a clean run raises [OK].
+#   9. (D#2533 fix round 1) Every degenerate branch raises exactly one
+#      marker too, not just the entry-loop path: [OK] for a settings file
+#      this script fully read and found nothing registered in (missing,
+#      present with no "hooks" key), [WARN] for one it could not read at
+#      all (invalid JSON). Checked on the project section (where the
+#      degenerate fixtures already lived) and, for the no-"hooks"-key case
+#      specifically, on the global section too -- that is the exact shape
+#      the round-1 review reproduced against a real operator settings file.
 #
 # Self-contained: every fixture lives under mktemp -d. This test never
 # reads or writes the operator's real $HOME or this repo's own committed
@@ -54,14 +69,20 @@ T=$(mktemp -d)
 cleanup() { rm -rf "$T"; }
 trap cleanup EXIT
 
-mkdir -p "$T/repoA/hooks" "$T/foreign_repo/hooks"
+mkdir -p "$T/repoA/hooks" "$T/foreign_repo/hooks" "$T/foreign_repo/other"
 echo "# in-repo hook" > "$T/repoA/hooks/sandbox.py"
 echo "# foreign hook" > "$T/foreign_repo/hooks/sandbox.py"
+echo "# foreign wrapper" > "$T/foreign_repo/other/wrapper.py"
 MISSING_SETTINGS="$T/does_not_exist.json"
 
 run_audit() {
   # $1=project settings path
   bash "$SCRIPT" --repo-root "$T/repoA" --project-settings "$1" --global-settings "$MISSING_SETTINGS"
+}
+
+run_audit_global() {
+  # $1=global settings path, project settings absent
+  bash "$SCRIPT" --repo-root "$T/repoA" --project-settings "$MISSING_SETTINGS" --global-settings "$1"
 }
 
 # -----------------------------------------------------------------------
@@ -158,6 +179,89 @@ fi
 [ "$RC_C" -eq 0 ] && ok "case (c): exits 0" || fail_test "case (c): exits 0" "got $RC_C"
 
 # -----------------------------------------------------------------------
+# Fixture (d): D#2533 finding 1's exact shape -- a foreign wrapper listed
+# BEFORE the genuine in-repo hook. This is the detector-evasion case: the
+# old last-token rule picked the in-repo path here and printed ITS hash
+# under an IN-REPO verdict. The fix must report FOREIGN, name the wrapper
+# token, and print the WRAPPER's hash -- never the in-repo hook's.
+# -----------------------------------------------------------------------
+FIXTURE_D="$T/fixture_d.json"
+python3 - "$FIXTURE_D" "$T/foreign_repo/other/wrapper.py" <<'PYEOF'
+import json, sys
+path, wrapper = sys.argv[1], sys.argv[2]
+settings = {"hooks": {"PreToolUse": [
+    {"matcher": "Bash", "hooks": [{"type": "command",
+        "command": f"python3 {wrapper} $CLAUDE_PROJECT_DIR/hooks/sandbox.py"}]}
+]}}
+json.dump(settings, open(path, "w"))
+PYEOF
+
+OUT_D=$(run_audit "$FIXTURE_D")
+RC_D=$?
+WRAPPER_HASH=$(sha256sum "$T/foreign_repo/other/wrapper.py" | awk '{print $1}')
+INREPO_HASH=$(sha256sum "$T/repoA/hooks/sandbox.py" | awk '{print $1}')
+
+if echo "$OUT_D" | grep -q "project FOREIGN event=PreToolUse.*sha256=$WRAPPER_HASH"; then
+  ok "case (d): foreign-then-in-repo wrapper is classified FOREIGN with the wrapper's own hash"
+else
+  fail_test "case (d): foreign-then-in-repo wrapper is classified FOREIGN with the wrapper's own hash" "$OUT_D"
+fi
+
+if echo "$OUT_D" | grep -q "sha256=$INREPO_HASH"; then
+  fail_test "case (d): must not print the in-repo hook's hash for a FOREIGN verdict (the D#2533 bug)" "$OUT_D"
+else
+  ok "case (d): does not print the in-repo hook's hash for the FOREIGN verdict"
+fi
+
+[ "$RC_D" -eq 0 ] && ok "case (d): exits 0" || fail_test "case (d): exits 0" "got $RC_D"
+
+# -----------------------------------------------------------------------
+# Fixture (e): in-repo token FIRST, foreign token second. FOREIGN must
+# still win even though the foreign token is not the last one, and the
+# printed hash must be the foreign token's.
+# -----------------------------------------------------------------------
+FIXTURE_E="$T/fixture_e.json"
+python3 - "$FIXTURE_E" "$T/foreign_repo/other/wrapper.py" <<'PYEOF'
+import json, sys
+path, wrapper = sys.argv[1], sys.argv[2]
+settings = {"hooks": {"PreToolUse": [
+    {"matcher": "Bash", "hooks": [{"type": "command",
+        "command": f"python3 $CLAUDE_PROJECT_DIR/hooks/sandbox.py {wrapper}"}]}
+]}}
+json.dump(settings, open(path, "w"))
+PYEOF
+
+OUT_E=$(run_audit "$FIXTURE_E")
+RC_E=$?
+
+if echo "$OUT_E" | grep -q "project FOREIGN event=PreToolUse.*sha256=$WRAPPER_HASH"; then
+  ok "case (e): in-repo-then-foreign is still classified FOREIGN with the foreign token's hash"
+else
+  fail_test "case (e): in-repo-then-foreign is still classified FOREIGN with the foreign token's hash" "$OUT_E"
+fi
+
+[ "$RC_E" -eq 0 ] && ok "case (e): exits 0" || fail_test "case (e): exits 0" "got $RC_E"
+
+# -----------------------------------------------------------------------
+# Fixture (f): no absolute-path token at all -> UNRESOLVED
+# -----------------------------------------------------------------------
+FIXTURE_F="$T/fixture_f.json"
+cat > "$FIXTURE_F" <<'JSON'
+{"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "true"}]}]}}
+JSON
+
+OUT_F=$(run_audit "$FIXTURE_F")
+RC_F=$?
+
+if echo "$OUT_F" | grep -q "project UNRESOLVED event=PreToolUse"; then
+  ok "case (f): a command with no absolute-path token is UNRESOLVED"
+else
+  fail_test "case (f): a command with no absolute-path token is UNRESOLVED" "$OUT_F"
+fi
+
+[ "$RC_F" -eq 0 ] && ok "case (f): exits 0" || fail_test "case (f): exits 0" "got $RC_F"
+
+# -----------------------------------------------------------------------
 # Degenerate inputs -- each a stated result, exit 0
 # -----------------------------------------------------------------------
 
@@ -171,6 +275,20 @@ else
 fi
 [ "$RC_MISSING" -eq 0 ] && ok "degenerate: missing file exits 0" || fail_test "degenerate: missing file exits 0" "got $RC_MISSING"
 
+# fix round 1 (D#2533 blocker): a missing file is a verified-clean state --
+# this script read the absence and confirmed nothing is registered -- so it
+# gets [OK], on its own line, for BOTH the project and global sections.
+if echo "$OUT_MISSING" | grep -qE '^  project \[OK\]'; then
+  ok "fix round 1: missing project settings file raises an [OK] marker"
+else
+  fail_test "fix round 1: missing project settings file raises an [OK] marker" "$OUT_MISSING"
+fi
+if echo "$OUT_MISSING" | grep -qE '^  global \[OK\]'; then
+  ok "fix round 1: missing global settings file raises an [OK] marker"
+else
+  fail_test "fix round 1: missing global settings file raises an [OK] marker" "$OUT_MISSING"
+fi
+
 # Invalid JSON
 FIXTURE_BAD="$T/bad.json"
 echo '{not valid json' > "$FIXTURE_BAD"
@@ -183,7 +301,19 @@ else
 fi
 [ "$RC_BAD" -eq 0 ] && ok "degenerate: invalid JSON exits 0" || fail_test "degenerate: invalid JSON exits 0" "got $RC_BAD"
 
-# No "hooks" key
+# fix round 1: invalid JSON means this script cannot see what the file
+# contains, so it cannot claim [OK] -- it gets [WARN] instead, distinct from
+# the FOREIGN/UNRESOLVED [WARN] above but the same marker an operator scans
+# for.
+if echo "$OUT_BAD" | grep -qE '^  project \[WARN\]'; then
+  ok "fix round 1: invalid JSON raises a [WARN] marker (unverifiable, not silently OK)"
+else
+  fail_test "fix round 1: invalid JSON raises a [WARN] marker" "$OUT_BAD"
+fi
+
+# No "hooks" key -- this is the exact blocker from fix round 1: the built
+# PR's "no hooks key" branch printed no marker at all, reproduced against
+# the operator's real ~/.claude/settings.json (no "hooks" key there).
 FIXTURE_NOHOOKS="$T/nohooks.json"
 echo '{}' > "$FIXTURE_NOHOOKS"
 OUT_NOHOOKS=$(run_audit "$FIXTURE_NOHOOKS")
@@ -194,6 +324,92 @@ else
   fail_test "degenerate: no hooks key reports 'no hooks key'" "$OUT_NOHOOKS"
 fi
 [ "$RC_NOHOOKS" -eq 0 ] && ok "degenerate: no hooks key exits 0" || fail_test "degenerate: no hooks key exits 0" "got $RC_NOHOOKS"
+
+if echo "$OUT_NOHOOKS" | grep -qE '^  project \[OK\]'; then
+  ok "fix round 1: no-hooks-key raises an [OK] marker (the D#2533 blocker)"
+else
+  fail_test "fix round 1: no-hooks-key raises an [OK] marker (the D#2533 blocker)" "$OUT_NOHOOKS"
+fi
+
+# Same check on the GLOBAL settings file specifically -- this is the exact
+# shape the reviewer reproduced against the operator's real
+# ~/.claude/settings.json (project settings absent so only global renders).
+OUT_NOHOOKS_GLOBAL=$(run_audit_global "$FIXTURE_NOHOOKS")
+RC_NOHOOKS_GLOBAL=$?
+if echo "$OUT_NOHOOKS_GLOBAL" | grep -qE '^  global \[OK\]'; then
+  ok "fix round 1: no-hooks-key on the global settings file raises an [OK] marker"
+else
+  fail_test "fix round 1: no-hooks-key on the global settings file raises an [OK] marker" "$OUT_NOHOOKS_GLOBAL"
+fi
+[ "$RC_NOHOOKS_GLOBAL" -eq 0 ] && ok "fix round 1: no-hooks-key on global exits 0" || fail_test "fix round 1: no-hooks-key on global exits 0" "got $RC_NOHOOKS_GLOBAL"
+
+# -----------------------------------------------------------------------
+# D#2533 finding 2: a trailing value-less flag must fail fast, not hang.
+# Bounded by `timeout` so a regression cannot hang this suite itself.
+# -----------------------------------------------------------------------
+HANG_OUT=$(timeout --kill-after=5s 10 bash "$SCRIPT" --repo-root 2>&1)
+RC_HANG=$?
+
+if [ "$RC_HANG" -ne 124 ]; then
+  ok "finding 2: trailing --repo-root with no value does not hang (rc=$RC_HANG, not 124)"
+else
+  fail_test "finding 2: trailing --repo-root with no value does not hang" "got rc=124 (timeout fired)"
+fi
+
+if [ "$RC_HANG" -ne 0 ] && [ "$RC_HANG" -ne 124 ]; then
+  ok "finding 2: trailing --repo-root with no value exits non-zero (argument-parse error, not a report outcome)"
+else
+  fail_test "finding 2: trailing --repo-root with no value exits non-zero" "got rc=$RC_HANG"
+fi
+
+if echo "$HANG_OUT" | grep -qF -- '--repo-root'; then
+  ok "finding 2: the error message names the offending flag"
+else
+  fail_test "finding 2: the error message names the offending flag" "$HANG_OUT"
+fi
+
+# -----------------------------------------------------------------------
+# D#2533 finding 3: [WARN]/[OK] markers, checked on the global settings
+# file specifically -- that is the scenario this script exists for
+# (D#2344: a foreign hook registered globally, invisible to a project-only
+# check).
+# -----------------------------------------------------------------------
+GLOBAL_FOREIGN="$T/global_foreign.json"
+python3 - "$GLOBAL_FOREIGN" "$T/foreign_repo/hooks/sandbox.py" <<'PYEOF'
+import json, sys
+path, foreign_hook = sys.argv[1], sys.argv[2]
+settings = {"hooks": {"PreToolUse": [
+    {"matcher": "Bash", "hooks": [{"type": "command", "command": f"python3 {foreign_hook}"}]}
+]}}
+json.dump(settings, open(path, "w"))
+PYEOF
+
+OUT_GWARN=$(run_audit_global "$GLOBAL_FOREIGN")
+RC_GWARN=$?
+
+if echo "$OUT_GWARN" | grep -qE '^  global \[WARN\]'; then
+  ok "finding 3: a FOREIGN entry in the global settings file raises a [WARN] marker, its own line"
+else
+  fail_test "finding 3: a FOREIGN entry in the global settings file raises a [WARN] marker, its own line" "$OUT_GWARN"
+fi
+
+[ "$RC_GWARN" -eq 0 ] && ok "finding 3: exits 0 even when [WARN] fires (report, never a gate)" || fail_test "finding 3: exits 0 even when [WARN] fires" "got $RC_GWARN"
+
+GLOBAL_CLEAN="$T/global_clean.json"
+cat > "$GLOBAL_CLEAN" <<'JSON'
+{"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "python3 $CLAUDE_PROJECT_DIR/hooks/sandbox.py"}]}]}}
+JSON
+
+OUT_GOK=$(run_audit_global "$GLOBAL_CLEAN")
+RC_GOK=$?
+
+if echo "$OUT_GOK" | grep -qE '^  global \[OK\]'; then
+  ok "finding 3: a clean global settings file raises an [OK] marker"
+else
+  fail_test "finding 3: a clean global settings file raises an [OK] marker" "$OUT_GOK"
+fi
+
+[ "$RC_GOK" -eq 0 ] && ok "finding 3: exits 0 on a clean global run" || fail_test "finding 3: exits 0 on a clean global run" "got $RC_GOK"
 
 # -----------------------------------------------------------------------
 # Never mutates either settings file
