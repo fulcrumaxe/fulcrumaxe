@@ -95,6 +95,14 @@ PYTEST_BUILTIN_MARKERS = frozenset({
 # Directories that are not this project's source tree.
 SKIP_DIR_NAMES = frozenset({".git", ".venv", "venv", "node_modules", "__pycache__"})
 
+# archive/ holds files the Archive Protocol has retired: kept findable in the
+# working tree, but not part of the live dependency boundary this guard
+# describes (nothing imports them at runtime). Excluded explicitly, by a
+# prefix test on the path relative to the scan root, rather than folded into
+# SKIP_DIR_NAMES — those are scan mechanics (VCS/venv/cache dirs skipped
+# everywhere), this is a policy call about what counts as "live" (D#2491).
+ARCHIVE_DIR_NAME = "archive"
+
 
 def _iter_requirement_lines(text: str):
     for raw_line in text.splitlines():
@@ -165,13 +173,17 @@ def scan_markers(root: Path) -> tuple[dict[str, set[str]], set[str], list[Path]]
     for path in sorted(root.rglob("*.py")):
         if SKIP_DIR_NAMES.intersection(path.parts):
             continue
+        rel_path = path.relative_to(root)
+        if rel_path.parts and rel_path.parts[0] == ARCHIVE_DIR_NAME:
+            # Archived by protocol, not live — see ARCHIVE_DIR_NAME above.
+            continue
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"))
         except (OSError, SyntaxError, UnicodeDecodeError):
             unparseable.append(path)
             continue
 
-        rel = str(path.relative_to(root))
+        rel = str(rel_path)
         for node in ast.walk(tree):
             name = _marker_name(node)
             if name is not None:
