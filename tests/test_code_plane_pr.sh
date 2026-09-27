@@ -994,6 +994,182 @@ rm -rf "$CALLER_CWD"
 rm -rf "$FX_MANIFEST" "$FX_BOUNDED" "$FX_AGENTS" "$FX_COMMANDS" "$FX_ALLOWLIST" \
        "${FX_RUFF:-}" "$FX_RUFF9" "$FX_QUIET" "${FX_PUSH:-}" "$FX_CONTAIN"
 
+# ── D#2622 Case: a guard-clean tree passes the full run-guards.sh suite
+#                (item 1) ──────────────────────────────────────────────────
+# Fix round 1: the fixture used to plant a synthetic .autonomous-team/
+# config.json, which is exactly what the real code plane never ships — that
+# planted file let the tree "self-resolve" in the test even though the real
+# tree never can, so the suite never exercised the fallback path that fires
+# in production. No config.json is planted anywhere below. Instead the test
+# passes --code-repo explicitly, the way a real caller does (resolved once,
+# in the caller's own checkout, before calling build), and a guard script
+# checks the exact value the guard subprocess actually sees for
+# AUTONOMOUS_TEAM_REPO — proving both that the guard ran and that it saw the
+# right value, not a fallback.
+echo ""
+echo "=== D#2622 Case: build runs the full run-guards.sh suite and passes on a guard-clean tree (item 1) ==="
+FX_RUNGUARDS_OK="$(_fixture_repo)"
+mkdir -p "$FX_RUNGUARDS_OK/scripts/ci" "$FX_RUNGUARDS_OK/scripts/lib"
+cp "$REPO_ROOT/scripts/ci/run-guards.sh" "$FX_RUNGUARDS_OK/scripts/ci/run-guards.sh"
+cat > "$FX_RUNGUARDS_OK/scripts/ci/fixture-repo-check-guard.sh" <<'GUARDEOF'
+#!/usr/bin/env bash
+# Fails unless AUTONOMOUS_TEAM_REPO is exactly the slug this fixture's test
+# case expects, so a passing run also proves the guard subprocess saw the
+# caller-supplied --code-repo value and nothing else (not unset, not a
+# value leaked from the caller's own shell).
+if [[ "${AUTONOMOUS_TEAM_REPO:-}" != "fixture-org/fixture-repo" ]]; then
+  echo "expected AUTONOMOUS_TEAM_REPO=fixture-org/fixture-repo, got '${AUTONOMOUS_TEAM_REPO:-<unset>}'" >&2
+  exit 1
+fi
+exit 0
+GUARDEOF
+COMMIT_RUNGUARDS_OK_BASE="$(_d2578_stage_and_commit "$FX_RUNGUARDS_OK" "base for a guard-clean tree" \
+  scripts/ci/run-guards.sh scripts/ci/fixture-repo-check-guard.sh)"
+
+LOCAL_RUNGUARDS_OK="$TEST_SCRATCH/d2622-ok-trivial.txt"
+printf 'trivial content\n' > "$LOCAL_RUNGUARDS_OK"
+# env -u: the fixture carries no config.json (the real tree never does
+# either), and this shell has no AUTONOMOUS_TEAM_REPO of its own — the only
+# way the guard subprocess can see the right value is via --code-repo.
+OUT_RUNGUARDS_OK="$(cd "$FX_RUNGUARDS_OK" && unset AUTONOMOUS_TEAM_REPO && code_plane_pr build \
+  --target-ref "$COMMIT_RUNGUARDS_OK_BASE" --base-ref "$COMMIT_RUNGUARDS_OK_BASE" \
+  --code-repo "fixture-org/fixture-repo" \
+  --branch test --message "d2622 clean guard run" "trivial.txt=$LOCAL_RUNGUARDS_OK" 2>"$TEST_SCRATCH/d2622-ok.err")"
+RC_RUNGUARDS_OK=$?
+
+if [[ "$RC_RUNGUARDS_OK" -eq 0 && "$OUT_RUNGUARDS_OK" =~ ^[0-9a-f]{40}$ ]]; then
+  _pass "item1 (D#2622): build exits 0 and prints a commit sha on a guard-clean tree, AUTONOMOUS_TEAM_REPO unset"
+else
+  _fail "item1 (D#2622): expected exit 0 with a commit sha, got rc=$RC_RUNGUARDS_OK stdout='$OUT_RUNGUARDS_OK': $(cat "$TEST_SCRATCH/d2622-ok.err")"
+fi
+if grep -q 'run-guards: OK' "$TEST_SCRATCH/d2622-ok.err"; then
+  _pass "item1 (D#2622): build's stderr contains 'run-guards: OK'"
+else
+  _fail "item1 (D#2622): build's stderr does not contain 'run-guards: OK': $(cat "$TEST_SCRATCH/d2622-ok.err")"
+fi
+if grep -qE '0 failed' "$TEST_SCRATCH/d2622-ok.err"; then
+  _pass "item1 (D#2622): build's stderr contains a summary line with '0 failed'"
+else
+  _fail "item1 (D#2622): build's stderr does not contain a '0 failed' summary: $(cat "$TEST_SCRATCH/d2622-ok.err")"
+fi
+
+# ── D#2622 Case: a leaked ambient AUTONOMOUS_TEAM_REPO must not reach the
+#                guards (item 4 / fix round 1) ──────────────────────────────
+# Reproduces the reviewer's second finding directly: export an arbitrary,
+# wrong value into the CALLING shell before invoking build, still pass the
+# correct --code-repo, and confirm the guard subprocess sees only the
+# --code-repo value — never the caller's own exported one.
+echo ""
+echo "=== D#2622 Case: a bogus caller-exported AUTONOMOUS_TEAM_REPO does not reach the guard subprocess ==="
+OUT_RUNGUARDS_LEAK="$(cd "$FX_RUNGUARDS_OK" && AUTONOMOUS_TEAM_REPO="LEAKED-org/LEAKED-repo" code_plane_pr build \
+  --target-ref "$COMMIT_RUNGUARDS_OK_BASE" --base-ref "$COMMIT_RUNGUARDS_OK_BASE" \
+  --code-repo "fixture-org/fixture-repo" \
+  --branch test --message "d2622 leaked env must not reach guards" "trivial.txt=$LOCAL_RUNGUARDS_OK" 2>"$TEST_SCRATCH/d2622-leak.err")"
+RC_RUNGUARDS_LEAK=$?
+
+if [[ "$RC_RUNGUARDS_LEAK" -eq 0 && "$OUT_RUNGUARDS_LEAK" =~ ^[0-9a-f]{40}$ ]]; then
+  _pass "leaked-env (D#2622): build still exits 0 using --code-repo despite a bogus AUTONOMOUS_TEAM_REPO in the caller's shell"
+else
+  _fail "leaked-env (D#2622): expected exit 0 with a commit sha, got rc=$RC_RUNGUARDS_LEAK stdout='$OUT_RUNGUARDS_LEAK': $(cat "$TEST_SCRATCH/d2622-leak.err")"
+fi
+if grep -q 'run-guards: OK' "$TEST_SCRATCH/d2622-leak.err" && ! grep -q 'LEAKED-org/LEAKED-repo' "$TEST_SCRATCH/d2622-leak.err"; then
+  _pass "leaked-env (D#2622): guard subprocess saw the --code-repo value, not the leaked one"
+else
+  _fail "leaked-env (D#2622): the leaked value reached the guard, or the guard did not run cleanly: $(cat "$TEST_SCRATCH/d2622-leak.err")"
+fi
+rm -rf "$FX_RUNGUARDS_OK"
+
+# ── D#2622 Case: omitting --code-repo refuses loudly, never a silent pass
+#                (item 2 / item 4, fix round 1) ─────────────────────────────
+# Reproduces the reviewer's primary finding: with the runner present in the
+# tree and no --code-repo supplied, build must refuse (exit 2) before ever
+# dispatching a single guard — not fall through to whatever the caller's
+# shell happens to have exported, and not silently skip the check.
+echo ""
+echo "=== D#2622 Case: build refuses (exit 2) when --code-repo is omitted and the runner is present ==="
+FX_RUNGUARDS_NOREPO="$(_fixture_repo)"
+mkdir -p "$FX_RUNGUARDS_NOREPO/scripts/ci"
+cp "$REPO_ROOT/scripts/ci/run-guards.sh" "$FX_RUNGUARDS_NOREPO/scripts/ci/run-guards.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$FX_RUNGUARDS_NOREPO/scripts/ci/fixture-clean-guard.sh"
+COMMIT_RUNGUARDS_NOREPO_BASE="$(_d2578_stage_and_commit "$FX_RUNGUARDS_NOREPO" "base, no --code-repo case" \
+  scripts/ci/run-guards.sh scripts/ci/fixture-clean-guard.sh)"
+
+LOCAL_RUNGUARDS_NOREPO="$TEST_SCRATCH/d2622-norepo-trivial.txt"
+printf 'trivial content\n' > "$LOCAL_RUNGUARDS_NOREPO"
+# Tried once with a bogus value ALSO exported ambiently, so a regression
+# that silently falls back to the environment is caught even though it
+# would "work" by accident in the plain-unset case.
+OUT_RUNGUARDS_NOREPO="$(cd "$FX_RUNGUARDS_NOREPO" && AUTONOMOUS_TEAM_REPO="LEAKED-org/LEAKED-repo" code_plane_pr build \
+  --target-ref "$COMMIT_RUNGUARDS_NOREPO_BASE" --base-ref "$COMMIT_RUNGUARDS_NOREPO_BASE" \
+  --branch test --message "d2622 no code-repo given" "trivial.txt=$LOCAL_RUNGUARDS_NOREPO" 2>"$TEST_SCRATCH/d2622-norepo.err")"
+RC_RUNGUARDS_NOREPO=$?
+
+if [[ "$RC_RUNGUARDS_NOREPO" -eq 2 ]]; then
+  _pass "no-code-repo (D#2622): build refuses with exit 2 when --code-repo is omitted"
+else
+  _fail "no-code-repo (D#2622): expected exit 2, got $RC_RUNGUARDS_NOREPO (stdout='$OUT_RUNGUARDS_NOREPO'): $(cat "$TEST_SCRATCH/d2622-norepo.err")"
+fi
+if grep -q -- '--code-repo' "$TEST_SCRATCH/d2622-norepo.err"; then
+  _pass "no-code-repo (D#2622): stderr names --code-repo as the missing input"
+else
+  _fail "no-code-repo (D#2622): stderr does not mention --code-repo: $(cat "$TEST_SCRATCH/d2622-norepo.err")"
+fi
+if grep -qE '^--- fixture-clean-guard\.sh$' "$TEST_SCRATCH/d2622-norepo.err"; then
+  _fail "no-code-repo (D#2622): run-guards.sh was dispatched at all — refusal must happen before any guard runs: $(cat "$TEST_SCRATCH/d2622-norepo.err")"
+else
+  _pass "no-code-repo (D#2622): refusal happens before run-guards.sh dispatches any guard"
+fi
+rm -rf "$FX_RUNGUARDS_NOREPO"
+
+# ── D#2622 Case: a behavioural regression is refused (item 2) ───────────────
+# Plants a canonical-shaped spawn id in a NEW tracked file so
+# no-planted-spawn-ids-guard.py fails — a `git ls-files`-based guard, not one
+# of the three derived-file guards, so this exercises the materialized git
+# index (_cpp_materialize_git_index), not just the archive-only path.
+# Fix round 1: no planted config.json here either — --code-repo is passed
+# explicitly and the ambient shell has no AUTONOMOUS_TEAM_REPO of its own.
+echo ""
+echo "=== D#2622 Case: build refuses a behavioural (non-derived-file) guard failure (item 2) ==="
+FX_RUNGUARDS_FAIL="$(_fixture_repo)"
+mkdir -p "$FX_RUNGUARDS_FAIL/scripts/ci" "$FX_RUNGUARDS_FAIL/docs"
+cp "$REPO_ROOT/scripts/ci/run-guards.sh" "$FX_RUNGUARDS_FAIL/scripts/ci/run-guards.sh"
+cp "$REPO_ROOT/scripts/ci/no-planted-spawn-ids-guard.py" "$FX_RUNGUARDS_FAIL/scripts/ci/no-planted-spawn-ids-guard.py"
+printf 'benign doc content, no plant here\n' > "$FX_RUNGUARDS_FAIL/docs/notes.md"
+COMMIT_RUNGUARDS_FAIL_BASE="$(_d2578_stage_and_commit "$FX_RUNGUARDS_FAIL" "base for a guard-clean tree, item 2" \
+  scripts/ci/run-guards.sh scripts/ci/no-planted-spawn-ids-guard.py docs/notes.md)"
+
+LOCAL_PLANT="$TEST_SCRATCH/d2622-planted.md"
+# Assembled from two separate fragments, same discipline
+# no-planted-spawn-ids-guard.py uses for its own source: this test file is
+# ITSELF a tracked file the real run-guards.sh scans, so writing the tag
+# immediately adjacent to a canonical-shaped id as one literal here would
+# plant a hit against this very test file.
+PLANT_TAG_D2622="hook_event_id="
+PLANT_ID_D2622="executor-42-1735000000"
+printf 'a doc with a planted spawn id: %s%s\n' "$PLANT_TAG_D2622" "$PLANT_ID_D2622" > "$LOCAL_PLANT"
+OUT_RUNGUARDS_FAIL="$(cd "$FX_RUNGUARDS_FAIL" && unset AUTONOMOUS_TEAM_REPO && code_plane_pr build \
+  --target-ref "$COMMIT_RUNGUARDS_FAIL_BASE" --base-ref "$COMMIT_RUNGUARDS_FAIL_BASE" \
+  --code-repo "fixture-org/fixture-repo" \
+  --branch test --message "d2622 planted id trips the guard" "docs/planted.md=$LOCAL_PLANT" 2>"$TEST_SCRATCH/d2622-fail.err")"
+RC_RUNGUARDS_FAIL=$?
+
+if [[ "$RC_RUNGUARDS_FAIL" -eq 5 ]]; then
+  _pass "item2 (D#2622): build exits 5 (documented refusal code) when a behavioural guard fails"
+else
+  _fail "item2 (D#2622): expected exit 5, got $RC_RUNGUARDS_FAIL (stdout='$OUT_RUNGUARDS_FAIL'): $(cat "$TEST_SCRATCH/d2622-fail.err")"
+fi
+if [[ -z "$OUT_RUNGUARDS_FAIL" ]]; then
+  _pass "item2 (D#2622): build prints no commit sha when the behavioural guard refuses"
+else
+  _fail "item2 (D#2622): expected empty stdout on guard refusal, got '$OUT_RUNGUARDS_FAIL'"
+fi
+if grep -q 'no-planted-spawn-ids-guard.py' "$TEST_SCRATCH/d2622-fail.err"; then
+  _pass "item2 (D#2622): build's stderr names the failing guard by filename"
+else
+  _fail "item2 (D#2622): build's stderr does not name no-planted-spawn-ids-guard.py: $(cat "$TEST_SCRATCH/d2622-fail.err")"
+fi
+rm -rf "$FX_RUNGUARDS_FAIL"
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 rm -rf "$FX4" "$FX6" "$FX8"
 

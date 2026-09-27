@@ -97,13 +97,43 @@
 #      materialized tree (an old --target-ref, or a fixture that doesn't
 #      carry it) is a stderr NOTE and is skipped — CI cannot run a guard the
 #      tree doesn't have either.
-#   5. Never regenerates scripts/ruff-known-findings.txt. Lowering it is a
+#   5. Runs the full behavioural guard suite, scripts/ci/run-guards.sh,
+#      against that same scratch tree (D#2622) — the tree `build` is about
+#      to commit, not the caller's own checkout and not code-plane main.
+#      `git archive | tar -x` alone leaves no `.git`, which is fine for
+#      steps 1-4 but not for a guard that reads `git ls-files` to find its
+#      subject set, so this step first turns the scratch tree into a
+#      minimal, disposable git repo: `git init`, an
+#      objects/info/alternates file pointing at this process's own object
+#      store (read-only — nothing is ever written back through it), then
+#      `git read-tree` of the exact tree already on disk. None of that is
+#      one of the seven verbs (checkout/switch/branch/reset/clean/worktree/
+#      restore) this script is never allowed to touch. AUTONOMOUS_TEAM_REPO
+#      and AUTONOMOUS_TEAM_STATE_DIR are set explicitly for that one
+#      subprocess call. AUTONOMOUS_TEAM_REPO comes from the caller's
+#      `--code-repo <owner/name>` argument to `build` — never resolved from
+#      the tree, because the code plane ships no
+#      .autonomous-team/config.json for a tree-local resolution to read, and
+#      never inherited from this shell's own AUTONOMOUS_TEAM_REPO either, so
+#      an unrelated value already exported by the caller's shell can't reach
+#      the guards by accident (D#2622 fix round 1 — the first cut tried to
+#      resolve from the tree's own config, which can never exist, and so
+#      silently fell through to whatever the caller's shell happened to have
+#      set). `build` refuses (exit 2) if the runner is present in the tree
+#      but `--code-repo` was not given. AUTONOMOUS_TEAM_STATE_DIR always
+#      points at a scratch dir under the build's own scratch. The run is
+#      bounded (`timeout 300`); a timeout is a refusal, not a pass. Refuses
+#      (exit 5) naming the failing guard(s) on any non-zero exit.
+#      scripts/ci/run-guards.sh absent from the materialized tree (an old
+#      --target-ref, or a fixture that doesn't carry it) is a stderr NOTE
+#      and is skipped, same discipline as step 4.
+#   6. Never regenerates scripts/ruff-known-findings.txt. Lowering it is a
 #      judgement call ("this finding is fixed, not moved"), not a mechanical
 #      derivation — see ruff-ratchet.py's own header. A finding that stops
 #      reproducing refuses (exit 5) and names the exact baseline line to
 #      change.
 #
-# `--skip-guards "<reason>"` on `build` or `push` skips steps 1-4 above (a
+# `--skip-guards "<reason>"` on `build` or `push` skips steps 1-5 above (a
 # loud WARN on stderr quoting the reason) and, on `push`, skips the
 # re-verification before the network call. This exists so a guard red on
 # main itself can never block the PR that fixes it. An empty or missing
@@ -118,8 +148,10 @@
 #   4  scope check failed — built commit touches more/fewer paths than asked
 #      (asked = the requested paths union whatever this step regenerated)
 #   5  a derived-file guard refused the commit (bounded-regeneration
-#      overflow, a failing CI guard, or a ruff-baseline over-allowance);
-#      stderr names the offending path. --skip-guards bypasses this.
+#      overflow, a failing CI guard, or a ruff-baseline over-allowance), or
+#      the full run-guards.sh suite failed (or timed out) against the tree
+#      about to be committed; stderr names the offending path or guard(s).
+#      --skip-guards bypasses this.
 #
 # Exit codes from `push`:
 #   0  pushed (or, with --skip-guards, attempted the push regardless of
@@ -133,6 +165,12 @@
 # above, and never resolves a repo slug — that stays in the caller's hands
 # (see scripts/lib/repo-resolve.sh and `_resolve_code_repo`), matching the
 # repo-scope card's boundary between "build the commit" and "open the PR".
+# `--code-repo` on `build` (D#2622, step 5 above) does not change this: it is
+# a plain string the caller already resolved for its own purposes (the same
+# slug it uses to open the PR), handed to this file only so the one
+# `run-guards.sh` subprocess can see it as AUTONOMOUS_TEAM_REPO. This file
+# still performs no resolution of its own, feeds nothing to `push`, and
+# picks no remote from it.
 #
 # This file stays a single, self-contained script — executors copy it alone
 # into a scratch directory — so it never `source`s a sibling file. It may
@@ -150,16 +188,27 @@ scripts/lib/code-plane-pr.sh — build a code-plane commit without touching a
 local ref, branch, index, or working tree.
 
   build   --target-ref <ref> --base-ref <ref> --branch <name>
-          --message <msg> [--skip-guards <reason>]
+          --message <msg> [--skip-guards <reason>] [--code-repo <owner/name>]
           <repo-path>=<local-file> [<repo-path>=<local-file> ...]
           --base-ref is required (pass the sha `extract` printed on stderr,
           or --target-ref's own value again for the genuine no-gap case).
           Regenerates engine/manifest.json and the agents//commands/
-          mirrors from the tree it just built, and refuses (exit 5) if the
-          result would still redden CI for a derived-file reason.
-          --skip-guards "<reason>" skips that regeneration and refusal
-          entirely (loud WARN on stderr) — an empty/missing reason is a
-          usage error (exit 2).
+          mirrors from the tree it just built, then runs the full
+          scripts/ci/run-guards.sh suite against that same tree, and
+          refuses (exit 5) if the result would still redden CI for a
+          derived-file reason or if any behavioural guard fails.
+          --code-repo <owner/name> is the repo slug the CALLER already
+          resolved (the same slug it uses to open the PR — see
+          scripts/lib/repo-resolve.sh's _resolve_code_repo, run from the
+          caller's own checkout). It is required whenever
+          scripts/ci/run-guards.sh exists in the tree being built: the code
+          plane ships no .autonomous-team/config.json, so a tree-local
+          resolution can never succeed, and this file never falls back to
+          its own shell's AUTONOMOUS_TEAM_REPO — omitting --code-repo in
+          that case is a refusal (exit 2), not a silent pass.
+          --skip-guards "<reason>" skips that regeneration and both guard
+          checks entirely (loud WARN on stderr) — an empty/missing reason
+          is a usage error (exit 2).
           Prints the built commit sha on stdout on success.
 
   extract --ref <ref>
@@ -316,6 +365,102 @@ _cpp_run_guards() {
   fi
 
   [[ "$refused" -eq 0 ]]
+}
+
+_cpp_materialize_git_index() {
+  # _cpp_materialize_git_index <dtree> <tree-sha>
+  # Turns the already-populated <dtree> (files already on disk, matching
+  # <tree-sha> byte for byte — see _cpp_regenerate_derived_files) into a
+  # minimal, disposable git repo whose INDEX also matches <tree-sha>, so a
+  # `git ls-files`-based guard run from <dtree> sees a real subject set
+  # instead of "not a git repository" (D#2622). Built from `git init` + an
+  # objects/info/alternates file pointing at this process's own object
+  # store + `git read-tree` — none of the seven verbs (checkout/switch/
+  # branch/reset/clean/worktree/restore) this script is never allowed to
+  # touch, and it only ever READS through the alternates file, never writes
+  # back into the source object store through it. <dtree>'s working-tree
+  # files are left exactly as they are; read-tree touches only the new
+  # .git/index. Returns 2 on any failure.
+  local dtree="$1" tree_sha="$2" common_dir
+  common_dir="$(git rev-parse --git-common-dir 2>/dev/null)" || {
+    _cpp_err "build: derived-files: could not resolve this process's own git dir for the guard index"
+    return 2
+  }
+  common_dir="$(cd "$common_dir" 2>/dev/null && pwd)" || {
+    _cpp_err "build: derived-files: could not resolve an absolute path for '$common_dir'"
+    return 2
+  }
+  if ! git init -q "$dtree" 2>/dev/null; then
+    _cpp_err "build: derived-files: git init failed while materializing the guard index at $dtree"
+    return 2
+  fi
+  if ! mkdir -p "$dtree/.git/objects/info" 2>/dev/null; then
+    _cpp_err "build: derived-files: could not create $dtree/.git/objects/info"
+    return 2
+  fi
+  printf '%s\n' "$common_dir/objects" >"$dtree/.git/objects/info/alternates"
+  if ! git -C "$dtree" read-tree "$tree_sha" 2>/dev/null; then
+    _cpp_err "build: derived-files: git read-tree failed while materializing the guard index"
+    return 2
+  fi
+  return 0
+}
+
+_cpp_run_full_guards() {
+  # _cpp_run_full_guards <dtree> <code-repo>
+  # Runs scripts/ci/run-guards.sh from <dtree> — which must already carry a
+  # git index matching the tree, via _cpp_materialize_git_index — covering
+  # behavioural guards (D#2622), not just the three derived-file guards
+  # _cpp_run_guards checks above.
+  #
+  # <code-repo> is a plain string the CALLER resolved before calling `build`
+  # (the same way it resolves the repo it opens the PR against — see
+  # scripts/lib/repo-resolve.sh's _resolve_code_repo, run from the caller's
+  # own checkout) and passed in via --code-repo. This function does not
+  # resolve a repo slug itself and does not read this shell's own
+  # AUTONOMOUS_TEAM_REPO: the materialized tree ships no
+  # .autonomous-team/config.json (the code plane never carries one), so a
+  # tree-local resolution can never succeed there, and falling back to
+  # whatever the calling shell happened to have exported would run the
+  # guards against an unrelated repo with no signal that it happened (the
+  # bug this replaces, D#2622 fix round 1). AUTONOMOUS_TEAM_STATE_DIR always
+  # points at a private scratch dir under the build's own scratch, never the
+  # operator's real state dir. Bounded at 300s; a timeout is a refusal, not
+  # a pass. Relays run-guards.sh's own stdout/stderr onto this script's
+  # stderr, prefixed. Returns 0 on a clean run (or a NOTE-skip when the
+  # runner is absent from <dtree>), 2 if the runner is present but
+  # <code-repo> is empty, 5 if the runner fails or times out.
+  local dtree="$1" code_repo="$2"
+  local runner="$dtree/scripts/ci/run-guards.sh"
+  if [[ ! -f "$runner" ]]; then
+    _cpp_err "build: NOTE: scripts/ci/run-guards.sh absent from the materialized tree — full guard run skipped"
+    return 0
+  fi
+
+  if [[ -z "$code_repo" ]]; then
+    _cpp_err "build: REFUSED — scripts/ci/run-guards.sh is present in the tree but no --code-repo was supplied; the code plane ships no .autonomous-team/config.json, so this step cannot resolve one from the tree itself. Pass --code-repo <owner/name>, resolved by the caller the same way it resolves the repo to open the PR — this step never falls back to its own shell's AUTONOMOUS_TEAM_REPO."
+    return 2
+  fi
+
+  local guard_state_dir
+  guard_state_dir="$(dirname "$dtree")/guard-state"
+  if ! mkdir -p "$guard_state_dir" 2>/dev/null; then
+    _cpp_err "build: derived-files: could not create $guard_state_dir"
+    return 2
+  fi
+
+  local out rc l
+  out="$(cd "$dtree" && AUTONOMOUS_TEAM_REPO="$code_repo" AUTONOMOUS_TEAM_STATE_DIR="$guard_state_dir" \
+    timeout --kill-after=5s 300 bash scripts/ci/run-guards.sh 2>&1)"
+  rc=$?
+
+  while IFS= read -r l; do _cpp_err "build:   $l"; done <<<"$out"
+
+  if [[ "$rc" -ne 0 ]]; then
+    _cpp_err "build: REFUSED — scripts/ci/run-guards.sh failed against the tree about to be committed (exit $rc); see the guard: lines above"
+    return 5
+  fi
+  return 0
 }
 
 _cpp_regenerate_derived_files() {
@@ -484,7 +629,7 @@ PYEOF
 # ── build ─────────────────────────────────────────────────────────────────────
 
 code_plane_pr_build() {
-  local base_ref="" target_ref="" branch="" message=""
+  local base_ref="" target_ref="" branch="" message="" code_repo=""
   local skip_guards_given=false skip_guards_reason=""
   local -a pairs=()
 
@@ -494,6 +639,7 @@ code_plane_pr_build() {
       --target-ref)   target_ref="$2";   shift 2 ;;
       --branch)       branch="$2";       shift 2 ;;
       --message)      message="$2";      shift 2 ;;
+      --code-repo)    code_repo="$2";    shift 2 ;;
       --skip-guards)  skip_guards_given=true; skip_guards_reason="$2"; shift 2 ;;
       --) shift; pairs+=("$@"); break ;;
       -*) _cpp_err "build: unknown flag '$1'"; return 2 ;;
@@ -632,6 +778,20 @@ code_plane_pr_build() {
       _cpp_err "build: REFUSED — a derived-file guard failed against the regenerated tree; see the guard: lines above"
       rm -rf "$scratch"
       return 5
+    fi
+
+    # ── full behavioural guard suite (D#2622) — run against the exact tree
+    # this build is about to commit, not the caller's checkout, not main.
+    if ! _cpp_materialize_git_index "$dtree" "$tree"; then
+      rm -rf "$scratch"
+      return 2
+    fi
+    local full_guards_rc
+    _cpp_run_full_guards "$dtree" "$code_repo"
+    full_guards_rc=$?
+    if [[ "$full_guards_rc" -ne 0 ]]; then
+      rm -rf "$scratch"
+      return "$full_guards_rc"
     fi
   fi
 
