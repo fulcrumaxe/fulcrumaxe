@@ -298,6 +298,21 @@ _GIT_BROAD_PATTERN = re.compile(r"\bgit\b")
 # ---------------------------------------------------------------------------
 # Dial registry protection — filenames that sub-agents must never write to.
 # Only the Team Lead path (not in a worktree) may mutate these files.
+#
+# D#2483 PR-b: this single list used to be consulted, unmodified, by BOTH
+# classify_bash()'s Bash-operand scan AND classify_path_write()'s Edit/Write
+# check — one tuple doing two jobs with different correct answers. Blocking
+# provision-dial-allowlist.sh as a Bash operand (SEC-1, so a sub-agent can't
+# invoke it) is correct; blocking an Edit/Write to a WORKTREE-LOCAL copy of
+# that same script is not — it froze the script's source against the very
+# agents whose job is to fix it, since a worktree copy is a private tree that
+# only ever reaches production through a reviewed PR. _DIAL_PROTECTED_SUFFIXES
+# below stays the full union and keeps feeding every Bash-side consumer
+# unchanged (_protected_basename_operand, _PROTECTED_BASENAME_RE, the
+# unenumerated-write scan) — none of that behaviour moves. Only
+# classify_path_write() now consults the narrower _DIAL_WRITE_PROTECTED_SUFFIXES
+# subset defined below it, via the `suffixes=` parameter on
+# _is_dial_protected_path().
 # ---------------------------------------------------------------------------
 
 # External-intake approval baseline store (D#1672) — a self-approval
@@ -380,6 +395,28 @@ _DIAL_PROTECTED_SUFFIXES: tuple[str, ...] = (
     # initialized" out of the filesystem into the append-only audit trail or
     # state.db, which this round does not attempt.
     f".{_EXTERNAL_INTAKE_BASELINES_FILENAME}.initialized",
+)
+
+# D#2483 PR-b — the tuple split.
+#
+# Invocation-protected: basenames a worktree sub-agent may not use as a Bash
+# operand at all (classify_bash() step 1d, via _protected_basename_operand()).
+# provision-dial-allowlist.sh belongs here and only here — it is source, not
+# state, and a worktree sub-agent must be free to Edit/Write its own private
+# copy the same as any other file in the repo it's fixing.
+_DIAL_INVOCATION_PROTECTED_SUFFIXES: tuple[str, ...] = (
+    "provision-dial-allowlist.sh",
+)
+
+# Write-protected: live state a worktree sub-agent may not Edit/Write —
+# classify_path_write() consults this set (not the full union above) so an
+# Edit/Write to a worktree-local provision-dial-allowlist.sh is allowed while
+# these files stay refused. Defined by excluding the invocation-only set from
+# the full union rather than retyped, so the two tuples cannot silently drift
+# apart — dial-registry.json, dial-directive-allowlist.json, audit.jsonl, the
+# intake baseline store, and its own init marker are the only entries left.
+_DIAL_WRITE_PROTECTED_SUFFIXES: tuple[str, ...] = tuple(
+    s for s in _DIAL_PROTECTED_SUFFIXES if s not in _DIAL_INVOCATION_PROTECTED_SUFFIXES
 )
 
 # Pre-compiled pattern for gh merge detection.
@@ -4402,7 +4439,9 @@ def classify_bash(command: str, cwd: str) -> Decision:
     return Decision(allow=True, reason="")
 
 
-def _is_dial_protected_path(file_path: str) -> bool:
+def _is_dial_protected_path(
+    file_path: str, suffixes: tuple[str, ...] = _DIAL_PROTECTED_SUFFIXES
+) -> bool:
     """Return True if *file_path* matches a dial-registry protected filename.
 
     Sub-agents in worktrees must never write these files — only the Team Lead
@@ -4410,12 +4449,21 @@ def _is_dial_protected_path(file_path: str) -> bool:
 
     Checks are suffix-only (basename match) so the function is independent of
     the exact state-dir location, which may vary per environment.
+
+    D#2483 PR-b: *suffixes* defaults to the full invocation+write union, which
+    keeps every existing caller's behaviour unchanged. classify_path_write()
+    is the one exception — it passes _DIAL_WRITE_PROTECTED_SUFFIXES instead,
+    since a worktree sub-agent's Edit/Write tool call may target its own copy
+    of provision-dial-allowlist.sh (a private tree that only reaches
+    production through a reviewed PR), even though that same basename stays
+    refused as a Bash operand — see _protected_basename_operand(), which is
+    unaffected and keeps checking the full union.
     """
     try:
         name = Path(file_path).name
     except Exception:
         return False
-    return any(name == suffix for suffix in _DIAL_PROTECTED_SUFFIXES)
+    return any(name == suffix for suffix in suffixes)
 
 
 def _protected_basename_operand(tok: str) -> bool:
@@ -4457,9 +4505,15 @@ def classify_path_write(file_path: str, cwd: str) -> Decision:
     Caller is responsible for checking is_worktree(cwd) first.
     Relative paths are allowed — Claude Code resolves them against cwd (the worktree).
     """
+    # D#2483 PR-b: checked against the write-protected subset only, not the
+    # full _DIAL_PROTECTED_SUFFIXES union — a worktree sub-agent's Edit/Write
+    # call may target its own private copy of provision-dial-allowlist.sh
+    # (source, not live state), even though the same basename stays refused
+    # as a Bash operand via _protected_basename_operand() (step 1d), which
+    # still checks the full union and is unchanged by this split.
     if not os.path.isabs(file_path):
         # Even for relative paths, check dial-registry protection by name.
-        if _is_dial_protected_path(file_path):
+        if _is_dial_protected_path(file_path, suffixes=_DIAL_WRITE_PROTECTED_SUFFIXES):
             return Decision(
                 allow=False,
                 reason=f"dial-registry write blocked: {Path(file_path).name} is read-only for sub-agents",
@@ -4467,7 +4521,7 @@ def classify_path_write(file_path: str, cwd: str) -> Decision:
         return Decision(allow=True, reason="")
 
     # Dial-registry files are protected regardless of their absolute location.
-    if _is_dial_protected_path(file_path):
+    if _is_dial_protected_path(file_path, suffixes=_DIAL_WRITE_PROTECTED_SUFFIXES):
         return Decision(
             allow=False,
             reason=f"dial-registry write blocked: {Path(file_path).name} is read-only for sub-agents",
