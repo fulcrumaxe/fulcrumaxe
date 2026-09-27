@@ -245,11 +245,24 @@ echo "--- Idempotency: re-running bootstrap ---"
 ENGINE_INSTALL_STAMP="$TARGET/.autonomous-team/engine-install.json"
 BEFORE=$(find "$TARGET" -type f -not -path '*/.git/*' -not -path "$ENGINE_INSTALL_STAMP" | sort | xargs md5sum 2>/dev/null)
 BEFORE_ENGINE_COMMIT=$(python3 -c "import json; print(json.load(open('$ENGINE_INSTALL_STAMP')).get('engine_commit'))" 2>/dev/null || echo "")
+# D#2624: I1, I3, I4 and I6 below used to each pay for their own full
+# bootstrap.sh --force re-run just to check that one file's hash (or, for
+# I4, one log line) is unchanged/present. Every one of those checks is a
+# strict subset of what this whole-tree re-run already compares, so capture
+# what they need right here and let them assert against it instead of
+# re-installing four more times. BOOTSTRAP_SKIP_TEAMLOG=1 is added to this
+# re-run so I4 can check its log below instead of running its own.
+MCP_HASH_BEFORE=$(md5sum "$TARGET/.mcp.json" 2>/dev/null | awk '{print $1}')
+REQ_HASH_BEFORE=$(md5sum "$TARGET/requirements.txt" 2>/dev/null | awk '{print $1}')
+CP_HASH_BEFORE=$(md5sum "$TARGET/.autonomous-team/config.json" 2>/dev/null | awk '{print $1}')
 
-bash "$BOOTSTRAP" --repo acme/test-cold-start-v2 --force "$TARGET" > "$RUN_TMP/bootstrap-rerun-v2.log" 2>&1
+BOOTSTRAP_SKIP_TEAMLOG=1 bash "$BOOTSTRAP" --repo acme/test-cold-start-v2 --force "$TARGET" > "$RUN_TMP/bootstrap-rerun-v2.log" 2>&1
 
 AFTER=$(find "$TARGET" -type f -not -path '*/.git/*' -not -path "$ENGINE_INSTALL_STAMP" | sort | xargs md5sum 2>/dev/null)
 AFTER_ENGINE_COMMIT=$(python3 -c "import json; print(json.load(open('$ENGINE_INSTALL_STAMP')).get('engine_commit'))" 2>/dev/null || echo "")
+MCP_HASH_AFTER=$(md5sum "$TARGET/.mcp.json" 2>/dev/null | awk '{print $1}')
+REQ_HASH_AFTER=$(md5sum "$TARGET/requirements.txt" 2>/dev/null | awk '{print $1}')
+CP_HASH_AFTER=$(md5sum "$TARGET/.autonomous-team/config.json" 2>/dev/null | awk '{print $1}')
 
 if [[ "$BEFORE" == "$AFTER" ]]; then
   pass "idempotent: re-run produced no diff (excluding the engine-install.json timestamp)"
@@ -903,16 +916,14 @@ assert_contains "$MCP_TEMPLATE_SRC" "chrome-devtools" ".mcp.json.template lists 
 # bootstrap must have installed .mcp.json into the target (since it didn't exist)
 assert_file "$TARGET/.mcp.json"
 assert_contains "$TARGET/.mcp.json" "mcpServers" "installed .mcp.json has mcpServers"
-# Idempotency: re-run should not overwrite existing .mcp.json
-echo "sentinel-content" > "$TARGET/.mcp.json.bak"
-cp "$TARGET/.mcp.json" "$TARGET/.mcp.json.bak"
-bash "$BOOTSTRAP" --repo acme/test-cold-start-v2 --force "$TARGET" > "$RUN_TMP/bootstrap-i1-idem.log" 2>&1
-if diff -q "$TARGET/.mcp.json" "$TARGET/.mcp.json.bak" > /dev/null 2>&1; then
+# Idempotency: re-run should not overwrite existing .mcp.json. Checked
+# against the whole-tree idempotency re-run above (D#2624) rather than
+# paying for a bootstrap.sh install of its own.
+if [[ -n "$MCP_HASH_BEFORE" && "$MCP_HASH_BEFORE" == "$MCP_HASH_AFTER" ]]; then
   pass "I1 idempotent: .mcp.json not overwritten on re-run"
 else
   fail "I1 idempotent: .mcp.json was modified on re-run"
 fi
-rm -f "$TARGET/.mcp.json.bak"
 
 # I3: requirements.txt.template + setup-deps.sh
 echo ""
@@ -944,11 +955,10 @@ if [[ -x "$TARGET/scripts/setup-deps.sh" ]]; then
 else
   fail "installed setup-deps.sh is NOT executable"
 fi
-# idempotency: requirements.txt not overwritten
-REQ_HASH_BEFORE=$(md5sum "$TARGET/requirements.txt" | awk '{print $1}')
-bash "$BOOTSTRAP" --repo acme/test-cold-start-v2 --force "$TARGET" > "$RUN_TMP/bootstrap-i3-idem.log" 2>&1
-REQ_HASH_AFTER=$(md5sum "$TARGET/requirements.txt" | awk '{print $1}')
-if [[ "$REQ_HASH_BEFORE" == "$REQ_HASH_AFTER" ]]; then
+# idempotency: requirements.txt not overwritten. Checked against the
+# whole-tree idempotency re-run above (D#2624) rather than paying for a
+# bootstrap.sh install of its own.
+if [[ -n "$REQ_HASH_BEFORE" && "$REQ_HASH_BEFORE" == "$REQ_HASH_AFTER" ]]; then
   pass "I3 idempotent: requirements.txt not overwritten on re-run"
 else
   fail "I3 idempotent: requirements.txt changed on re-run"
@@ -962,8 +972,11 @@ BOOTSTRAP_SH="$REPO_ROOT/loop-bootstrap/bootstrap.sh"
 assert_contains "$BOOTSTRAP_SH" "BOOTSTRAP_SKIP_TEAMLOG" "bootstrap.sh has BOOTSTRAP_SKIP_TEAMLOG opt-out"
 assert_contains "$BOOTSTRAP_SH" "rotate-team-log.sh" "bootstrap.sh references rotate-team-log.sh"
 assert_contains "$BOOTSTRAP_SH" "team-log" "bootstrap.sh references team-log label"
-# Verify BOOTSTRAP_SKIP_TEAMLOG=1 bypasses team-log creation
-SKIP_LOG=$(BOOTSTRAP_SKIP_TEAMLOG=1 bash "$BOOTSTRAP_SH" --repo acme/test-cold-start-v2 --force "$TARGET" 2>&1 | grep -c "BOOTSTRAP_SKIP_TEAMLOG" || echo 0)
+# Verify BOOTSTRAP_SKIP_TEAMLOG=1 bypasses team-log creation. Checked
+# against the whole-tree idempotency re-run's log above (D#2624), which now
+# runs with BOOTSTRAP_SKIP_TEAMLOG=1 itself, rather than paying for a
+# bootstrap.sh install of its own.
+SKIP_LOG=$(grep -c "BOOTSTRAP_SKIP_TEAMLOG" "$RUN_TMP/bootstrap-rerun-v2.log" || echo 0)
 if [[ "$SKIP_LOG" -ge 1 ]]; then
   pass "I4: BOOTSTRAP_SKIP_TEAMLOG=1 skips team-log Issue creation"
 else
@@ -1021,11 +1034,10 @@ assert_contains "$CP_TEMPLATE_SRC" "executor" "control-plane-defaults.json.templ
 assert_file "$TARGET/.autonomous-team/config.json"
 assert_contains "$TARGET/.autonomous-team/config.json" "gates" "installed config.json has gates"
 assert_contains "$TARGET/.autonomous-team/config.json" "auto_merge" "installed config.json has auto_merge"
-# idempotency: config.json not overwritten
-CP_HASH_BEFORE=$(md5sum "$TARGET/.autonomous-team/config.json" | awk '{print $1}')
-bash "$BOOTSTRAP" --repo acme/test-cold-start-v2 --force "$TARGET" > "$RUN_TMP/bootstrap-i6-idem.log" 2>&1
-CP_HASH_AFTER=$(md5sum "$TARGET/.autonomous-team/config.json" | awk '{print $1}')
-if [[ "$CP_HASH_BEFORE" == "$CP_HASH_AFTER" ]]; then
+# idempotency: config.json not overwritten. Checked against the whole-tree
+# idempotency re-run above (D#2624) rather than paying for a bootstrap.sh
+# install of its own.
+if [[ -n "$CP_HASH_BEFORE" && "$CP_HASH_BEFORE" == "$CP_HASH_AFTER" ]]; then
   pass "I6 idempotent: config.json not overwritten on re-run"
 else
   fail "I6 idempotent: config.json changed on re-run"

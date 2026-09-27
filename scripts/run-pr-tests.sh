@@ -243,7 +243,6 @@ BASH_SUITE_DENYLIST=(
   "tests/test_dashboard_lifecycle.sh:host-env(dashboard ports) — reconciled against the real 120s bound (dur=79s, still fails): Vite dev server did not respond on port 5273 within 30s"
   "tests/test_dial_bypass_coverage.sh:bug(D#2167) — FAIL B4: graphql mutation from worktree — expected exit 2 (blocked), got exit 0"
   "tests/test_execve_fence.sh:host-env(pyseccomp) — claude_execve_fence: FATAL: pyseccomp not installed — fence required"
-  "tests/test_loop_bootstrap_extended.sh:bug(D#2165) — reconciled against the real 120s bound (dur=29s, still fails): stale assertions against loop-bootstrap/backend-snapshot/, archived by D#1890 on 2026-08-17"
   "tests/test_loop_merge_sha_pin.sh:flaky(inconsistent across repeat runs) — measured fail on this host, inconsistent across repeat runs on this host"
   "tests/test_post_agent_hook_substrate.sh:flaky(timed out some runs, passed at 16s others) — measured right at the old 20s bound; timed out on some runs, passed at 16s on others"
   "tests/test_preflight_full.sh:host-env(pytest baseline) — preflight-full.sh runs pytest; tree-wide baseline is 67 failed / 23 errors on this host even with AUTONOMOUS_TEAM_STATE_DIR exported (D#2132 non-goal)"
