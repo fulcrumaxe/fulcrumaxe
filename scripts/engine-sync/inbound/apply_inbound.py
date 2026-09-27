@@ -294,6 +294,62 @@ def _git(args: list[str], repo_dir: Path, env: dict | None = None, timeout: int 
     return proc.stdout
 
 
+def _read_ref(ref: str, repo_dir: Path) -> str | None:
+    """The current value of *ref*, or None if it does not resolve yet (the
+    very first run, before the marker has ever been set).
+
+    Deliberately does not go through `_git`: `_git` raises on any nonzero
+    exit, and a ref that has never been set is the expected starting state,
+    not a refusal."""
+    proc = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", ref],
+        cwd=str(repo_dir),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    value = proc.stdout.strip()
+    return value if proc.returncode == 0 and value else None
+
+
+def _advance_marker(*, marker: str, new_sha: str, repo_dir: Path, branch: str, pr_url: str) -> None:
+    """Move `marker` to `new_sha` and record the move in the audit trail
+    (D#2472).
+
+    `refs/synced/*` gets no reflog from git: `core.logAllRefUpdates=true`
+    only extends reflogs to `refs/heads/`, `refs/remotes/`, `refs/notes/`
+    and `HEAD`, not an arbitrary ref namespace -- so this audit row is the
+    only record of what the ref pointed to before. The old value has to be
+    read HERE, before the move: once `update-ref` runs, it is gone for good.
+
+    The move happens before the audit write, and the audit write is
+    deliberately NOT wrapped in try/except. By the time this function runs,
+    the branch is already pushed and the PR already open -- the run has
+    already reached the outside world, so refusing the marker move at this
+    last step could not undo any of that, it could only hide that it
+    happened. If the audit write itself raises, the exception is left to
+    propagate: `apply_inbound`'s own outer try/except reports the run as
+    failed (bumping the consecutive-failure counter and naming the error in
+    the result) instead of the failure vanishing into a swallowed `except`.
+    That is "proceeds and the failure is surfaced loudly" -- the option this
+    file's own long-standing philosophy prefers (see the debt-vs-marker
+    ordering comment above this call site: an extra, visible mess beats a
+    silent, lost one) -- not "the move is refused."
+    """
+    old_sha = _read_ref(marker, repo_dir)
+    _git(["update-ref", marker, new_sha], repo_dir)
+    from backend.audit_trail import get_audit_trail  # noqa: PLC0415 — call-time, not import-time (D#1810)
+
+    get_audit_trail().emit(
+        source="engine_sync",
+        action="marker_advance",
+        key=marker,
+        old_value=old_sha,
+        new_value={"sha": new_sha, "branch": branch, "pr_url": pr_url},
+        actor="apply_inbound",
+    )
+
+
 def tree_entry_count(ref: str, repo_dir: Path) -> int:
     """How many blobs a ref's tree holds. The post-apply invariant compares
     this before and after: a built tree must hold exactly the base's count
@@ -1178,7 +1234,10 @@ def _run(
     write_state(state_dir, consecutive_failures=0, pending=next_pending)
 
     # The marker advances only here, after the branch exists on the remote and
-    # the PR is open. Every refusal path above returns before this line.
+    # the PR is open. Every refusal path above returns before this line. This
+    # is also the ONLY place in this file that moves `marker` -- there is no
+    # --force/repair mode and no other update-ref call, so this one call site
+    # is the whole enumeration for D#2472 item 2.
     #
     # It records which commits the channel has ENUMERATED AND RULED ON -- not
     # which content the engine has taken. Those differ whenever anything was
@@ -1188,7 +1247,7 @@ def _run(
     # backlog and cannot work: all 13 commits carry at least one withheld
     # path, so it would never advance, the change set would grow past the
     # ceiling, and the channel would refuse until it disabled itself.
-    _git(["update-ref", marker, tip_sha], repo_dir)
+    _advance_marker(marker=marker, new_sha=tip_sha, repo_dir=repo_dir, branch=branch, pr_url=pr_url)
 
     return {
         "result": RESULT_APPLIED,
