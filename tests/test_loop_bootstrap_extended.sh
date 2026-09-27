@@ -488,9 +488,12 @@ HOOKS_BOOTSTRAP_DIR="$REPO_ROOT/hooks"
 assert_dir "$HOOKS_BOOTSTRAP_DIR"
 assert_file "$HOOKS_BOOTSTRAP_DIR/sandbox.py"
 assert_file "$HOOKS_BOOTSTRAP_DIR/sandbox_rules.py"
-# sandbox_rules.py must have the _load_main_repo_root helper
-assert_contains "$HOOKS_BOOTSTRAP_DIR/sandbox_rules.py" "_load_main_repo_root" "_load_main_repo_root helper"
-assert_contains "$HOOKS_BOOTSTRAP_DIR/sandbox_rules.py" "project.json" "reads project.json"
+# The repo-root lookup moved into hooks/repo_root.py, which derives the root
+# from __file__ plus the .git entry instead of reading project.json --
+# SANDBOX_MAIN_REPO_ROOT is a test-only override that cannot lift that
+# derived floor. Assert against the current mechanism, not the removed one.
+assert_contains "$HOOKS_BOOTSTRAP_DIR/sandbox_rules.py" "from hooks.repo_root import" "imports repo-root resolver from hooks/repo_root.py"
+assert_contains "$HOOKS_BOOTSTRAP_DIR/repo_root.py" "def resolve_main_repo_root" "repo_root.py defines resolve_main_repo_root"
 # sandbox.py must use timezone-aware datetime (not deprecated utcnow)
 assert_contains "$HOOKS_BOOTSTRAP_DIR/sandbox.py" "timezone.utc" "uses timezone-aware datetime"
 assert_not_contains "$HOOKS_BOOTSTRAP_DIR/sandbox.py" "utcnow()" "no deprecated utcnow()"
