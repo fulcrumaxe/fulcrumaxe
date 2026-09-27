@@ -3637,45 +3637,73 @@ def _all_path_operands(command: str) -> list[str]:
     """
     paths: list[str] = []
 
-    # D#2541 fix round 1: strip heredoc bodies FIRST, before anything below
-    # scans *command* — matching the order `_scan_command_segments` already
-    # uses (`_strip_heredoc_bodies_capturing` runs before its own
-    # `_split_glued_redirect_operands` call). Without this, a heredoc body
-    # line that merely CONTAINS a protected-basename-shaped substring glued
-    # to a `<`/`>` character — documentation text, a `gh ... --body-file`
-    # heredoc, this very module's own commit message — gets that glue
-    # split too, and the resulting bare basename token reads as a real
-    # write target even though bash never treats heredoc body text as a
-    # redirect at all. The captured payloads are discarded here exactly as
-    # `_strip_heredoc_bodies` already discarded them for this function
-    # before D#2541 — this function has never deep-scanned inside a
-    # heredoc/python payload the way `_scan_command_segments` does.
-    stripped, _heredoc_payloads = _strip_heredoc_bodies_capturing(command)
+    # D#2541 fix round 2: two independent scans, unioned, not one scan on one
+    # text.
+    #
+    # Pass 1 is main's ORIGINAL step-1d scan, byte-for-byte: _REDIRECT_PATTERN
+    # and _shlex_split against the RAW, unstripped *command* — no heredoc
+    # detection involved at all. Fix round 1 replaced this pass outright with
+    # a scan of heredoc-STRIPPED text and threw the stripped bodies away,
+    # which was wrong: on main, this scan already saw a write/delete sitting
+    # inside anything `_HEREDOC_START_RE` would call heredoc territory,
+    # simply because it never stripped in the first place. That's what caught
+    # an interpreter heredoc whose body really executes (`bash <<'EOF'` /
+    # `echo x > audit.jsonl` / `EOF`), and it's also what caught a real
+    # command line that `_HEREDOC_START_RE` false-matches into oblivion — the
+    # regex also matches arithmetic `1<<2`, a here-string's `<<<`, and `<<EOF`
+    # inside a quoted string, so `echo $((1<<2))` / `rm audit.jsonl` on the
+    # next line silently lost that `rm` line to every stripped-text scan.
+    # Losing this pass is what let all four of those rows go from BLOCK on
+    # main to ALLOW on fix round 1 (D#2541 fix round 2 security re-review).
+    # Running it unconditionally on the raw command — not gated on whether
+    # `_HEREDOC_START_RE` thinks a heredoc opened — is what makes this pass
+    # immune to that regex's own false matches: there is nothing for a false
+    # heredoc-opener match to hide text FROM here.
+    for match in _REDIRECT_PATTERN.finditer(command):
+        candidate = match.group(1)
+        if not _is_kernel_device(candidate):
+            paths.append(candidate)
+    try:
+        raw_tokens = _shlex_split(command)
+    except ValueError:
+        raw_tokens = command.split()
+    for tok in raw_tokens:
+        if tok in _SHELL_SEPARATORS:
+            continue
+        if os.path.isabs(tok) and _is_kernel_device(tok):
+            continue
+        paths.append(tok)
 
-    # Redirect targets — same extraction as _absolute_path_targets. The
-    # regex itself only matches targets beginning with `/`, so this stays
-    # absolute-only; that's a narrower surface than the deletion forms SEC-8
-    # is about, and out of scope for this round.
+    # Pass 2 is fix round 0/1's glued-redirect scan, kept exactly as round 1
+    # left it: heredoc bodies are stripped FIRST (`_strip_heredoc_bodies_capturing`,
+    # the same helper `_scan_command_segments` already uses), and the glued-
+    # redirect split (`_split_glued_redirect_operands`, D#2541 round 0) runs
+    # on that stripped text. This is what catches a GLUED redirect operator
+    # (`>audit.jsonl`, `2>>audit.jsonl`, ...) whose target would otherwise
+    # hide inside a single "operator+path" shlex token — pass 1 above never
+    # splits a glued operator off its target, so it can't see these on its
+    # own. Stripping heredoc bodies before the split is required here: without
+    # it, a heredoc body LINE that merely CONTAINS a protected-basename-shaped
+    # substring glued to a `<`/`>` character — documentation text, a
+    # `gh ... --body-file` heredoc, this very module's own commit message —
+    # gets that glue split too, and the resulting bare basename token reads as
+    # a real write target even though bash never treats heredoc body text as
+    # a redirect at all (fix round 0's over-block, closed by stripping before
+    # this pass runs). The captured heredoc payloads are unused here, same as
+    # round 1 — this pass has never deep-scanned inside a heredoc/python
+    # payload the way `_scan_command_segments` does; pass 1 above is what
+    # covers a payload that merely contains a bare, spaced mention of a
+    # protected name (matching main, which never stripped at all).
+    stripped, _heredoc_payloads = _strip_heredoc_bodies_capturing(command)
     for match in _REDIRECT_PATTERN.finditer(stripped):
         candidate = match.group(1)
         if not _is_kernel_device(candidate):
             paths.append(candidate)
-
-    # Every token in the command, not just specific commands' destination
-    # args, and not filtered to absolute-shaped tokens (SEC-8) — a relative,
-    # `~`-prefixed, or dotdot-relative token is just as real an operand.
-    #
-    # D#2541: split a glued redirect operator (`>audit.jsonl`, `2>>audit.jsonl`,
-    # ...) off its target BEFORE tokenising, so the target reaches
-    # `_protected_basename_operand()` as its own token instead of hiding
-    # inside a single "operator+path" blob — see `_GLUED_REDIRECT_OP_RE`.
-    # Runs on the heredoc-stripped text, not the raw command (fix round 1).
     operand_scan_text = _split_glued_redirect_operands(stripped)
     try:
         tokens = _shlex_split(operand_scan_text)
     except ValueError:
         tokens = operand_scan_text.split()
-
     for tok in tokens:
         if tok in _SHELL_SEPARATORS:
             continue

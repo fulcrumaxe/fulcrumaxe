@@ -5105,6 +5105,68 @@ class TestD2541FixRound1GlueReadWriteOpen:
         assert d.allow is True, f"expected ALLOW, got reason={d.reason!r}"
 
 
+class TestD2541FixRound2RawCommandScanRestored:
+    """Security re-review of fix round 1: moving `_all_path_operands`'s only
+    scan onto heredoc-STRIPPED text (round 1) discarded the raw-command scan
+    main always ran there, so a write or delete sitting inside text
+    `_HEREDOC_START_RE` treats as heredoc territory silently stopped being
+    caught. Two distinct mechanisms feed this:
+
+    1. An interpreter heredoc (`bash <<EOF`, `sh <<EOF`) whose body really
+       executes. The body is captured by `_strip_heredoc_bodies_capturing`
+       but the payload was thrown away instead of scanned.
+    2. `_HEREDOC_START_RE` false-matching arithmetic `<<` (`$((1<<2))`), a
+       here-string's `<<<`, and `<<EOF` inside a quoted string -- each of
+       these drops every line that follows from the stripped-text scan
+       entirely, real command line included.
+
+    Each of the four commands below writes or deletes the file for real when
+    run in actual bash, and each blocks on `main` today. Fixed by restoring
+    main's original raw-command scan (`_REDIRECT_PATTERN` + `_shlex_split`
+    against the unstripped `command`) as an unconditional first pass in
+    `_all_path_operands`, and unioning its operands with fix round 0/1's
+    glued-redirect scan on heredoc-stripped text, rather than one scan
+    replacing the other.
+    """
+
+    def test_interpreter_heredoc_body_write_blocked(self) -> None:
+        cmd = f"bash <<'EOF2'\necho x > {_D2483_REGISTRY_BASENAME}\nEOF2"
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+        assert _D2483_REGISTRY_BASENAME in d.reason
+
+    def test_arithmetic_shift_false_heredoc_opener_does_not_hide_next_line(self) -> None:
+        cmd = f"echo $((1<<2))\nrm {_D2483_REGISTRY_BASENAME}"
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+        assert _D2483_REGISTRY_BASENAME in d.reason
+
+    def test_herestring_false_heredoc_opener_does_not_hide_next_line(self) -> None:
+        cmd = f"cat <<<word\nrm {_D2483_REGISTRY_BASENAME}"
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+        assert _D2483_REGISTRY_BASENAME in d.reason
+
+    def test_quoted_heredoc_marker_false_opener_does_not_hide_next_line(self) -> None:
+        cmd = f"echo 'use <<EOF'\nrm {_D2483_REGISTRY_BASENAME}"
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+        assert _D2483_REGISTRY_BASENAME in d.reason
+
+    def test_heredoc_overblock_fix_from_round0_still_holds(self) -> None:
+        # Non-regression: restoring the raw-command scan must not resurrect
+        # round 0's over-block. A GLUED mention inside a heredoc body stays a
+        # single token on the raw pass (no glue-split runs there), so it
+        # still can't match the protected basename exactly.
+        cmd = (
+            "cat > note.txt <<'EOF2'\n"
+            f"see >{_D2483_REGISTRY_BASENAME} for the gap\n"
+            "EOF2"
+        )
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is True, f"expected ALLOW, got reason={d.reason!r}"
+
+
 class TestD2483PR171InterpreterVersionToleranceStillBlocked:
     """The exact-name frozenset `_PY_INTERPRETER_NAMES` (`{"python3",
     "python"}`) lost the segment-text write-detection layer for any other
