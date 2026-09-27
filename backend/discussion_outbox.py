@@ -51,6 +51,16 @@ record in the transcript, and only at its `text`-type content blocks — never
 a `tool_use`/`tool_result` block — which is the one part of the transcript
 that is entirely caller-authored and impossible for the agent to edit.
 
+Even within that first message, only a whole line matching
+`^hook_event_id=<id>$` counts as the trailer — never a substring embedded
+mid-sentence. `prompt_builder.py` always appends the real trailer as its own
+line after the task text, so scanning for a standalone line and taking the
+LAST one matches that placement; an earlier occurrence quoted inline (a log
+line, a Discussion excerpt) is not itself a standalone line and never even
+enters the running. If more than one DISTINCT id each appears on its own
+line, `_extract_join_key` refuses rather than guesses, and the caller treats
+that the same as `ambiguous_registry`.
+
 Dedup, and why there is no trailer
 ------------------------------------
 The Spec requires "the whole file is the text that gets posted" — no
@@ -73,6 +83,7 @@ import hashlib
 import json
 import re
 import subprocess
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -115,9 +126,13 @@ _ENVELOPE_RE = re.compile(
 
 # The canonical hook_event_id shape scripts/spawn-agent.sh:EVENT_ID builds:
 # "${ROLE}-${DISCUSSION:-nod}-$(date +%s)". Deliberately restricted to the
-# FIRST message's plain-text content only — see _extract_join_key.
-_EVENT_ID_RE = re.compile(
-    r'hook_event_id=([a-z]+(?:-[a-z]+)*-(?:[0-9]+|nod)-[0-9]{9,12})(?![\w-])'
+# FIRST message's plain-text content only — see _extract_join_key. Anchored
+# to a WHOLE line (re.MULTILINE, ^...$) so an id quoted mid-sentence earlier
+# in the task text (a log line, a Discussion excerpt) never matches — only
+# the real trailer prompt_builder.py appends as its own line does.
+_EVENT_ID_LINE_RE = re.compile(
+    r'^hook_event_id=([a-z]+(?:-[a-z]+)*-(?:[0-9]+|nod)-[0-9]{9,12})$',
+    re.MULTILINE,
 )
 
 
@@ -193,41 +208,68 @@ def _first_message_text(agent_transcript_path: str) -> str:
     return ""
 
 
-def _extract_join_key(agent_transcript_path: str) -> str:
+def _extract_join_key(agent_transcript_path: str) -> tuple[str, bool]:
+    """Returns (event_id, ambiguous).
+
+    Only a whole line matching `^hook_event_id=<id>$` counts (see the module
+    docstring) — never a substring embedded mid-sentence. Uses the LAST such
+    line, matching where `prompt_builder.py` appends the real trailer (after
+    all task text), so an earlier, unrelated standalone occurrence can never
+    win over it. `ambiguous` is True when more than one DISTINCT id each
+    appears on its own line — refuse rather than guess which one is real.
+    """
     text = _first_message_text(agent_transcript_path)
     if not text:
-        return ""
-    m = _EVENT_ID_RE.search(text)
-    return m.group(1) if m else ""
+        return "", False
+    matches = _EVENT_ID_LINE_RE.findall(text)
+    if not matches:
+        return "", False
+    if len(set(matches)) > 1:
+        return "", True
+    return matches[-1], False
 
 
 def _resolve_identity(payload: dict) -> tuple[Optional[dict], Optional[str]]:
     """Returns (registry_entry, refusal_reason) — exactly one is not None.
 
     Refusal reasons match criterion 13 exactly: `not_worktree`,
-    `no_registry_entry`, `ambiguous_registry`, `role_mismatch`.
+    `no_registry_entry`, `ambiguous_registry`, `role_mismatch`. Every
+    refusal here also prints one warning line to stderr (criterion 13) —
+    a misconfigured spawn is otherwise silent at the terminal.
     """
     cwd = payload.get("cwd") or ""
     if not _is_linked_worktree(cwd):
-        return None, "not_worktree"
+        return None, _warn_identity_refusal("not_worktree")
 
     agent_transcript_path = payload.get("agent_transcript_path") or ""
-    event_id = _extract_join_key(agent_transcript_path)
+    event_id, ambiguous = _extract_join_key(agent_transcript_path)
+    if ambiguous:
+        return None, _warn_identity_refusal("ambiguous_registry")
     if not event_id:
-        return None, "no_registry_entry"
+        return None, _warn_identity_refusal("no_registry_entry")
 
     entries = find_by_event_id(event_id)
     if not entries:
-        return None, "no_registry_entry"
+        return None, _warn_identity_refusal("no_registry_entry")
     if len(entries) > 1:
-        return None, "ambiguous_registry"
+        return None, _warn_identity_refusal("ambiguous_registry")
 
     entry = entries[0]
     agent_type = payload.get("agent_type") or ""
     if entry.get("role") != agent_type:
-        return None, "role_mismatch"
+        return None, _warn_identity_refusal("role_mismatch")
 
     return entry, None
+
+
+def _warn_identity_refusal(reason: str) -> str:
+    """Criterion 13: an identity refusal prints one stderr warning line, in
+    addition to the audit row `_process_one_file` writes. Never raises."""
+    try:
+        print(f"discussion_outbox: refused: {reason}", file=sys.stderr)
+    except OSError:
+        pass
+    return reason
 
 
 # ---------------------------------------------------------------------------
@@ -247,12 +289,12 @@ def _validate_outbox_file(path: Path, worktree_root: Path) -> tuple[Optional[byt
             return None, "not_regular_file"
         if not path.is_file():
             return None, "not_regular_file"
+        if path.stat().st_size > MAX_BYTES:
+            return None, "oversize"
         data = path.read_bytes()
     except OSError:
         return None, "not_regular_file"
 
-    if len(data) > MAX_BYTES:
-        return None, "oversize"
     if b"\x00" in data:
         return None, "nul_byte"
     try:
@@ -609,7 +651,11 @@ def process_stop_event(payload: dict, repo_root, client: Optional[GitHubClient] 
     present: list[tuple[str, Path]] = []
     for kind, filename in (("comment", COMMENT_FILENAME), ("body", BODY_FILENAME)):
         candidate = outbox_dir / filename
-        if candidate.exists():
+        # is_symlink() first: .exists() alone follows symlinks and returns
+        # False for a DANGLING one, so it would never even reach
+        # _validate_outbox_file's own not_regular_file check below — silently
+        # skipped, with no audit line at all.
+        if candidate.is_symlink() or candidate.exists():
             present.append((kind, candidate))
 
     if not present:

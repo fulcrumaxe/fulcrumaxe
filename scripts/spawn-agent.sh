@@ -675,19 +675,10 @@ except Exception as e:
 EVENT_ID="${ROLE}-${DISCUSSION:-nod}-$(date +%s)"
 
 # ── 1a. Record the spawn registry row (D#2615 ENG-0) ──────────────────────────
-# EVENT_ID is also embedded as the prompt's own `hook_event_id=` trailer (see
-# backend/prompt_builder.py) -- this is the join key hooks/discussion_outbox_
-# stop.py recovers from the subagent's own transcript to find this row.
+# The CLI (backend/spawn_registry.py) owns the WARN-on-failure handling; keep
+# this call as the single line the Spec's 10-line cap requires.
 if [[ -z "$NO_REGISTER" ]]; then
-  python3 -c "
-import sys; sys.path.insert(0, '${REPO_ROOT}')
-from datetime import datetime, timezone
-from backend.spawn_registry import record_spawn
-try:
-    record_spawn('${EVENT_ID}', '${ROLE}', int('${DISCUSSION}') if '${DISCUSSION}' else None, datetime.now(timezone.utc).isoformat())
-except Exception as e:
-    print(f'[spawn-agent] WARN: spawn registry record failed: {e}', file=sys.stderr)
-" 2>/dev/null || true
+  PYTHONPATH="$REPO_ROOT" python3 -m backend.spawn_registry record "$EVENT_ID" "$ROLE" "${DISCUSSION:-}"
 fi
 
 # ── 1b. Resolve model from role agent card ────────────────────────────────────

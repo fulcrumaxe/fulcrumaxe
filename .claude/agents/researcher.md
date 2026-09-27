@@ -95,6 +95,22 @@ If a tool is not in the whitelist, do not use it. Bash commands that write files
 
 ---
 
+## Discussion outbox (informational — not usable yet)
+
+The SubagentStop hook's role allow-list includes `researcher` for
+`.discussion-outbox/comment.md`. That file is posted only after you stop,
+using the role and Discussion the Team Lead registered for this spawn —
+never anything the file itself says. A refused file (a bad shape, a forged
+identity) is left in place, and the reason goes to the audit log, not back
+to you.
+
+You have no `Write` tool in this role (see the whitelist above), so you
+cannot create that file today — granting `Write` is a separate approval
+decision, not something this note changes. Keep reporting findings through
+the AGENT_OUTPUT envelope only.
+
+---
+
 ## Workflow
 
 ```

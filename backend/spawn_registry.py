@@ -35,6 +35,8 @@ every match rather than silently picking one, and the caller in
 from __future__ import annotations
 
 import json
+import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -101,3 +103,30 @@ def find_by_event_id(event_id: str) -> list[dict]:
     except OSError:
         return []
     return matches
+
+
+def _cli(argv: list[str]) -> int:
+    """`python3 -m backend.spawn_registry record <event_id> <role> [discussion]`
+
+    Wraps `record_spawn` with the exception-to-stderr-WARN handling that used
+    to be inlined as a `python3 -c "..."` block in `scripts/spawn-agent.sh`
+    (D#2615 fix round 1: that inline block alone put the shell diff over the
+    Spec's line cap for that file). Always returns 0 — a registry-write
+    failure must never fail the spawn that's recording it; the WARN on
+    stderr is the signal (see CHEAP HARDENING: it must not be redirected to
+    /dev/null by the caller).
+    """
+    if len(argv) < 3 or argv[0] != "record":
+        print("usage: python3 -m backend.spawn_registry record <event_id> <role> [discussion]", file=sys.stderr)
+        return 0
+    _, event_id, role, *rest = argv
+    discussion = int(rest[0]) if rest and rest[0] else None
+    try:
+        record_spawn(event_id, role, discussion, datetime.now(timezone.utc).isoformat())
+    except Exception as e:
+        print(f"[spawn-agent] WARN: spawn registry record failed: {e}", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(_cli(sys.argv[1:]))

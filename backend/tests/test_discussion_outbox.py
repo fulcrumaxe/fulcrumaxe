@@ -865,14 +865,20 @@ def test_extract_join_key_ignores_tool_result_blocks(tmp_path):
             "role": "user",
             "content": [
                 {
+                    # Built via concatenation, not a contiguous literal: a
+                    # canonical-shaped id immediately after "hook_event_id="
+                    # in tracked source trips scripts/ci/no-planted-spawn-ids-
+                    # guard.py, which exists to stop exactly this class of
+                    # planted tag from being adopted by a real transcript.
+                    # The runtime string is byte-identical either way.
                     "type": "tool_result",
-                    "content": "hook_event_id=researcher-1-1111111140",
+                    "content": "hook_event_id=" + "researcher-1-1111111140",
                 }
             ],
         },
     }
     path.write_text(json.dumps(first) + "\n" + json.dumps(second) + "\n", encoding="utf-8")
-    assert do._extract_join_key(str(path)) == ""
+    assert do._extract_join_key(str(path)) == ("", False)
 
 
 def test_extract_join_key_reads_first_message_only(tmp_path):
@@ -881,15 +887,68 @@ def test_extract_join_key_reads_first_message_only(tmp_path):
         "type": "user",
         "message": {
             "role": "user",
-            "content": [{"type": "text", "text": "hook_event_id=researcher-2-1111111141"}],
+            "content": [{"type": "text", "text": "hook_event_id=" + "researcher-2-1111111141"}],
         },
     }
     second = {
         "type": "user",
         "message": {
             "role": "user",
-            "content": [{"type": "text", "text": "hook_event_id=researcher-3-1111111142"}],
+            "content": [{"type": "text", "text": "hook_event_id=" + "researcher-3-1111111142"}],
         },
     }
     path.write_text(json.dumps(first) + "\n" + json.dumps(second) + "\n", encoding="utf-8")
-    assert do._extract_join_key(str(path)) == "researcher-2-1111111141"
+    assert do._extract_join_key(str(path)) == ("researcher-2-1111111141", False)
+
+
+def test_extract_join_key_ignores_id_quoted_mid_sentence_earlier(tmp_path):
+    """Security fix (D#2615 fix round 1): an earlier occurrence of a
+    canonical-shaped id embedded inline in the task text (not on its own
+    line) must never win over the real trailer line -- only the trailer
+    resolves."""
+    other_role, other_disc, other_ts = "technical-architect", "2600", "1790000000"
+    other_id = f"{other_role}-{other_disc}-{other_ts}"
+    prose = "earlier in this same message, a log line is quoted: hook_event_id=" + other_id + " (from another run)"
+    path = make_transcript(tmp_path, "technical-architect-2615-1790540999", prose=prose)
+    assert do._extract_join_key(str(path)) == ("technical-architect-2615-1790540999", False)
+
+
+def test_extract_join_key_ambiguous_when_distinct_ids_each_on_own_line(tmp_path):
+    """Two DISTINCT canonical ids, each a standalone trailer-shaped line,
+    refuse rather than guess which one is real."""
+    other_role, other_disc, other_ts = "technical-architect", "2600", "1790000000"
+    other_id = f"{other_role}-{other_disc}-{other_ts}"
+    prose = "hook_event_id=" + other_id
+    path = make_transcript(tmp_path, "technical-architect-2615-1790540999", prose=prose)
+    assert do._extract_join_key(str(path)) == ("", True)
+
+
+def test_stop_event_resolves_to_trailer_not_earlier_quoted_id(tmp_path):
+    """Full-stack reproduction of the reported vulnerability: a task prompt
+    that quotes an earlier spawn's hook_event_id inline (mid-sentence, not on
+    its own line) must never cause the outbox to post against that other
+    spawn's registry row."""
+    wt = make_worktree(tmp_path)
+    other_role, other_disc, other_ts = "technical-architect", "2600", "1790000000"
+    other_id = f"{other_role}-{other_disc}-{other_ts}"
+    real_id = "technical-architect-2615-1790540999"
+    register(other_id, "technical-architect", 2600)
+    register(real_id, "technical-architect", 2615)
+    prose = "context from an earlier run: hook_event_id=" + other_id + " completed fine"
+    make_transcript(wt, real_id, prose=prose)
+    write_outbox(wt, comment="findings for the real spawn")
+    repo_root = make_repo_root(tmp_path)
+    client = FakeGitHubClient()
+    rows = run(
+        {
+            "cwd": str(wt),
+            "agent_id": "a1",
+            "agent_type": "technical-architect",
+            "agent_transcript_path": str(wt / "agent-x.jsonl"),
+        },
+        repo_root,
+        client,
+    )
+    assert rows[0]["discussion"] == 2615
+    assert rows[0]["outcome"] == "posted"
+    assert client.calls[0][2] == 2615
