@@ -743,6 +743,10 @@ except Exception as e:
   echo ""
   echo "  Shared-lib staleness (scripts/lib vs code plane, advisory-only, D#2534):"
   bash "$REPO_ROOT/scripts/check-shared-lib-staleness.sh" scripts/lib 2>&1 | sed 's/^/    /' || true
+
+  echo ""
+  echo "  Registered-hook staleness (settings-registered hooks/ vs code plane, advisory-only, D#2362):"
+  bash "$REPO_ROOT/scripts/hook-staleness-check.sh" 2>&1 | sed 's/^/    /' || true
 fi
 
 # ── Auto-generate today's plan if absent ─────────────────────────────────────
