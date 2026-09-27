@@ -12,6 +12,10 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TEAM_STATUS = REPO_ROOT / "backend" / "team_status.py"
 
+sys.path.insert(0, str(REPO_ROOT))
+
+from backend.team_status import _spawn_breaker_line  # noqa: E402
+
 
 def _run(*args: str, timeout: int = 30) -> tuple[int, str, str]:
     """Run team_status.py with the given args. Returns (returncode, stdout, stderr)."""
@@ -225,3 +229,74 @@ class TestCostByDiscussion:
         data = json.loads(out)
         top5 = data["cost"]["by_discussion_top_5"]
         assert len(top5) <= 5, "by_discussion_top_5 must have at most 5 entries"
+
+
+class TestSpawnBreakerLine:
+    """_spawn_breaker_line() must distinguish an uncovered zero from a real
+    all-clear, and surface a tracker error instead of rendering fabricated
+    zeros. Exercises the renderer directly with constructed summary dicts —
+    not the subprocess — per D#2134."""
+
+    def _bare_zero_line(self) -> str:
+        # What every zero used to render as, regardless of coverage.
+        return "  Spawn breaker: closed  spawns 1h=0  24h=0  spend 24h=$0.0000"
+
+    def test_error_key_renders_unavailable_not_closed(self):
+        sb = {"error": "rc=1: claude_spawn_tracker.py summary --json failed"}
+        line = _spawn_breaker_line(sb)
+        assert "unavailable" in line.lower()
+        assert "closed" not in line
+
+    def test_uncovered_zero_names_the_covered_lane(self):
+        # per_source only has a source that is not the Team Lead's own spawn
+        # path (spawn-agent.sh / pre-spawn-check.sh never call record()).
+        sb = {
+            "tripped": False,
+            "spawns_1h": 0,
+            "spawns_24h": 0,
+            "spend_24h_usd": 0.0,
+            "per_source": {"dashboard_spawn": 3},
+            "tripped_meta": None,
+        }
+        line = _spawn_breaker_line(sb)
+        assert "dashboard_spawn" in line
+        assert line != self._bare_zero_line()
+
+    def test_empty_per_source_says_no_coverage(self):
+        sb = {
+            "tripped": False,
+            "spawns_1h": 0,
+            "spawns_24h": 0,
+            "spend_24h_usd": 0.0,
+            "per_source": {},
+            "tripped_meta": None,
+        }
+        line = _spawn_breaker_line(sb)
+        assert "instrumented: none" in line
+        assert line != self._bare_zero_line()
+
+    def test_tripped_still_unmistakable(self):
+        sb = {
+            "tripped": True,
+            "tripped_meta": {"reason": "spawns_24h_max exceeded (210 > 200)"},
+            "spawns_1h": 12,
+            "spawns_24h": 210,
+            "spend_24h_usd": 18.4,
+            "per_source": {"dashboard_spawn": 210},
+        }
+        line = _spawn_breaker_line(sb)
+        assert "TRIPPED" in line
+        assert "spawns_24h_max exceeded (210 > 200)" in line
+
+    def test_zero_with_and_without_coverage_render_differently(self):
+        # The discriminating check: items above can all pass while these two
+        # still render identically, which was the entire defect.
+        covered = {
+            "tripped": False, "spawns_1h": 0, "spawns_24h": 0, "spend_24h_usd": 0.0,
+            "per_source": {"dashboard_spawn": 0}, "tripped_meta": None,
+        }
+        uncovered = {
+            "tripped": False, "spawns_1h": 0, "spawns_24h": 0, "spend_24h_usd": 0.0,
+            "per_source": {}, "tripped_meta": None,
+        }
+        assert _spawn_breaker_line(covered) != _spawn_breaker_line(uncovered)

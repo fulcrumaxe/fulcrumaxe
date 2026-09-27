@@ -487,6 +487,50 @@ def _spawn_breaker_summary() -> dict:
         }
 
 
+def _spawn_breaker_line(sb: dict) -> str:
+    """Render the spawn-breaker status line from a `_spawn_breaker_summary()` dict.
+
+    A bare "closed  spawns 1h=0  24h=0" reads as an all-clear whether the
+    tracker genuinely saw no spawns or simply never heard from the path that
+    produced them. This renders three cases distinguishably:
+
+    - `error` set: the tracker call itself failed — say so, don't print
+      fabricated zeros as if they were counted.
+    - not tripped: name which sources the zero (or nonzero) count actually
+      covers, so an uncovered zero can't be mistaken for an all-clear.
+    - tripped: unchanged — a real trip must stay unmistakable regardless of
+      the coverage wording added for the other two cases.
+    """
+    error = sb.get("error")
+    if error:
+        return f"  Spawn breaker: unavailable — tracker error: {error}"
+
+    sb_tripped = sb.get("tripped", False)
+    sb_meta = sb.get("tripped_meta") or {}
+    sb_reason = sb_meta.get("reason", "") if sb_tripped else ""
+    sb_1h = sb.get("spawns_1h", 0)
+    sb_24h = sb.get("spawns_24h", 0)
+    sb_spend = sb.get("spend_24h_usd", 0.0)
+
+    if sb_tripped:
+        return (
+            f"  Spawn breaker: TRIPPED ({sb_reason})"
+            f"  spawns 1h={sb_1h}  24h={sb_24h}  spend 24h=${sb_spend:.4f}"
+        )
+
+    covered = sorted((sb.get("per_source") or {}).keys())
+    if covered:
+        coverage = f"instrumented: {', '.join(covered)} (other spawn paths aren't counted)"
+    else:
+        coverage = "instrumented: none — this is an uncovered zero, not a measured one"
+
+    return (
+        f"  Spawn breaker: closed"
+        f"  spawns 1h={sb_1h}  24h={sb_24h}  spend 24h=${sb_spend:.4f}"
+        f"  ({coverage})"
+    )
+
+
 def _kpi_summary() -> dict:
     rc, out = _run([sys.executable, "backend/kpi_engine.py", "show"])
     # Try to find "tasks completed" line
@@ -709,22 +753,7 @@ def _human_output(data: dict, stale_message: str | None) -> str:
 
     # Spawn breaker
     sb = data.get("spawn_breaker") or {}
-    sb_tripped = sb.get("tripped", False)
-    sb_meta = sb.get("tripped_meta") or {}
-    sb_reason = sb_meta.get("reason", "") if sb_tripped else ""
-    sb_1h = sb.get("spawns_1h", 0)
-    sb_24h = sb.get("spawns_24h", 0)
-    sb_spend = sb.get("spend_24h_usd", 0.0)
-    if sb_tripped:
-        lines.append(
-            f"  Spawn breaker: TRIPPED ({sb_reason})"
-            f"  spawns 1h={sb_1h}  24h={sb_24h}  spend 24h=${sb_spend:.4f}"
-        )
-    else:
-        lines.append(
-            f"  Spawn breaker: closed"
-            f"  spawns 1h={sb_1h}  24h={sb_24h}  spend 24h=${sb_spend:.4f}"
-        )
+    lines.append(_spawn_breaker_line(sb))
 
     lines.append("")
 
