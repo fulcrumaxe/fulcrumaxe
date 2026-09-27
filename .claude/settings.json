@@ -27,6 +27,15 @@
             "command": "python3 $CLAUDE_PROJECT_DIR/hooks/fleet_unregister.py"
           }
         ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 $CLAUDE_PROJECT_DIR/hooks/discussion_outbox_stop.py"
+          }
+        ]
       }
     ],
     "PreToolUse": [

@@ -90,6 +90,27 @@ Set `BLOCKED-BY:` instead of demoting a finished Spec out of `SPEC_READY`, and i
 writing the constraint in prose — the selector and the spawn gate read this field and
 nothing else. Full grammar: `wiki/Discussion-Status-Protocol.md`.
 
+### Posting via the Discussion outbox (D#2615 ENG-0)
+
+A comment or a body update for the Discussion this spawn is registered
+against — a synthesis comment, a consensus comment, a reminder, a Spec-body
+update to `SPEC_READY` — is written to a file in your own worktree instead of
+being posted by you directly:
+
+- `.discussion-outbox/comment.md` — the complete text of one Discussion comment.
+- `.discussion-outbox/body.md` — the complete new Discussion body.
+
+The SubagentStop hook posts the file after you stop, using the role and
+Discussion the Team Lead registered for this spawn — never anything the file
+itself says. A refused file (a bad phase, a dropped `BLOCKED-BY:`, an
+oversized file) is left in place, and the reason goes to the audit log, not
+back to you.
+
+This does **not** apply to the Team Log or PM Brain issues (still `gh issue
+comment`, unchanged below) or to creating a brand-new child Discussion (still
+the existing `gh api graphql createDiscussion` mutation) — the outbox only
+ever carries the current spawn's own registered Discussion.
+
 ---
 
 ## PM Brain Issue (Persistent State)
@@ -581,7 +602,7 @@ Post at minimum:
 ## Behavioral Guidelines
 
 - ✅ Always run wake-up protocol on activation
-- ✅ GitHub is the only state source — no local files
+- ✅ GitHub is the only state source — no local files, other than the transient `.discussion-outbox/` hand-off (see above), cleared by the hook on every post
 - ✅ Hand off to Team Lead (executor spawn) after SPEC_READY, then move on
 - ✅ Minimum 2 roles for HEAVY consensus (TA + 1)
 - ✅ All spawn requests via SendMessage → main (never spawn directly)
