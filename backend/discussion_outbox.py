@@ -81,6 +81,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -270,6 +271,41 @@ def _warn_identity_refusal(reason: str) -> str:
     except OSError:
         pass
     return reason
+
+
+def _in_hook_context(payload: dict, repo_root) -> bool:
+    """True only when this call plausibly reached `process_stop_event`
+    through a real Claude Code SubagentStop hook invocation, never a
+    hand-run script, `python3 -c`, or a pytest subprocess (D#2626).
+
+    `CLAUDE_PROJECT_DIR` is set by Claude Code for hook commands (see
+    `.claude/settings.json`, which runs this hook as
+    `python3 $CLAUDE_PROJECT_DIR/hooks/discussion_outbox_stop.py`) and is
+    absent from a sub-agent's own Bash environment — measured directly, not
+    assumed — along with anything a subprocess it starts inherits. Comparing
+    it against `repo_root` (rather than merely checking it is set) also
+    catches a value left over from a different checkout. `hook_event_name`
+    is a cheap second check for a hand-built fixture that omits the field.
+    """
+    project_dir = os.environ.get("CLAUDE_PROJECT_DIR") or ""
+    if not project_dir:
+        return False
+    try:
+        if Path(project_dir).resolve() != Path(repo_root).resolve():
+            return False
+    except OSError:
+        return False
+    return payload.get("hook_event_name") == "SubagentStop"
+
+
+def _warn_hook_context_refusal() -> str:
+    """A hand-run refusal prints one stderr warning line, same shape as
+    `_warn_identity_refusal`. Never raises."""
+    try:
+        print("discussion_outbox: refused: not_hook_context", file=sys.stderr)
+    except OSError:
+        pass
+    return "not_hook_context"
 
 
 # ---------------------------------------------------------------------------
@@ -667,6 +703,18 @@ def process_stop_event(payload: dict, repo_root, client: Optional[GitHubClient] 
     identity_entry, identity_reason = _resolve_identity(payload)
 
     if client is None:
+        if not _in_hook_context(payload, repo_root):
+            reason = _warn_hook_context_refusal()
+            rows = []
+            for kind, path in present:
+                try:
+                    sha = hashlib.sha256(path.read_bytes()).hexdigest()
+                except OSError:
+                    sha = ""
+                row = _refused_row(agent_id, None, None, kind, sha, reason)
+                _append_audit(row)
+                rows.append(row)
+            return rows
         client = RealGitHubClient()
     repo = _resolve_discussion_repo(repo_root)
 
