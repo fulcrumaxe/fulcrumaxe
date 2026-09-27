@@ -277,13 +277,26 @@ esac
 
 # -- item 4: node-id translation, executed against all three shapes in the
 #    committed 93's pattern set, not merely string-compared ----------------
+# This is the one place in this file that shells out to a real `pytest
+# --collect-only` subprocess against the real tree, and that subprocess
+# otherwise inherits this shell's environment. The root conftest chain
+# imports backend.spawn_templates, which needs a resolvable repo slug
+# (AUTONOMOUS_TEAM_REPO, or a "repo" field in .autonomous-team/project.json)
+# to import at all — absent on a clean shell and on the code plane itself
+# (D#1900's own D#2515 addendum: 0 files under .autonomous-team/ there). Pin
+# an explicit env for this one subprocess rather than relying on whatever
+# the caller's shell happens to have set, matching the per-command pattern
+# in scripts/lib/code-plane-pr.sh (AUTONOMOUS_TEAM_REPO / STATE_DIR set only
+# for the one call that needs them, never exported to the whole shell).
 echo "-- D#1900 PR 3 item 4: translation executed under --collect-only -q, all three shapes --"
-python3 - "$LIB" "$REPO_ROOT" <<'PYEOF'
+mkdir -p "$SCRATCH/item4-state"
+python3 - "$LIB" "$REPO_ROOT" "$SCRATCH/item4-state" <<'PYEOF'
 import importlib.util
+import os
 import subprocess
 import sys
 
-lib_path, repo_root = sys.argv[1], sys.argv[2]
+lib_path, repo_root, state_dir = sys.argv[1], sys.argv[2], sys.argv[3]
 spec = importlib.util.spec_from_file_location("pytest_baseline", lib_path)
 pb = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pb)
@@ -299,6 +312,14 @@ cases = [
      "test_template_contains_category_guide[loop-bootstrap-snapshot]"),
 ]
 
+# Explicit env for the collect-only subprocess only — a placeholder slug
+# when the caller's shell has none, so this check is self-sufficient in a
+# clean shell or on a bare code-plane checkout, and never a real
+# AUTONOMOUS_TEAM_REPO this test happens to inherit.
+subprocess_env = dict(os.environ)
+subprocess_env["AUTONOMOUS_TEAM_REPO"] = os.environ.get("AUTONOMOUS_TEAM_REPO") or "fixture/repo"
+subprocess_env["AUTONOMOUS_TEAM_STATE_DIR"] = state_dir
+
 ok = True
 for junit_id, expected in cases:
     got = pb.junit_id_to_pytest_nodeid(junit_id)
@@ -309,6 +330,7 @@ for junit_id, expected in cases:
     result = subprocess.run(
         [sys.executable, "-m", "pytest", got, "--collect-only", "-q"],
         cwd=repo_root, capture_output=True, text=True, timeout=60,
+        env=subprocess_env,
     )
     if result.returncode != 0 or "1 test collected" not in result.stdout:
         print(f"collect-only did not collect exactly one test for {got!r}:\n{result.stdout}\n{result.stderr}", file=sys.stderr)
