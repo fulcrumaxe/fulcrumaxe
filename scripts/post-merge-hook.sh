@@ -149,48 +149,25 @@ source "$SCRIPT_DIR/lib/resolve-pr-discussion.sh"
 source "$SCRIPT_DIR/lib/discussion-close-guard.sh"
 # shellcheck source=scripts/lib/planned-prs-label.sh
 source "$SCRIPT_DIR/lib/planned-prs-label.sh"
+# shellcheck source=scripts/lib/discussion-merge-count.sh
+source "$SCRIPT_DIR/lib/discussion-merge-count.sh"
 
-# ── Merge-count resolution (D#2021 §3) ────────────────────────────────────────
-# Recorded merges via backend/pr_state.py replace the old title-prefix-only
-# count as the merge-count source for discussion-close-guard.sh's
-# planned_prs > 1 branch. Title-prefix counting stays only as a FALLBACK for a
-# Discussion with no pr_state record at all — it biases toward undercounting
-# (and therefore toward staying open, the safe direction of error), which is
-# why it is safe to keep and unsafe to rely on. The two counts are never
-# combined/maxed: the recorded count wins whenever any record exists.
+# ── Merge-count resolution (D#2021 §3, D#2590) ────────────────────────────────
+# A repo-scoped pr_state read only ever saw merges on the plane the CURRENT
+# merge happened on, so a Discussion split across planes — or one whose
+# earlier merge predates repo-scoped pr_state rows (D#2379) — could never
+# reach its own planned_prs and held open forever. discussion_merge_count
+# (scripts/lib/discussion-merge-count.sh) fixes that: it unions GitHub closing
+# references on BOTH planes, repo-scoped pr_state rows on BOTH planes, and the
+# PR this hook run is for, keyed on (plane, PR) so same-numbered PRs on
+# different planes never collapse into one. See that file's header for the
+# full contract, including why a `gh` failure on one plane degrades rather
+# than aborts. The old title-prefix-only fallback is gone — the GitHub read
+# above covers that convention too.
 # Args: $1 = Discussion number
 # Echoes: integer merge count
 resolve_merged_count() {
-  local disc="$1"
-  local all_records record_total recorded_true title_count
-
-  all_records=$(python3 "$REPO_ROOT/backend/pr_state.py" list --discussion "$disc" --repo "$_PR_REPO" 2>/dev/null || echo "[]")
-  record_total=$(echo "$all_records" | python3 -c "
-import json, sys
-try:
-    print(len(json.load(sys.stdin)))
-except Exception:
-    print(0)
-" 2>/dev/null || echo "0")
-  record_total="${record_total:-0}"
-
-  if [[ "$record_total" -gt 0 ]]; then
-    recorded_true=$(echo "$all_records" | python3 -c "
-import json, sys
-try:
-    d = json.load(sys.stdin)
-    print(sum(1 for e in d if e.get('merged') is True))
-except Exception:
-    print(0)
-" 2>/dev/null || echo "0")
-    echo "${recorded_true:-0}"
-  else
-    title_count=$(gh pr list --repo "$_PR_REPO" \
-      --state merged --json number,title \
-      --jq "[.[] | select(.title | startswith(\"#${disc}:\"))] | length" \
-      2>/dev/null || echo "0")
-    echo "${title_count:-0}"
-  fi
+  discussion_merge_count "$1" "$PR" "$_PR_REPO"
 }
 # shellcheck source=scripts/lib/state-dir.sh
 source "$SCRIPT_DIR/lib/state-dir.sh" || true
