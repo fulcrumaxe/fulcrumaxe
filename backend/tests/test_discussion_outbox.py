@@ -794,6 +794,166 @@ def test_client_raising_yields_post_failed_and_file_left_in_place(tmp_path):
     assert (wt / ".discussion-outbox" / "comment.md").exists()
 
 
+# ---------------------------------------------------------------------------
+# D#2626: RealGitHubClient is built only from a real SubagentStop hook
+# invocation, never a hand-run script or subprocess.
+# ---------------------------------------------------------------------------
+
+
+class _RecordingRealClient:
+    """Stand-in for RealGitHubClient: records that it was constructed, then
+    raises so the test fails loudly if a real network call were ever
+    attempted past this point."""
+
+    instances: list["_RecordingRealClient"] = []
+
+    def __init__(self):
+        _RecordingRealClient.instances.append(self)
+        raise RuntimeError("RealGitHubClient must not be constructed in tests")
+
+
+@pytest.fixture(autouse=True)
+def _reset_recording_client():
+    _RecordingRealClient.instances = []
+    yield
+    _RecordingRealClient.instances = []
+
+
+def test_hook_context_missing_project_dir_refuses_without_constructing_client(tmp_path, monkeypatch):
+    wt = make_worktree(tmp_path)
+    event_id = "researcher-1300-1111111140"
+    make_transcript(wt, event_id)
+    register(event_id, "researcher", 1300)
+    write_outbox(wt, comment="content")
+    repo_root = make_repo_root(tmp_path)
+    monkeypatch.setattr(do, "RealGitHubClient", _RecordingRealClient)
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+
+    payload = {
+        "cwd": str(wt),
+        "agent_id": "a1",
+        "agent_type": "researcher",
+        "agent_transcript_path": str(wt / "agent-x.jsonl"),
+        "hook_event_name": "SubagentStop",
+    }
+    rows = do.process_stop_event(payload, repo_root)
+
+    assert _RecordingRealClient.instances == []
+    assert len(rows) == 1
+    assert rows[0]["outcome"] == "refused:not_hook_context"
+
+
+def test_hook_context_project_dir_pointing_elsewhere_refuses_without_constructing_client(tmp_path, monkeypatch):
+    wt = make_worktree(tmp_path)
+    event_id = "researcher-1301-1111111141"
+    make_transcript(wt, event_id)
+    register(event_id, "researcher", 1301)
+    write_outbox(wt, comment="content")
+    repo_root = make_repo_root(tmp_path)
+    monkeypatch.setattr(do, "RealGitHubClient", _RecordingRealClient)
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path / "some-other-checkout"))
+
+    payload = {
+        "cwd": str(wt),
+        "agent_id": "a1",
+        "agent_type": "researcher",
+        "agent_transcript_path": str(wt / "agent-x.jsonl"),
+        "hook_event_name": "SubagentStop",
+    }
+    rows = do.process_stop_event(payload, repo_root)
+
+    assert _RecordingRealClient.instances == []
+    assert len(rows) == 1
+    assert rows[0]["outcome"] == "refused:not_hook_context"
+
+
+@pytest.mark.parametrize("hook_event_name", [None, "PreToolUse"])
+def test_hook_context_wrong_event_name_refuses_without_constructing_client(tmp_path, monkeypatch, hook_event_name):
+    wt = make_worktree(tmp_path)
+    event_id = f"researcher-1302-{1111111142 + (0 if hook_event_name is None else 1)}"
+    make_transcript(wt, event_id)
+    register(event_id, "researcher", 1302)
+    write_outbox(wt, comment="content")
+    repo_root = make_repo_root(tmp_path)
+    monkeypatch.setattr(do, "RealGitHubClient", _RecordingRealClient)
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(repo_root))
+
+    payload = {
+        "cwd": str(wt),
+        "agent_id": "a1",
+        "agent_type": "researcher",
+        "agent_transcript_path": str(wt / "agent-x.jsonl"),
+    }
+    if hook_event_name is not None:
+        payload["hook_event_name"] = hook_event_name
+    rows = do.process_stop_event(payload, repo_root)
+
+    assert _RecordingRealClient.instances == []
+    assert len(rows) == 1
+    assert rows[0]["outcome"] == "refused:not_hook_context"
+
+
+def test_hook_context_satisfied_reaches_real_client_construction(tmp_path, monkeypatch):
+    wt = make_worktree(tmp_path)
+    event_id = "researcher-1303-1111111143"
+    make_transcript(wt, event_id)
+    register(event_id, "researcher", 1303)
+    write_outbox(wt, comment="content")
+    repo_root = make_repo_root(tmp_path)
+    monkeypatch.setattr(do, "RealGitHubClient", _RecordingRealClient)
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(repo_root))
+
+    payload = {
+        "cwd": str(wt),
+        "agent_id": "a1",
+        "agent_type": "researcher",
+        "agent_transcript_path": str(wt / "agent-x.jsonl"),
+        "hook_event_name": "SubagentStop",
+    }
+    with pytest.raises(RuntimeError):
+        do.process_stop_event(payload, repo_root)
+
+    assert len(_RecordingRealClient.instances) == 1
+
+
+def test_hook_context_check_skipped_when_client_injected(tmp_path, monkeypatch):
+    """Criterion unaffected: tests that inject a client never hit the guard,
+    whatever CLAUDE_PROJECT_DIR / hook_event_name are set to."""
+    wt = make_worktree(tmp_path)
+    event_id = "researcher-1304-1111111144"
+    make_transcript(wt, event_id)
+    register(event_id, "researcher", 1304)
+    write_outbox(wt, comment="content")
+    repo_root = make_repo_root(tmp_path)
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    client = FakeGitHubClient()
+
+    payload = {
+        "cwd": str(wt),
+        "agent_id": "a1",
+        "agent_type": "researcher",
+        "agent_transcript_path": str(wt / "agent-x.jsonl"),
+    }
+    rows = do.process_stop_event(payload, repo_root, client=client)
+
+    assert rows[0]["outcome"] == "posted"
+
+
+def test_hook_context_empty_outbox_still_writes_no_row(tmp_path, monkeypatch):
+    """Criterion 7 is unchanged: an empty outbox short-circuits before the
+    hook-context check even runs, whatever the env looks like."""
+    wt = make_worktree(tmp_path)
+    repo_root = make_repo_root(tmp_path)
+    monkeypatch.setattr(do, "RealGitHubClient", _RecordingRealClient)
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+
+    payload = {"cwd": str(wt), "agent_id": "a1", "agent_type": "researcher"}
+    rows = do.process_stop_event(payload, repo_root)
+
+    assert rows == []
+    assert _RecordingRealClient.instances == []
+
+
 def test_hook_entry_point_never_raises_and_exits_0_on_empty_outbox(tmp_path, monkeypatch):
     """The real entry point, exercised end-to-end via stdin — never a mock of
     it. Deliberately an EMPTY outbox (no comment.md/body.md) so this reaches
