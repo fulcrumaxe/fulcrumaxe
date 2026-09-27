@@ -1254,6 +1254,169 @@ assert_contains "CS-24d: FAILING names the duplicated check" "PR mutation eviden
 assert_contains "CS-24d: diagnostic explains the two id sequences aren't comparable" "two different id sequences" "$OUT"
 unset CI_STATUS_OVERRIDE_20208 CI_STATUS_HEAD_SHA_20208
 
+# ═══════════════════════════════════════════════════════════════════════════
+# CS-25 (D#2028) — a run that honours a test seam leaves a durable
+# ci_status_test_seam_used row naming which one; a run that honours none
+# leaves zero.
+#
+# Deferred from D#2019 on reasoning that inverted the threat model: these
+# seams are only reachable with CI_STATUS_TEST_MODE=1, and that is exactly
+# where an in-process actor forging a merge decision would set it, not a
+# place the forgery is absent.
+# -----------------------------------------------------------------------
+# _seam_row_count <file> <seam> — count of ci_status_test_seam_used rows in
+# <file> whose PARSED "reason" field equals <seam> exactly. Never a substring
+# match on the raw line (AC-6) and never a count of the whole file (each of
+# these sub-tests also incidentally exercises the _ci_audit_path seam, since
+# resolving where to write is itself consulting that seam's own redirect —
+# filtering by name is what keeps that from looking like a miscount here).
+_seam_row_count() {
+  local file="$1" seam="$2"
+  python3 -c "
+import json, sys
+path, seam = sys.argv[1], sys.argv[2]
+n = 0
+try:
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            row = json.loads(line)
+            if row.get('kind') == 'ci_status_test_seam_used' and row.get('reason') == seam:
+                n += 1
+except FileNotFoundError:
+    pass
+print(n)
+" "$file" "$seam"
+}
+
+_assert_seam_row() {
+  local label="$1" file="$2" seam="$3" count
+  count="$(_seam_row_count "$file" "$seam")"
+  if [ "$count" = "1" ]; then
+    echo "  PASS: $label"; PASS=$((PASS + 1))
+  else
+    echo "  FAIL: $label — expected exactly one row naming '$seam', found $count"
+    echo "        content: $(cat "$file" 2>/dev/null)"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
+echo ""
+echo "=== CS-25a: the _ci_fetch_head_sha seam leaves one seam-used row naming itself ==="
+SEAM_TMP_A="$(mktemp)"
+(
+  source "$CI_LIB"
+  export CI_STATUS_TEST_AUDIT_FILE="$SEAM_TMP_A"
+  export CI_STATUS_HEAD_SHA_50001="cafef00d01"
+  _ci_fetch_head_sha 50001 "test-owner/test-repo" >/dev/null
+)
+_assert_seam_row "CS-25a" "$SEAM_TMP_A" "_ci_fetch_head_sha"
+rm -f "$SEAM_TMP_A"
+
+echo ""
+echo "=== CS-25b: the _ci_fetch_check_runs_json seam leaves one seam-used row naming itself ==="
+SEAM_TMP_B="$(mktemp)"
+(
+  source "$CI_LIB"
+  export CI_STATUS_TEST_AUDIT_FILE="$SEAM_TMP_B"
+  export CI_STATUS_OVERRIDE_50002="[]"
+  _ci_fetch_check_runs_json 50002 "test-owner/test-repo" "deadbeef50" >/dev/null
+)
+_assert_seam_row "CS-25b" "$SEAM_TMP_B" "_ci_fetch_check_runs_json"
+rm -f "$SEAM_TMP_B"
+
+echo ""
+echo "=== CS-25c: the CI_KILL_SWITCH_OVERRIDE branch leaves one seam-used row naming itself ==="
+SEAM_TMP_C="$(mktemp)"
+(
+  source "$CI_LIB"
+  export CI_STATUS_TEST_AUDIT_FILE="$SEAM_TMP_C"
+  export CI_KILL_SWITCH_OVERRIDE=HTTP_404
+  _ci_kill_switch_state "test-owner/test-repo" >/dev/null
+)
+_assert_seam_row "CS-25c" "$SEAM_TMP_C" "CI_KILL_SWITCH_OVERRIDE"
+rm -f "$SEAM_TMP_C"
+
+echo ""
+echo "=== CS-25d: the _ci_audit_path redirect leaves one seam-used row naming itself ==="
+SEAM_TMP_D="$(mktemp)"
+(
+  source "$CI_LIB"
+  export CI_STATUS_TEST_AUDIT_FILE="$SEAM_TMP_D"
+  _ci_audit_path >/dev/null
+)
+_assert_seam_row "CS-25d" "$SEAM_TMP_D" "_ci_audit_path"
+rm -f "$SEAM_TMP_D"
+
+# -----------------------------------------------------------------------
+# CS-25e (AC-3): with CI_STATUS_TEST_MODE unset, none of the four seams can
+# fire, so a real check_ci_status call (kill-switch read stubbed to fail,
+# same shape as CS-15) writes zero seam-used rows — and nothing else either,
+# since it fails closed before reaching any audit write.
+# -----------------------------------------------------------------------
+echo ""
+echo "=== CS-25e: CI_STATUS_TEST_MODE unset -> zero seam-used rows on a real check_ci_status call ==="
+STUB_DIR3="$(mktemp -d)"
+printf '#!/usr/bin/env bash\nexit 127\n' > "$STUB_DIR3/gh"
+chmod +x "$STUB_DIR3/gh"
+SEAM_TMP_E="$(mktemp)"
+env -u CI_STATUS_TEST_MODE \
+    PATH="$STUB_DIR3:$PATH" \
+    CI_STATUS_TEST_AUDIT_FILE="$SEAM_TMP_E" \
+    CI_KILL_SWITCH_OVERRIDE=true \
+  bash -c '
+    source "'"$CI_LIB"'"
+    check_ci_status 50005 "test-owner/test-repo"
+    exit $?
+  ' >/dev/null 2>&1
+if [ ! -s "$SEAM_TMP_E" ]; then
+  echo "  PASS: CS-25e: audit file stays empty — no seam fired, nothing else written either"; PASS=$((PASS + 1))
+else
+  echo "  FAIL: CS-25e: expected an empty file, got: $(cat "$SEAM_TMP_E")"; FAIL=$((FAIL + 1))
+fi
+rm -rf "$STUB_DIR3"
+rm -f "$SEAM_TMP_E"
+
+# -----------------------------------------------------------------------
+# CS-25f (hardening, cheap): every tests/*.sh caller that sets
+# CI_STATUS_TEST_AUDIT_FILE also has CI_STATUS_TEST_MODE=1 in scope —
+# pinned in a test rather than left as prose, per the Implementation Notes.
+# "In scope" is deliberately crude (same line, or anywhere earlier in the
+# file — this suite's own suite-wide export at :27 is exactly that shape):
+# the property being guarded is "the redirect can never accidentally apply
+# to production", not a precise static-scope analysis.
+# -----------------------------------------------------------------------
+echo ""
+echo "=== CS-25f: every CI_STATUS_TEST_AUDIT_FILE caller in tests/ has CI_STATUS_TEST_MODE=1 in scope ==="
+if python3 - "$REAL_REPO_ROOT/tests" <<'PYEOF'
+import re, sys, pathlib
+
+tests_dir = pathlib.Path(sys.argv[1])
+problems = []
+for f in sorted(tests_dir.glob("*.sh")):
+    text = f.read_text()
+    for m in re.finditer(r'CI_STATUS_TEST_AUDIT_FILE', text):
+        line_start = text.rfind("\n", 0, m.start()) + 1
+        line_end = text.find("\n", m.start())
+        line_end = line_end if line_end != -1 else len(text)
+        line = text[line_start:line_end]
+        if "CI_STATUS_TEST_MODE=1" in line:
+            continue
+        if "CI_STATUS_TEST_MODE=1" in text[:m.start()]:
+            continue
+        problems.append(f"{f.name}:{text.count(chr(10), 0, m.start()) + 1}: {line.strip()}")
+for p in problems:
+    print(p, file=sys.stderr)
+sys.exit(1 if problems else 0)
+PYEOF
+then
+  echo "  PASS: CS-25f: every CI_STATUS_TEST_AUDIT_FILE caller in tests/ has CI_STATUS_TEST_MODE=1 in scope"; PASS=$((PASS + 1))
+else
+  echo "  FAIL: CS-25f: a CI_STATUS_TEST_AUDIT_FILE caller in tests/ has no CI_STATUS_TEST_MODE=1 in scope"; FAIL=$((FAIL + 1))
+fi
+
 # -----------------------------------------------------------------------
 # Summary
 # -----------------------------------------------------------------------

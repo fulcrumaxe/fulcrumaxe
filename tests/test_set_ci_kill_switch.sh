@@ -83,7 +83,14 @@ OUT3=$(_run "$AUDIT3" true false); RC3=$?
 if [ "$RC3" -eq 0 ]; then pass "KS-3: exits 0"; else fail "KS-3: expected exit 0, got $RC3 — $OUT3"; fi
 if python3 -c '
 import json, sys
-r = [json.loads(l) for l in open(sys.argv[1]) if l.strip()][0]
+# Filter by kind rather than taking row [0] (D#2028): _ci_audit_path now
+# leaves its own ci_status_test_seam_used row every time its test-mode
+# redirect is consulted, which happens here too since set-ci-kill-switch.sh
+# calls _ci_audit_path directly — that row lands in this same file, ahead of
+# the ci_kill_switch_changed row this assertion is actually about.
+rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+rows = [r for r in rows if r.get("kind") == "ci_kill_switch_changed"]
+r = rows[0]
 assert r["old"] == "true" and r["new"] == "false", r
 ' "$AUDIT3"; then
   pass "KS-3: row records true -> false"

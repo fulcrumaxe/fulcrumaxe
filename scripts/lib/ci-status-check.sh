@@ -324,6 +324,7 @@ _ci_kill_switch_state() {
   local repo="$1"
 
   if [ "${CI_STATUS_TEST_MODE:-}" = "1" ] && [ -n "${CI_KILL_SWITCH_OVERRIDE+set}" ]; then
+    _ci_note_seam_used "CI_KILL_SWITCH_OVERRIDE"
     case "${CI_KILL_SWITCH_OVERRIDE}" in
       HTTP_404)                       printf 'enabled' ;;
       HTTP_403|HTTP_500|GH_API_ERROR) printf 'unknown' ;;
@@ -355,6 +356,7 @@ _ci_fetch_head_sha() {
   local mock_var="CI_STATUS_HEAD_SHA_${pr}"
   if [ -n "${!mock_var:-}" ]; then
     if [ "${CI_STATUS_TEST_MODE:-}" = "1" ]; then
+      _ci_note_seam_used "_ci_fetch_head_sha"
       printf '%s' "${!mock_var}"
       return 0
     fi
@@ -368,6 +370,7 @@ _ci_fetch_check_runs_json() {
   local mock_var="CI_STATUS_OVERRIDE_${pr}"
   if [ -n "${!mock_var:-}" ]; then
     if [ "${CI_STATUS_TEST_MODE:-}" = "1" ]; then
+      _ci_note_seam_used "_ci_fetch_check_runs_json"
       local mock_val="${!mock_var}"
       if [ "$mock_val" = "GH_API_ERROR" ]; then
         return 1
@@ -1138,13 +1141,15 @@ ci_report_conflict() {
   return 0
 }
 
-# ── Public: ci_write_audit <kind> <pr> <head_sha> <failing> <run_url> <reason>
-# Durable signal (AC-13) + the audited-bypass trail (AC-12), same shape as
-# the existing manual_merge_two_gate_bypass row in merge-and-hook.sh.
-ci_write_audit() {
-  local kind="$1" pr="$2" head_sha="$3" failing="$4" run_url="$5" reason="$6"
-  local ts
-  ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "")
+# ── Internal: _ci_write_audit_row <path> <kind> <pr> <head_sha> <failing> <run_url> <reason> <ts>
+# The actual JSON-build-and-append, given an ALREADY-RESOLVED destination.
+# ci_write_audit (below) resolves the path itself via _ci_audit_path and then
+# calls this. _ci_audit_path's own test-seam note (further down) also calls
+# this directly, with the path it already has in hand — it cannot ask
+# ci_write_audit / _ci_audit_path to resolve the path for it without
+# recursing into itself.
+_ci_write_audit_row() {
+  local path="$1" kind="$2" pr="$3" head_sha="$4" failing="$5" run_url="$6" reason="$7" ts="$8"
   local entry
   entry=$(python3 -c "
 import json, sys
@@ -1160,7 +1165,33 @@ print(json.dumps({
 " "$kind" "$pr" "$head_sha" "$failing" "$run_url" "$reason" "$ts" 2>/dev/null)
   [ -z "$entry" ] && return 0
 
-  printf '%s\n' "$entry" >> "$(_ci_audit_path)" 2>/dev/null || true
+  printf '%s\n' "$entry" >> "$path" 2>/dev/null || true
+}
+
+# ── Public: ci_write_audit <kind> <pr> <head_sha> <failing> <run_url> <reason>
+# Durable signal (AC-13) + the audited-bypass trail (AC-12), same shape as
+# the existing manual_merge_two_gate_bypass row in merge-and-hook.sh.
+ci_write_audit() {
+  local kind="$1" pr="$2" head_sha="$3" failing="$4" run_url="$5" reason="$6"
+  local ts
+  ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "")
+  _ci_write_audit_row "$(_ci_audit_path)" "$kind" "$pr" "$head_sha" "$failing" "$run_url" "$reason" "$ts"
+}
+
+# ── Test-seam audit (D#2028) ────────────────────────────────────────────────
+# Deferred from D#2019 on reasoning that inverted the threat model: the seams
+# above are only reachable with CI_STATUS_TEST_MODE=1, and that is precisely
+# where an in-process actor forging a merge decision would set it — not a
+# place the forgery is absent. This writes one ci_status_test_seam_used row
+# each time one of the four seams is actually consulted, naming which one, so
+# that decision leaves a durable artifact. Purely observational — no branch
+# here can change check_ci_status's STATUS or exit code.
+CI_STATUS_TEST_SEAM_USED_KIND="ci_status_test_seam_used"
+_ci_note_seam_used() {
+  # Goes through ci_write_audit — same redirect-aware destination every other
+  # audit row uses — so a caller that also points CI_STATUS_TEST_AUDIT_FILE
+  # at a scratch file never has one of these land in the real ledger either.
+  ci_write_audit "$CI_STATUS_TEST_SEAM_USED_KIND" "" "" "" "" "$1"
 }
 
 # ── Public: ci_note_merge_if_unverified <pr> <sha> [audit_already_written] ──
@@ -1197,6 +1228,12 @@ ci_note_merge_if_unverified() {
 _ci_audit_path() {
   if [ -n "${CI_STATUS_TEST_AUDIT_FILE:-}" ]; then
     if [ "${CI_STATUS_TEST_MODE:-}" = "1" ]; then
+      # D#2028: this redirect being taken IS the seam firing. Write directly
+      # to the already-known path (never call back into ci_write_audit /
+      # _ci_audit_path here — that would resolve the path by calling this
+      # function again, recursing forever).
+      _ci_write_audit_row "$CI_STATUS_TEST_AUDIT_FILE" "$CI_STATUS_TEST_SEAM_USED_KIND" "" "" "" "" \
+        "_ci_audit_path" "$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "")"
       printf '%s' "$CI_STATUS_TEST_AUDIT_FILE"
       return 0
     fi
