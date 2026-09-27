@@ -42,9 +42,23 @@
 # scanning the morning output for markers previously had nothing to scan
 # for.
 #
-# Degenerate settings files (missing, invalid JSON, no "hooks" key, a
-# "hooks" key with no entries, or no PreToolUse entries at all) each print a
-# single stated line instead of entry lines.
+# Every branch through report() ends in exactly one marker line, including
+# the degenerate ones (fix round 1: the "no hooks key" branch used to print
+# neither, which is the single most common shape for a global settings file
+# and exactly the blind spot finding 3 exists to close). The degenerate
+# branches split on whether the file's absence of danger is verified or
+# merely assumed:
+#   [OK]   file not present, or present with no "hooks" key, or a "hooks"
+#          key with no entries -- each of these is a settings file this
+#          script can fully read, and reading it confirms nothing is
+#          registered.
+#   [WARN] file present but unreadable, or present but invalid JSON -- in
+#          both cases this script cannot see what the file actually
+#          contains, so it cannot claim [OK]; an operator has to look.
+#
+# Degenerate settings files (missing, unreadable, invalid JSON, no "hooks"
+# key, a "hooks" key with no entries, or no PreToolUse entries at all) each
+# print a single stated line plus that one marker, instead of entry lines.
 #
 # Hard constraints (see D#2344 failure conditions):
 #   - Read-only. Never writes to, edits, or offers to edit either settings
@@ -202,20 +216,24 @@ def report(label, path, repo_root):
     print(f"== {label}: {path} ==")
     if not path or not os.path.isfile(path):
         print(f"  {label}: not present")
+        print(f"  {label} [OK] no settings file present -- nothing registered")
         return
     try:
         with open(path, "r") as f:
             raw = f.read()
     except OSError as e:
         print(f"  {label}: could not read file ({e})")
+        print(f"  {label} [WARN] settings file present but unreadable -- cannot verify registered hooks")
         return
     try:
         settings = json.loads(raw)
     except json.JSONDecodeError as e:
         print(f"  {label}: invalid JSON ({e})")
+        print(f"  {label} [WARN] settings file present but invalid JSON -- cannot verify registered hooks")
         return
     if not isinstance(settings, dict) or "hooks" not in settings:
         print(f"  {label}: no hooks key")
+        print(f"  {label} [OK] no hooks key present -- nothing registered")
         return
     entries = list(iter_entries(settings["hooks"]))
     if not entries:

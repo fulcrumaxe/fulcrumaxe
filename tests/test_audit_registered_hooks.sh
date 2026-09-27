@@ -24,6 +24,14 @@
 #   7. (D#2533) A trailing value-less flag fails fast instead of hanging.
 #   8. (D#2533) A FOREIGN/UNRESOLVED entry raises a [WARN] marker line,
 #      distinct from the entry dump line; a clean run raises [OK].
+#   9. (D#2533 fix round 1) Every degenerate branch raises exactly one
+#      marker too, not just the entry-loop path: [OK] for a settings file
+#      this script fully read and found nothing registered in (missing,
+#      present with no "hooks" key), [WARN] for one it could not read at
+#      all (invalid JSON). Checked on the project section (where the
+#      degenerate fixtures already lived) and, for the no-"hooks"-key case
+#      specifically, on the global section too -- that is the exact shape
+#      the round-1 review reproduced against a real operator settings file.
 #
 # Self-contained: every fixture lives under mktemp -d. This test never
 # reads or writes the operator's real $HOME or this repo's own committed
@@ -267,6 +275,20 @@ else
 fi
 [ "$RC_MISSING" -eq 0 ] && ok "degenerate: missing file exits 0" || fail_test "degenerate: missing file exits 0" "got $RC_MISSING"
 
+# fix round 1 (D#2533 blocker): a missing file is a verified-clean state --
+# this script read the absence and confirmed nothing is registered -- so it
+# gets [OK], on its own line, for BOTH the project and global sections.
+if echo "$OUT_MISSING" | grep -qE '^  project \[OK\]'; then
+  ok "fix round 1: missing project settings file raises an [OK] marker"
+else
+  fail_test "fix round 1: missing project settings file raises an [OK] marker" "$OUT_MISSING"
+fi
+if echo "$OUT_MISSING" | grep -qE '^  global \[OK\]'; then
+  ok "fix round 1: missing global settings file raises an [OK] marker"
+else
+  fail_test "fix round 1: missing global settings file raises an [OK] marker" "$OUT_MISSING"
+fi
+
 # Invalid JSON
 FIXTURE_BAD="$T/bad.json"
 echo '{not valid json' > "$FIXTURE_BAD"
@@ -279,7 +301,19 @@ else
 fi
 [ "$RC_BAD" -eq 0 ] && ok "degenerate: invalid JSON exits 0" || fail_test "degenerate: invalid JSON exits 0" "got $RC_BAD"
 
-# No "hooks" key
+# fix round 1: invalid JSON means this script cannot see what the file
+# contains, so it cannot claim [OK] -- it gets [WARN] instead, distinct from
+# the FOREIGN/UNRESOLVED [WARN] above but the same marker an operator scans
+# for.
+if echo "$OUT_BAD" | grep -qE '^  project \[WARN\]'; then
+  ok "fix round 1: invalid JSON raises a [WARN] marker (unverifiable, not silently OK)"
+else
+  fail_test "fix round 1: invalid JSON raises a [WARN] marker" "$OUT_BAD"
+fi
+
+# No "hooks" key -- this is the exact blocker from fix round 1: the built
+# PR's "no hooks key" branch printed no marker at all, reproduced against
+# the operator's real ~/.claude/settings.json (no "hooks" key there).
 FIXTURE_NOHOOKS="$T/nohooks.json"
 echo '{}' > "$FIXTURE_NOHOOKS"
 OUT_NOHOOKS=$(run_audit "$FIXTURE_NOHOOKS")
@@ -290,6 +324,24 @@ else
   fail_test "degenerate: no hooks key reports 'no hooks key'" "$OUT_NOHOOKS"
 fi
 [ "$RC_NOHOOKS" -eq 0 ] && ok "degenerate: no hooks key exits 0" || fail_test "degenerate: no hooks key exits 0" "got $RC_NOHOOKS"
+
+if echo "$OUT_NOHOOKS" | grep -qE '^  project \[OK\]'; then
+  ok "fix round 1: no-hooks-key raises an [OK] marker (the D#2533 blocker)"
+else
+  fail_test "fix round 1: no-hooks-key raises an [OK] marker (the D#2533 blocker)" "$OUT_NOHOOKS"
+fi
+
+# Same check on the GLOBAL settings file specifically -- this is the exact
+# shape the reviewer reproduced against the operator's real
+# ~/.claude/settings.json (project settings absent so only global renders).
+OUT_NOHOOKS_GLOBAL=$(run_audit_global "$FIXTURE_NOHOOKS")
+RC_NOHOOKS_GLOBAL=$?
+if echo "$OUT_NOHOOKS_GLOBAL" | grep -qE '^  global \[OK\]'; then
+  ok "fix round 1: no-hooks-key on the global settings file raises an [OK] marker"
+else
+  fail_test "fix round 1: no-hooks-key on the global settings file raises an [OK] marker" "$OUT_NOHOOKS_GLOBAL"
+fi
+[ "$RC_NOHOOKS_GLOBAL" -eq 0 ] && ok "fix round 1: no-hooks-key on global exits 0" || fail_test "fix round 1: no-hooks-key on global exits 0" "got $RC_NOHOOKS_GLOBAL"
 
 # -----------------------------------------------------------------------
 # D#2533 finding 2: a trailing value-less flag must fail fast, not hang.
