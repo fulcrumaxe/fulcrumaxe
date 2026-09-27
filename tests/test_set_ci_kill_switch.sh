@@ -83,19 +83,22 @@ OUT3=$(_run "$AUDIT3" true false); RC3=$?
 if [ "$RC3" -eq 0 ]; then pass "KS-3: exits 0"; else fail "KS-3: expected exit 0, got $RC3 — $OUT3"; fi
 if python3 -c '
 import json, sys
-# Filter by kind rather than taking row [0] (D#2028): _ci_audit_path now
-# leaves its own ci_status_test_seam_used row every time its test-mode
-# redirect is consulted, which happens here too since set-ci-kill-switch.sh
-# calls _ci_audit_path directly — that row lands in this same file, ahead of
-# the ci_kill_switch_changed row this assertion is actually about.
-rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
-rows = [r for r in rows if r.get("kind") == "ci_kill_switch_changed"]
-r = rows[0]
+r = [json.loads(l) for l in open(sys.argv[1]) if l.strip()][0]
 assert r["old"] == "true" and r["new"] == "false", r
 ' "$AUDIT3"; then
   pass "KS-3: row records true -> false"
 else
   fail "KS-3: wrong row — $(cat "$AUDIT3")"
+fi
+# D#2028 fix-round 1: set-ci-kill-switch.sh resolves its destination through
+# _ci_resolve_audit_dest (silent plumbing), not _ci_audit_path (the seam a
+# test drives directly) — so this file holds exactly the one row this
+# assertion is about, and row [0] above is not filtering out any noise.
+ROWS3=$(grep -c '"kind"' "$AUDIT3" 2>/dev/null || true)
+if [ "${ROWS3:-0}" -eq 1 ]; then
+  pass "KS-3: exactly 1 kind-bearing row total"
+else
+  fail "KS-3: expected exactly 1 kind-bearing row total, got ${ROWS3:-0}: $(cat "$AUDIT3")"
 fi
 rm -f "$AUDIT3"
 

@@ -888,12 +888,37 @@ if [[ "$N_BYPASS" -eq 0 ]]; then pass "CD-1: zero manual_merge_ci_bypass rows"; 
 # D#2271 PR-a: the stand-down row already records the decline — the new
 # ci_note_merge_if_unverified fallback (kind=ci_gate_unverified_merge) must
 # see _CI_AUDIT_WRITTEN=true from this branch and add nothing on top of it.
-# A total of exactly 1 row is the only way to see a silent double-write.
-N_TOTAL_CD1=$(grep -c '"kind"' "$AUDIT_CD1" 2>/dev/null || true)
-if [[ "${N_TOTAL_CD1:-0}" -eq 1 ]]; then
-  pass "CD-1: exactly 1 kind-bearing row total (no unverified-merge double-write)"
+# D#2028 fix-round 1: run_script above always threads CI_KILL_SWITCH_OVERRIDE
+# through CI_STATUS_TEST_MODE=1 (this test sets it to "true" itself, to force
+# the stand-down), so _ci_kill_switch_state now also logs one
+# ci_status_test_seam_used row for that consultation — a real, new row this
+# suite never had to account for before D#2028, not noise to filter away. A
+# total of exactly 2 (that seam row plus the stand-down row, nothing else) is
+# what still rules out a silent unverified-merge double-write.
+N_SEAM_CD1=$(_audit_count "$AUDIT_CD1" "ci_status_test_seam_used")
+if [[ "$N_SEAM_CD1" -eq 1 ]]; then
+  pass "CD-1: exactly 1 ci_status_test_seam_used row (the kill-switch-override consultation)"
 else
-  fail "CD-1: expected exactly 1 kind-bearing row total, got ${N_TOTAL_CD1:-0}"
+  fail "CD-1: expected 1 ci_status_test_seam_used row, got $N_SEAM_CD1"
+fi
+N_TOTAL_CD1=$(grep -c '"kind"' "$AUDIT_CD1" 2>/dev/null || true)
+if [[ "${N_TOTAL_CD1:-0}" -eq 2 ]]; then
+  pass "CD-1: exactly 2 kind-bearing rows total (stand-down + seam-used, no unverified-merge double-write)"
+else
+  fail "CD-1: expected exactly 2 kind-bearing rows total, got ${N_TOTAL_CD1:-0}: $(cat "$AUDIT_CD1" 2>/dev/null)"
+fi
+if python3 -c '
+import json, sys
+for line in open(sys.argv[1]):
+    row = json.loads(line)
+    if row.get("kind") == "ci_status_test_seam_used":
+        assert row.get("reason") == "CI_KILL_SWITCH_OVERRIDE", row
+        sys.exit(0)
+sys.exit(1)
+' "$AUDIT_CD1" 2>/dev/null; then
+  pass "CD-1: seam-used row names CI_KILL_SWITCH_OVERRIDE as the seam"
+else
+  fail "CD-1: seam-used row missing or names the wrong seam — $(cat "$AUDIT_CD1" 2>/dev/null)"
 fi
 if python3 -c '
 import json, sys
@@ -942,11 +967,37 @@ sys.exit(1)
 else
   fail "CD-2: bypass row still has empty head_sha/failing_checks — the gate did not run before the override"
 fi
-N_TOTAL_CD2=$(grep -c '"kind"' "$AUDIT_CD2" 2>/dev/null || true)
-if [[ "${N_TOTAL_CD2:-0}" -eq 1 ]]; then
-  pass "CD-2: exactly 1 kind-bearing row total (no unverified-merge double-write)"
+# D#2028 fix-round 1: this test doesn't set CI_KILL_SWITCH_OVERRIDE itself, so
+# run_script's own default (CI_KILL_SWITCH_OVERRIDE=HTTP_404, "no override
+# requested") applies — and that default is still a real consultation of the
+# kill-switch test seam under CI_STATUS_TEST_MODE=1, so it now also logs one
+# ci_status_test_seam_used row, same as CD-1. A total of exactly 2 (that seam
+# row plus the bypass row, nothing else) is what rules out a silent
+# unverified-merge double-write here.
+N_SEAM_CD2=$(_audit_count "$AUDIT_CD2" "ci_status_test_seam_used")
+if [[ "$N_SEAM_CD2" -eq 1 ]]; then
+  pass "CD-2: exactly 1 ci_status_test_seam_used row (the default kill-switch-override consultation)"
 else
-  fail "CD-2: expected exactly 1 kind-bearing row total, got ${N_TOTAL_CD2:-0}"
+  fail "CD-2: expected 1 ci_status_test_seam_used row, got $N_SEAM_CD2"
+fi
+N_TOTAL_CD2=$(grep -c '"kind"' "$AUDIT_CD2" 2>/dev/null || true)
+if [[ "${N_TOTAL_CD2:-0}" -eq 2 ]]; then
+  pass "CD-2: exactly 2 kind-bearing rows total (bypass + seam-used, no unverified-merge double-write)"
+else
+  fail "CD-2: expected exactly 2 kind-bearing rows total, got ${N_TOTAL_CD2:-0}: $(cat "$AUDIT_CD2" 2>/dev/null)"
+fi
+if python3 -c '
+import json, sys
+for line in open(sys.argv[1]):
+    row = json.loads(line)
+    if row.get("kind") == "ci_status_test_seam_used":
+        assert row.get("reason") == "CI_KILL_SWITCH_OVERRIDE", row
+        sys.exit(0)
+sys.exit(1)
+' "$AUDIT_CD2" 2>/dev/null; then
+  pass "CD-2: seam-used row names CI_KILL_SWITCH_OVERRIDE as the seam"
+else
+  fail "CD-2: seam-used row missing or names the wrong seam — $(cat "$AUDIT_CD2" 2>/dev/null)"
 fi
 unset TWO_GATE_PR_BODY_999 STUB_CI_CHECK_RUNS STUB_HEAD_SHA
 rm -rf "$T_CD2"
@@ -988,12 +1039,37 @@ RC_CD4=$?
 assert_exit "CD-4: exits 0 — merge proceeds" 0 "$RC_CD4"
 AUDIT_CD4="$T_CD4/state/audit.jsonl"
 N_VERIFIED_CD4=$(_audit_count "$AUDIT_CD4" "ci_gate_verified")
-N_TOTAL_CD4=$(grep -c '"kind"' "$AUDIT_CD4" 2>/dev/null || true)
 if [[ "$N_VERIFIED_CD4" -eq 1 ]]; then pass "CD-4: exactly 1 ci_gate_verified row"; else fail "CD-4: expected 1 ci_gate_verified row, got $N_VERIFIED_CD4"; fi
-if [[ "${N_TOTAL_CD4:-0}" -eq 1 ]]; then
-  pass "CD-4: exactly 1 kind-bearing row total (verified merge writes no fallback row)"
+# D#2028 fix-round 1: same as CD-2 — this test doesn't set
+# CI_KILL_SWITCH_OVERRIDE, so run_script's own HTTP_404 default applies and
+# is still a real consultation of the kill-switch test seam, logging one
+# ci_status_test_seam_used row alongside the positive ci_gate_verified marker.
+# A total of exactly 2 (that seam row plus the verified row, nothing else)
+# is what still rules out a fallback row on a genuinely green merge.
+N_SEAM_CD4=$(_audit_count "$AUDIT_CD4" "ci_status_test_seam_used")
+if [[ "$N_SEAM_CD4" -eq 1 ]]; then
+  pass "CD-4: exactly 1 ci_status_test_seam_used row (the default kill-switch-override consultation)"
 else
-  fail "CD-4: expected exactly 1 kind-bearing row total, got ${N_TOTAL_CD4:-0}: $(cat "$AUDIT_CD4" 2>/dev/null)"
+  fail "CD-4: expected 1 ci_status_test_seam_used row, got $N_SEAM_CD4"
+fi
+N_TOTAL_CD4=$(grep -c '"kind"' "$AUDIT_CD4" 2>/dev/null || true)
+if [[ "${N_TOTAL_CD4:-0}" -eq 2 ]]; then
+  pass "CD-4: exactly 2 kind-bearing rows total (verified + seam-used, verified merge writes no fallback row)"
+else
+  fail "CD-4: expected exactly 2 kind-bearing rows total, got ${N_TOTAL_CD4:-0}: $(cat "$AUDIT_CD4" 2>/dev/null)"
+fi
+if python3 -c '
+import json, sys
+for line in open(sys.argv[1]):
+    row = json.loads(line)
+    if row.get("kind") == "ci_status_test_seam_used":
+        assert row.get("reason") == "CI_KILL_SWITCH_OVERRIDE", row
+        sys.exit(0)
+sys.exit(1)
+' "$AUDIT_CD4" 2>/dev/null; then
+  pass "CD-4: seam-used row names CI_KILL_SWITCH_OVERRIDE as the seam"
+else
+  fail "CD-4: seam-used row missing or names the wrong seam — $(cat "$AUDIT_CD4" 2>/dev/null)"
 fi
 unset TWO_GATE_PR_BODY_999
 rm -rf "$T_CD4"
