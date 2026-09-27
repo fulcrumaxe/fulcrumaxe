@@ -18,6 +18,17 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BOOTSTRAP="$REPO_ROOT/loop-bootstrap/bootstrap.sh"
 
+# A minimal PATH for the coldstart-guard fixtures below: just the dirnames of
+# the interpreters coldstart-project.sh actually needs (bash, python3, git)
+# plus the directory holding the coreutils it shells out to (dirname, mkdir,
+# cat, ...), plus the standard system dirs. A hardcoded
+# "/usr/bin:/bin:/usr/local/bin" has no bash -- or coreutils -- on a host
+# where every tool lives under its own /nix/store/<hash>-<pkg>/bin (a bash-
+# only fix still dies on "dirname: command not found" the moment the script
+# resolves its own SCRIPT_DIR). Passing the invoking shell's own $PATH
+# through would defeat the fixture's point of a deliberately minimal PATH.
+MIN_PATH="$(dirname "$(command -v bash)"):$(dirname "$(command -v python3)"):$(dirname "$(command -v git)"):$(dirname "$(command -v dirname)"):/usr/bin:/bin:/usr/local/bin"
+
 # All scratch paths for this suite live under one mktemp'd directory so
 # concurrent runs of this suite (e.g. two reviewers in separate worktrees)
 # never race on a shared fixed /tmp path (D#2254).
@@ -589,7 +600,7 @@ CS_TMP="$RUN_TMP/coldstart-guard-test"
 CS_HOME="$RUN_TMP/coldstart-guard-home"
 mkdir -p "$CS_TMP" "$CS_HOME"
 git -C "$CS_TMP" init -q 2>&1 || true
-CS_OUT=$(cd /tmp && HOME="$CS_HOME" COLDSTART_STATE_ROOT="$CS_HOME" PATH="/usr/bin:/bin:/usr/local/bin" bash "$REPO_ROOT/scripts/coldstart-project.sh" "$CS_TMP" coldstart-guard --language python 2>&1) || true
+CS_OUT=$(cd /tmp && HOME="$CS_HOME" COLDSTART_STATE_ROOT="$CS_HOME" PATH="$MIN_PATH" bash "$REPO_ROOT/scripts/coldstart-project.sh" "$CS_TMP" coldstart-guard --language python 2>&1) || true
 CS_SENTINEL="$CS_HOME/.coldstart-guard-state/project.json"
 if [[ -f "$CS_SENTINEL" ]]; then
   CS_PORT=$(python3 -c "import json; print(json.load(open('$CS_SENTINEL')).get('dashboard_port','MISSING'))" 2>&1 || echo ERROR)
@@ -970,7 +981,7 @@ I5_TMP_REPO="$RUN_TMP/i5-test-repo"
 I5_HOME="$RUN_TMP/i5-test-home"
 mkdir -p "$I5_TMP_REPO" "$I5_HOME"
 git -C "$I5_TMP_REPO" init -q
-I5_OUT=$(cd /tmp && HOME="$I5_HOME" COLDSTART_STATE_ROOT="$I5_HOME" PATH="/usr/bin:/bin:/usr/local/bin" bash "$COLDSTART_SH" "$I5_TMP_REPO" i5test --language python 2>&1) || true
+I5_OUT=$(cd /tmp && HOME="$I5_HOME" COLDSTART_STATE_ROOT="$I5_HOME" PATH="$MIN_PATH" bash "$COLDSTART_SH" "$I5_TMP_REPO" i5test --language python 2>&1) || true
 I5_STATE="$I5_HOME/.i5test-state"
 if [[ -f "$I5_STATE/agent-feed.jsonl" ]]; then
   pass "I5: coldstart creates agent-feed.jsonl"
