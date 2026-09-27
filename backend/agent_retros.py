@@ -32,17 +32,74 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import os
+# Allow running as a script from the repo root (or any cwd, via an absolute
+# path): `python3 backend/agent_retros.py ...`. Python only puts this file's
+# own directory on sys.path, not the repo root, so a sibling backend import
+# (state_paths) needs the repo root added explicitly — same idiom as
+# backend/stats_writer.py and backend/audit_trail.py.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-RETROS_FILE = Path(os.environ.get(
-    "AF_RETROS_FILE",
-    str(_REPO_ROOT / ".autonomous-team" / "agent-retros.jsonl"),
-))
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+# Pre-D#2532 default: a path inside the repo tree. A worktree-isolated
+# executor cannot write there (the sandbox hook blocks any write outside the
+# agent's own worktree — see D#2532), which is the bug this file now fixes.
+# Kept as a READ fallback in load_retros() so rows written here before the
+# fix — production state with no cleanup path — are not silently dropped.
+LEGACY_RETROS_FILE = _REPO_ROOT / ".autonomous-team" / "agent-retros.jsonl"
+
+
+def _default_retros_file() -> Path:
+    """Resolve the write/primary-read target for the retro log.
+
+    ``AF_RETROS_FILE`` is an explicit override (kept for tests and any
+    caller that wants a specific file — same precedent as
+    ``STATS_DB_PATH`` in backend/state_paths.py) and wins outright.
+    Otherwise the default comes from state_paths.AGENT_RETROS
+    ($AUTONOMOUS_TEAM_STATE_DIR/agent-retros.jsonl) — the single source of
+    truth for runtime-state paths, not a path this module templates itself.
+    """
+    env = os.environ.get("AF_RETROS_FILE")
+    if env:
+        return Path(env)
+    from backend import state_paths  # noqa: PLC0415
+
+    return state_paths.AGENT_RETROS
+
+
+RETROS_FILE = _default_retros_file()
+
+
+class RetroWriteError(RuntimeError):
+    """Raised when a retro row could not be appended to RETROS_FILE.
+
+    Distinct from a dedup skip (a normal, expected outcome — the same
+    (agent_id, classifier, turn_idx) was already recorded) — this means the
+    write itself failed, e.g. the target directory could not be created or
+    the file could not be opened for append (D#2532 item 5: this is what
+    makes that failure countable instead of only a field in the caller's own
+    AGENT_OUTPUT envelope).
+    """
+
+
+def _record_skip(reason: str, role: str | None = None) -> None:
+    """Best-effort: record that a retro row was NOT written, and why.
+
+    Never raises — a metrics call must not be the reason the CLI itself
+    fails. See backend/stats/retro_skip.py.
+    """
+    try:
+        from backend.stats.retro_skip import record_retro_skip  # noqa: PLC0415
+
+        record_retro_skip(reason, role=role)
+    except Exception as exc:  # noqa: BLE001 — metrics must never crash the CLI
+        print(f"self-observe: could not record skip metric: {exc}", file=sys.stderr)
 
 
 def _now_utc() -> str:
@@ -60,31 +117,51 @@ def _parse_since(since_str: str) -> datetime:
     return now - delta
 
 
-def load_retros(since: datetime | None = None, role: str | None = None) -> list[dict]:
-    """Load retro entries from agent-retros.jsonl, optionally filtered."""
-    entries: list[dict] = []
-    if not RETROS_FILE.exists():
-        return entries
-    with open(RETROS_FILE) as f:
+def _read_retro_lines(path: Path) -> list[dict]:
+    """Return the parsed JSONL rows in *path*, or [] if it doesn't exist."""
+    rows: list[dict] = []
+    if not path.exists():
+        return rows
+    with open(path) as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
             try:
-                entry = json.loads(line)
+                rows.append(json.loads(line))
             except json.JSONDecodeError:
                 continue
-            if since is not None:
-                ts_str = entry.get("ts", "")
-                try:
-                    ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-                    if ts < since:
-                        continue
-                except (ValueError, AttributeError):
-                    pass
-            if role is not None and entry.get("role") != role:
-                continue
-            entries.append(entry)
+    return rows
+
+
+def load_retros(since: datetime | None = None, role: str | None = None) -> list[dict]:
+    """Load retro entries, optionally filtered by *since* / *role*.
+
+    Reads RETROS_FILE (the current write target) and, if it's a different
+    path, LEGACY_RETROS_FILE too — rows written there before D#2532 moved the
+    default are production state with no cleanup path, so a reader that
+    ignores it silently loses history rather than merging it. Every row the
+    legacy file can hold predates every row the new file holds (the cutover
+    is a single point in time), so concatenating legacy-then-current keeps
+    the merged list in chronological order without a full sort.
+    """
+    raw: list[dict] = list(_read_retro_lines(LEGACY_RETROS_FILE))
+    if RETROS_FILE.resolve() != LEGACY_RETROS_FILE.resolve():
+        raw.extend(_read_retro_lines(RETROS_FILE))
+
+    entries: list[dict] = []
+    for entry in raw:
+        if since is not None:
+            ts_str = entry.get("ts", "")
+            try:
+                ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                if ts < since:
+                    continue
+            except (ValueError, AttributeError):
+                pass
+        if role is not None and entry.get("role") != role:
+            continue
+        entries.append(entry)
     return entries
 
 
@@ -104,8 +181,16 @@ def get_latest_retro(discussion_number: int) -> dict | None:
 
 
 def append_retro(entry: dict) -> bool:
-    """Append a retro entry. Returns False if primary key already exists (dedup)."""
-    RETROS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    """Append a retro entry. Returns False if primary key already exists (dedup).
+
+    Raises RetroWriteError if the write itself fails (directory could not be
+    created, or the file could not be opened for append) — different from a
+    dedup skip, which is a normal outcome, not a failure.
+    """
+    try:
+        RETROS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise RetroWriteError(f"cannot create {RETROS_FILE.parent}: {exc}") from exc
 
     agent_id = entry.get("agent_id", "")
     classifier = entry.get("classifier", "")
@@ -113,24 +198,19 @@ def append_retro(entry: dict) -> bool:
 
     # Dedup by primary key
     if RETROS_FILE.exists():
-        with open(RETROS_FILE) as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    existing = json.loads(line)
-                    if (
-                        existing.get("agent_id") == agent_id
-                        and existing.get("classifier") == classifier
-                        and existing.get("turn_idx") == turn_idx
-                    ):
-                        return False  # already exists
-                except json.JSONDecodeError:
-                    continue
+        for existing in _read_retro_lines(RETROS_FILE):
+            if (
+                existing.get("agent_id") == agent_id
+                and existing.get("classifier") == classifier
+                and existing.get("turn_idx") == turn_idx
+            ):
+                return False  # already exists
 
-    with open(RETROS_FILE, "a") as f:
-        f.write(json.dumps(entry) + "\n")
+    try:
+        with open(RETROS_FILE, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except OSError as exc:
+        raise RetroWriteError(f"cannot write {RETROS_FILE}: {exc}") from exc
     return True
 
 
@@ -221,7 +301,12 @@ def cmd_append(args: argparse.Namespace) -> int:
         "shadow_mode": bool(args.shadow_mode),
         "turn_idx": args.turn_idx if args.turn_idx is not None else -1,
     }
-    written = append_retro(entry)
+    try:
+        written = append_retro(entry)
+    except RetroWriteError as exc:
+        print(f"Retro write failed: {exc}", file=sys.stderr)
+        _record_skip("retro_write_failed", role=args.role)
+        return 1
     if written:
         print(f"Appended retro: agent={args.agent_id[:20]} classifier={args.classifier}")
     else:
