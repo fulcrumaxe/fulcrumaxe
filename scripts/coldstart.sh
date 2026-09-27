@@ -85,6 +85,54 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # shellcheck source=scripts/lib/coldstart-state-root.sh
 source "$SCRIPT_DIR/lib/coldstart-state-root.sh"
 
+# shellcheck source=scripts/lib/identity-resolve.sh
+source "$SCRIPT_DIR/lib/identity-resolve.sh"
+
+# ---------------------------------------------------------------------------
+# Identity guard (D#2558 AC12/AC13) — a project whose config.json already
+# carries boss_github_username must carry a real, grammar-valid one, not a
+# missing or invalid value: that field seeds the forbidden-identifier gate,
+# and a gate seeded with nothing protects nobody. Reuses
+# identity-resolve.sh's own grammar function rather than re-deriving it.
+#
+# Unlike the D#2226 guard below, a config.json that does not exist yet (or
+# has no boss_github_username key yet) is tolerated here, not refused: the
+# interview (step 7) is what populates this field, on a first --path run it
+# has not happened yet, and coldstart.sh is documented as safe to re-run at
+# any point. This becomes load-bearing in run_seed() below, which only runs
+# on --resume/--phase seed -- by then the interview (and a generate.py run)
+# should already have produced a real config.json.
+# ---------------------------------------------------------------------------
+
+_coldstart_assert_boss_login() {
+  local repo_path="$1" cj login
+  cj="$repo_path/.autonomous-team/config.json"
+  [[ -f "$cj" ]] || return 0
+
+  login="$(python3 -c "
+import json
+try:
+    print(json.load(open('$cj')).get('boss_github_username') or '')
+except Exception:
+    print('')
+" 2>/dev/null)"
+
+  if [[ -z "$login" ]]; then
+    echo "ERROR (D#2558 guard): boss_github_username is missing or empty in" >&2
+    echo "         '.autonomous-team/config.json' -- the coldstart interview's identity" >&2
+    echo "         topic never got a GitHub-login answer. Answer it (or set" >&2
+    echo "         boss_github_username in that file directly) before continuing." >&2
+    return 1
+  fi
+  if ! _self_login_grammar_ok "$login"; then
+    echo "ERROR (D#2558 guard): boss_github_username ('$login') in" >&2
+    echo "         '.autonomous-team/config.json' is not a valid GitHub login." >&2
+    return 1
+  fi
+  echo "[=] boss_github_username is configured and valid"
+  return 0
+}
+
 # ---------------------------------------------------------------------------
 # Usage / help
 # ---------------------------------------------------------------------------
@@ -317,6 +365,7 @@ fi
 
 run_seed() {
   echo "=== coldstart.sh: seed ==="
+  _coldstart_assert_boss_login "$REPO_PATH" || return 1
   if [[ ! -d "$EPICS_DIR" ]]; then
     echo "[!] No epics/ backlog dir found at $EPICS_DIR — nothing to seed. Skipping."
     return 0
@@ -389,6 +438,10 @@ else
   echo "       Fix whichever file(s) are wrong or empty before continuing." >&2
   exit 1
 fi
+echo ""
+
+echo "=== coldstart.sh: identity guard (D#2558) ==="
+_coldstart_assert_boss_login "$REPO_PATH" || exit 1
 echo ""
 
 # ---------------------------------------------------------------------------

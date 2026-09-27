@@ -16,16 +16,42 @@ Writes exactly two files into --out:
 Never writes to any engine-sync [include] path (scripts/*.sh, hooks/*.py,
 .claude/agents/*.md) or to the canonical CLAUDE.md body -- see
 test_generate.py::test_engine_boundary_guard.
+
+One field is the exception to "abandoned interview -> manifest defaults"
+(Spec item 10): identity.boss_github_username. Every other answer safely
+falls back to a manifest default when missing; this one does not, because a
+missing or invalid value would silently ship a forbidden-identifier gate
+that protects nobody's login (D#2558). See _validate_boss_github_username.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
 CORE_TOPIC_IDS = ("mode", "identity", "stack", "deploy", "autonomy", "mission")
+
+# GitHub login grammar (D#2558 D2): starts and ends with an alphanumeric,
+# single hyphens only in between, 1-39 characters total. Byte-for-byte the
+# same pattern as scripts/lib/identity-resolve.sh's SELF_LOGIN_GRAMMAR_REGEX
+# -- bash and Python can't share a regex object across the language
+# boundary, so keep the two in sync by hand if this ever changes (see
+# scripts/coldstart-interview/tests/test_generate.py::
+# test_self_login_grammar_matches_identity_resolve_sh, which reads that
+# file's value rather than re-typing it, so a drift is caught rather than
+# silently accepted).
+SELF_LOGIN_GRAMMAR = re.compile(r"^[A-Za-z0-9](-?[A-Za-z0-9]){0,38}$")
+
+
+class ConfigGenerationError(RuntimeError):
+    """Raised when the supplied answers cannot produce a valid config.json.
+
+    Currently only for identity.boss_github_username (D#2558 AC12/AC13): a
+    missing/empty or grammar-invalid login refuses generation entirely,
+    unlike every other field, which falls back to a manifest default."""
 
 # Static ceiling table mirroring backend/control_plane.py's dial definitions.
 # Hardcoded (not shelled out to control_plane.py) so generation stays a pure
@@ -155,6 +181,11 @@ def build_config(resolved: dict) -> dict:
 
     return {
         "dials": dials,
+        # Top-level, not nested under "project": backend/schema_validator.py's
+        # CONFIG_SCHEMA requires boss_github_username at the config root, and
+        # scripts/lib/identity-resolve.sh and scripts/lib/trust_id_resolver.py
+        # both read it from there (D#2558).
+        "boss_github_username": identity.get("boss_github_username", "") or "",
         "project": {
             "name": identity.get("project_name"),
             "description": identity.get("project_description"),
@@ -169,6 +200,30 @@ def build_config(resolved: dict) -> dict:
             "security_review": str(autonomy.get("security_review_required", "yes")).lower() == "yes",
         },
     }
+
+
+def _validate_boss_github_username(value: str) -> None:
+    """D#2558 AC12/AC13: refuse to generate config.json when
+    boss_github_username is missing, blank, or grammar-invalid. Every other
+    answer in this generator degrades to a manifest default when unanswered
+    (Spec item 10); this is the one deliberate exception, because a missing
+    or invalid value would ship a forbidden-identifier gate that protects
+    nobody's login rather than fail loudly at install."""
+    stripped = (value or "").strip()
+    if not stripped:
+        raise ConfigGenerationError(
+            "boss_github_username is missing or empty -- .autonomous-team/config.json "
+            "will not be generated without it. Answer the identity topic's GitHub-login "
+            "question in the coldstart interview (or set boss_github_username directly "
+            "in answers.json) and re-run the generator."
+        )
+    if not SELF_LOGIN_GRAMMAR.match(stripped):
+        raise ConfigGenerationError(
+            f"boss_github_username {stripped!r} is not a valid GitHub login (letters, "
+            "digits, and single internal hyphens only) -- .autonomous-team/config.json "
+            "will not be generated with an invalid value. Fix the answer and re-run "
+            "the generator."
+        )
 
 
 def build_active_roles(resolved: dict, roles_map: dict) -> list:
@@ -303,6 +358,9 @@ def generate(
     roles_map = load_roles_map(roles_map_path)
 
     config = build_config(resolved)
+    # Fail closed before anything is written -- D#2558 AC12: a half-written
+    # output dir on a rejected login would be worse than no output at all.
+    _validate_boss_github_username(config["boss_github_username"])
     config["active_roles"] = build_active_roles(resolved, roles_map)
     overlay = build_claude_overlay(resolved)
 
@@ -337,7 +395,11 @@ def main(argv=None) -> int:
     )
     args = parser.parse_args(argv)
 
-    generate(args.answers, args.out, args.manifest, args.roles_map)
+    try:
+        generate(args.answers, args.out, args.manifest, args.roles_map)
+    except ConfigGenerationError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
     return 0
 
 

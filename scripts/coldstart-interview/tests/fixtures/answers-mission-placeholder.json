@@ -6,6 +6,7 @@
       "project_description": "Generates parametric widgets from a spec file.",
       "repo_owner": "acme-labs",
       "primary_domain": "manufacturing tooling",
+      "boss_github_username": "octocat",
       "target_users": "internal CAD engineers"
     },
     "mission": {

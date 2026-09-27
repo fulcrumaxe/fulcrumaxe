@@ -3,7 +3,8 @@
   "topics": {
     "identity": {
       "project_name": "onlyidentity",
-      "project_description": "A project that only answered the identity topic before dropping the session."
+      "project_description": "A project that only answered the identity topic before dropping the session.",
+      "boss_github_username": "octocat"
     }
   }
 }

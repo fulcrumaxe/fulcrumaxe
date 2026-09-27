@@ -92,3 +92,57 @@ setup() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"mode:               existing"* ]]
 }
+
+# --- D#2558 AC11-AC13: install-time identity guard (--resume path) ---------
+
+@test "coldstart.sh --resume tolerates a not-yet-written config.json" {
+  local tmp_repo tmp_state
+  tmp_repo="$(mktemp -d)"
+  tmp_state="$(mktemp -d)"
+  run env COLDSTART_STATE_ROOT="$tmp_state" bash "$REPO_ROOT/scripts/coldstart.sh" \
+    --resume --path "$tmp_repo" --name BatsIdentityGuard1
+  # The interview hasn't run yet in this fixture -- the identity guard must
+  # not be why this fails (there's no epics/ dir either, which is fine: run_seed
+  # reports "nothing to seed" and exits 0).
+  [[ "$output" != *"D#2558 guard"* ]]
+  rm -rf "$tmp_repo" "$tmp_state"
+}
+
+@test "coldstart.sh --resume hard-fails when boss_github_username is missing from config.json" {
+  local tmp_repo tmp_state
+  tmp_repo="$(mktemp -d)"
+  tmp_state="$(mktemp -d)"
+  mkdir -p "$tmp_repo/.autonomous-team"
+  echo '{"repo": "acme/widget"}' > "$tmp_repo/.autonomous-team/config.json"
+  run env COLDSTART_STATE_ROOT="$tmp_state" bash "$REPO_ROOT/scripts/coldstart.sh" \
+    --resume --path "$tmp_repo" --name BatsIdentityGuard2
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"boss_github_username"* ]]
+  [[ "$output" == *".autonomous-team/config.json"* ]]
+  rm -rf "$tmp_repo" "$tmp_state"
+}
+
+@test "coldstart.sh --resume hard-fails when boss_github_username fails the login grammar" {
+  local tmp_repo tmp_state
+  tmp_repo="$(mktemp -d)"
+  tmp_state="$(mktemp -d)"
+  mkdir -p "$tmp_repo/.autonomous-team"
+  echo '{"repo": "acme/widget", "boss_github_username": "github-actions[bot]"}' > "$tmp_repo/.autonomous-team/config.json"
+  run env COLDSTART_STATE_ROOT="$tmp_state" bash "$REPO_ROOT/scripts/coldstart.sh" \
+    --resume --path "$tmp_repo" --name BatsIdentityGuard3
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"not a valid GitHub login"* ]]
+  rm -rf "$tmp_repo" "$tmp_state"
+}
+
+@test "coldstart.sh --resume proceeds past the identity guard with a valid boss_github_username" {
+  local tmp_repo tmp_state
+  tmp_repo="$(mktemp -d)"
+  tmp_state="$(mktemp -d)"
+  mkdir -p "$tmp_repo/.autonomous-team"
+  echo '{"repo": "acme/widget", "boss_github_username": "octocat"}' > "$tmp_repo/.autonomous-team/config.json"
+  run env COLDSTART_STATE_ROOT="$tmp_state" bash "$REPO_ROOT/scripts/coldstart.sh" \
+    --resume --path "$tmp_repo" --name BatsIdentityGuard4
+  [[ "$output" == *"boss_github_username is configured and valid"* ]]
+  rm -rf "$tmp_repo" "$tmp_state"
+}

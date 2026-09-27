@@ -15,6 +15,7 @@ from __future__ import annotations
 import filecmp
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -76,9 +77,18 @@ ENGINE_SYNC_INCLUDE_GLOBS = [
 
 @pytest.fixture()
 def empty_answers_fixture(tmp_path):
-    """An answers.json with no topics at all -- the most extreme partial case."""
+    """An answers.json with nothing but a valid boss_github_username -- the
+    most extreme partial case for every OTHER field. boss_github_username is
+    the one field D#2558 deliberately excludes from the "abandoned interview
+    -> manifest defaults" tolerance (see test_boss_github_username_missing_
+    fails_closed below for that exclusion's own dedicated test), so it is
+    supplied here to keep this fixture testing what it always tested:
+    robustness when everything else is missing."""
     p = tmp_path / "answers-empty.json"
-    p.write_text(json.dumps({"session": "fixture-empty", "topics": {}}))
+    p.write_text(json.dumps({
+        "session": "fixture-empty",
+        "topics": {"identity": {"boss_github_username": "octocat"}},
+    }))
     return p
 
 
@@ -243,12 +253,14 @@ def test_empty_answers_no_crash(tmp_path, empty_answers_fixture):
 
 
 def test_core_question_count_within_shipped_bound():
-    """D#1538's shipped test asserts 15 <= core <= 20. Adding project_kind
-    as a core question lands exactly at the ceiling (20) -- this must keep
-    passing, not be worked around by dropping project_kind."""
+    """D#1538's shipped test asserted 15 <= core <= 20; D#2558 adds
+    boss_github_username as a required core question (it cannot be optional
+    -- it is the one field that fails coldstart closed rather than
+    defaulting), moving the ceiling to 21. This must keep passing, not be
+    worked around by dropping a question."""
     manifest = json.loads((COLDSTART_DIR / "questions.json").read_text())
     core = [q for t in manifest["topics"] for q in t["questions"] if q.get("tier") == "core"]
-    assert 15 <= len(core) <= 20, len(core)
+    assert 15 <= len(core) <= 21, len(core)
 
 
 def test_project_kind_is_first_topic_single_question():
@@ -603,3 +615,129 @@ def test_pre_spawn_check_backward_compat_dry_run(tmp_path):
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert payload.get("allowed") is True
+
+
+# ---------------------------------------------------------------------------
+# D#2558 PR-b -- boss_github_username: install-time population and fail-closed
+# validation (AC11-AC13). Every other answer degrades to a manifest default
+# when unanswered (Spec item 10 above); this field is the one deliberate
+# exception -- see generate.py::_validate_boss_github_username.
+# ---------------------------------------------------------------------------
+
+def _write_answers(tmp_path, identity_extra):
+    answers = {"session": "fixture-boss-login", "topics": {"identity": {
+        "project_name": "proj",
+        **identity_extra,
+    }}}
+    p = tmp_path / "answers.json"
+    p.write_text(json.dumps(answers))
+    return p
+
+
+def test_boss_github_username_populated_from_answer(tmp_path):
+    """AC11: a supplied login populates the top-level boss_github_username
+    key in config.json, verbatim, with zero manual file edits."""
+    ans_path = _write_answers(tmp_path, {"boss_github_username": "octocat"})
+    out_dir = tmp_path / "out"
+    generate.generate(ans_path, out_dir)
+    config = json.loads((out_dir / "config.json").read_text())
+    assert config["boss_github_username"] == "octocat"
+
+
+def test_boss_github_username_missing_fails_closed(tmp_path):
+    """AC12: an omitted login refuses to generate config.json at all -- no
+    half-written output dir -- and the error names both the field and the
+    file it belongs in."""
+    ans_path = _write_answers(tmp_path, {})
+    out_dir = tmp_path / "out"
+    with pytest.raises(generate.ConfigGenerationError) as excinfo:
+        generate.generate(ans_path, out_dir)
+    assert "boss_github_username" in str(excinfo.value)
+    assert ".autonomous-team/config.json" in str(excinfo.value)
+    assert not out_dir.exists()
+
+
+def test_boss_github_username_empty_fails_closed(tmp_path):
+    """AC12: an explicitly-empty answer is treated the same as omitted."""
+    ans_path = _write_answers(tmp_path, {"boss_github_username": "   "})
+    out_dir = tmp_path / "out"
+    with pytest.raises(generate.ConfigGenerationError):
+        generate.generate(ans_path, out_dir)
+    assert not out_dir.exists()
+
+
+def test_boss_github_username_grammar_invalid_fails_closed(tmp_path):
+    """AC13: a grammar-invalid login (bot-shaped, brackets) is refused, not
+    escaped and enforced."""
+    ans_path = _write_answers(tmp_path, {"boss_github_username": "github-actions[bot]"})
+    out_dir = tmp_path / "out"
+    with pytest.raises(generate.ConfigGenerationError) as excinfo:
+        generate.generate(ans_path, out_dir)
+    assert "boss_github_username" in str(excinfo.value)
+    assert not out_dir.exists()
+
+
+def test_cli_exits_nonzero_on_missing_login(tmp_path):
+    """AC12: 'the coldstart config-generation path' means the real CLI, not
+    just the Python function -- the process itself must exit non-zero."""
+    ans_path = _write_answers(tmp_path, {})
+    out_dir = tmp_path / "out"
+    script = COLDSTART_DIR / "generate.py"
+    result = subprocess.run(
+        [sys.executable, str(script), "--answers", str(ans_path), "--out", str(out_dir)],
+        capture_output=True,
+        text=True,
+        cwd=str(COLDSTART_DIR),
+    )
+    assert result.returncode != 0
+    assert "boss_github_username" in result.stderr
+    assert ".autonomous-team/config.json" in result.stderr
+
+
+def test_cli_success_emits_no_degrade_notice(tmp_path):
+    """AC14: a successfully-configured repo's coldstart output carries no
+    degrade notice at all (that shape belongs only to the push-time scanner
+    degrade path from PR-a, never to a clean install)."""
+    ans_path = _write_answers(tmp_path, {"boss_github_username": "octocat"})
+    out_dir = tmp_path / "out"
+    script = COLDSTART_DIR / "generate.py"
+    result = subprocess.run(
+        [sys.executable, str(script), "--answers", str(ans_path), "--out", str(out_dir)],
+        capture_output=True,
+        text=True,
+        cwd=str(COLDSTART_DIR),
+    )
+    assert result.returncode == 0, result.stderr
+    combined = (result.stdout + result.stderr).lower()
+    assert "self_login" not in combined
+    assert "unprotected" not in combined
+    assert "degrade" not in combined
+
+
+def test_self_login_grammar_matches_identity_resolve_sh():
+    """D2/AC13: generate.py's SELF_LOGIN_GRAMMAR must be byte-identical to
+    scripts/lib/identity-resolve.sh's SELF_LOGIN_GRAMMAR_REGEX -- read from
+    that file rather than re-typed here, so the two can never quietly drift
+    apart (PM remaining-scope note: 'sourced from identity-resolve.sh rather
+    than written a second time')."""
+    src = (REPO_ROOT / "scripts" / "lib" / "identity-resolve.sh").read_text()
+    m = re.search(r"^SELF_LOGIN_GRAMMAR_REGEX='(.*)'$", src, re.MULTILINE)
+    assert m, "expected identity-resolve.sh to export SELF_LOGIN_GRAMMAR_REGEX"
+    assert m.group(1) == generate.SELF_LOGIN_GRAMMAR.pattern
+
+
+def test_grammar_invalid_login_rejected_by_both_scanner_and_generator():
+    """AC13: 'assert the scanner and coldstart reject the same invalid
+    value' -- prove it against the real bash function, not a re-typed
+    Python copy of the pattern."""
+    bad = "github-actions[bot]"
+    assert not generate.SELF_LOGIN_GRAMMAR.match(bad)
+
+    identity_resolve = REPO_ROOT / "scripts" / "lib" / "identity-resolve.sh"
+    result = subprocess.run(
+        ["bash", "-c", f'source "{identity_resolve}" && _self_login_grammar_ok "$1" && echo VALID || echo INVALID',
+         "--", bad],
+        capture_output=True,
+        text=True,
+    )
+    assert result.stdout.strip() == "INVALID", result.stderr

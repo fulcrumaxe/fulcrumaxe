@@ -6,6 +6,7 @@
       "project_description": "A headless CLI that crunches CSV batches on a schedule.",
       "repo_owner": "acme-labs",
       "primary_domain": "data tooling",
+      "boss_github_username": "octocat",
       "target_users": "internal analysts"
     },
     "stack": {

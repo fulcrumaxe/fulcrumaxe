@@ -43,12 +43,21 @@ _self_login_trim() {
   printf '%s' "$v"
 }
 
-# _self_login_grammar_ok <value> — GitHub login grammar: starts and ends
-# with an alphanumeric, single hyphens only in between, 1-39 characters
-# total. Anything else (including an empty string, and including a
-# bracket-bearing bot login) fails.
+# SELF_LOGIN_GRAMMAR_REGEX — GitHub login grammar: starts and ends with an
+# alphanumeric, single hyphens only in between, 1-39 characters total.
+# Anything else (including an empty string, and including a bracket-bearing
+# bot login) fails. Exported as a variable (D#2558) rather than inlined only
+# in _self_login_grammar_ok below, so a caller that needs the raw pattern —
+# scripts/coldstart-interview/generate.py mirrors it in Python, and
+# scripts/coldstart.sh's install-time guard sources this file directly for
+# the function itself — has one place to read it from instead of re-deriving
+# it.
+SELF_LOGIN_GRAMMAR_REGEX='^[A-Za-z0-9](-?[A-Za-z0-9]){0,38}$'
+
+# _self_login_grammar_ok <value> — true iff <value> matches
+# SELF_LOGIN_GRAMMAR_REGEX above.
 _self_login_grammar_ok() {
-  [[ "$1" =~ ^[A-Za-z0-9](-?[A-Za-z0-9]){0,38}$ ]]
+  [[ "$1" =~ $SELF_LOGIN_GRAMMAR_REGEX ]]
 }
 
 # resolve_self_login — prints the resolved login on stdout and returns 0,

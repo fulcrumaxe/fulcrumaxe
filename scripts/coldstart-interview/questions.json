@@ -44,6 +44,13 @@
           "default": "general software"
         },
         {
+          "id": "boss_github_username",
+          "prompt": "Your GitHub login (the human actually running this tooling)?",
+          "tier": "core",
+          "default": "",
+          "why": "Seeds the forbidden-identifier gate so it protects your login instead of shipping ours -- a blank or invalid answer here fails coldstart rather than shipping a gate that protects nobody."
+        },
+        {
           "id": "target_users",
           "prompt": "Who are the primary users of this project?",
           "tier": "optional",
