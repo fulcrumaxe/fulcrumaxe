@@ -674,7 +674,14 @@ except Exception as e:
 # ── 1. Generate stable event-id ───────────────────────────────────────────────
 EVENT_ID="${ROLE}-${DISCUSSION:-nod}-$(date +%s)"
 
-# ── 1a. Resolve model from role agent card ────────────────────────────────────
+# ── 1a. Record the spawn registry row (D#2615 ENG-0) ──────────────────────────
+# The CLI (backend/spawn_registry.py) owns the WARN-on-failure handling; keep
+# this call as the single line the Spec's 10-line cap requires.
+if [[ -z "$NO_REGISTER" ]]; then
+  PYTHONPATH="$REPO_ROOT" python3 -m backend.spawn_registry record "$EVENT_ID" "$ROLE" "${DISCUSSION:-}"
+fi
+
+# ── 1b. Resolve model from role agent card ────────────────────────────────────
 # Read the 'model:' frontmatter field from .claude/agents/<role>.md.
 # This is the authoritative source of which model tier a role uses.
 # We capture it here (spawn time) so agent_run rows have non-null model

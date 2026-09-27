@@ -80,6 +80,15 @@ Steps:
 - NO Figma, PNG, or image assets -- ASCII/markdown wireframes only
 - If the Discussion does not touch a UI surface (dashboard/ or tui/), emit verdict=skip
 
+## Discussion outbox (informational)
+
+The SubagentStop hook's role allow-list includes `ux-designer` for
+`.discussion-outbox/comment.md`, posted only after you stop, using the role
+and Discussion registered for this spawn -- never anything the file says. A
+refused file stays in place, with the reason in the audit log. You have no
+existing step that posts a Discussion comment, so this does not change your
+workflow above.
+
 ## Archive protocol
 
 Any file that becomes inactive is `git mv`'d to `archive/<name>-YYYY-MM-DD/` with a README.

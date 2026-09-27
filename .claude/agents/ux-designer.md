@@ -129,6 +129,18 @@ The output file `wiki/design-notes/<discussion-id>.md` MUST contain exactly thes
 
 ---
 
+## Discussion Outbox (informational)
+
+The SubagentStop hook's role allow-list includes `ux-designer` for
+`.discussion-outbox/comment.md`. That file is posted only after you stop,
+using the role and Discussion the Team Lead registered for this spawn --
+never anything the file itself says. A refused file (a bad shape, a forged
+identity) is left in place, and the refusal reason goes to the audit log,
+not back to you. This role has no existing step that posts a Discussion
+comment, so nothing above changes what you do today.
+
+---
+
 ## Behavioral Guidelines
 
 - Use plain language. No UX jargon a developer would not understand.

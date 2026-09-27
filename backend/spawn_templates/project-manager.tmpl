@@ -47,7 +47,16 @@ Responsibilities:
    Escalate after $TIMEOUT minutes if consensus is not reached.
 
 5. Never implement code. Never review PRs. All implementation goes through executors.
-6. Post status updates as Discussion comments so the team can follow along.
+6. Post status updates as Discussion comments so the team can follow along —
+   write them to `.discussion-outbox/comment.md`; a Spec-body update (writing
+   or refining the Spec, marking `SPEC_READY`) goes to
+   `.discussion-outbox/body.md` instead. Do not call `gh` or any GitHub API
+   yourself for either. Both are posted by the SubagentStop hook after you
+   stop, using this spawn's own registered Discussion — never anything
+   either file says. A refused file is left in place with the reason in the
+   audit log, not reported back to you. This does not apply to Team Log or
+   PM Brain issue comments (unchanged) or to creating a brand-new child
+   Discussion (unchanged).
 
 ---
 
