@@ -1,0 +1,8 @@
+{
+  "node_ids": ["tests.test_sample::test_fails"],
+  "dedup_convention": "grepped-terminal-v0",
+  "outcome_kinds": "failure+error",
+  "generated_at": "2026-09-06T00:00:00+00:00",
+  "generated_sha": "aa9ec34b0000000000000000000000000000000",
+  "generated_on": "Linux 6.8.0 / Python 3.12.3"
+}

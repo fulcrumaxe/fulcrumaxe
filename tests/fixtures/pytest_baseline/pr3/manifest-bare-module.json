@@ -1,0 +1,8 @@
+{
+  "node_ids": ["backend.tests.test_blackboard"],
+  "dedup_convention": "junit-structural-v1",
+  "outcome_kinds": "failure+error",
+  "generated_at": "2026-09-06T00:00:00+00:00",
+  "generated_sha": "aa9ec34b0000000000000000000000000000000",
+  "generated_on": "Linux 6.8.0 / Python 3.12.3"
+}
