@@ -2108,6 +2108,129 @@ else
 fi
 
 # -----------------------------------------------------------------------
+# CS-28g/h/i (D#2643 fix round 1, security review of #272): the source-time
+# clear used to be a bare `rm -rf ... || true`, and _ci_warn_seam_once
+# treated "mkdir failed but the path exists" as "already warned" — so a
+# marker this process could not REMOVE silenced the warning even though
+# this process never printed it. These three reproduce the review's own
+# cases: they fail (0 warning lines) against fc467fa2 and pass against the
+# fix, which separates "is the directory genuinely mine" (decided once, at
+# source time) from "have I warned" (a second, independent check).
+# -----------------------------------------------------------------------
+
+echo ""
+echo "--- CS-28g (blind pre-plant: markers for a PID range, read-only TMPDIR, still warns) ---"
+# The review's own reproduction: an attacker who does not know the target
+# process's PID pre-plants markers for a wide range of PIDs, then makes the
+# directory read-only so this process can neither remove its own marker nor
+# recreate it. On fc467fa2, once the process's real PID lands in that range
+# (guaranteed here by centering the range on the process's own $$, which is
+# only known once it's running -- the range still covers thousands of PIDs
+# either side, same shape as a blind attacker's guess), "mkdir failed but
+# the path exists" reads as "already warned" and the process prints 0 lines
+# while the seams still decide the gate.
+CS28G_TMPDIR="$(mktemp -d)/readonly"
+mkdir -p "$CS28G_TMPDIR"
+CS28G_OUT=$(
+  TMPDIR="$CS28G_TMPDIR" \
+      CI_STATUS_TEST_MODE=1 \
+      CI_KILL_SWITCH_OVERRIDE=false \
+      CI_STATUS_HEAD_SHA_60040=abc123 \
+      CI_STATUS_OVERRIDE_60040='[]' \
+      CI_STATUS_TEST_AUDIT_FILE=/dev/null \
+  bash -c '
+    _start=$(( $$ > 1500 ? $$ - 1500 : 1 ))
+    _end=$(( $$ + 1500 ))
+    eval "mkdir \"\$TMPDIR\"/ci-status-seam-warned.{${_start}..${_end}}"
+    chmod 555 "$TMPDIR"
+    source "'"$CI_LIB"'"
+    check_ci_status 60040 "test-owner/test-repo"
+    check_ci_status 60040 "test-owner/test-repo"
+  ' 2>&1 >/dev/null
+)
+chmod 755 "$CS28G_TMPDIR"
+rm -rf "$CS28G_TMPDIR"
+CS28G_COUNT="$(_seam_warning_count "$CS28G_OUT")"
+if [ "$CS28G_COUNT" -ge 1 ] 2>/dev/null; then
+  echo "  PASS: CS-28g: markers pre-planted for a wide PID range in a read-only TMPDIR still warns ($CS28G_COUNT line(s)) — this process could never establish ownership of its marker, so dedupe never engaged"; PASS=$((PASS + 1))
+else
+  echo "  FAIL: CS-28g: expected at least 1 warning line, found $CS28G_COUNT (blind pre-plant silenced the warning)"
+  echo "        stderr: $CS28G_OUT"
+  FAIL=$((FAIL + 1))
+fi
+
+echo ""
+echo "--- CS-28h (symlink at the marker path, read-only TMPDIR, still warns) ---"
+# A symlink is unlinked, not followed, by `rm -rf` on a writable parent —
+# that part already worked (verified by the review). The defect is the
+# read-only parent: the process's own rm cannot unlink the symlink, mkdir
+# cannot replace it either, and on fc467fa2 `[ -e "$marker" ]` follows the
+# symlink to a target that DOES exist and reads that as "already warned".
+# The target has to actually exist for this to reproduce -- a dangling
+# symlink makes `-e` false and takes a different, unaffected path.
+CS28H_TMPDIR="$(mktemp -d)/readonly"
+mkdir -p "$CS28H_TMPDIR"
+CS28H_OUT=$(
+  TMPDIR="$CS28H_TMPDIR" \
+      CI_STATUS_TEST_MODE=1 \
+      CI_KILL_SWITCH_OVERRIDE=false \
+      CI_STATUS_HEAD_SHA_60040=abc123 \
+      CI_STATUS_OVERRIDE_60040='[]' \
+      CI_STATUS_TEST_AUDIT_FILE=/dev/null \
+  bash -c '
+    ln -s /tmp "$TMPDIR/ci-status-seam-warned.$$"
+    chmod 555 "$TMPDIR"
+    source "'"$CI_LIB"'"
+    check_ci_status 60040 "test-owner/test-repo"
+    check_ci_status 60040 "test-owner/test-repo"
+  ' 2>&1 >/dev/null
+)
+chmod 755 "$CS28H_TMPDIR" 2>/dev/null
+rm -rf "$CS28H_TMPDIR"
+CS28H_COUNT="$(_seam_warning_count "$CS28H_OUT")"
+if [ "$CS28H_COUNT" -ge 1 ] 2>/dev/null; then
+  echo "  PASS: CS-28h: symlink (to an existing target) planted at the marker path in a read-only TMPDIR still warns ($CS28H_COUNT line(s))"; PASS=$((PASS + 1))
+else
+  echo "  FAIL: CS-28h: expected at least 1 warning line, found $CS28H_COUNT (planted symlink silenced the warning)"
+  echo "        stderr: $CS28H_OUT"
+  FAIL=$((FAIL + 1))
+fi
+
+echo ""
+echo "--- CS-28i (marker created after source, before the first seam, still warns) ---"
+# The TOCTOU gap the review flagged: on fc467fa2 the clear at source time
+# was followed by a LAZY mkdir, deferred until the first seam actually
+# fires -- so anything that creates the marker path in between silences the
+# warning ("mkdir failed but the path exists" reads as "already warned").
+# This plants a plain empty directory at that path right after source
+# returns, before calling check_ci_status. Against fc467fa2 that window is
+# still open, so the plant beats the lazy mkdir and the warning is
+# silenced. Against the fix, the marker is created (and owned) DURING
+# source itself, so by the time this line runs the directory already
+# exists, this mkdir is a same-path no-op, and dedupe is unaffected.
+CS28I_OUT=$(
+  CI_STATUS_TEST_MODE=1 \
+      CI_KILL_SWITCH_OVERRIDE=false \
+      CI_STATUS_HEAD_SHA_60040=abc123 \
+      CI_STATUS_OVERRIDE_60040='[]' \
+      CI_STATUS_TEST_AUDIT_FILE=/dev/null \
+  bash -c '
+    source "'"$CI_LIB"'"
+    mkdir "${TMPDIR:-/tmp}/ci-status-seam-warned.$$" 2>/dev/null || true
+    check_ci_status 60040 "test-owner/test-repo"
+    check_ci_status 60040 "test-owner/test-repo"
+  ' 2>&1 >/dev/null
+)
+CS28I_COUNT="$(_seam_warning_count "$CS28I_OUT")"
+if [ "$CS28I_COUNT" -ge 1 ] 2>/dev/null; then
+  echo "  PASS: CS-28i: marker created after source, before the first seam, still warns ($CS28I_COUNT line(s)) instead of trusting the marker path's mere existence"; PASS=$((PASS + 1))
+else
+  echo "  FAIL: CS-28i: expected at least 1 warning line, found $CS28I_COUNT"
+  echo "        stderr: $CS28I_OUT"
+  FAIL=$((FAIL + 1))
+fi
+
+# -----------------------------------------------------------------------
 # Summary
 # -----------------------------------------------------------------------
 echo ""

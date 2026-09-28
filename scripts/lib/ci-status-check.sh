@@ -272,14 +272,43 @@ CI_MERGE_PROBE_INTERVAL="${CI_MERGE_PROBE_INTERVAL:-2}"
 _CI_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _CI_REPO_ROOT="$(cd "$_CI_LIB_DIR/../.." && pwd)"
 
-# ── Test-seam warning dedupe marker (D#2643) ────────────────────────────────
+# ── Test-seam warning dedupe marker (D#2643, fix round 1) ───────────────────
 # See _ci_warn_seam_once, further down, for what this marker guards. Cleared
 # HERE, at source time, in the top-level shell — not lazily on first use —
 # so a marker a PREVIOUS process left behind (its PID reused by this one)
 # can never suppress the warning this process owes. Sourcing happens once
 # per process, at the top level, before any subshell exists, which is what
 # makes "clear at source time" equivalent to "clear once per process".
-rm -rf "${TMPDIR:-/tmp}/ci-status-seam-warned.$$" 2>/dev/null || true
+#
+# Fix round 1 (security review of #272): the clear used to be the whole
+# story, and _ci_warn_seam_once treated "mkdir failed but the path already
+# exists" as proof that THIS process had already warned. Those are not the
+# same fact — a marker this process could not remove (pre-planted in a
+# read-only TMPDIR, a symlink, another uid's leftover in a shared sticky
+# /tmp, or one that lands in the gap between this rm and the old lazy
+# mkdir) satisfied that check without this process ever printing anything.
+# The create now happens HERE, right after the clear, in the same top-level
+# shell — and whether it succeeded, meaning the directory is genuinely
+# ours, is recorded in a plain variable. A plain variable survives into a
+# $(...) subshell (the same property the marker file itself needs — see the
+# note in _ci_warn_seam_once), so every seam call sees the same answer.
+# _ci_warn_seam_once only dedupes when this is "1"; anything else means
+# dedupe cannot be trusted, so every call warns instead of guessing. Warn
+# more, never less.
+CI_STATUS_SEAM_MARKER_DIR="${TMPDIR:-/tmp}/ci-status-seam-warned.$$"
+rm -rf "$CI_STATUS_SEAM_MARKER_DIR" 2>/dev/null || true
+if mkdir "$CI_STATUS_SEAM_MARKER_DIR" 2>/dev/null; then
+  CI_STATUS_SEAM_MARKER_OWNED=1
+else
+  CI_STATUS_SEAM_MARKER_OWNED=0
+fi
+# Hardening left undone, on purpose: removing this directory at process
+# exit would need an EXIT trap, and this file is sourced by callers that
+# set their own (scripts/loop-phased-step5.sh, this suite's own harness) —
+# a trap set here would silently replace theirs, not chain with them, which
+# is worse than a few leaked empty directories. Each seam-using process
+# leaves one behind in ${TMPDIR:-/tmp}; the rm above is what keeps a later
+# process with a reused PID from inheriting it.
 
 # ── CI kill switch (D#1944) ────────────────────────────────────────────────
 # `ci.yml` gates all three jobs on `vars.CI_DISABLED != 'true'`. A job-level
@@ -1269,25 +1298,41 @@ ci_write_audit() {
 # (kill-switch state, head-SHA fetch, check-runs fetch all run as
 # `x="$(...)"`), so a variable set inside would be set in the subshell and
 # lost the moment it exits, printing once per seam instead of once per
-# process. A marker keyed on $$ survives that: $$ is the top-level shell's
-# PID even inside a subshell (BASHPID is the subshell's own, and would not
-# work here). `mkdir` makes the create atomic.
+# process. $CI_STATUS_SEAM_MARKER_DIR is keyed on $$ and created once, at
+# source time, in the top-level shell — see the block above. $$ is the
+# top-level shell's PID even inside a subshell (BASHPID is the subshell's
+# own, and would not work here).
 #
-# Dedupe state for one process is this marker; it is cleared at SOURCE time
-# (top of file), not here, so a later process that happens to reuse this
-# PID is never silenced by a marker an earlier process left behind.
+# Fix round 1 (security review of #272): dedupe is now two separate checks,
+# not one. Whether $CI_STATUS_SEAM_MARKER_DIR is genuinely ours was already
+# decided, once, at source time — $CI_STATUS_SEAM_MARKER_OWNED. This
+# function trusts that decision and never re-derives "is it mine" from the
+# marker path's mere existence, which is exactly the confusion the earlier
+# version made ("mkdir failed but the path exists" is not evidence this
+# process warned anyone). When it is not "1", dedupe cannot work, so every
+# call warns — no fallback existence check on the outer path at all.
 #
-# If the marker can't be created AND doesn't already exist either — an
-# unwritable ${TMPDIR:-/tmp}, for example — dedupe cannot work, so this
-# warns anyway, every time. Warn more, never less, is the explicit failure
-# direction here (D#2643).
+# When it IS "1", "already warned" is a second, independent atomic
+# noclobber create — a file INSIDE that owned directory, not the directory
+# itself. If the owned directory has stopped being usable by the time a
+# seam actually fires (removed, replaced, permissions changed — the same
+# race the marker clear/create pair narrows but a single-process shell
+# script cannot fully close), that create fails for a reason that is NOT
+# "this process already warned", and this still warns rather than trust a
+# check it cannot verify. Warn more, never less, is the explicit failure
+# direction throughout (D#2643).
 _ci_warn_seam_once() {
   local name="$1"
-  local marker="${TMPDIR:-/tmp}/ci-status-seam-warned.$$"
-  if mkdir "$marker" 2>/dev/null; then
-    :
-  elif [ -e "$marker" ]; then
-    return 0
+  if [ "${CI_STATUS_SEAM_MARKER_OWNED:-0}" = "1" ] && [ -d "$CI_STATUS_SEAM_MARKER_DIR" ]; then
+    local warned="$CI_STATUS_SEAM_MARKER_DIR/warned"
+    if ( set -C; : >"$warned" ) 2>/dev/null; then
+      :  # first call in this process — fall through and warn
+    elif [ -e "$warned" ]; then
+      return 0  # this process already warned on an earlier call
+    fi
+    # else: the create failed for some other reason (directory vanished or
+    # went unwritable after source time) — fall through and warn rather
+    # than treat an unexplained failure as "already warned".
   fi
   echo "ci-status-check: WARNING: CI-status test seam in use (${name}) — CI gate results in this process come from test overrides, not GitHub" >&2
 }
