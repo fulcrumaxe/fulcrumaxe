@@ -270,17 +270,24 @@ _run_step5() {
   : > "$STUB_GH_LOG"
 
   # A single `env` call takes every NAME=value pair (including the
-  # caller's own "$@" fixture overrides and the dynamic CI_PR_FILES_<pr>
-  # key) as plain strings, so nothing here depends on bash's own
-  # prefix-assignment parsing recognising a quoted or dynamically-built
-  # assignment word.
+  # caller's own "$@" fixture overrides) as plain strings, so nothing here
+  # depends on bash's own prefix-assignment parsing recognising a quoted or
+  # dynamically-built assignment word. Fix round 1 (D#2647): this used to
+  # also inject a fixed "CI_PR_FILES_${pr}=README.md" here, unconditionally,
+  # for every case including Section A's no-test-flag runs — nothing in
+  # this suite ever read it (check_ci_provenance_gate's own CI_PR_FILES_<pr>
+  # mock is gated on CI_STATUS_TEST_MODE=1, which Section A deliberately
+  # never sets), so it was dead weight that tripped CS-25f's static scan in
+  # tests/test_ci_status_check.sh (a caller setting CI_PR_FILES_<pr> with no
+  # CI_STATUS_TEST_MODE=1 anywhere earlier in the file). Removed rather than
+  # paired with the flag, since pairing it would have started actually
+  # exercising that mock in cases meant to test the real, unmocked path.
   OUTPUT=$(
     env \
       AF_CONTROL_PLANE_CONFIG="$cfg" SNAPSHOT_PATH="$snap" \
       REPO_ROOT="$REAL_REPO_ROOT" \
       AUTONOMOUS_TEAM_REPO="test-owner/test-repo" \
       HOOKS_DISABLED=1 PR_DEPENDENTS_DISABLE=1 \
-      "CI_PR_FILES_${pr}=README.md" \
       STUB_GH_LOG="$STUB_GH_LOG" \
       PATH="$STUB_DIR:$PATH" \
       "$@" \
@@ -424,6 +431,34 @@ assert_eq "B9: exit 0" "0" "$RC"
 assert_contains "B9: GH_MERGE mock still reachable" "GH_MERGE_ARGS:" "$OUTPUT"
 assert_eq "B9: zero real merge calls in the stub log" "0" "$MERGE_CALLS"
 
+echo ""
+echo "=== B10: GH_MERGE=echo leaked outside test mode -> ignored, real merge happens, warned ==="
+# Fix round 1 (D#2647 item 3): GH_MERGE=echo used to be honoured
+# unconditionally in _gh_merge, so a stray GH_MERGE=echo surviving into a
+# real cron/loop shell would short-circuit the actual `gh pr merge` call —
+# the loop would then believe the PR merged and run post-merge bookkeeping
+# for a PR that never merged. GH_MERGE is now gated on _step5_test_mode
+# like every other seam (added to the startup leaked-seam warning loop),
+# so outside STEP5_TEST_MODE=1 it is ignored (with the same named warning)
+# and the real `gh pr merge` still runs. Same fixture shape as A6's positive
+# control, plus the leaked GH_MERGE=echo.
+_run_step5 90111 90211 \
+  SPAWN_AGENT=echo GH_MERGE=echo \
+  STUB_PR_LABELS="code-review-passed" \
+  STUB_HEAD_SHA="cafef00dS" \
+  STUB_CHECK_RUNS_JSON="$ALL_GREEN_CHECK_RUNS"
+assert_eq "B10: exit 0" "0" "$RC"
+assert_eq "B10: exactly one REAL merge call (GH_MERGE mock not honoured)" "1" "$MERGE_CALLS"
+assert_contains "B10: warns about GH_MERGE" "ignoring GH_MERGE" "$OUTPUT"
+assert_contains "B10: warning names STEP5_TEST_MODE" "set STEP5_TEST_MODE=1 to honour it" "$OUTPUT"
+if printf '%s' "$OUTPUT" | grep -qF "GH_MERGE_ARGS"; then
+  echo "  FAIL: B10: GH_MERGE mock output (GH_MERGE_ARGS) appeared — mock was honoured outside test mode"
+  FAIL=$((FAIL + 1))
+else
+  echo "  PASS: B10: no GH_MERGE_ARGS mock output — real merge path taken"
+  PASS=$((PASS + 1))
+fi
+
 # =========================================================================
 # Section C — warnings and unification.
 # =========================================================================
@@ -443,27 +478,31 @@ assert_contains "C10: Discussion reads went live (spec-ready query answered by s
 
 echo ""
 echo "=== C11: no gate read keys on \${SPAWN_AGENT:-} ==="
-if grep -nE '\$\{SPAWN_AGENT:-\}' "$SCRIPT" > /tmp/c11-matches-$$.txt; then
+# Fix round 1 (D#2647): captured into a variable instead of a fixed
+# /tmp/c11-matches-$$.txt path — a shared-PID-suffixed /tmp literal still
+# races every concurrent invocation of this suite (preflight's "No Fixed
+# /tmp Paths in Tests" gate, D#2254).
+C11_MATCHES="$(grep -nE '\$\{SPAWN_AGENT:-\}' "$SCRIPT")"
+if [ -n "$C11_MATCHES" ]; then
   echo "  FAIL: C11: found \${SPAWN_AGENT:-} reference(s) in $SCRIPT"
-  cat /tmp/c11-matches-$$.txt | sed 's/^/        /'
+  printf '%s\n' "$C11_MATCHES" | sed 's/^/        /'
   FAIL=$((FAIL + 1))
 else
   echo "  PASS: C11: no \${SPAWN_AGENT:-} references remain"
   PASS=$((PASS + 1))
 fi
-rm -f /tmp/c11-matches-$$.txt
 
 echo ""
 echo "=== C12: no -n \"\$SPAWN_AGENT style predicate remains ==="
-if grep -nE '\-n "\$\{SPAWN_AGENT' "$SCRIPT" > /tmp/c12-matches-$$.txt; then
+C12_MATCHES="$(grep -nE '\-n "\$\{SPAWN_AGENT' "$SCRIPT")"
+if [ -n "$C12_MATCHES" ]; then
   echo "  FAIL: C12: found a -n \"\${SPAWN_AGENT... predicate in $SCRIPT"
-  cat /tmp/c12-matches-$$.txt | sed 's/^/        /'
+  printf '%s\n' "$C12_MATCHES" | sed 's/^/        /'
   FAIL=$((FAIL + 1))
 else
   echo "  PASS: C12: no -n \"\${SPAWN_AGENT... predicate remains"
   PASS=$((PASS + 1))
 fi
-rm -f /tmp/c12-matches-$$.txt
 
 # -----------------------------------------------------------------------
 echo ""

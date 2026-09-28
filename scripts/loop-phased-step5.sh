@@ -21,18 +21,24 @@
 # Environment overrides (for testing):
 #   STEP5_TEST_MODE=1     — D#2647: the ONE flag every seam below now requires.
 #                            Outside this flag, SPAWN_AGENT / SPEC_READY_MOCK /
-#                            DISCUSSING_MOCK are ignored (with a startup warning)
-#                            and the real reads run. This also feeds the _gh_merge
-#                            coupling guard below: while this flag (or
-#                            CI_STATUS_TEST_MODE) is set, _gh_merge refuses a real
-#                            merge outright, so a mocked read can never feed a real
-#                            write.
+#                            DISCUSSING_MOCK / GH_MERGE are ignored (with a
+#                            startup warning) and the real reads/writes run.
+#                            This also feeds the _gh_merge coupling guard
+#                            below: while this flag (or CI_STATUS_TEST_MODE)
+#                            is set, _gh_merge refuses a real merge outright,
+#                            so a mocked read can never feed a real write.
 #   SPAWN_AGENT=echo       — replace spawn-agent.sh with "echo" to capture args without running
 #   SNAPSHOT_PATH=...      — override the loop snapshot path (default: whatever
 #                            `python3 backend/snapshot_path.py` resolves to)
 #   REPO_ROOT=...          — override repo root
 #   AF_BLACKBOARD_PATH=... — override blackboard DB path (forwarded to pr_state.py)
-#   GH_MERGE=echo          — replace gh pr merge with "echo" (for merge-phase tests)
+#   GH_MERGE=echo          — replace gh pr merge with "echo" (for merge-phase
+#                            tests). Fix round 1 (D#2647 item 3): requires
+#                            STEP5_TEST_MODE=1 like every other seam — outside
+#                            it, a leaked GH_MERGE=echo is ignored (startup
+#                            warning) and the real `gh pr merge` still runs,
+#                            so the loop can never record a false "merged"
+#                            for a PR nothing was ever pushed for.
 #   HOOKS_DISABLED=1       — skip post-merge-hook.sh (for merge-phase tests)
 
 set -uo pipefail
@@ -130,7 +136,7 @@ _step5_test_mode() {
 # a real team-log post in production, same as every other _log call here).
 # -----------------------------------------------------------------------
 if ! _step5_test_mode; then
-  for _leaked_seam_var in SPAWN_AGENT SPEC_READY_MOCK DISCUSSING_MOCK; do
+  for _leaked_seam_var in SPAWN_AGENT SPEC_READY_MOCK DISCUSSING_MOCK GH_MERGE; do
     _leaked_seam_val="${!_leaked_seam_var:-}"
     if [ -n "$_leaked_seam_val" ]; then
       _leaked_seam_msg="loop-phased-step5: ignoring $_leaked_seam_var — set STEP5_TEST_MODE=1 to honour it"
@@ -321,15 +327,20 @@ _step5_write_seam_refusal_audit() {
   local ts
   ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "")
   local audit_path
+  # Fix round 1 (D#2647 item 4): REPO_ROOT passed via sys.argv, not
+  # interpolated into the -c source — an env-controlled value with a stray
+  # quote or backslash could otherwise break out of the string literal.
+  # Older copies of this same lookup elsewhere in this file predate this
+  # fix round and are left as they were.
   audit_path=$(python3 -c "
 import sys
-sys.path.insert(0, '$REPO_ROOT')
+sys.path.insert(0, sys.argv[1])
 try:
     from backend.state_paths import AUDIT_LOG
     print(str(AUDIT_LOG))
 except Exception:
-    print('$REPO_ROOT/.autonomous-team/audit.jsonl')
-" 2>/dev/null || echo "$REPO_ROOT/.autonomous-team/audit.jsonl")
+    print(sys.argv[1] + '/.autonomous-team/audit.jsonl')
+" "$REPO_ROOT" 2>/dev/null || echo "$REPO_ROOT/.autonomous-team/audit.jsonl")
   python3 -c "
 import json, sys
 flags = [f for f in sys.argv[2].split(',') if f]
@@ -338,7 +349,15 @@ print(json.dumps({'kind': 'step5_seam_merge_refused', 'pr': int(sys.argv[1]), 'f
 }
 
 _gh_merge() {
-  if [ "${GH_MERGE:-}" = "echo" ]; then
+  # Fix round 1 (D#2647 item 3): GH_MERGE=echo used to be honoured here
+  # unconditionally, so a leaked GH_MERGE=echo reaching a real cron/loop
+  # shell would silently mock this write — the loop would then believe the
+  # PR merged and run post-merge bookkeeping for a PR nothing was ever
+  # pushed for. Gated on _step5_test_mode like every other seam in this
+  # file; outside it, GH_MERGE is caught by the startup leaked-seam warning
+  # above and ignored here, falling through to the real `gh pr merge` call
+  # below.
+  if [ "${GH_MERGE:-}" = "echo" ] && _step5_test_mode; then
     echo "GH_MERGE_ARGS: $*"
     return 0
   fi
