@@ -1449,7 +1449,28 @@ cat > "$STUB_DIR26/gh" <<'GHSTUB'
 # depending on $CS26_STUB_KILL. Anything else (including the `gh api graphql`
 # calls external_intake_gate.py makes) fails, same as CS-15's stub — that
 # failure is what makes the real provenance check fail closed for CS-26b.
+#
+# `--json changedFiles` (D#2630) answers with $CS26_STUB_FILES's own line
+# count, so it always matches what the `--json files` branch just returned —
+# none of CS-26's scenarios are about a truncated list, so the new fetch
+# must be a no-op here.
 if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+  json_field=""
+  prev=""
+  for arg in "$@"; do
+    if [ "$prev" = "--json" ]; then
+      json_field="$arg"
+    fi
+    prev="$arg"
+  done
+  if [ "$json_field" = "changedFiles" ]; then
+    if [ -z "${CS26_STUB_FILES:-}" ]; then
+      printf '0'
+    else
+      printf '%s\n' "$CS26_STUB_FILES" | grep -c '.'
+    fi
+    exit 0
+  fi
   printf '%s\n' "$CS26_STUB_FILES"
   exit 0
 fi
@@ -1597,6 +1618,13 @@ rm -f "$SEAM_TMP_26F"
 # This section proves the fetch's own failure is now fail-closed,
 # regardless of kill-switch state, and that a real fetch that *succeeds*
 # is completely unaffected (CS-27c/d/e).
+#
+# CS-27f/g (fix round 1) cover a second way that same fetch stayed fail-open:
+# `gh pr view --json files` returns at most 100 files and never paginates,
+# but still exits 0 — a rc check alone cannot see a >100-file PR whose
+# `.github/workflows/**` path landed past the cutoff. CS-27f drives exactly
+# that (150 changed, 100 returned) and expects a closed gate; CS-27g is the
+# control proving a matching count is not itself a new false block.
 # -----------------------------------------------------------------------
 echo ""
 echo "=== CS-27: an unreadable gh file-list fetch fails closed instead of falling through to 0 ==="
@@ -1606,12 +1634,36 @@ cat > "$STUB_DIR27/gh" <<'GHSTUB'
 # Minimal gh stand-in for CS-27: `gh pr view ... --json files` answers
 # according to $CS27_STUB_RC / $CS27_STUB_FILES so the real fetch branch
 # can be driven both to failure (CS-27a/b) and to a staged success
-# (CS-27c/d/e) without a network call. Anything else fails, same shape as
-# CS-26's stub.
+# (CS-27c/d/e/f/g) without a network call. Anything else fails, same shape
+# as CS-26's stub.
+#
+# `--json changedFiles` (D#2630) is answered separately: $CS27_STUB_CHANGED_FILES
+# when set (CS-27f/g drive a mismatch or an exact match on purpose), else the
+# line count of $CS27_STUB_FILES itself — so CS-27a/b/c/d/e, which never set
+# it, get a changedFiles total that always matches their own file list and
+# see no behavior change from this addition.
 if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
   if [ "${CS27_STUB_RC:-0}" != "0" ]; then
     echo "gh: stubbed failure" >&2
     exit "${CS27_STUB_RC}"
+  fi
+  json_field=""
+  prev=""
+  for arg in "$@"; do
+    if [ "$prev" = "--json" ]; then
+      json_field="$arg"
+    fi
+    prev="$arg"
+  done
+  if [ "$json_field" = "changedFiles" ]; then
+    if [ -n "${CS27_STUB_CHANGED_FILES:-}" ]; then
+      printf '%s' "${CS27_STUB_CHANGED_FILES}"
+    elif [ -z "${CS27_STUB_FILES:-}" ]; then
+      printf '0'
+    else
+      printf '%s\n' "${CS27_STUB_FILES}" | grep -c '.'
+    fi
+    exit 0
   fi
   printf '%s' "${CS27_STUB_FILES:-}"
   exit 0
@@ -1712,6 +1764,48 @@ CS27E_OUT=$(
 ); CS27E_RC=$?
 assert_exit_1 "CS-27e: a workflow-touching file list from a real fetch still hits the kill-switch block" "$CS27E_RC"
 assert_contains "CS-27e: reason cites the kill-switch block" "CI_DISABLED='true'" "$CS27E_OUT"
+
+echo ""
+echo "--- CS-27f (150 changed, only 100 returned, workflow file truncated at position 120): fails closed on the undercount ---"
+CS27F_FILES="$(for i in $(seq -w 1 100); do echo "plain-file-${i}.txt"; done)"
+CS27F_OUT=$(
+  PATH="$STUB_DIR27:$PATH" \
+      CS27_STUB_RC=0 \
+      CS27_STUB_FILES="$CS27F_FILES" \
+      CS27_STUB_CHANGED_FILES=150 \
+      CI_KILL_SWITCH_OVERRIDE=HTTP_404 \
+  bash -c '
+    source "'"$CI_LIB"'"
+    check_ci_provenance_gate 60032 "test-owner/test-repo" 60032
+    rc=$?
+    echo "RC:$rc"
+    echo "REASON:${CI_STATUS_FAIL_REASON:-}"
+    exit "$rc"
+  ' 2>&1
+); CS27F_RC=$?
+assert_exit_1 "CS-27f: changedFiles=150 but only 100 paths returned fails closed, even though none of the 100 is a workflow path" "$CS27F_RC"
+assert_contains "CS-27f: reason cites the undercount" "reports 150 changed files but gh pr view --json files only returned 100" "$CS27F_OUT"
+
+echo ""
+echo "--- CS-27g (150 changed, 150 returned): a matching count is unaffected, no false block ---"
+CS27G_FILES="$(for i in $(seq -w 1 150); do echo "plain-file-${i}.txt"; done)"
+CS27G_OUT=$(
+  PATH="$STUB_DIR27:$PATH" \
+      CS27_STUB_RC=0 \
+      CS27_STUB_FILES="$CS27G_FILES" \
+      CS27_STUB_CHANGED_FILES=150 \
+      CI_KILL_SWITCH_OVERRIDE=HTTP_404 \
+  bash -c '
+    source "'"$CI_LIB"'"
+    check_ci_provenance_gate 60033 "test-owner/test-repo" 60033
+    rc=$?
+    echo "RC:$rc"
+    echo "REASON:${CI_STATUS_FAIL_REASON:-}"
+    exit "$rc"
+  ' 2>&1
+); CS27G_RC=$?
+assert_exit_0 "CS-27g: changedFiles=150 and 150 paths returned (none a workflow) passes — a matching count is not a false block" "$CS27G_RC"
+assert_not_contains "CS-27g: reason never claims an undercount when the counts match" "only returned" "$CS27G_OUT"
 
 rm -rf "$STUB_DIR27"
 

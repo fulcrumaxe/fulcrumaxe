@@ -30,6 +30,11 @@
 #         1 also when the PR's file list cannot be read (fail closed) — with
 #         no file list, this gate cannot tell whether the PR touches
 #         .github/workflows/** at all, so it cannot safely fall through to 0.
+#         1 also when `gh pr view --json files` returns fewer paths than the
+#         PR's own `changedFiles` count (fail closed, D#2630) — that endpoint
+#         never paginates past 100 and still exits 0, so a >100-file PR with
+#         a `.github/workflows/**` path beyond the cutoff would otherwise
+#         read as "no workflow files" instead of "we can't see them all".
 #     Delegates the provenance half to scripts/lib/external_intake_gate.py —
 #     does not reinvent it.
 #
@@ -837,6 +842,29 @@ check_ci_provenance_gate() {
     local files_fetch_rc=$?
     if [ "$files_fetch_rc" -ne 0 ]; then
       CI_STATUS_FAIL_REASON="could not read the file list for PR #$pr (gh pr view --json files failed, rc=$files_fetch_rc) — cannot tell whether it modifies .github/workflows/**, failing closed"
+      return 1
+    fi
+
+    # D#2630: `gh pr view --json files` returns at most 100 files and never
+    # paginates, but still exits 0 — so the rc check above cannot catch a
+    # truncated list on a >100-file PR. Cross-check the returned count
+    # against the PR's own `changedFiles` total (a separate field, not
+    # subject to the same 100-item cap) and fail closed on any shortfall:
+    # a path beyond the cutoff is exactly as unverifiable as no list at all.
+    local changed_files_count
+    changed_files_count="$(gh pr view "$pr" --repo "$repo" --json changedFiles --jq '.changedFiles' 2>/dev/null)"
+    local changed_fetch_rc=$?
+    if [ "$changed_fetch_rc" -ne 0 ] || ! [[ "$changed_files_count" =~ ^[0-9]+$ ]]; then
+      CI_STATUS_FAIL_REASON="could not read changedFiles for PR #$pr (gh pr view --json changedFiles failed or returned a non-numeric value, rc=$changed_fetch_rc) — cannot verify the file list is complete, failing closed"
+      return 1
+    fi
+
+    local returned_files_count=0
+    if [ -n "$files_list" ]; then
+      returned_files_count="$(printf '%s\n' "$files_list" | grep -c '.')"
+    fi
+    if [ "$returned_files_count" -lt "$changed_files_count" ]; then
+      CI_STATUS_FAIL_REASON="PR #$pr reports $changed_files_count changed files but gh pr view --json files only returned $returned_files_count (gh pr view never paginates past 100) — cannot tell whether a truncated path modifies .github/workflows/**, failing closed"
       return 1
     fi
   fi
