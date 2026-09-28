@@ -53,6 +53,7 @@ from hooks.sandbox_rules import (
     _DIAL_WRITE_PROTECTED_SUFFIXES,
 )
 import hooks.sandbox_rules as sandbox_rules
+from hooks.enter_worktree_rule import classify_enter_worktree
 from testsupport.fixture_paths import FIXTURE_HOME, FIXTURE_MAIN_REPO
 
 # ---------------------------------------------------------------------------
@@ -61,6 +62,7 @@ from testsupport.fixture_paths import FIXTURE_HOME, FIXTURE_MAIN_REPO
 
 _MAIN_REPO = FIXTURE_MAIN_REPO
 _WT_CLAUDE = f"{_MAIN_REPO}/.claude/worktrees/abc123"
+_WT_CLAUDE_B = f"{_MAIN_REPO}/.claude/worktrees/other999"
 _WT_TMP = "/tmp/wt-testid"
 
 # D#2012 item 3: an always-blocked-verb Decision (checkout/switch/branch/
@@ -5519,3 +5521,125 @@ class TestD2483PRbPositiveControl:
         assert _is_dial_protected_path("provision-dial-allowlist.sh") is True
         for name in _DIAL_WRITE_PROTECTED_SUFFIXES:
             assert _is_dial_protected_path(name) is True
+
+
+# ---------------------------------------------------------------------------
+# D#2050 — classify_enter_worktree (hooks/enter_worktree_rule.py)
+# ---------------------------------------------------------------------------
+#
+# EnterWorktree(path=<a different agent's worktree>) leaves the caller's
+# Bash-tool cwd permanently resolved outside its own worktree, and
+# ExitWorktree itself refuses to undo that for a sub-agent caller. This rule
+# refuses the EnterWorktree call itself when the caller is worktree-pinned
+# and the target resolves to a DIFFERENT worktree, and fails open on every
+# other shape -- see hooks/enter_worktree_rule.py's own docstring for why.
+
+
+class TestClassifyEnterWorktree:
+    # -- item 2: deny, cross-worktree ------------------------------------
+
+    def test_denies_cross_worktree_target(self) -> None:
+        d = classify_enter_worktree(_WT_CLAUDE, {"path": _WT_CLAUDE_B})
+        assert d.allow is False
+        assert "cross_worktree_enter_forbidden" in d.reason
+
+    def test_denial_names_the_code_plane_pr_helper(self) -> None:
+        d = classify_enter_worktree(_WT_CLAUDE, {"path": _WT_CLAUDE_B})
+        assert d.allow is False
+        assert "scripts/lib/code-plane-pr.sh" in d.reason
+        # D#2050 verification note: that helper lives on code-plane/main, not
+        # every ref -- the message must not imply otherwise.
+        assert "code-plane/main" in d.reason
+
+    def test_denial_names_git_show_and_git_archive_as_the_alternative(self) -> None:
+        d = classify_enter_worktree(_WT_CLAUDE, {"path": _WT_CLAUDE_B})
+        assert d.allow is False
+        assert "git show <ref>:<path>" in d.reason
+        assert "git archive" in d.reason
+
+    def test_denies_cross_worktree_target_under_tmp_wt_prefix(self) -> None:
+        # Same shape, the other recognised worktree-root form (/tmp/wt-<id>).
+        d = classify_enter_worktree(_WT_TMP, {"path": _WT_CLAUDE})
+        assert d.allow is False
+        assert "cross_worktree_enter_forbidden" in d.reason
+
+    # -- item 3: allow, same worktree / non-worktree caller ---------------
+
+    def test_allows_same_worktree_target(self) -> None:
+        d = classify_enter_worktree(_WT_CLAUDE, {"path": _WT_CLAUDE})
+        assert d.allow is True
+
+    def test_allows_same_worktree_target_from_nested_cwd(self) -> None:
+        d = classify_enter_worktree(_WT_CLAUDE + "/src", {"path": _WT_CLAUDE})
+        assert d.allow is True
+
+    def test_allows_when_caller_is_not_worktree_pinned(self) -> None:
+        # Team Lead / main-repo cwd -- out of scope for this rule; it never
+        # actually reaches classify_enter_worktree in hooks/sandbox.py's own
+        # dispatch (the team_lead tier returns earlier), but the function
+        # itself must also be safe called directly with such a cwd.
+        d = classify_enter_worktree(_MAIN_REPO, {"path": _WT_CLAUDE_B})
+        assert d.allow is True
+
+    def test_allows_target_outside_any_known_worktree_prefix(self) -> None:
+        # Not the cross-worktree shape this rule exists for -- fail open.
+        d = classify_enter_worktree(_WT_CLAUDE, {"path": "/some/unrelated/dir"})
+        assert d.allow is True
+
+    # -- item 4: fail open on an unrecognised shape, and name it ----------
+
+    def test_allows_and_flags_missing_path_key(self) -> None:
+        d = classify_enter_worktree(_WT_CLAUDE, {"worktree_name": "other999"})
+        assert d.allow is True
+        assert d.reason.startswith("unrecognised_enter_worktree_shape")
+        assert "worktree_name" in d.reason
+
+    def test_allows_empty_tool_input(self) -> None:
+        d = classify_enter_worktree(_WT_CLAUDE, {})
+        assert d.allow is True
+        assert d.reason.startswith("unrecognised_enter_worktree_shape")
+
+    # -- item 6: never raises, for malformed shapes ------------------------
+
+    def test_no_raise_tool_input_missing_represented_as_default(self) -> None:
+        # hooks/sandbox.py's own `payload.get("tool_input", {})` turns an
+        # absent key into {} before this function ever sees it.
+        d = classify_enter_worktree(_WT_CLAUDE, {})
+        assert d.allow is True
+
+    def test_no_raise_tool_input_not_a_dict_string(self) -> None:
+        d = classify_enter_worktree(_WT_CLAUDE, "oops")
+        assert d.allow is True
+        assert d.reason.startswith("unrecognised_enter_worktree_shape")
+
+    def test_no_raise_tool_input_not_a_dict_list(self) -> None:
+        d = classify_enter_worktree(_WT_CLAUDE, ["oops"])
+        assert d.allow is True
+
+    def test_no_raise_tool_input_not_a_dict_none(self) -> None:
+        d = classify_enter_worktree(_WT_CLAUDE, None)
+        assert d.allow is True
+
+    def test_no_raise_path_value_not_a_string_int(self) -> None:
+        d = classify_enter_worktree(_WT_CLAUDE, {"path": 123})
+        assert d.allow is True
+        assert d.reason.startswith("unrecognised_enter_worktree_shape")
+
+    def test_no_raise_path_value_not_a_string_none(self) -> None:
+        d = classify_enter_worktree(_WT_CLAUDE, {"path": None})
+        assert d.allow is True
+
+    def test_no_raise_path_value_empty_string(self) -> None:
+        d = classify_enter_worktree(_WT_CLAUDE, {"path": ""})
+        assert d.allow is True
+
+    # -- no regression on existing rules: is_worktree is read-only here ---
+
+    def test_does_not_change_is_worktree_result(self) -> None:
+        # classify_enter_worktree must be a pure reader of is_worktree(), not
+        # a wrapper that mutates or memoizes it in a way that could affect a
+        # later call from a different rule.
+        before = is_worktree(_WT_CLAUDE)
+        classify_enter_worktree(_WT_CLAUDE, {"path": _WT_CLAUDE_B})
+        after = is_worktree(_WT_CLAUDE)
+        assert before == after

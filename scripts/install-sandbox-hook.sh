@@ -8,9 +8,11 @@
 # two different paths, or two different projects on one machine, never
 # clobber each other's registration.
 #
-# PreToolUse hooks (hooks/sandbox.py) — matchers: Bash, Edit, Write, Agent.
+# PreToolUse hooks (hooks/sandbox.py) — matchers: Bash, Edit, Write, Agent,
+#   EnterWorktree.
 #   Blocks sub-agents from writing outside worktrees, merging PRs, posting gh
-#   api mutations, and spawning child agents.
+#   api mutations, spawning child agents, and (D#2050) entering a different
+#   worktree-pinned agent's worktree.
 #
 # SubagentStop hook (hooks/subagent_stop_dial_audit.py) — defense-in-depth.
 #   Scans each completed subagent transcript for Agent() calls from worktree
@@ -76,11 +78,12 @@ pre_tool_use = hooks.setdefault("PreToolUse", [])
 hook_command = "python3 $CLAUDE_PROJECT_DIR/hooks/sandbox.py"
 _HOOK_LEGACY_SUFFIX = "/hooks/sandbox.py"
 
-# Agent was added in D#1136; existing installs may be missing it. This is
-# also the allowlist of matchers we are ever willing to rewrite or upgrade
-# in place — an entry for any other matcher (e.g. "Read") is never ours to
-# touch, even if its command happens to end in /hooks/sandbox.py.
-required_matchers = {"Bash", "Edit", "Write", "Agent"}
+# Agent was added in D#1136; EnterWorktree in D#2050. Existing installs may
+# be missing either. This is also the allowlist of matchers we are ever
+# willing to rewrite or upgrade in place — an entry for any other matcher
+# (e.g. "Read") is never ours to touch, even if its command happens to end
+# in /hooks/sandbox.py.
+required_matchers = {"Bash", "Edit", "Write", "Agent", "EnterWorktree"}
 
 def _legacy_path_is_ours(cmd):
     """True only for the old absolute-path form THIS repo's installer used
