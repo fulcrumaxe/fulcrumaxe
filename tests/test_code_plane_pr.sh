@@ -1270,6 +1270,180 @@ else
 fi
 rm -rf "$FX_SHAPE"
 
+# ── Case: --mode flips an existing 100644 path to 100755 (D#2633 item 1) ─────
+echo ""
+echo "=== Case: --mode flips an existing 100644 path to 100755, content unchanged ==="
+FX_MODE1="$(_fixture_repo)"
+CONTENT_MODE1="same content, only the mode should change\n"
+BLOB_MODE1="$(printf "$CONTENT_MODE1" | git -C "$FX_MODE1" hash-object -w --stdin)"
+TREE_MODE1="$(printf '100644 blob %s\tflip.sh\n' "$BLOB_MODE1" | git -C "$FX_MODE1" mktree)"
+COMMIT_MODE1="$(git -C "$FX_MODE1" commit-tree "$TREE_MODE1" -m "case mode1 target")"
+
+LOCAL_MODE1="$TEST_SCRATCH/mode1-flip.sh"
+printf "$CONTENT_MODE1" > "$LOCAL_MODE1"
+
+OUT_MODE1="$(cd "$FX_MODE1" && code_plane_pr build --target-ref "$COMMIT_MODE1" --base-ref "$COMMIT_MODE1" \
+  --branch test-branch --message "flip to executable" --mode "flip.sh=100755" \
+  "flip.sh=$LOCAL_MODE1" 2>"$TEST_SCRATCH/mode1.err")"
+RC_MODE1=$?
+
+if [[ "$RC_MODE1" -eq 0 ]]; then
+  _pass "item1: build exits 0 for a --mode 100644->100755 flip on unchanged content"
+else
+  _fail "item1: expected exit 0, got $RC_MODE1: $(cat "$TEST_SCRATCH/mode1.err")"
+fi
+MODE_LINE_MODE1="$(git -C "$FX_MODE1" ls-tree "$OUT_MODE1" -- flip.sh 2>/dev/null)"
+if [[ "$MODE_LINE_MODE1" == 100755\ * ]]; then
+  _pass "item1: the built commit's ls-tree shows 100755"
+else
+  _fail "item1: ls-tree does not show 100755: '$MODE_LINE_MODE1'"
+fi
+DIFF_SUMMARY_MODE1="$(git -C "$FX_MODE1" diff --summary "$COMMIT_MODE1" "$OUT_MODE1" 2>/dev/null)"
+if [[ "$DIFF_SUMMARY_MODE1" == *"mode change 100644 => 100755"* ]]; then
+  _pass "item1: git diff --summary reports 'mode change 100644 => 100755'"
+else
+  _fail "item1: git diff --summary did not report the expected mode change: '$DIFF_SUMMARY_MODE1'"
+fi
+
+# ── Case: --mode flips an existing 100755 path to 100644 (D#2633 item 2) ─────
+echo ""
+echo "=== Case: --mode flips an existing 100755 path to 100644, content unchanged ==="
+FX_MODE2="$(_fixture_repo)"
+CONTENT_MODE2="same content, only the mode should change back\n"
+BLOB_MODE2="$(printf "$CONTENT_MODE2" | git -C "$FX_MODE2" hash-object -w --stdin)"
+TREE_MODE2="$(printf '100755 blob %s\tflip.sh\n' "$BLOB_MODE2" | git -C "$FX_MODE2" mktree)"
+COMMIT_MODE2="$(git -C "$FX_MODE2" commit-tree "$TREE_MODE2" -m "case mode2 target")"
+
+LOCAL_MODE2="$TEST_SCRATCH/mode2-flip.sh"
+printf "$CONTENT_MODE2" > "$LOCAL_MODE2"
+
+OUT_MODE2="$(cd "$FX_MODE2" && code_plane_pr build --target-ref "$COMMIT_MODE2" --base-ref "$COMMIT_MODE2" \
+  --branch test-branch --message "flip to non-executable" --mode "flip.sh=100644" \
+  "flip.sh=$LOCAL_MODE2" 2>"$TEST_SCRATCH/mode2.err")"
+RC_MODE2=$?
+
+if [[ "$RC_MODE2" -eq 0 ]]; then
+  _pass "item2: build exits 0 for a --mode 100755->100644 flip on unchanged content"
+else
+  _fail "item2: expected exit 0, got $RC_MODE2: $(cat "$TEST_SCRATCH/mode2.err")"
+fi
+MODE_LINE_MODE2="$(git -C "$FX_MODE2" ls-tree "$OUT_MODE2" -- flip.sh 2>/dev/null)"
+if [[ "$MODE_LINE_MODE2" == 100644\ * ]]; then
+  _pass "item2: the built commit's ls-tree shows 100644"
+else
+  _fail "item2: ls-tree does not show 100644: '$MODE_LINE_MODE2'"
+fi
+DIFF_SUMMARY_MODE2="$(git -C "$FX_MODE2" diff --summary "$COMMIT_MODE2" "$OUT_MODE2" 2>/dev/null)"
+if [[ "$DIFF_SUMMARY_MODE2" == *"mode change 100755 => 100644"* ]]; then
+  _pass "item2: git diff --summary reports 'mode change 100755 => 100644'"
+else
+  _fail "item2: git diff --summary did not report the expected mode change: '$DIFF_SUMMARY_MODE2'"
+fi
+
+# ── Case: invalid --mode values are refused (D#2633 item 3) ─────────────────
+echo ""
+echo "=== Case: an invalid --mode value exits 2 with no sha on stdout ==="
+for BAD_MODE_VALUE in "755" "100777" ""; do
+  OUT_BADMODE="$(cd "$FX_MODE1" && code_plane_pr build --target-ref "$COMMIT_MODE1" --base-ref "$COMMIT_MODE1" \
+    --branch test-branch --message "bad mode value" --mode "flip.sh=$BAD_MODE_VALUE" \
+    "flip.sh=$LOCAL_MODE1" 2>"$TEST_SCRATCH/badmode.err")"
+  RC_BADMODE=$?
+  if [[ "$RC_BADMODE" -eq 2 ]]; then
+    _pass "item3: --mode flip.sh='$BAD_MODE_VALUE' exits 2"
+  else
+    _fail "item3: --mode flip.sh='$BAD_MODE_VALUE' expected exit 2, got $RC_BADMODE: $(cat "$TEST_SCRATCH/badmode.err")"
+  fi
+  if [[ -z "$OUT_BADMODE" ]]; then
+    _pass "item3: --mode flip.sh='$BAD_MODE_VALUE' prints no sha on stdout"
+  else
+    _fail "item3: --mode flip.sh='$BAD_MODE_VALUE' printed a sha on stdout: '$OUT_BADMODE'"
+  fi
+done
+
+# ── Case: --mode for an unwritten path, and conflicting duplicates (item 4) ──
+echo ""
+echo "=== Case: --mode on a path not being written, and conflicting duplicates, both exit 2 ==="
+OUT_MODE_OTHER="$(cd "$FX_MODE1" && code_plane_pr build --target-ref "$COMMIT_MODE1" --base-ref "$COMMIT_MODE1" \
+  --branch test-branch --message "mode for unwritten path" --mode "never-written.sh=100755" \
+  "flip.sh=$LOCAL_MODE1" 2>"$TEST_SCRATCH/mode-other.err")"
+RC_MODE_OTHER=$?
+if [[ "$RC_MODE_OTHER" -eq 2 ]]; then
+  _pass "item4: --mode for a path that is not a PATH=LOCALFILE pair exits 2"
+else
+  _fail "item4: expected exit 2, got $RC_MODE_OTHER: $(cat "$TEST_SCRATCH/mode-other.err")"
+fi
+if [[ -z "$OUT_MODE_OTHER" ]]; then
+  _pass "item4: no sha printed when --mode targets an unwritten path"
+else
+  _fail "item4: printed a sha for an unwritten-path --mode: '$OUT_MODE_OTHER'"
+fi
+
+OUT_MODE_DUP="$(cd "$FX_MODE1" && code_plane_pr build --target-ref "$COMMIT_MODE1" --base-ref "$COMMIT_MODE1" \
+  --branch test-branch --message "conflicting duplicate mode" \
+  --mode "flip.sh=100755" --mode "flip.sh=100644" \
+  "flip.sh=$LOCAL_MODE1" 2>"$TEST_SCRATCH/mode-dup.err")"
+RC_MODE_DUP=$?
+if [[ "$RC_MODE_DUP" -eq 2 ]]; then
+  _pass "item4: --mode given twice for the same path with conflicting values exits 2"
+else
+  _fail "item4: expected exit 2, got $RC_MODE_DUP: $(cat "$TEST_SCRATCH/mode-dup.err")"
+fi
+if [[ -z "$OUT_MODE_DUP" ]]; then
+  _pass "item4: no sha printed for a conflicting duplicate --mode"
+else
+  _fail "item4: printed a sha for a conflicting duplicate --mode: '$OUT_MODE_DUP'"
+fi
+
+# ── Case: without --mode, a locally chmod +x'd existing 100644 path still
+#          builds as 100644 — today's behaviour, pinned (D#2633 item 5) ──────
+echo ""
+echo "=== Case: no --mode, local chmod +x is still ignored for an existing 100644 path ==="
+FX_MODE5="$(_fixture_repo)"
+BLOB_MODE5="$(printf 'original content\n' | git -C "$FX_MODE5" hash-object -w --stdin)"
+TREE_MODE5="$(printf '100644 blob %s\tplain.sh\n' "$BLOB_MODE5" | git -C "$FX_MODE5" mktree)"
+COMMIT_MODE5="$(git -C "$FX_MODE5" commit-tree "$TREE_MODE5" -m "case mode5 target")"
+
+# The content is edited (so the build produces a real diff, distinct from
+# the "no diff at all" scope-check case above) but the local file is also
+# chmod +x'd — that local executable bit must still be ignored for an
+# existing path when no --mode override is given.
+LOCAL_MODE5="$TEST_SCRATCH/mode5-plain.sh"
+printf 'edited content, local bit must not leak\n' > "$LOCAL_MODE5"
+chmod +x "$LOCAL_MODE5"
+
+OUT_MODE5="$(cd "$FX_MODE5" && code_plane_pr build --target-ref "$COMMIT_MODE5" --base-ref "$COMMIT_MODE5" \
+  --branch test-branch --message "no override, local bit ignored" \
+  "plain.sh=$LOCAL_MODE5" 2>"$TEST_SCRATCH/mode5.err")"
+RC_MODE5=$?
+
+if [[ "$RC_MODE5" -eq 0 ]]; then
+  _pass "item5: build exits 0 with no --mode override"
+else
+  _fail "item5: expected exit 0, got $RC_MODE5: $(cat "$TEST_SCRATCH/mode5.err")"
+fi
+MODE_LINE_MODE5="$(git -C "$FX_MODE5" ls-tree "$OUT_MODE5" -- plain.sh 2>/dev/null)"
+if [[ "$MODE_LINE_MODE5" == 100644\ * ]]; then
+  _pass "item5: the local chmod +x bit is ignored — the built commit still shows 100644"
+else
+  _fail "item5: local chmod +x leaked into the built commit's mode: '$MODE_LINE_MODE5'"
+fi
+rm -rf "$FX_MODE1" "$FX_MODE2" "$FX_MODE5"
+
+# ── Case: usage text documents --mode (D#2633 item 7) ────────────────────────
+echo ""
+echo "=== Case: usage text lists --mode <repo-path>=<100644|100755> ==="
+USAGE_TEXT_MODE="$(code_plane_pr_usage 2>&1)"
+if [[ "$USAGE_TEXT_MODE" == *"--mode <repo-path>=<100644|100755>"* ]]; then
+  _pass "item7: code_plane_pr_usage documents --mode <repo-path>=<100644|100755>"
+else
+  _fail "item7: usage text is missing the --mode flag: $USAGE_TEXT_MODE"
+fi
+if grep -qF -- '--mode <repo-path>=<100644|100755>' "$HELPER"; then
+  _pass "item7: the header's invoke-directly synopsis also lists --mode"
+else
+  _fail "item7: the header synopsis does not list --mode"
+fi
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 rm -rf "$FX4" "$FX6" "$FX8"
 
