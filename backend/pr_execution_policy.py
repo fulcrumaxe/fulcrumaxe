@@ -9,12 +9,28 @@ the rendered spawn prompt (via ``HOST_EXECUTION: host|static-only``, see
 ``apply_host_execution`` below) and the role cards key off, so a reviewer and
 its own prompt never disagree about which case they are in.
 
-Fails closed by construction: ``resolve()`` returns ``"host"`` only when BOTH
-of the two existing intake CLIs confirm — by their own already-fail-closed
-exit-code contracts — that the PR is internal. Any other outcome, including a
+Fails closed by construction: ``resolve()`` returns ``"host"`` only when the
+PR-author check (``pr_intake_gate.py``) confirms the PR's author is internal
+AND — whenever a ``discussion`` is given — the Discussion-provenance check
+(``external_intake_gate.py``) also confirms internal. With no ``discussion``
+argument, the PR-author check alone decides: this matches the Spec's own
+acceptance table (row 2) and is not a gap. Any other outcome, including a
 non-1 exit from either CLI, a timeout, a missing script, or any other
-exception, is ``"static-only"``. No environment variable, label, or PR text
-can change that: this module reads only subprocess exit codes.
+exception, is ``"static-only"``. PR text can never change the mode: it is
+decided from subprocess exit codes, never from anything the PR itself says.
+
+This module does not itself read any environment variable, and no PR- or
+Discussion-supplied text reaches either check. But the two CLIs it shells out
+to are ordinary subprocesses and inherit the operator's full environment —
+``_run_cli()`` passes no ``env=`` — and both consult operator-controlled
+variables of their own: ``external_intake_gate.py``'s trust set always
+includes whichever login ``AUTONOMOUS_TEAM_BOT_ACCOUNT`` names, and
+``AUTONOMOUS_TEAM_REPO`` / ``AUTONOMOUS_TEAM_STATE_DIR`` can repoint which
+repo's collaborators and which cache the CLIs read. None of that is
+contributor-controlled — a PR author cannot set the operator host's
+environment — but it means "no environment variable can change the outcome"
+is false read as a claim about the process tree as a whole, and is corrected
+here rather than repeated.
 
 Both CLIs already exist and are already what the merge gates call, so this
 adds no new provenance logic:
@@ -87,6 +103,9 @@ def resolve(
 ) -> tuple[str, str]:
     """Decide ``"host"`` vs ``"static-only"`` for a reviewer spawned against *pr*.
 
+    Both checks are required for ``"host"`` when *discussion* is given; with
+    no *discussion*, the PR-author check alone decides (see module docstring).
+
     Returns ``(mode, reason)``. *reason* is a short human-readable string
     naming which check produced the result — always non-empty when the mode
     is ``static-only``.
@@ -137,6 +156,41 @@ def normalize_mode(mode: str) -> str:
 def host_execution_line(mode: str) -> str:
     """Render the ``HOST_EXECUTION: <mode>`` line for a spawn prompt."""
     return f"HOST_EXECUTION: {normalize_mode(mode)}"
+
+
+# Zero-width space: invisible to a human or an agent reading the rendered
+# prompt, but it breaks an exact-string match against the sentinel/marker
+# literals above.
+_ZWSP = "​"
+
+
+def neutralize_host_execution_text(text: str) -> str:
+    """Break any literal ``HOST_EXECUTION:`` / ``HOST_EXEC_BEGIN`` / ``HOST_EXEC_END``
+    control string inside *text* so it cannot be mistaken for a real mode line
+    or span marker once concatenated into a rendered spawn prompt.
+
+    D#2644 fix-round (should-fix item 4): ``apply_host_execution()`` above
+    only ever processes the rendered *template* body. The task prompt is
+    substituted into that same body too (as the template's ``{{task_brief}}``
+    slot, ahead of the sentinel and every span in the three PR-scoped
+    templates) and is then appended a SECOND time, verbatim and unprocessed,
+    by ``prompt_builder.py``'s own TASK_PROMPT section. A task prompt built
+    from PR- or Discussion-derived text (a title, a body, a comment) could
+    otherwise contain these exact literal strings: as ``{{task_brief}}`` input
+    an injected ``<!-- HOST_EXEC_BEGIN -->`` with no matching END swallows
+    everything up to the template's own real END marker, and an injected
+    ``HOST_EXECUTION: host`` line sits in the assembled prompt next to the
+    real, resolved line, contradicting it. Call this once on the task prompt,
+    before it is used either way — the substitution below is inert for the
+    overwhelming majority of task prompts, which never contain any of these
+    strings.
+    """
+    if not text:
+        return text
+    text = text.replace(HOST_EXEC_BEGIN, f"<!-- HOST_EXEC{_ZWSP}_BEGIN -->")
+    text = text.replace(HOST_EXEC_END, f"<!-- HOST_EXEC{_ZWSP}_END -->")
+    text = text.replace("HOST_EXECUTION:", f"HOST_EXECUTION{_ZWSP}:")
+    return text
 
 
 def _static_only_section(pr: int, pr_repo: str) -> str:

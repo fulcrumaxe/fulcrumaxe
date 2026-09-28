@@ -528,12 +528,21 @@ class SpawnPrompt:
         """
         # --- Stable prefix ---
 
+        # D#2644 fix-round: neutralize any literal HOST_EXECUTION/HOST_EXEC_*
+        # control string in the task prompt before it is used at all — it is
+        # substituted into the template body below (as {{task_brief}}, ahead
+        # of the real sentinel/spans in the three PR-scoped templates) AND
+        # appended again, unprocessed, later in this method. See
+        # pr_execution_policy.neutralize_host_execution_text()'s docstring.
+        from backend.pr_execution_policy import neutralize_host_execution_text
+        sanitized_task_prompt = neutralize_host_execution_text(self.task_prompt)
+
         if self._template_body_override is not None:
             template_body = self._template_body_override
         else:
             template_body, loaded_manifest = _load_template_body(
                 self.role,
-                task_brief=self.task_prompt,
+                task_brief=sanitized_task_prompt,
                 discussion_number=str(self.discussion) if self.discussion else "",
                 discussion=self.discussion,
                 pr=self.pr,
@@ -587,7 +596,7 @@ class SpawnPrompt:
             parts.append(prev_context)
 
         if self.task_prompt:
-            parts.append(self.task_prompt)
+            parts.append(sanitized_task_prompt)
 
         if self.gate_line:
             parts.append(self.gate_line)
