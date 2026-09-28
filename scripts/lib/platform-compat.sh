@@ -157,6 +157,30 @@ pc_stat_size() {
   esac
 }
 
+# pc_stat_perm FILE — print FILE's permission bits (e.g. "700", "600"),
+# return 0. Same no-silent-fallback contract as pc_stat_mtime.
+pc_stat_perm() {
+  local file="$1"
+  [[ -e "$file" ]] || return 1
+  _pc_detect_stat_mode || return 1
+  case "$PC_STAT_MODE" in
+    gnu) stat -c %a "$file" 2>/dev/null ;;
+    bsd) stat -f %Lp "$file" 2>/dev/null ;;
+  esac
+}
+
+# pc_stat_uid FILE — print FILE's owner uid, return 0. Same
+# no-silent-fallback contract as pc_stat_mtime.
+pc_stat_uid() {
+  local file="$1"
+  [[ -e "$file" ]] || return 1
+  _pc_detect_stat_mode || return 1
+  case "$PC_STAT_MODE" in
+    gnu) stat -c %u "$file" 2>/dev/null ;;
+    bsd) stat -f %u "$file" 2>/dev/null ;;
+  esac
+}
+
 # pc_date_offset BASE_DATE DAYS — print the date DAYS days away from
 # BASE_DATE (BASE_DATE and the output are both '%Y-%m-%d'), return 0. DAYS
 # is a signed integer, e.g. -1 or 7. Tries GNU `date -d` first, then BSD
