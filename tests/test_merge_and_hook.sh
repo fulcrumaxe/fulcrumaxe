@@ -160,6 +160,22 @@ if [[ "$ARGS" == *"--json files"* ]]; then
   exit 0
 fi
 
+# `gh pr view <PR> --repo ... --json changedFiles --jq '.changedFiles'` (D#2630
+# undercount check, same provenance gate). None of this suite's scenarios are
+# about a truncated file list, so this always agrees with whatever
+# STUB_PR_FILES just answered above -- its own line count, unless
+# STUB_CHANGED_FILES is set for a test that wants to drive a mismatch.
+if [[ "$ARGS" == *"--json changedFiles"* ]]; then
+  if [[ -n "${STUB_CHANGED_FILES:-}" ]]; then
+    printf '%s' "$STUB_CHANGED_FILES"
+  elif [[ -z "${STUB_PR_FILES:-}" ]]; then
+    printf '0'
+  else
+    printf '%s\n' "$STUB_PR_FILES" | grep -c '.'
+  fi
+  exit 0
+fi
+
 # `gh pr view <PR> --repo ... --json mergeable,mergeStateStatus --jq ...`
 # (D#2339 mergeability probe). The wrapper's --jq joins the two fields with a
 # pipe, so the stub returns the already-joined string the same way every other
