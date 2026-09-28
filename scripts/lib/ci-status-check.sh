@@ -27,6 +27,9 @@
 #           - the PR traces to a provenance:external Discussion and the D#1588
 #             intake-approved human gate has not cleared — CI's own
 #             self-reported green is not trustworthy here.
+#         1 also when the PR's file list cannot be read (fail closed) — with
+#         no file list, this gate cannot tell whether the PR touches
+#         .github/workflows/** at all, so it cannot safely fall through to 0.
 #     Delegates the provenance half to scripts/lib/external_intake_gate.py —
 #     does not reinvent it.
 #
@@ -831,6 +834,11 @@ check_ci_provenance_gate() {
       echo "check_ci_provenance_gate: ignoring ${files_mock} — set CI_STATUS_TEST_MODE=1 to honour it" >&2
     fi
     files_list="$(gh pr view "$pr" --repo "$repo" --json files --jq '.files[].path' 2>/dev/null)"
+    local files_fetch_rc=$?
+    if [ "$files_fetch_rc" -ne 0 ]; then
+      CI_STATUS_FAIL_REASON="could not read the file list for PR #$pr (gh pr view --json files failed, rc=$files_fetch_rc) — cannot tell whether it modifies .github/workflows/**, failing closed"
+      return 1
+    fi
   fi
   if printf '%s\n' "$files_list" | grep -q '^\.github/workflows/'; then
     touches_workflows="true"

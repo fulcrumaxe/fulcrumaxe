@@ -1587,6 +1587,135 @@ _assert_seam_row "CS-26f" "$SEAM_TMP_26F" "CI_PROVENANCE_BLOCKED"
 rm -f "$SEAM_TMP_26F"
 
 # -----------------------------------------------------------------------
+# CS-27 (D#2630) — the real `gh pr view --json files` fetch (the `else`
+# branch above, reached whenever CI_PR_FILES_<pr> is unset) used to discard
+# gh's own exit status: the command substitution's rc was never read, so a
+# failed fetch and an empty-but-successful fetch landed on the exact same
+# "no workflow files" result and returned 0. That is fail-open on the one
+# case where the gate cannot actually tell whether the PR touches
+# .github/workflows/** — exactly when the kill-switch block matters most.
+# This section proves the fetch's own failure is now fail-closed,
+# regardless of kill-switch state, and that a real fetch that *succeeds*
+# is completely unaffected (CS-27c/d/e).
+# -----------------------------------------------------------------------
+echo ""
+echo "=== CS-27: an unreadable gh file-list fetch fails closed instead of falling through to 0 ==="
+STUB_DIR27="$(mktemp -d)"
+cat > "$STUB_DIR27/gh" <<'GHSTUB'
+#!/usr/bin/env bash
+# Minimal gh stand-in for CS-27: `gh pr view ... --json files` answers
+# according to $CS27_STUB_RC / $CS27_STUB_FILES so the real fetch branch
+# can be driven both to failure (CS-27a/b) and to a staged success
+# (CS-27c/d/e) without a network call. Anything else fails, same shape as
+# CS-26's stub.
+if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+  if [ "${CS27_STUB_RC:-0}" != "0" ]; then
+    echo "gh: stubbed failure" >&2
+    exit "${CS27_STUB_RC}"
+  fi
+  printf '%s' "${CS27_STUB_FILES:-}"
+  exit 0
+fi
+exit 127
+GHSTUB
+chmod +x "$STUB_DIR27/gh"
+
+echo ""
+echo "--- CS-27a (unreadable list, kill switch ON): fails closed before the switch is even read ---"
+CS27A_OUT=$(
+  PATH="$STUB_DIR27:$PATH" \
+      CS27_STUB_RC=1 \
+      CI_KILL_SWITCH_OVERRIDE=true \
+  bash -c '
+    source "'"$CI_LIB"'"
+    check_ci_provenance_gate 60027 "test-owner/test-repo" 60027
+    rc=$?
+    echo "RC:$rc"
+    echo "REASON:${CI_STATUS_FAIL_REASON:-}"
+    exit "$rc"
+  ' 2>&1
+); CS27A_RC=$?
+assert_exit_1 "CS-27a: unreadable file list blocks even with the kill switch ON" "$CS27A_RC"
+assert_contains "CS-27a: reason says the file list could not be read" "could not read the file list for PR #60027" "$CS27A_OUT"
+
+echo ""
+echo "--- CS-27b (unreadable list, kill switch OFF): fails closed regardless of switch state ---"
+CS27B_OUT=$(
+  PATH="$STUB_DIR27:$PATH" \
+      CS27_STUB_RC=1 \
+      CI_KILL_SWITCH_OVERRIDE=HTTP_404 \
+  bash -c '
+    source "'"$CI_LIB"'"
+    check_ci_provenance_gate 60028 "test-owner/test-repo" 60028
+    rc=$?
+    echo "RC:$rc"
+    echo "REASON:${CI_STATUS_FAIL_REASON:-}"
+    exit "$rc"
+  ' 2>&1
+); CS27B_RC=$?
+assert_exit_1 "CS-27b: unreadable file list blocks even with the kill switch OFF" "$CS27B_RC"
+assert_contains "CS-27b: reason says the file list could not be read" "could not read the file list for PR #60028" "$CS27B_OUT"
+
+echo ""
+echo "--- CS-27c (successful empty list): a real fetch that returns nothing is not an error ---"
+CS27C_OUT=$(
+  PATH="$STUB_DIR27:$PATH" \
+      CS27_STUB_RC=0 \
+      CS27_STUB_FILES="" \
+      CI_KILL_SWITCH_OVERRIDE=HTTP_404 \
+  bash -c '
+    source "'"$CI_LIB"'"
+    check_ci_provenance_gate 60029 "test-owner/test-repo" 60029
+    rc=$?
+    echo "RC:$rc"
+    echo "REASON:${CI_STATUS_FAIL_REASON:-}"
+    exit "$rc"
+  ' 2>&1
+); CS27C_RC=$?
+assert_exit_0 "CS-27c: a successful empty file list is not treated as a failure" "$CS27C_RC"
+assert_contains "CS-27c: reason stays empty" "REASON:" "$CS27C_OUT"
+assert_not_contains "CS-27c: reason never claims an unreadable list" "could not read the file list" "$CS27C_OUT"
+
+echo ""
+echo "--- CS-27d (successful non-workflow list, kill switch ON): still not a blanket block ---"
+CS27D_OUT=$(
+  PATH="$STUB_DIR27:$PATH" \
+      CS27_STUB_RC=0 \
+      CS27_STUB_FILES="README.md" \
+      CI_KILL_SWITCH_OVERRIDE=true \
+  bash -c '
+    source "'"$CI_LIB"'"
+    check_ci_provenance_gate 60030 "test-owner/test-repo" 60030
+    rc=$?
+    echo "RC:$rc"
+    echo "REASON:${CI_STATUS_FAIL_REASON:-}"
+    exit "$rc"
+  ' 2>&1
+); CS27D_RC=$?
+assert_exit_0 "CS-27d: a non-workflow file list from a real fetch still returns 0" "$CS27D_RC"
+
+echo ""
+echo "--- CS-27e (successful workflow list, kill switch ON): the real SEC-3 block, reached via a real fetch ---"
+CS27E_OUT=$(
+  PATH="$STUB_DIR27:$PATH" \
+      CS27_STUB_RC=0 \
+      CS27_STUB_FILES=".github/workflows/ci.yml" \
+      CI_KILL_SWITCH_OVERRIDE=true \
+  bash -c '
+    source "'"$CI_LIB"'"
+    check_ci_provenance_gate 60031 "test-owner/test-repo" 60031
+    rc=$?
+    echo "RC:$rc"
+    echo "REASON:${CI_STATUS_FAIL_REASON:-}"
+    exit "$rc"
+  ' 2>&1
+); CS27E_RC=$?
+assert_exit_1 "CS-27e: a workflow-touching file list from a real fetch still hits the kill-switch block" "$CS27E_RC"
+assert_contains "CS-27e: reason cites the kill-switch block" "CI_DISABLED='true'" "$CS27E_OUT"
+
+rm -rf "$STUB_DIR27"
+
+# -----------------------------------------------------------------------
 # Summary
 # -----------------------------------------------------------------------
 echo ""
