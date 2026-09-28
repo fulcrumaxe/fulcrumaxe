@@ -153,10 +153,29 @@ if [[ "$ARGS" == *"pr diff"* ]]; then
   exit 0
 fi
 
-# `gh pr view <PR> --repo ... --json files --jq '.files[].path'` (D#1614 provenance gate)
-if [[ "$ARGS" == *"--json files"* ]]; then
+# `gh pr view <PR> --repo ... --json files,changedFiles` (D#1614 provenance
+# gate; D#2630 fix round 2 — one combined fetch replaces the old separate
+# `--json files` / `--json changedFiles` calls). Builds a JSON object from
+# STUB_PR_FILES (one path per line) and STUB_CHANGED_FILES (defaults to
+# STUB_PR_FILES's own line count -- a real file count for every one of this
+# suite's plain, newline-free fixtures, so nothing here is about a mismatch
+# and this consolidation is a no-op for every pre-existing scenario, unless
+# STUB_CHANGED_FILES is set for a test that wants to drive one).
+if [[ "$ARGS" == *"--json files,changedFiles"* ]]; then
   echo "GH_ARGS: $ARGS" >&2
-  printf '%s\n' "${STUB_PR_FILES:-}"
+  if [[ -n "${STUB_CHANGED_FILES:-}" ]]; then
+    changed_count="$STUB_CHANGED_FILES"
+  elif [[ -z "${STUB_PR_FILES:-}" ]]; then
+    changed_count=0
+  else
+    changed_count="$(printf '%s\n' "$STUB_PR_FILES" | grep -c '.')"
+  fi
+  python3 - "${STUB_PR_FILES:-}" "$changed_count" <<'PYEOF'
+import json, sys
+files_blob, changed = sys.argv[1], sys.argv[2]
+files = files_blob.split("\n") if files_blob else []
+print(json.dumps({"files": [{"path": f} for f in files], "changedFiles": int(changed)}))
+PYEOF
   exit 0
 fi
 

@@ -27,6 +27,22 @@
 #           - the PR traces to a provenance:external Discussion and the D#1588
 #             intake-approved human gate has not cleared — CI's own
 #             self-reported green is not trustworthy here.
+#         1 also when the PR's file list cannot be read (fail closed) — with
+#         no file list, this gate cannot tell whether the PR touches
+#         .github/workflows/** at all, so it cannot safely fall through to 0.
+#         1 also when a single `gh pr view --json files,changedFiles` fetch
+#         shows the returned `.files` array length does not exactly match
+#         the PR's own `changedFiles` total (fail closed, D#2630), when
+#         either number is non-numeric, or when `changedFiles` is 0 while
+#         `.files` is non-empty — `gh pr view --json files` never paginates
+#         past 100 and still exits 0, so a >100-file PR with a
+#         `.github/workflows/**` path beyond the cutoff would otherwise read
+#         as "no workflow files" instead of "we can't see them all". The two
+#         counts are computed from one fetch with jq's `.files | length` (an
+#         array count), not by counting lines of printed paths — a path
+#         containing a literal newline inflates a line count by one without
+#         changing the array length, which let a >100-file PR's truncated
+#         100-entry response line up with its own `changedFiles` and pass.
 #     Delegates the provenance half to scripts/lib/external_intake_gate.py —
 #     does not reinvent it.
 #
@@ -830,7 +846,51 @@ check_ci_provenance_gate() {
     if [ -n "${!files_mock:-}" ]; then
       echo "check_ci_provenance_gate: ignoring ${files_mock} — set CI_STATUS_TEST_MODE=1 to honour it" >&2
     fi
-    files_list="$(gh pr view "$pr" --repo "$repo" --json files --jq '.files[].path' 2>/dev/null)"
+    # D#2630 fix round 2: this used to be two separate `gh pr view` calls,
+    # and the "how many paths did we get back" side of the comparison was a
+    # LINE count (`grep -c '.'` over `--jq '.files[].path'` output), not a
+    # file count. A path containing a literal newline prints across two
+    # lines, so one such path inflates that count by one — enough for a
+    # >100-file PR's truncated 100-entry response to line up with its own
+    # `changedFiles` total and pass. Fetch both fields in ONE call and
+    # compute both numbers from that single JSON response with jq's
+    # `.files | length` — an array count, which a newline inside one path's
+    # string value can never inflate — instead of a text-line count.
+    local pr_json
+    pr_json="$(gh pr view "$pr" --repo "$repo" --json files,changedFiles 2>/dev/null)"
+    local pr_json_rc=$?
+    if [ "$pr_json_rc" -ne 0 ]; then
+      CI_STATUS_FAIL_REASON="could not read the file list for PR #$pr (gh pr view --json files,changedFiles failed, rc=$pr_json_rc) — cannot tell whether it modifies .github/workflows/**, failing closed"
+      return 1
+    fi
+
+    local changed_files_count returned_files_count
+    changed_files_count="$(printf '%s' "$pr_json" | jq -r '.changedFiles' 2>/dev/null)"
+    returned_files_count="$(printf '%s' "$pr_json" | jq -r '(.files | length)' 2>/dev/null)"
+    if ! [[ "$changed_files_count" =~ ^[0-9]+$ ]] || ! [[ "$returned_files_count" =~ ^[0-9]+$ ]]; then
+      CI_STATUS_FAIL_REASON="could not read changedFiles/files for PR #$pr (gh pr view --json files,changedFiles returned a non-numeric changedFiles or files count) — cannot verify the file list is complete, failing closed"
+      return 1
+    fi
+
+    # changedFiles=0 alongside a non-empty files array isn't a cap/truncation
+    # shape at all — it's gh handing back an internally inconsistent
+    # response. Neither number can be trusted over the other here, so this
+    # fails closed with its own reason rather than falling into the generic
+    # mismatch message below.
+    if [ "$changed_files_count" -eq 0 ] && [ "$returned_files_count" -gt 0 ]; then
+      CI_STATUS_FAIL_REASON="PR #$pr reports changedFiles=0 but gh pr view --json files returned $returned_files_count path(s) — an inconsistent response from gh, failing closed"
+      return 1
+    fi
+
+    # Fail closed on ANY mismatch, not just a shortfall (-lt): a returned
+    # count larger than changedFiles is exactly as unverifiable as a smaller
+    # one — an exact match is what "the file list is complete" requires.
+    if [ "$returned_files_count" -ne "$changed_files_count" ]; then
+      CI_STATUS_FAIL_REASON="PR #$pr reports $changed_files_count changed files but gh pr view --json files returned $returned_files_count (gh pr view never paginates past 100) — cannot tell whether a truncated or inflated list is accurate, failing closed"
+      return 1
+    fi
+
+    files_list="$(printf '%s' "$pr_json" | jq -r '.files[].path' 2>/dev/null)"
   fi
   if printf '%s\n' "$files_list" | grep -q '^\.github/workflows/'; then
     touches_workflows="true"
