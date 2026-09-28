@@ -1940,6 +1940,174 @@ assert_contains "CS-27k: reason cites the changedFiles=0 inconsistency" "reports
 rm -rf "$STUB_DIR27"
 
 # -----------------------------------------------------------------------
+# CS-28 (D#2643): the first time any CI-status test seam is consulted in a
+# process, ci-status-check.sh prints ONE warning line to stderr naming the
+# seam — stderr, not the audit file, so CI_STATUS_TEST_AUDIT_FILE=/dev/null
+# cannot hide it (security review of code-plane #254). Every sub-test here
+# spawns its own `bash -c` so each gets a real, fresh process ($$), the same
+# unit "once per process" means.
+# -----------------------------------------------------------------------
+_seam_warning_count() {
+  printf '%s' "$1" | grep -cF 'CI-status test seam in use'
+}
+
+echo ""
+echo "=== CS-28 (D#2643): CI-status test seam stderr warning ==="
+
+echo "--- CS-28a (fires once, redirect cannot hide it) ---"
+CS28A_OUT=$(
+  CI_STATUS_TEST_MODE=1 \
+      CI_KILL_SWITCH_OVERRIDE=false \
+      CI_STATUS_HEAD_SHA_60040=abc123 \
+      CI_STATUS_OVERRIDE_60040='[]' \
+      CI_STATUS_TEST_AUDIT_FILE=/dev/null \
+  bash -c '
+    source "'"$CI_LIB"'"
+    check_ci_status 60040 "test-owner/test-repo"
+    check_ci_status 60040 "test-owner/test-repo"
+  ' 2>&1 >/dev/null
+)
+CS28A_COUNT="$(_seam_warning_count "$CS28A_OUT")"
+if [ "$CS28A_COUNT" = "1" ]; then
+  echo "  PASS: CS-28a: exactly one warning line across two check_ci_status calls in one process"; PASS=$((PASS + 1))
+else
+  echo "  FAIL: CS-28a: expected exactly 1 warning line, found $CS28A_COUNT"
+  echo "        stderr: $CS28A_OUT"
+  FAIL=$((FAIL + 1))
+fi
+assert_contains "CS-28a: the line names CI_KILL_SWITCH_OVERRIDE, the first seam consulted" \
+  "CI-status test seam in use (CI_KILL_SWITCH_OVERRIDE)" "$CS28A_OUT"
+
+echo ""
+echo "--- CS-28b (silent without test mode) ---"
+CS28B_OUT=$(
+  env -u CI_STATUS_TEST_MODE \
+      CI_KILL_SWITCH_OVERRIDE=false \
+      CI_STATUS_HEAD_SHA_60040=abc123 \
+      CI_STATUS_OVERRIDE_60040='[]' \
+      CI_STATUS_TEST_AUDIT_FILE=/dev/null \
+  bash -c '
+    source "'"$CI_LIB"'"
+    check_ci_status 60040 "test-owner/test-repo"
+    check_ci_status 60040 "test-owner/test-repo"
+  ' 2>&1 >/dev/null
+)
+CS28B_COUNT="$(_seam_warning_count "$CS28B_OUT")"
+if [ "$CS28B_COUNT" = "0" ]; then
+  echo "  PASS: CS-28b: no warning line when CI_STATUS_TEST_MODE is unset"; PASS=$((PASS + 1))
+else
+  echo "  FAIL: CS-28b: expected 0 warning lines, found $CS28B_COUNT"
+  echo "        stderr: $CS28B_OUT"
+  FAIL=$((FAIL + 1))
+fi
+
+echo ""
+echo "--- CS-28c (the direct-write seam) ---"
+CS28C_OUT=$(
+  CI_STATUS_TEST_MODE=1 \
+      CI_STATUS_TEST_AUDIT_FILE=/dev/null \
+  bash -c '
+    source "'"$CI_LIB"'"
+    _ci_audit_path >/dev/null
+  ' 2>&1 >/dev/null
+)
+CS28C_COUNT="$(_seam_warning_count "$CS28C_OUT")"
+if [ "$CS28C_COUNT" = "1" ]; then
+  echo "  PASS: CS-28c: exactly one warning line for a lone _ci_audit_path call"; PASS=$((PASS + 1))
+else
+  echo "  FAIL: CS-28c: expected exactly 1 warning line, found $CS28C_COUNT"
+  echo "        stderr: $CS28C_OUT"
+  FAIL=$((FAIL + 1))
+fi
+assert_contains "CS-28c: the line names _ci_audit_path" \
+  "CI-status test seam in use (_ci_audit_path)" "$CS28C_OUT"
+
+echo ""
+echo "--- CS-28d (per process, not per machine) ---"
+for _cs28d_i in 1 2; do
+  CS28D_OUT=$(
+    CI_STATUS_TEST_MODE=1 \
+        CI_KILL_SWITCH_OVERRIDE=false \
+        CI_STATUS_HEAD_SHA_60040=abc123 \
+        CI_STATUS_OVERRIDE_60040='[]' \
+        CI_STATUS_TEST_AUDIT_FILE=/dev/null \
+    bash -c '
+      source "'"$CI_LIB"'"
+      check_ci_status 60040 "test-owner/test-repo"
+      check_ci_status 60040 "test-owner/test-repo"
+    ' 2>&1 >/dev/null
+  )
+  CS28D_COUNT="$(_seam_warning_count "$CS28D_OUT")"
+  if [ "$CS28D_COUNT" = "1" ]; then
+    echo "  PASS: CS-28d: run $_cs28d_i warns exactly once (not silenced by an earlier process)"; PASS=$((PASS + 1))
+  else
+    echo "  FAIL: CS-28d: run $_cs28d_i expected exactly 1 warning line, found $CS28D_COUNT"
+    echo "        stderr: $CS28D_OUT"
+    FAIL=$((FAIL + 1))
+  fi
+done
+
+echo ""
+echo "--- CS-28e (decisions unchanged) ---"
+CS28E_AUDIT="$(mktemp)"
+CS28E_OUT=$(
+  CI_STATUS_TEST_MODE=1 \
+      CI_KILL_SWITCH_OVERRIDE=false \
+      CI_STATUS_HEAD_SHA_60041=abc123 \
+      CI_STATUS_OVERRIDE_60041='[]' \
+      CI_STATUS_TEST_AUDIT_FILE="$CS28E_AUDIT" \
+  bash -c '
+    source "'"$CI_LIB"'"
+    check_ci_status 60041 "test-owner/test-repo"
+    rc=$?
+    echo "STATE:${CI_STATUS_STATE:-}"
+    exit "$rc"
+  '
+); CS28E_RC=$?
+assert_exit_1 "CS-28e: rc is unchanged by the warning (same fail-closed pending result as CS-6a)" "$CS28E_RC"
+assert_contains "CS-28e: CI_STATUS_STATE is unchanged" "STATE:pending" "$CS28E_OUT"
+CS28E_ROWS="$(_seam_row_count "$CS28E_AUDIT" "CI_KILL_SWITCH_OVERRIDE")"
+CS28E_ROWS=$((CS28E_ROWS + $(_seam_row_count "$CS28E_AUDIT" "_ci_fetch_head_sha")))
+CS28E_ROWS=$((CS28E_ROWS + $(_seam_row_count "$CS28E_AUDIT" "_ci_fetch_check_runs_json")))
+if [ "$CS28E_ROWS" = "3" ]; then
+  echo "  PASS: CS-28e: audit-file row count is unchanged (3 rows, one per seam, same as CS-25) — the warning adds no row"; PASS=$((PASS + 1))
+else
+  echo "  FAIL: CS-28e: expected 3 audit rows total, found $CS28E_ROWS"
+  echo "        content: $(cat "$CS28E_AUDIT" 2>/dev/null)"
+  FAIL=$((FAIL + 1))
+fi
+rm -f "$CS28E_AUDIT"
+
+echo ""
+echo "--- CS-28f (dedupe failure is loud) ---"
+CS28F_TMPDIR="$(mktemp -d)/unwritable"
+mkdir -p "$CS28F_TMPDIR"
+chmod 000 "$CS28F_TMPDIR"
+CS28F_OUT=$(
+  TMPDIR="$CS28F_TMPDIR" \
+      CI_STATUS_TEST_MODE=1 \
+      CI_KILL_SWITCH_OVERRIDE=false \
+      CI_STATUS_HEAD_SHA_60040=abc123 \
+      CI_STATUS_OVERRIDE_60040='[]' \
+      CI_STATUS_TEST_AUDIT_FILE=/dev/null \
+  bash -c '
+    source "'"$CI_LIB"'"
+    check_ci_status 60040 "test-owner/test-repo"
+    check_ci_status 60040 "test-owner/test-repo"
+  ' 2>&1 >/dev/null
+)
+chmod 755 "$CS28F_TMPDIR"
+rm -rf "$CS28F_TMPDIR"
+CS28F_COUNT="$(_seam_warning_count "$CS28F_OUT")"
+if [ "$CS28F_COUNT" -ge 1 ] 2>/dev/null; then
+  echo "  PASS: CS-28f: dedupe cannot work (unwritable TMPDIR) so it warns anyway ($CS28F_COUNT line(s)) instead of going silent"; PASS=$((PASS + 1))
+else
+  echo "  FAIL: CS-28f: expected at least 1 warning line with dedupe broken, found $CS28F_COUNT"
+  echo "        stderr: $CS28F_OUT"
+  FAIL=$((FAIL + 1))
+fi
+
+# -----------------------------------------------------------------------
 # Summary
 # -----------------------------------------------------------------------
 echo ""
