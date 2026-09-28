@@ -342,13 +342,15 @@ _ci_kill_switch_state() {
 }
 
 # ── Test-seam master key ─────────────────────────────────────────────────
-# CI_STATUS_TEST_MODE=1 arms FOUR behaviours, all in this file:
+# CI_STATUS_TEST_MODE=1 arms SIX behaviours, all in this file:
 #   1. CI_KILL_SWITCH_OVERRIDE  — kill-switch stand-down mock (_ci_kill_switch_state)
 #   2. CI_STATUS_HEAD_SHA_<pr>  — head-SHA mock (_ci_fetch_head_sha)
 #   3. CI_STATUS_OVERRIDE_<pr>  — check-runs mock (_ci_fetch_check_runs_json)
 #   4. CI_STATUS_TEST_AUDIT_FILE — audit-log redirect (_ci_audit_path)
+#   5. CI_PR_FILES_<pr>        — PR file-list mock (check_ci_provenance_gate)
+#   6. CI_PROVENANCE_BLOCKED_<disc> — provenance-gate mock (check_ci_provenance_gate)
 # One flag is a master key: leaking CI_STATUS_TEST_MODE=1 into a cron or loop
-# environment re-arms all four at once, not just the one a caller intended.
+# environment re-arms all six at once, not just the one a caller intended.
 
 # ── Head SHA + check-runs fetch (test-override aware) ───────────────────────
 _ci_fetch_head_sha() {
@@ -820,15 +822,18 @@ check_ci_provenance_gate() {
 
   local touches_workflows="false"
   local files_mock="CI_PR_FILES_${pr}"
-  if [ -n "${!files_mock:-}" ]; then
-    if printf '%s\n' "${!files_mock}" | grep -q '^\.github/workflows/'; then
-      touches_workflows="true"
-    fi
+  local files_list
+  if [ -n "${!files_mock:-}" ] && [ "${CI_STATUS_TEST_MODE:-}" = "1" ]; then
+    _ci_note_seam_used "CI_PR_FILES"
+    files_list="${!files_mock}"
   else
-    if gh pr view "$pr" --repo "$repo" --json files --jq '.files[].path' 2>/dev/null \
-        | grep -q '^\.github/workflows/'; then
-      touches_workflows="true"
+    if [ -n "${!files_mock:-}" ]; then
+      echo "check_ci_provenance_gate: ignoring ${files_mock} — set CI_STATUS_TEST_MODE=1 to honour it" >&2
     fi
+    files_list="$(gh pr view "$pr" --repo "$repo" --json files --jq '.files[].path' 2>/dev/null)"
+  fi
+  if printf '%s\n' "$files_list" | grep -q '^\.github/workflows/'; then
+    touches_workflows="true"
   fi
 
   if [ "$touches_workflows" != "true" ]; then
@@ -857,12 +862,16 @@ check_ci_provenance_gate() {
   fi
 
   local gate_mock="CI_PROVENANCE_BLOCKED_${disc}"
-  if [ -n "${!gate_mock:-}" ]; then
+  if [ -n "${!gate_mock:-}" ] && [ "${CI_STATUS_TEST_MODE:-}" = "1" ]; then
+    _ci_note_seam_used "CI_PROVENANCE_BLOCKED"
     if [ "${!gate_mock}" = "yes" ]; then
       CI_STATUS_FAIL_REASON="provenance:external PR modifies .github/workflows/** — CI result not honored until the D#1588 intake-approved gate clears (D#$disc)"
       return 1
     fi
     return 0
+  fi
+  if [ -n "${!gate_mock:-}" ]; then
+    echo "check_ci_provenance_gate: ignoring ${gate_mock} — set CI_STATUS_TEST_MODE=1 to honour it" >&2
   fi
 
   if ! python3 "$_CI_LIB_DIR/external_intake_gate.py" check-discussion "$disc" >/dev/null 2>&1; then
@@ -1183,7 +1192,7 @@ ci_write_audit() {
 # above are only reachable with CI_STATUS_TEST_MODE=1, and that is precisely
 # where an in-process actor forging a merge decision would set it — not a
 # place the forgery is absent. This writes one ci_status_test_seam_used row
-# each time one of the four seams is actually consulted, naming which one.
+# each time one of the six seams is actually consulted, naming which one.
 # That row follows $CI_STATUS_TEST_AUDIT_FILE exactly like the decision it is
 # reporting on, so it is not a channel a redirect can't also carry away —
 # pointing that same redirect at /dev/null silences this row along with
