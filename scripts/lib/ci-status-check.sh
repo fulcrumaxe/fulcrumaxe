@@ -272,6 +272,44 @@ CI_MERGE_PROBE_INTERVAL="${CI_MERGE_PROBE_INTERVAL:-2}"
 _CI_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _CI_REPO_ROOT="$(cd "$_CI_LIB_DIR/../.." && pwd)"
 
+# ── Test-seam warning dedupe marker (D#2643, fix round 1) ───────────────────
+# See _ci_warn_seam_once, further down, for what this marker guards. Cleared
+# HERE, at source time, in the top-level shell — not lazily on first use —
+# so a marker a PREVIOUS process left behind (its PID reused by this one)
+# can never suppress the warning this process owes. Sourcing happens once
+# per process, at the top level, before any subshell exists, which is what
+# makes "clear at source time" equivalent to "clear once per process".
+#
+# Fix round 1 (security review of #272): the clear used to be the whole
+# story, and _ci_warn_seam_once treated "mkdir failed but the path already
+# exists" as proof that THIS process had already warned. Those are not the
+# same fact — a marker this process could not remove (pre-planted in a
+# read-only TMPDIR, a symlink, another uid's leftover in a shared sticky
+# /tmp, or one that lands in the gap between this rm and the old lazy
+# mkdir) satisfied that check without this process ever printing anything.
+# The create now happens HERE, right after the clear, in the same top-level
+# shell — and whether it succeeded, meaning the directory is genuinely
+# ours, is recorded in a plain variable. A plain variable survives into a
+# $(...) subshell (the same property the marker file itself needs — see the
+# note in _ci_warn_seam_once), so every seam call sees the same answer.
+# _ci_warn_seam_once only dedupes when this is "1"; anything else means
+# dedupe cannot be trusted, so every call warns instead of guessing. Warn
+# more, never less.
+CI_STATUS_SEAM_MARKER_DIR="${TMPDIR:-/tmp}/ci-status-seam-warned.$$"
+rm -rf "$CI_STATUS_SEAM_MARKER_DIR" 2>/dev/null || true
+if mkdir "$CI_STATUS_SEAM_MARKER_DIR" 2>/dev/null; then
+  CI_STATUS_SEAM_MARKER_OWNED=1
+else
+  CI_STATUS_SEAM_MARKER_OWNED=0
+fi
+# Hardening left undone, on purpose: removing this directory at process
+# exit would need an EXIT trap, and this file is sourced by callers that
+# set their own (scripts/loop-phased-step5.sh, this suite's own harness) —
+# a trap set here would silently replace theirs, not chain with them, which
+# is worse than a few leaked empty directories. Each seam-using process
+# leaves one behind in ${TMPDIR:-/tmp}; the rm above is what keeps a later
+# process with a reused PID from inheriting it.
+
 # ── CI kill switch (D#1944) ────────────────────────────────────────────────
 # `ci.yml` gates all three jobs on `vars.CI_DISABLED != 'true'`. A job-level
 # `if:` is evaluated BEFORE matrix expansion, so when the switch is on the
@@ -1247,6 +1285,58 @@ ci_write_audit() {
   _ci_write_audit_row "$(_ci_resolve_audit_dest)" "$kind" "$pr" "$head_sha" "$failing" "$run_url" "$reason" "$ts"
 }
 
+# ── Internal: _ci_warn_seam_once <name> ─────────────────────────────────────
+# The first time ANY CI-status test seam is consulted in this process, print
+# ONE line to stderr naming it. Unlike the audit row below, this does not go
+# through _ci_resolve_audit_dest / $CI_STATUS_TEST_AUDIT_FILE at all — stderr
+# is a trace a redirect on the audit file cannot also carry away, which is
+# the gap D#2643 closes (security review of code-plane #254: the same
+# environment that forges a CI pass can point the audit file at /dev/null).
+#
+# A plain shell variable cannot carry "already warned" out of a $(...)
+# command substitution — three of these seams are consulted inside one
+# (kill-switch state, head-SHA fetch, check-runs fetch all run as
+# `x="$(...)"`), so a variable set inside would be set in the subshell and
+# lost the moment it exits, printing once per seam instead of once per
+# process. $CI_STATUS_SEAM_MARKER_DIR is keyed on $$ and created once, at
+# source time, in the top-level shell — see the block above. $$ is the
+# top-level shell's PID even inside a subshell (BASHPID is the subshell's
+# own, and would not work here).
+#
+# Fix round 1 (security review of #272): dedupe is now two separate checks,
+# not one. Whether $CI_STATUS_SEAM_MARKER_DIR is genuinely ours was already
+# decided, once, at source time — $CI_STATUS_SEAM_MARKER_OWNED. This
+# function trusts that decision and never re-derives "is it mine" from the
+# marker path's mere existence, which is exactly the confusion the earlier
+# version made ("mkdir failed but the path exists" is not evidence this
+# process warned anyone). When it is not "1", dedupe cannot work, so every
+# call warns — no fallback existence check on the outer path at all.
+#
+# When it IS "1", "already warned" is a second, independent atomic
+# noclobber create — a file INSIDE that owned directory, not the directory
+# itself. If the owned directory has stopped being usable by the time a
+# seam actually fires (removed, replaced, permissions changed — the same
+# race the marker clear/create pair narrows but a single-process shell
+# script cannot fully close), that create fails for a reason that is NOT
+# "this process already warned", and this still warns rather than trust a
+# check it cannot verify. Warn more, never less, is the explicit failure
+# direction throughout (D#2643).
+_ci_warn_seam_once() {
+  local name="$1"
+  if [ "${CI_STATUS_SEAM_MARKER_OWNED:-0}" = "1" ] && [ -d "$CI_STATUS_SEAM_MARKER_DIR" ]; then
+    local warned="$CI_STATUS_SEAM_MARKER_DIR/warned"
+    if ( set -C; : >"$warned" ) 2>/dev/null; then
+      :  # first call in this process — fall through and warn
+    elif [ -e "$warned" ]; then
+      return 0  # this process already warned on an earlier call
+    fi
+    # else: the create failed for some other reason (directory vanished or
+    # went unwritable after source time) — fall through and warn rather
+    # than treat an unexplained failure as "already warned".
+  fi
+  echo "ci-status-check: WARNING: CI-status test seam in use (${name}) — CI gate results in this process come from test overrides, not GitHub" >&2
+}
+
 # ── Test-seam audit (D#2028) ────────────────────────────────────────────────
 # Deferred from D#2019 on reasoning that inverted the threat model: the seams
 # above are only reachable with CI_STATUS_TEST_MODE=1, and that is precisely
@@ -1254,13 +1344,16 @@ ci_write_audit() {
 # place the forgery is absent. This writes one ci_status_test_seam_used row
 # each time one of the six seams is actually consulted, naming which one.
 # That row follows $CI_STATUS_TEST_AUDIT_FILE exactly like the decision it is
-# reporting on, so it is not a channel a redirect can't also carry away —
-# pointing that same redirect at /dev/null silences this row along with
-# everything else. Whether that gap needs closing is tracked separately
-# (D#2627). Purely observational either way — no branch here can change
-# check_ci_status's STATUS or exit code.
+# reporting on, so it is not a channel a redirect can't also carry away for
+# THIS row — pointing that redirect at /dev/null silences the audit row along
+# with everything else. That gap is what _ci_warn_seam_once, above, closes:
+# every call here also prints the stderr warning, which does not follow
+# $CI_STATUS_TEST_AUDIT_FILE and so cannot be hidden the same way. Closed by
+# D#2643 (was tracked separately as D#2627). Purely observational either
+# way — no branch here can change check_ci_status's STATUS or exit code.
 CI_STATUS_TEST_SEAM_USED_KIND="ci_status_test_seam_used"
 _ci_note_seam_used() {
+  _ci_warn_seam_once "$1"
   # Goes through ci_write_audit — same redirect-aware destination every other
   # audit row uses — so a caller that also points CI_STATUS_TEST_AUDIT_FILE
   # at a scratch file never has one of these land in the real ledger either.
@@ -1338,13 +1431,17 @@ except Exception:
 # the audit-path seam" means here.
 #
 # The row this writes follows $CI_STATUS_TEST_AUDIT_FILE like every other row
-# in test mode — it is not a channel a redirect can't also carry away. See
-# D#2627 for the open question of whether a decision made through this seam
-# needs a trace that survives the redirect being pointed at /dev/null too.
+# in test mode — it is not a channel a redirect can't also carry away. D#2643
+# closes that (was the open question tracked as D#2627): the
+# _ci_warn_seam_once call below prints a stderr line for this seam too, and
+# stderr does not follow $CI_STATUS_TEST_AUDIT_FILE, so a decision made
+# through this seam now has a trace that survives the redirect being pointed
+# at /dev/null.
 _ci_audit_path() {
   local path
   path="$(_ci_resolve_audit_dest)"
   if [ -n "${CI_STATUS_TEST_AUDIT_FILE:-}" ] && [ "${CI_STATUS_TEST_MODE:-}" = "1" ]; then
+    _ci_warn_seam_once "_ci_audit_path"
     # Write directly to the already-known path (never call back into
     # ci_write_audit / _ci_resolve_audit_dest here — both already ran above;
     # doing it again would just repeat the same resolution).
