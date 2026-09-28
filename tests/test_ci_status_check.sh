@@ -1381,15 +1381,18 @@ rm -f "$SEAM_TMP_E"
 
 # -----------------------------------------------------------------------
 # CS-25f (hardening, cheap): every tests/*.sh caller that sets
-# CI_STATUS_TEST_AUDIT_FILE also has CI_STATUS_TEST_MODE=1 in scope —
-# pinned in a test rather than left as prose, per the Implementation Notes.
+# CI_STATUS_TEST_AUDIT_FILE, CI_PR_FILES_<pr>, or CI_PROVENANCE_BLOCKED_<disc>
+# also has CI_STATUS_TEST_MODE=1 in scope — pinned in a test rather than left
+# as prose, per the Implementation Notes. D#2627 widened this from just the
+# audit-file redirect to the two provenance-gate mocks, which are gated the
+# same way as of that change.
 # "In scope" is deliberately crude (same line, or anywhere earlier in the
 # file — this suite's own suite-wide export at :27 is exactly that shape):
-# the property being guarded is "the redirect can never accidentally apply
-# to production", not a precise static-scope analysis.
+# the property being guarded is "the redirect/mock can never accidentally
+# apply to production", not a precise static-scope analysis.
 # -----------------------------------------------------------------------
 echo ""
-echo "=== CS-25f: every CI_STATUS_TEST_AUDIT_FILE caller in tests/ has CI_STATUS_TEST_MODE=1 in scope ==="
+echo "=== CS-25f: every CI_STATUS_TEST_AUDIT_FILE / CI_PR_FILES_ / CI_PROVENANCE_BLOCKED_ caller in tests/ has CI_STATUS_TEST_MODE=1 in scope ==="
 if python3 - "$REAL_REPO_ROOT/tests" <<'PYEOF'
 import re, sys, pathlib
 
@@ -1397,11 +1400,18 @@ tests_dir = pathlib.Path(sys.argv[1])
 problems = []
 for f in sorted(tests_dir.glob("*.sh")):
     text = f.read_text()
-    for m in re.finditer(r'CI_STATUS_TEST_AUDIT_FILE', text):
+    for m in re.finditer(r'CI_STATUS_TEST_AUDIT_FILE|CI_PR_FILES_|CI_PROVENANCE_BLOCKED_', text):
         line_start = text.rfind("\n", 0, m.start()) + 1
         line_end = text.find("\n", m.start())
         line_end = line_end if line_end != -1 else len(text)
         line = text[line_start:line_end]
+        # A comment mentioning the var name generically (e.g. this file's own
+        # module-docstring line describing CI_PR_FILES_<PR>) is documentation,
+        # not a caller that sets the variable — CI_PR_FILES_ and
+        # CI_PROVENANCE_BLOCKED_ widened the scan into prose the tighter
+        # CI_STATUS_TEST_AUDIT_FILE-only regex never had to skip.
+        if line.lstrip().startswith("#"):
+            continue
         if "CI_STATUS_TEST_MODE=1" in line:
             continue
         if "CI_STATUS_TEST_MODE=1" in text[:m.start()]:
@@ -1412,10 +1422,169 @@ for p in problems:
 sys.exit(1 if problems else 0)
 PYEOF
 then
-  echo "  PASS: CS-25f: every CI_STATUS_TEST_AUDIT_FILE caller in tests/ has CI_STATUS_TEST_MODE=1 in scope"; PASS=$((PASS + 1))
+  echo "  PASS: CS-25f: every CI_STATUS_TEST_AUDIT_FILE / CI_PR_FILES_ / CI_PROVENANCE_BLOCKED_ caller in tests/ has CI_STATUS_TEST_MODE=1 in scope"; PASS=$((PASS + 1))
 else
-  echo "  FAIL: CS-25f: a CI_STATUS_TEST_AUDIT_FILE caller in tests/ has no CI_STATUS_TEST_MODE=1 in scope"; FAIL=$((FAIL + 1))
+  echo "  FAIL: CS-25f: a CI_STATUS_TEST_AUDIT_FILE / CI_PR_FILES_ / CI_PROVENANCE_BLOCKED_ caller in tests/ has no CI_STATUS_TEST_MODE=1 in scope"; FAIL=$((FAIL + 1))
 fi
+
+# ═══════════════════════════════════════════════════════════════════════════
+# CS-26 (D#2627) — CI_PR_FILES_<pr> and CI_PROVENANCE_BLOCKED_<disc> are two
+# more test-only overrides in this file (used by CS-8/CS-20 above), and until
+# now they were honoured unconditionally — the only two of the six seams NOT
+# gated on CI_STATUS_TEST_MODE=1. A stray export of either in a real shell
+# silently turned a real block into a pass, with nothing on stderr and no
+# audit row. This section proves both are now gated the same way as the
+# other four: inert (falling through to the real check, not failing) without
+# CI_STATUS_TEST_MODE=1, and each leaves exactly one seam-used row when it
+# fires under test mode.
+# -----------------------------------------------------------------------
+echo ""
+echo "=== CS-26: CI_PR_FILES_<pr> and CI_PROVENANCE_BLOCKED_<disc> are gated on CI_STATUS_TEST_MODE=1 ==="
+STUB_DIR26="$(mktemp -d)"
+cat > "$STUB_DIR26/gh" <<'GHSTUB'
+#!/usr/bin/env bash
+# Minimal gh stand-in for CS-26: answers `gh pr view ... --json files` with
+# $CS26_STUB_FILES, and `gh api -i .../CI_DISABLED` with an HTTP 200/{"value":
+# "true"} (kill switch disabled) or HTTP 404 (kill switch enabled) response
+# depending on $CS26_STUB_KILL. Anything else (including the `gh api graphql`
+# calls external_intake_gate.py makes) fails, same as CS-15's stub — that
+# failure is what makes the real provenance check fail closed for CS-26b.
+if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+  printf '%s\n' "$CS26_STUB_FILES"
+  exit 0
+fi
+if [ "$1" = "api" ] && [ "$2" = "-i" ]; then
+  if [ "$CS26_STUB_KILL" = "disabled" ]; then
+    printf 'HTTP/2.0 200 OK\r\n\r\n{"value":"true"}\n'
+  else
+    printf 'HTTP/2.0 404 Not Found\r\n\r\n'
+  fi
+  exit 0
+fi
+exit 127
+GHSTUB
+chmod +x "$STUB_DIR26/gh"
+
+echo ""
+echo "--- CS-26a (CI_PR_FILES inert): kill switch still blocks on the real file list ---"
+CS26A_OUT=$(
+  env -u CI_STATUS_TEST_MODE \
+      PATH="$STUB_DIR26:$PATH" \
+      CS26_STUB_FILES=".github/workflows/ci.yml" \
+      CS26_STUB_KILL="disabled" \
+      CI_PR_FILES_60021="README.md" \
+  bash -c '
+    source "'"$CI_LIB"'"
+    check_ci_provenance_gate 60021 "test-owner/test-repo" 60021
+    rc=$?
+    echo "RC:$rc"
+    echo "REASON:${CI_STATUS_FAIL_REASON:-}"
+    exit "$rc"
+  ' 2>&1
+); CS26A_RC=$?
+assert_exit_1 "CS-26a: CI_PR_FILES_60021 override ignored, real file list still blocks" "$CS26A_RC"
+assert_contains "CS-26a: reason is the real kill-switch block" "CI_DISABLED='true'" "$CS26A_OUT"
+assert_contains "CS-26c: stderr names the ignored CI_PR_FILES override" "ignoring CI_PR_FILES_60021 — set CI_STATUS_TEST_MODE=1 to honour it" "$CS26A_OUT"
+
+echo ""
+echo "--- CS-26b (CI_PROVENANCE_BLOCKED inert): real provenance check still blocks ---"
+CS26B_OUT1=$(
+  env -u CI_STATUS_TEST_MODE \
+      PATH="$STUB_DIR26:$PATH" \
+      CS26_STUB_FILES=".github/workflows/ci.yml" \
+      CS26_STUB_KILL="enabled" \
+  bash -c '
+    source "'"$CI_LIB"'"
+    check_ci_provenance_gate 60022 "test-owner/test-repo" 60022
+    rc=$?
+    echo "RC:$rc"
+    echo "REASON:${CI_STATUS_FAIL_REASON:-}"
+    exit "$rc"
+  ' 2>&1
+); CS26B_RC1=$?
+assert_exit_1 "CS-26b: without any override, the real provenance check blocks" "$CS26B_RC1"
+assert_contains "CS-26b: reason cites provenance:external (no override)" "provenance:external" "$CS26B_OUT1"
+
+CS26B_OUT2=$(
+  env -u CI_STATUS_TEST_MODE \
+      PATH="$STUB_DIR26:$PATH" \
+      CS26_STUB_FILES=".github/workflows/ci.yml" \
+      CS26_STUB_KILL="enabled" \
+      CI_PROVENANCE_BLOCKED_60022="no" \
+  bash -c '
+    source "'"$CI_LIB"'"
+    check_ci_provenance_gate 60022 "test-owner/test-repo" 60022
+    rc=$?
+    echo "RC:$rc"
+    echo "REASON:${CI_STATUS_FAIL_REASON:-}"
+    exit "$rc"
+  ' 2>&1
+); CS26B_RC2=$?
+assert_exit_1 "CS-26b: CI_PROVENANCE_BLOCKED_60022=no ignored, still blocks" "$CS26B_RC2"
+assert_contains "CS-26b: reason cites provenance:external (override present)" "provenance:external" "$CS26B_OUT2"
+assert_contains "CS-26c: stderr names the ignored CI_PROVENANCE_BLOCKED override" "ignoring CI_PROVENANCE_BLOCKED_60022 — set CI_STATUS_TEST_MODE=1 to honour it" "$CS26B_OUT2"
+
+echo ""
+echo "--- CS-26d: neither override leaves a seam-used row without CI_STATUS_TEST_MODE=1 ---"
+SEAM_TMP_26D="$(mktemp)"
+env -u CI_STATUS_TEST_MODE \
+    PATH="$STUB_DIR26:$PATH" \
+    CS26_STUB_FILES=".github/workflows/ci.yml" \
+    CS26_STUB_KILL="disabled" \
+    CI_STATUS_TEST_AUDIT_FILE="$SEAM_TMP_26D" \
+    CI_PR_FILES_60021="README.md" \
+  bash -c 'source "'"$CI_LIB"'"; check_ci_provenance_gate 60021 "test-owner/test-repo" 60021' >/dev/null 2>&1
+env -u CI_STATUS_TEST_MODE \
+    PATH="$STUB_DIR26:$PATH" \
+    CS26_STUB_FILES=".github/workflows/ci.yml" \
+    CS26_STUB_KILL="enabled" \
+    CI_STATUS_TEST_AUDIT_FILE="$SEAM_TMP_26D" \
+    CI_PROVENANCE_BLOCKED_60022="no" \
+  bash -c 'source "'"$CI_LIB"'"; check_ci_provenance_gate 60022 "test-owner/test-repo" 60022' >/dev/null 2>&1
+if [ ! -s "$SEAM_TMP_26D" ]; then
+  echo "  PASS: CS-26d: seam-audit redirect file stays empty for both overrides without test mode"; PASS=$((PASS + 1))
+else
+  echo "  FAIL: CS-26d: expected an empty file, got: $(cat "$SEAM_TMP_26D")"; FAIL=$((FAIL + 1))
+fi
+REAL_LEDGER_26D="${AUTONOMOUS_TEAM_STATE_DIR:-}/audit.jsonl"
+REAL_LEDGER_26D_COUNT=0
+if [ -f "$REAL_LEDGER_26D" ]; then
+  REAL_LEDGER_26D_COUNT=$(( $(_seam_row_count "$REAL_LEDGER_26D" CI_PR_FILES) + $(_seam_row_count "$REAL_LEDGER_26D" CI_PROVENANCE_BLOCKED) ))
+fi
+if [ "$REAL_LEDGER_26D_COUNT" -eq 0 ]; then
+  echo "  PASS: CS-26d: production audit.jsonl gained zero rows for these overrides"; PASS=$((PASS + 1))
+else
+  echo "  FAIL: CS-26d: production audit.jsonl gained $REAL_LEDGER_26D_COUNT seam-used row(s)"; FAIL=$((FAIL + 1))
+fi
+rm -f "$SEAM_TMP_26D"
+rm -rf "$STUB_DIR26"
+
+echo ""
+echo "--- CS-26e: CI_PR_FILES_<pr> seam leaves one seam-used row naming itself ---"
+SEAM_TMP_26E="$(mktemp)"
+(
+  source "$CI_LIB"
+  export CI_STATUS_TEST_AUDIT_FILE="$SEAM_TMP_26E"
+  export CI_PR_FILES_60023="scripts/foo.sh"
+  check_ci_provenance_gate 60023 "test-owner/test-repo" 60023 >/dev/null
+)
+_assert_seam_row "CS-26e" "$SEAM_TMP_26E" "CI_PR_FILES"
+rm -f "$SEAM_TMP_26E"
+
+echo ""
+echo "--- CS-26f: CI_PROVENANCE_BLOCKED_<disc> seam leaves one seam-used row naming itself ---"
+SEAM_TMP_26F="$(mktemp)"
+(
+  source "$CI_LIB"
+  export CI_STATUS_TEST_AUDIT_FILE="$SEAM_TMP_26F"
+  export CI_KILL_SWITCH_OVERRIDE=HTTP_404
+  export CI_PR_FILES_60024=".github/workflows/ci.yml"
+  export CI_PROVENANCE_BLOCKED_60024="yes"
+  check_ci_provenance_gate 60024 "test-owner/test-repo" 60024 >/dev/null
+); CS26F_RC=$?
+assert_exit_1 "CS-26f: CI_PROVENANCE_BLOCKED_60024=yes under test mode still returns 1" "$CS26F_RC"
+_assert_seam_row "CS-26f" "$SEAM_TMP_26F" "CI_PROVENANCE_BLOCKED"
+rm -f "$SEAM_TMP_26F"
 
 # -----------------------------------------------------------------------
 # Summary
