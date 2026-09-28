@@ -195,9 +195,14 @@ If a tool call returns the same error 3 times in a row, STOP retrying — either
    per step 7's test-execution mandate above).
 
    After tests pass, anchor to the operator checkout — your cwd here may be the
-   PR-head verify-tree, and a bare relative path would run the PR's own copy
-   of these scripts instead of the operator's:
-     OP_ROOT=$(dirname "$(git rev-parse --git-common-dir)")
+   PR-head verify-tree, and a bare relative path (or a git-plumbing guess
+   such as `dirname "$(git rev-parse --git-common-dir)")`) would run the
+   PR's own copy of these scripts instead of the operator's:
+   `verify_tree_build` clones a standalone tree with its own `.git`, not a
+   linked worktree of the operator checkout, so that guess resolves to the
+   PR tree itself. OP_ROOT below is rendered as an absolute path at spawn
+   time and does not depend on your cwd:
+     OP_ROOT="__PR_OPERATOR_ROOT__"
      CLI_TOUCHED=$(bash "$OP_ROOT/scripts/check-pr-cli-touched.sh" {{pr_number}} && echo "yes" || echo "no")
 
    If CLI_TOUCHED=yes:
@@ -216,12 +221,16 @@ If a tool call returns the same error 3 times in a row, STOP retrying — either
 8b. **After reading the diff and Discussion body, run the external_docs check:**
 
 Anchor the import to the operator checkout, not cwd — your cwd here may be the
-PR-head verify-tree, and a bare relative `sys.path` entry would import the
-PR's own (possibly edited) copy of `backend/spec_external_docs.py` instead of
-the operator's trusted one:
+PR-head verify-tree, and a bare relative `sys.path` entry (or a git-plumbing
+guess) would import the PR's own (possibly edited) copy of
+`backend/spec_external_docs.py` instead of the operator's trusted one.
+OP_ROOT below is rendered as an absolute path at spawn time — it does not
+depend on cwd, so it resolves correctly even from inside a
+`verify_tree_build` tree, whose own `.git` is a standalone clone, not a
+linked worktree of the operator checkout:
 
 ```bash
-OP_ROOT=$(dirname "$(git rev-parse --git-common-dir)")
+OP_ROOT="__PR_OPERATOR_ROOT__"
 OP_ROOT="$OP_ROOT" python3 - <<'_EXTDOCS_EOF_'
 import os, sys, json, subprocess
 sys.path.insert(0, os.environ["OP_ROOT"])

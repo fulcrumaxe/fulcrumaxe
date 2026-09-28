@@ -780,8 +780,11 @@ class TestHostExecutionInternal:
         # apply_host_execution() is unit-tested directly in
         # test_pr_execution_policy.py; here we only need the integration
         # property: under "host" it is a same-line-count substitution of the
-        # HOST_EXECUTION sentinel, never a content rewrite — the wrapped
-        # host-exec span is passed through untouched, markers and all.
+        # HOST_EXECUTION sentinel (and, independently of mode, the
+        # __PR_OPERATOR_ROOT__ sentinel — D#2644 fix-round 2), never a
+        # content rewrite — the wrapped host-exec span is passed through
+        # untouched, markers and all.
+        from backend import pr_execution_policy as policy
         from backend.prompt_builder import _discussion_url, _pr_url
         from backend.spawn_templates import render_body
 
@@ -799,11 +802,17 @@ class TestHostExecutionInternal:
             ignore_unknown=False,
         )
         host_result = _host_exec_prompt(role, "host").render()
+        operator_root = str(policy._repo_root())
+
+        def _expected(line: str) -> str:
+            if line.strip().startswith("HOST_EXECUTION:"):
+                return "HOST_EXECUTION: host"
+            return line.replace(policy._OPERATOR_ROOT_SENTINEL, operator_root)
+
         # The rendered prompt appends CHECKLIST/PERSONA/etc. sections after
         # the template body, so compare only the template-body-sized prefix.
         assert host_result.splitlines()[: len(raw.splitlines())] == [
-            line if not line.strip().startswith("HOST_EXECUTION:") else "HOST_EXECUTION: host"
-            for line in raw.splitlines()
+            _expected(line) for line in raw.splitlines()
         ]
 
 
@@ -848,6 +857,29 @@ class TestCodeReviewerAnchoredPaths:
         result = _host_exec_prompt("code-reviewer", mode).render()
         assert "sys.path.insert(0, '.')" not in result
         assert 'sys.path.insert(0, os.environ["OP_ROOT"])' in result
+
+    @pytest.mark.parametrize("mode", ["host", "static-only"])
+    def test_op_root_is_rendered_absolute_not_git_plumbing(self, mode):
+        # D#2644 fix-round 2 (security round 2, blocking): OP_ROOT must never
+        # be computed from `git rev-parse --git-common-dir` at review time —
+        # that idiom only finds the operator checkout from a LINKED worktree
+        # of it, and a scripts/lib/verify-tree.sh `verify_tree_build` tree is
+        # a standalone clone, so it resolves to the PR tree itself there.
+        # Regression-tested end-to-end (from inside a real verify_tree_build
+        # tree) in test_pr_execution_policy.py's
+        # TestOperatorRootSurvivesAVerifyTree; here we only check the
+        # render-time integration: the sentinel is gone and an absolute path
+        # took its place. Step 7's gate1-invoke line still uses the old
+        # idiom — a pre-existing, host-only issue this fix-round explicitly
+        # does not touch (see the PR discussion) — so this only asserts
+        # about the two OP_ROOT= assignment lines this round DID fix
+        # (steps 8 and 8b), not about every occurrence of the phrase.
+        from backend import pr_execution_policy as policy
+
+        result = _host_exec_prompt("code-reviewer", mode).render()
+        assert policy._OPERATOR_ROOT_SENTINEL not in result
+        operator_root = str(policy._repo_root())
+        assert result.count(f'OP_ROOT="{operator_root}"') == 2
 
 
 # ---------------------------------------------------------------------------

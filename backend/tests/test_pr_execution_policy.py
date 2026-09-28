@@ -275,3 +275,136 @@ class TestEnvVarReachesTheRealIntakeCli:
         )
         assert proc.returncode == 0, proc.stderr
         assert proc.stdout.strip() == probe_login
+
+
+# ---------------------------------------------------------------------------
+# D#2644 fix-round 2 — security round-2 blocking finding: the OP_ROOT anchor
+# rendered for code-reviewer.tmpl steps 8/8b resolved to the PR-head tree
+# ITSELF when evaluated from inside a scripts/lib/verify-tree.sh
+# `verify_tree_build` tree, because `git rev-parse --git-common-dir` only
+# finds the operator checkout from a LINKED worktree of it, and
+# `verify_tree_build` deliberately builds a standalone `git clone --shared`
+# tree instead (its own `.git`, a borrowed object store). That is exactly
+# backwards under static-only mode, whose entire point is to never touch
+# PR-head code.
+#
+# This builds a REAL tree with verify_tree_build — a scratch
+# AUTONOMOUS_TEAM_STATE_DIR, never the production one — and evaluates the
+# RENDERED bash snippet from INSIDE it, the same way a reviewing agent's own
+# shell would. A render-string assertion (checking the template text for a
+# substring) can't catch this class of bug; only executing the resolved path
+# from the actual cwd a reviewer runs in can.
+# ---------------------------------------------------------------------------
+
+
+class TestOperatorRootSurvivesAVerifyTree:
+    def _build_vtree(self, tmp_path):
+        verify_tree_lib = _REPO_ROOT / "scripts" / "lib" / "verify-tree.sh"
+        assert verify_tree_lib.is_file(), f"missing {verify_tree_lib}"
+
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(_REPO_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert head.returncode == 0, head.stderr
+        sha = head.stdout.strip()
+
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        dest = tmp_path / "vtree"
+
+        # The rendered form of code-reviewer.tmpl steps 8 / 8b's OP_ROOT
+        # line, post apply_host_execution() under static-only mode — an
+        # absolute path baked in at render time, not resolved from cwd.
+        raw = f'OP_ROOT="{policy._OPERATOR_ROOT_SENTINEL}"\n'
+        rendered_op_root_line = policy.apply_host_execution(
+            raw, "static-only", pr=1, pr_repo="o/r"
+        )
+
+        # The pre-fix idiom the security round-2 review reported as broken
+        # (blocking finding, code-reviewer.tmpl:200-204 and :224-227 at
+        # 7847e319). A literal control value, not reconstructed from any
+        # resolver in this module — this documents the exact defect this
+        # test is a regression test for.
+        old_idiom_line = 'OP_ROOT=$(dirname "$(git rev-parse --git-common-dir)")\n'
+
+        script = f"""
+set -euo pipefail
+export AUTONOMOUS_TEAM_STATE_DIR="{state_dir}"
+source "{verify_tree_lib}"
+verify_tree_build "{sha}" "{dest}" "{_REPO_ROOT}" 1>&2
+cd "{dest}"
+
+{rendered_op_root_line}
+# Absolutize while still cwd=vtree, exactly as a consumer using
+# "$OP_ROOT/scripts/..." from this same shell would resolve it -- OP_ROOT
+# can legitimately be relative (the old idiom yields "."), and comparing the
+# raw string back in the calling Python process (a different cwd entirely)
+# would silently test the wrong thing.
+NEW_OP_ROOT="$(cd "$OP_ROOT" && pwd)"
+
+{old_idiom_line}
+OLD_OP_ROOT="$(cd "$OP_ROOT" && pwd)"
+
+printf 'NEW=%s\\n' "$NEW_OP_ROOT"
+printf 'OLD=%s\\n' "$OLD_OP_ROOT"
+printf 'VTREE=%s\\n' "$(pwd)"
+"""
+        try:
+            proc = subprocess.run(
+                ["bash", "-c", script],
+                capture_output=True,
+                text=True,
+                timeout=180,
+            )
+        finally:
+            # verify_tree_build write-protects every tracked file (chmod
+            # a-w); undo that so pytest's tmp_path cleanup doesn't choke on
+            # a read-only tree.
+            subprocess.run(
+                ["chmod", "-R", "u+w", str(dest)], capture_output=True
+            )
+        assert proc.returncode == 0, f"{proc.stdout}\n{proc.stderr}"
+        values = dict(
+            line.split("=", 1) for line in proc.stdout.strip().splitlines()
+        )
+        return values, dest
+
+    def test_rendered_op_root_resolves_to_operator_checkout_not_the_vtree(self, tmp_path):
+        values, dest = self._build_vtree(tmp_path)
+        real_operator_root = policy._repo_root().resolve()
+
+        # The fix: rendered absolute at spawn time, so it resolves correctly
+        # even from inside a verify-tree.
+        assert Path(values["NEW"]).resolve() == real_operator_root
+        assert Path(values["NEW"]).resolve() != dest.resolve()
+
+        # The reported defect, reproduced: the git-plumbing guess resolves
+        # to the vtree itself (its own .git is a standalone clone, not a
+        # linked worktree of the operator checkout) — exactly backwards
+        # under static-only mode. If this assertion ever starts failing,
+        # the defect stopped reproducing on its own and this test should be
+        # revisited, not silently left green for the wrong reason.
+        assert Path(values["OLD"]).resolve() == dest.resolve()
+        assert Path(values["OLD"]).resolve() != real_operator_root
+
+    def test_static_only_never_imports_spec_external_docs_from_the_pr_tree(self, tmp_path):
+        target = _REPO_ROOT / "backend" / "spec_external_docs.py"
+        if not target.is_file():
+            import pytest
+
+            pytest.skip("backend/spec_external_docs.py not present in this tree")
+
+        values, dest = self._build_vtree(tmp_path)
+        anchored = Path(values["NEW"]) / "backend" / "spec_external_docs.py"
+        vtree_copy = dest / "backend" / "spec_external_docs.py"
+
+        # Same content (verify_tree_build clones this same repo at this same
+        # commit) but a provably DIFFERENT file — the property that matters
+        # for CWE-94 is which file gets opened, not whether content happens
+        # to differ yet.
+        assert anchored.resolve() == target.resolve()
+        assert anchored.resolve() != vtree_copy.resolve()

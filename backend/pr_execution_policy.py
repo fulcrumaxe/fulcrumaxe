@@ -75,6 +75,25 @@ HOST_EXEC_END = "<!-- HOST_EXEC_END -->"
 # so no change is needed to spawn_templates.py's variable contract.
 _HOST_EXECUTION_LINE_SENTINEL = "HOST_EXECUTION: __PR_HOST_EXECUTION_MODE__"
 
+# Literal sentinel a template places wherever an absolute path to the
+# operator checkout belongs. Not a `{{var}}` token — replaced here for the
+# same reason _HOST_EXECUTION_LINE_SENTINEL is: this runs after
+# spawn_templates.render_body() has already finished its own substitution.
+#
+# D#2644 fix-round 2 (security round 2, blocking): a step that anchors an
+# import or a script invocation to "the operator checkout" must never
+# resolve that path from git plumbing at review time.
+# `git rev-parse --git-common-dir` only finds the operator checkout when cwd
+# is a LINKED worktree of it. scripts/lib/verify-tree.sh's
+# verify_tree_build deliberately builds a standalone tree instead
+# (`git clone --shared` — its own `.git`, a borrowed object store via
+# objects/info/alternates), so from inside a verify-tree that idiom resolves
+# to the PR-head tree itself, not the operator root — exactly backwards
+# under static-only mode, whose entire point is to never touch PR-head code.
+# Render the value once, absolutely, at spawn time instead, reusing
+# _repo_root() below rather than adding a second resolver.
+_OPERATOR_ROOT_SENTINEL = "__PR_OPERATOR_ROOT__"
+
 
 def _repo_root() -> Path:
     """The operator checkout this module itself lives in — never the PR head."""
@@ -206,23 +225,32 @@ def _static_only_section(pr: int, pr_repo: str) -> str:
 def apply_host_execution(body: str, mode: str, *, pr: Optional[int] = None, pr_repo: str = "") -> str:
     """Post-process a rendered template *body* for the resolved *mode*.
 
-    Two independent, literal substitutions — neither is a ``{{var}}`` token,
+    Three independent, literal substitutions — none is a ``{{var}}`` token,
     so this runs after ``spawn_templates.render_body()`` has already done its
     own substitution and needs no change to that module's variable contract:
 
     1. The ``HOST_EXECUTION: __PR_HOST_EXECUTION_MODE__`` sentinel line, if
        present, becomes ``HOST_EXECUTION: <normalized mode>``.
-    2. Every ``<!-- HOST_EXEC_BEGIN -->...<!-- HOST_EXEC_END -->`` wrapped
+    2. Every ``__PR_OPERATOR_ROOT__`` sentinel, if present, becomes the
+       absolute path from ``_repo_root()`` — the operator checkout this
+       process itself is running from. Applied unconditionally (regardless
+       of *mode*): a step anchoring to the operator checkout needs the real
+       path whether it runs under host or static-only, and the value must
+       never depend on the reviewing agent's cwd (see the sentinel's own
+       docstring above for why a git-plumbing guess fails inside a
+       ``verify_tree_build`` tree).
+    3. Every ``<!-- HOST_EXEC_BEGIN -->...<!-- HOST_EXEC_END -->`` wrapped
        span. Under ``"host"`` the span is left exactly as written (including
        its marker lines). Under anything else — the fail-closed default —
        the whole span, markers included, is replaced with a short
        static-review instruction naming *pr* / *pr_repo*.
 
-    A *body* with neither the sentinel nor any marker pair (most roles) is
-    returned unchanged.
+    A *body* with none of the sentinel/marker forms (most roles) is returned
+    unchanged.
     """
     resolved = normalize_mode(mode)
     body = body.replace(_HOST_EXECUTION_LINE_SENTINEL, host_execution_line(resolved))
+    body = body.replace(_OPERATOR_ROOT_SENTINEL, str(_repo_root()))
 
     if resolved == HOST:
         return body
