@@ -244,7 +244,7 @@
     "scripts/lib/worktree-registry.sh": "069e197353f723daf73e223f192957b291d21f8ce8136b28cd9031ca4ea6e34d",
     "scripts/lint-spawn-prompt.sh": "dfc8ae96045687c39d1c2fed85f060cd4df00d5369d97f8722226e1cc85a3e17",
     "scripts/loop-health-watchdog.sh": "498b976f202007e41621f0ee89cc4b13cba0c9c142c021bf15235660aee4ad05",
-    "scripts/loop-phased-step5.sh": "5fb8a0685e78494355fbd5f94a7fcedfdffdde5778282a8e61591859fcc329fd",
+    "scripts/loop-phased-step5.sh": "d4acb95aca2337f5291cf8a0f7c35034f44e562254ca329acc25021444d405c8",
     "scripts/loop-preflight.sh": "e15c8d7c9631d31ad86dd48208d5b6622f9c93b81c6206ca74a66c4a5a72983a",
     "scripts/loop-watchdog.sh": "1659d7f1bcee9a55ee31d3aa3e5855ff0f5ca72f33751b10d25822894a624d24",
     "scripts/mark-memories-hardwired.sh": "9cc5e335146c3fb9004a4e047ee4a82a4fd262f6c4705441f493f6115c979b78",

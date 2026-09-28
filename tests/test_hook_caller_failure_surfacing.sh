@@ -359,7 +359,7 @@ _run_site2() {
 
   local -a env_args=(
     AF_CONTROL_PLANE_CONFIG="$cfg" SNAPSHOT_PATH="$snap"
-    SPAWN_AGENT=echo GH_MERGE=echo
+    STEP5_TEST_MODE=1 SPAWN_AGENT=echo GH_MERGE=echo
     AUTONOMOUS_TEAM_REPO=autonomous-agent-7/fulcrumaxe
     DASHBOARD_TOUCHED=no SECURITY_TRIGGER_RESULT=no
     DISCUSSING_MOCK='[]'

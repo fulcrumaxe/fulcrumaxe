@@ -19,6 +19,14 @@
 #   - scripts/lib/security-trigger.sh: single source of truth for security-trigger detection
 #
 # Environment overrides (for testing):
+#   STEP5_TEST_MODE=1     — D#2647: the ONE flag every seam below now requires.
+#                            Outside this flag, SPAWN_AGENT / SPEC_READY_MOCK /
+#                            DISCUSSING_MOCK are ignored (with a startup warning)
+#                            and the real reads run. This also feeds the _gh_merge
+#                            coupling guard below: while this flag (or
+#                            CI_STATUS_TEST_MODE) is set, _gh_merge refuses a real
+#                            merge outright, so a mocked read can never feed a real
+#                            write.
 #   SPAWN_AGENT=echo       — replace spawn-agent.sh with "echo" to capture args without running
 #   SNAPSHOT_PATH=...      — override the loop snapshot path (default: whatever
 #                            `python3 backend/snapshot_path.py` resolves to)
@@ -82,7 +90,7 @@ fi
 # Helper: post to team-log
 # -----------------------------------------------------------------------
 _log() {
-  if [ "${SPAWN_AGENT:-}" = "echo" ]; then
+  if _step5_test_mode; then
     # In test mode (SPAWN_AGENT=echo), skip the network call and print to stderr instead.
     echo "[log] $*" >&2
     return 0
@@ -94,13 +102,44 @@ _log() {
 # Helper: invoke spawn-agent.sh (or a test mock if SPAWN_AGENT=echo)
 # -----------------------------------------------------------------------
 _spawn() {
-  if [ "${SPAWN_AGENT:-}" = "echo" ]; then
+  if _step5_test_mode; then
     echo "SPAWN_AGENT_ARGS: $*"
     return 0
   fi
   bash "$SCRIPT_DIR/spawn-agent.sh" "$@"
   return $?
 }
+
+# -----------------------------------------------------------------------
+# D#2647: the one test-mode predicate every seam in this file now consults.
+# SPAWN_AGENT / SPEC_READY_MOCK / DISCUSSING_MOCK used to each gate
+# themselves (`= "echo"` on some sites, bare `-n`/`-z` on others), which
+# meant any one of them leaking into a real cron/loop shell alone was
+# enough to mock a merge-gate read. One flag, one predicate: every site
+# below calls this instead of re-reading its own env var.
+# -----------------------------------------------------------------------
+_step5_test_mode() {
+  [ "${STEP5_TEST_MODE:-}" = "1" ]
+}
+
+# -----------------------------------------------------------------------
+# D#2647: warn once, outside test mode, when a seam variable is set but
+# ignored. Goes to stderr (visible to an operator watching the loop) and
+# through _log (so it reaches the team log too — _log itself now honours
+# _step5_test_mode, so this call is a harmless stderr echo in test mode and
+# a real team-log post in production, same as every other _log call here).
+# -----------------------------------------------------------------------
+if ! _step5_test_mode; then
+  for _leaked_seam_var in SPAWN_AGENT SPEC_READY_MOCK DISCUSSING_MOCK; do
+    _leaked_seam_val="${!_leaked_seam_var:-}"
+    if [ -n "$_leaked_seam_val" ]; then
+      _leaked_seam_msg="loop-phased-step5: ignoring $_leaked_seam_var — set STEP5_TEST_MODE=1 to honour it"
+      echo "$_leaked_seam_msg" >&2
+      _log "$_leaked_seam_msg"
+    fi
+  done
+  unset _leaked_seam_var _leaked_seam_val _leaked_seam_msg
+fi
 
 # -----------------------------------------------------------------------
 # Helper: invoke security-trigger.sh (sourced once here)
@@ -153,7 +192,7 @@ _check_ci_passed() {
   # decline-reason row, so the merge-success checkpoint later in this file
   # knows whether it still needs to leave the fallback marker.
   _CI_GATE_AUDIT_WRITTEN=false
-  if [ "${SPAWN_AGENT:-}" = "echo" ]; then
+  if _step5_test_mode; then
     # Test mode: default to CI passed unless a test overrides it.
     # D#2124: CI_PASSED_SHA is an opt-in seam mirroring CI_PASSED_RESULT —
     # it lets a test simulate the gate having resolved a head SHA (the
@@ -193,7 +232,7 @@ _SECURITY_TRIGGER_REASON=""
 _check_security_trigger() {
   local pr="$1"
   _SECURITY_TRIGGER_REASON=""
-  if [ "${SPAWN_AGENT:-}" = "echo" ]; then
+  if _step5_test_mode; then
     # In test mode, default to not triggered (tests can override via
     # SECURITY_TRIGGER_RESULT). SECURITY_TRIGGER_REASON is the same convention
     # for the callee's stderr: without it the branch below that names the real
@@ -234,7 +273,7 @@ _check_security_trigger() {
 # -----------------------------------------------------------------------
 _external_provenance_forces_security() {
   local disc="$1"
-  if [ "${SPAWN_AGENT:-}" = "echo" ]; then
+  if _step5_test_mode; then
     # Test mode: default to not-required unless a test overrides it.
     [ "${EXTERNAL_PROVENANCE_FORCES_SECURITY:-no}" = "yes" ] && return 0 || return 1
   fi
@@ -261,7 +300,7 @@ _external_provenance_forces_security() {
 # -----------------------------------------------------------------------
 _intake_approval_dismissed() {
   local disc="$1"
-  if [ "${SPAWN_AGENT:-}" = "echo" ]; then
+  if _step5_test_mode; then
     # Test mode: default to not-dismissed unless a test overrides it.
     [ "${INTAKE_APPROVAL_DISMISSED:-no}" = "yes" ] && return 0 || return 1
   fi
@@ -273,11 +312,62 @@ _intake_approval_dismissed() {
 # -----------------------------------------------------------------------
 # Helper: run gh pr merge (or mock in tests via GH_MERGE=echo)
 # -----------------------------------------------------------------------
+# D#2647: refuse a real merge whose gate inputs could have been mocked.
+# Appends one audit row (kind=step5_seam_merge_refused) using the same
+# AUDIT_LOG resolution _write_merge_audit uses. Separate helper so _gh_merge
+# itself stays readable.
+_step5_write_seam_refusal_audit() {
+  local pr="$1" flags_csv="$2"
+  local ts
+  ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "")
+  local audit_path
+  audit_path=$(python3 -c "
+import sys
+sys.path.insert(0, '$REPO_ROOT')
+try:
+    from backend.state_paths import AUDIT_LOG
+    print(str(AUDIT_LOG))
+except Exception:
+    print('$REPO_ROOT/.autonomous-team/audit.jsonl')
+" 2>/dev/null || echo "$REPO_ROOT/.autonomous-team/audit.jsonl")
+  python3 -c "
+import json, sys
+flags = [f for f in sys.argv[2].split(',') if f]
+print(json.dumps({'kind': 'step5_seam_merge_refused', 'pr': int(sys.argv[1]), 'flags': flags, 'ts': sys.argv[3]}))
+" "$pr" "$flags_csv" "$ts" >> "$audit_path" 2>/dev/null || true
+}
+
 _gh_merge() {
   if [ "${GH_MERGE:-}" = "echo" ]; then
     echo "GH_MERGE_ARGS: $*"
     return 0
   fi
+
+  # D#2647: mocked reads must never feed a real write. If any step5 seam (or
+  # ci-status-check.sh's own master seam) is active, refuse the real merge
+  # outright rather than trust gate inputs that may have come from mocks.
+  # Placed AFTER the GH_MERGE=echo branch above and BEFORE the real `gh pr
+  # merge` call below, so an existing test that pairs STEP5_TEST_MODE=1 with
+  # GH_MERGE=echo still exercises its write-mock path unchanged.
+  if _step5_test_mode || [ "${CI_STATUS_TEST_MODE:-}" = "1" ]; then
+    local _seam_flags=()
+    _step5_test_mode && _seam_flags+=("STEP5_TEST_MODE")
+    [ "${CI_STATUS_TEST_MODE:-}" = "1" ] && _seam_flags+=("CI_STATUS_TEST_MODE")
+    local _seam_csv
+    _seam_csv=$(IFS=,; echo "${_seam_flags[*]}")
+    local _refuse_msg="refusing real merge of PR #$1 — test seams active (${_seam_flags[*]})"
+    # D#2647: the merge call site used to wrap this whole function in
+    # 2>/dev/null, which would have swallowed a stderr-only refusal (nothing
+    # in this function wrote to stderr before this change, so that redirect
+    # was previously a no-op). It has been dropped at the call site for
+    # exactly this reason -- printed on stdout here too, so the refusal is
+    # visible regardless of which branch _log takes.
+    echo "$_refuse_msg"
+    _log "$_refuse_msg"
+    _step5_write_seam_refusal_audit "$1" "$_seam_csv"
+    return 1
+  fi
+
   # D#2124: capture combined output so the caller can tell a head-moved
   # refusal (--match-head-commit rejected by GitHub) apart from a generic
   # failure, same classification the manual path already does in
@@ -344,7 +434,7 @@ _check_nack_labels() {
   for nack in "${MERGE_GATE_NACK_LABELS[@]}"; do
     local slug
     slug=$(echo "$nack" | tr '-' '_')
-    if [ -n "${SPAWN_AGENT:-}" ]; then
+    if _step5_test_mode; then
       local mock_var="NACK_LABEL_${pr}_${slug}"
       local mock_val="${!mock_var:-}"
       if [ "$mock_val" = "yes" ]; then
@@ -377,7 +467,7 @@ _check_nack_labels() {
 _write_merge_audit() {
   local pr="$1" passed_nack_check="$2"
   local labels_json="[]"
-  if [ -z "${SPAWN_AGENT:-}" ]; then
+  if ! _step5_test_mode; then
     labels_json=$(gh pr view "$pr" --repo "$_CODE_REPO" \
       --json labels --jq '[.labels[].name]' 2>/dev/null || echo "[]")
   fi
@@ -396,7 +486,7 @@ print(json.dumps({
 " "$pr" "$labels_json" "$passed_nack_check" "$ts" 2>/dev/null || true)
   [ -z "$entry" ] && return 0
 
-  if [ "${SPAWN_AGENT:-}" = "echo" ]; then
+  if _step5_test_mode; then
     echo "MERGE_AUDIT: $entry"
     return 0
   fi
@@ -448,7 +538,7 @@ _has_label() {
   if [ -n "${_STALE_INVALIDATED_LABELS[${pr}:${label}]:-}" ]; then
     return 1
   fi
-  if [ -n "${SPAWN_AGENT:-}" ]; then
+  if _step5_test_mode; then
     # In test mode, check mock env var: HAS_LABEL_<PR>_<label with - replaced by _>
     local mock_var
     mock_var="HAS_LABEL_${pr}_$(echo "$label" | tr '-' '_')"
@@ -525,7 +615,7 @@ _invalidate_stale_pass_labels() {
   local stale_after_event=""
   local -A label_ts=()
 
-  if [ -n "${SPAWN_AGENT:-}" ]; then
+  if _step5_test_mode; then
     local mock_fp_var="FORCE_PUSH_TS_${pr}"
     local mock_committed_var="COMMITTED_TS_${pr}"
     local mock_base_var="BASE_REF_TS_${pr}"
@@ -634,7 +724,7 @@ _invalidate_stale_pass_labels() {
       # remote mutation never landed -- _has_label consults this map
       # first, unconditionally, in both test and production mode.
       _STALE_INVALIDATED_LABELS["${pr}:${name}"]=1
-      if [ "${SPAWN_AGENT:-}" = "echo" ]; then
+      if _step5_test_mode; then
         echo "STALE_LABEL_REMOVED: pr=$pr label=$name"
       else
         remove_label "$pr" "$name" 2>&1 || true
@@ -670,7 +760,7 @@ _debater_gate() {
 # Return the current HEAD SHA for a PR (test mode: HEAD_SHA_<PR>).
 _pr_head_sha() {
   local pr="$1"
-  if [ "${SPAWN_AGENT:-}" = "echo" ]; then
+  if _step5_test_mode; then
     local v="HEAD_SHA_${pr}"
     echo "${!v:-deadbeef}"
     return 0
@@ -684,7 +774,7 @@ _pr_head_sha() {
 # Test mode: DEBATER_RAN_<PR>=yes overrides.
 _debater_already_ran() {
   local pr="$1"
-  if [ "${SPAWN_AGENT:-}" = "echo" ]; then
+  if _step5_test_mode; then
     local v
     v="DEBATER_RAN_${pr}"
     [ "${!v:-no}" = "yes" ] && return 0 || return 1
@@ -701,7 +791,7 @@ _debater_already_ran() {
 # Used by _process_debater_envelope.
 _latest_debater_envelope() {
   local pr="$1"
-  if [ "${SPAWN_AGENT:-}" = "echo" ]; then
+  if _step5_test_mode; then
     local v
     v="DEBATER_VERDICT_${pr}"
     [ -n "${!v:-}" ] && printf '{"verdict":"%s"}\n' "${!v}"
@@ -780,7 +870,7 @@ _spawn_debater() {
 
   # Fetch raw diff (read-only); fall back to empty in test mode.
   local raw_diff=""
-  if [ "${SPAWN_AGENT:-}" = "echo" ]; then
+  if _step5_test_mode; then
     raw_diff="${DEBATER_DIFF_MOCK:-}"
   else
     raw_diff=$(gh pr diff "$pr" --repo "$_CODE_REPO" 2>/dev/null || echo "")
@@ -879,7 +969,7 @@ _process_debater_envelope() {
 # -----------------------------------------------------------------------
 _dashboard_touched() {
   local pr="$1"
-  if [ "${SPAWN_AGENT:-}" = "echo" ]; then
+  if _step5_test_mode; then
     [ "${DASHBOARD_TOUCHED:-no}" = "yes" ] && return 0 || return 1
   fi
   bash "$SCRIPT_DIR/check-pr-dashboard-touched.sh" "$pr" 2>/dev/null
@@ -892,7 +982,7 @@ _dashboard_touched() {
 # -----------------------------------------------------------------------
 _get_spec_ready_discussions() {
   # Test-mode override: SPEC_READY_MOCK=[] (or any JSON array) skips the network call.
-  if [[ -n "${SPEC_READY_MOCK:-}" ]]; then echo "$SPEC_READY_MOCK"; return 0; fi
+  if _step5_test_mode && [[ -n "${SPEC_READY_MOCK:-}" ]]; then echo "$SPEC_READY_MOCK"; return 0; fi
   # Try the snapshot first — but only while it is fresh. This is a routing
   # decision: a stale snapshot here would spawn executors against Discussion
   # state that may be days old. When the snapshot is past MAX_AGE the helper
@@ -963,7 +1053,7 @@ except Exception:
 # -----------------------------------------------------------------------
 _get_discussing_discussions() {
   # Test-mode override: DISCUSSING_MOCK=[] (or any JSON array) skips the network call.
-  if [ -n "${DISCUSSING_MOCK:-}" ]; then
+  if _step5_test_mode && [ -n "${DISCUSSING_MOCK:-}" ]; then
     echo "$DISCUSSING_MOCK"
     return 0
   fi
@@ -1273,7 +1363,7 @@ print(entries[0].get('pr', 0) if entries else 0)
           _apply_label "$PR_NUM" "code-review-needs-fix"
 
           # Post a human-readable comment on the PR (skip in test mode).
-          if [ "${SPAWN_AGENT:-}" != "echo" ]; then
+          if ! _step5_test_mode; then
             gh pr comment "$PR_NUM" --repo "$_CODE_REPO" \
               --body "Two-Gate markers missing from PR body. Add a \"## Verification\" block with \"Gate 1: ...\" and \"Gate 2: ...\" lines (PASS or \"N/A — <reason>\"). See .claude/agents/executor.md." \
               2>/dev/null || true
@@ -1342,7 +1432,7 @@ print(entries[0].get('fix_cycle_count', 0) if entries else 0)
             # skipped in test mode (SPAWN_AGENT=echo), matching every other
             # real-gh-call block in this file.
             GATE1_RECEIPT_LINE="Gate 1 receipt: not produced this round (see step5 log)."
-            if [ "${SPAWN_AGENT:-}" != "echo" ]; then
+            if ! _step5_test_mode; then
               GATE1_SHA="$(_pr_head_sha "$PR_NUM")"
               if [ -n "$GATE1_SHA" ]; then
                 GATE1_TREE="$(mktemp -u -d)"
@@ -1657,7 +1747,7 @@ print('true' if entries and entries[0].get('needs_security_review', False) else 
           # Reuse the two-gate-failure PR-comment + audit pattern (code_review
           # phase above) rather than a new mechanism — no Discussion comment
           # (too noisy per merge event), just the PR comment + durable audit row.
-          if [ "${SPAWN_AGENT:-}" != "echo" ]; then
+          if ! _step5_test_mode; then
             # D#2415 PR-b: CI_STATUS_FAILING_CHECKS and CI_STATUS_RUN_URL come
             # from the head's own .github/workflows/ — externally
             # influenceable — and this lands in a PR comment our own bot
@@ -1724,7 +1814,7 @@ ${_ci_gate_detail}"
             _log "D#$DISC_NUM PR#$PR_NUM: merging unpinned — no gated head SHA available from the CI check"
           fi
           _GH_MERGE_OUT=""
-          _gh_merge "$PR_NUM" "${_MERGE_ARGS[@]}" 2>/dev/null || MERGE_RC=$?
+          _gh_merge "$PR_NUM" "${_MERGE_ARGS[@]}" || MERGE_RC=$?
 
           if [ "$MERGE_RC" -eq 0 ]; then
             _log "D#$DISC_NUM PR#$PR_NUM: merged successfully"
