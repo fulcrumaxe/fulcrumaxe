@@ -230,6 +230,13 @@ verify_tree_build() {
   local mdir manifest
   mdir="$(_vt_manifest_dir)"
   mkdir -p "$mdir" || { rm -rf "$tmp" "$dest"; return 3; }
+  # The scratch manifest dir is keyed on TMPDIR (see _vt_manifest_dir above),
+  # so verify_tree_build and verify_tree_assert must run with the same
+  # TMPDIR to agree on where a manifest lands. TMPDIR is commonly
+  # world-writable, so lock the dir to its owner rather than rely on umask.
+  if [ -z "${AUTONOMOUS_TEAM_STATE_DIR:-}" ]; then
+    chmod 700 "$mdir" || _vt_log "WARNING — chmod 700 did not apply to $mdir"
+  fi
   manifest="$(_vt_manifest_path "$dest" "$full_sha")"
   (cd "$dest" && xargs -0 -r sha256sum) < "$tmp/paths.z" > "$tmp/manifest" || {
     rm -rf "$tmp" "$dest"
