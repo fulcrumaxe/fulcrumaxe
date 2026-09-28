@@ -182,6 +182,39 @@ assert_rc "no argument exits 3" 3 $?
 assert_not "helper contains no filesystem-sweep word" grep -qE '\bfind\b' "$LIB"
 assert_ok "manifest derives from git ls-tree" grep -q 'ls-tree -r -z' "$LIB"
 
+echo "=== manifest dir never defaults to the production state dir (D#2631) ==="
+# A reviewer template never exports AUTONOMOUS_TEAM_STATE_DIR, so this is the
+# path every unmodified review run actually takes. HOME and TMPDIR are fresh
+# per-test dirs so a failure here can never be masked by a real
+# ~/.autonomous-forever-state already sitting on the host, and so build and
+# assert (separate bash -c subshells, as they'd be in separate processes)
+# can only agree by finding the same deterministic scratch path.
+UNSET_HOME="$(mktemp -d)"
+UNSET_TMPDIR="$(mktemp -d)"
+UNSET_DEST="$WORK/tree-unset"
+
+env -u AUTONOMOUS_TEAM_STATE_DIR HOME="$UNSET_HOME" TMPDIR="$UNSET_TMPDIR" bash -c '
+  source "$1"
+  verify_tree_build "$2" "$3" "$4"
+' _ "$LIB" "$SHA" "$UNSET_DEST" "$PARENT" > /dev/null 2>&1
+assert_rc "build exits 0 with the variable unset" 0 $?
+
+NFILES_UNDER_HOME="$(find "$UNSET_HOME/.autonomous-forever-state" -type f 2>/dev/null | wc -l)"
+assert_ok "nothing is written under HOME/.autonomous-forever-state" test "$NFILES_UNDER_HOME" -eq 0
+
+SCRATCH_MDIR="$UNSET_TMPDIR/verify-tree-manifests-$(id -u)"
+NMANIFESTS="$(find "$SCRATCH_MDIR" -maxdepth 1 -name '*.sha256' -type f 2>/dev/null | wc -l)"
+assert_ok "exactly one manifest under TMPDIR/verify-tree-manifests-<uid>" test "$NMANIFESTS" -eq 1
+
+env -u AUTONOMOUS_TEAM_STATE_DIR HOME="$UNSET_HOME" TMPDIR="$UNSET_TMPDIR" bash -c '
+  source "$1"
+  verify_tree_assert "$2" "$3"
+' _ "$LIB" "$UNSET_DEST" "$SHA" > /dev/null 2>&1
+assert_rc "a separate process finds the same manifest with the variable unset" 0 $?
+
+chmod -R u+w "$UNSET_DEST" 2>/dev/null
+rm -rf "$UNSET_HOME" "$UNSET_TMPDIR" "$UNSET_DEST"
+
 echo
 echo "PASS: $PASS  FAIL: $FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

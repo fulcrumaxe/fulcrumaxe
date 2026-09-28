@@ -104,10 +104,15 @@
 # deliberately here because the list is short (1 entry) and low-churn, not
 # because a check would be hard to write.
 #
-# Manifests live outside every tree under STATE_DIR/tree-manifests/. STATE_DIR
-# comes from backend/state_paths.py and honours AUTONOMOUS_TEAM_STATE_DIR, so
-# build and assert must agree on it; if they do not, assert exits 3 naming the
-# path it looked in rather than silently passing.
+# Manifests live outside every tree. With AUTONOMOUS_TEAM_STATE_DIR set, they
+# go under STATE_DIR/tree-manifests/ (STATE_DIR comes from
+# backend/state_paths.py). With the variable unset — the common case, since
+# the reviewer templates that call this never export it — they go to a
+# deterministic per-user scratch dir instead:
+# ${TMPDIR:-/tmp}/verify-tree-manifests-$(id -u)/, never the production state
+# dir (D#2631). Either way, build and assert must agree on which one is in
+# effect; if they do not, assert exits 3 naming the path it looked in rather
+# than silently passing.
 #
 # Exit codes (assert): 0 clean · 1 content changed · 2 live process rooted in the
 # tree · 3 usage error or missing manifest. Call assert from OUTSIDE the tree; it
@@ -128,12 +133,18 @@ _vt_repo_root() { (cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd); }
 _vt_abs() { readlink -f "$1" 2>/dev/null || printf '%s\n' "$1"; }
 _vt_ppid() { awk '/^PPid:/ { print $2 }' "/proc/$1/status" 2>/dev/null; }
 
-# STATE_DIR/tree-manifests — outside every tree, by construction.
+# STATE_DIR/tree-manifests when AUTONOMOUS_TEAM_STATE_DIR is set, otherwise a
+# per-user scratch dir under TMPDIR — never the production state dir by
+# default (D#2631). Outside every tree either way, by construction.
 _vt_manifest_dir() {
-  local sd
-  sd="$(python3 "$(_vt_repo_root)/backend/state_paths.py" 2>/dev/null | head -1)"
-  [ -n "$sd" ] || sd="${AUTONOMOUS_TEAM_STATE_DIR:-$HOME/.autonomous-forever-state}"
-  printf '%s/tree-manifests\n' "$sd"
+  if [ -n "${AUTONOMOUS_TEAM_STATE_DIR:-}" ]; then
+    local sd
+    sd="$(python3 "$(_vt_repo_root)/backend/state_paths.py" 2>/dev/null | head -1)"
+    [ -n "$sd" ] || sd="$AUTONOMOUS_TEAM_STATE_DIR"
+    printf '%s/tree-manifests\n' "$sd"
+  else
+    printf '%s/verify-tree-manifests-%s\n' "${TMPDIR:-/tmp}" "$(id -u)"
+  fi
 }
 
 # Stable id for a (tree, sha) pair, so assert can locate the manifest unaided.
@@ -219,6 +230,13 @@ verify_tree_build() {
   local mdir manifest
   mdir="$(_vt_manifest_dir)"
   mkdir -p "$mdir" || { rm -rf "$tmp" "$dest"; return 3; }
+  # The scratch manifest dir is keyed on TMPDIR (see _vt_manifest_dir above),
+  # so verify_tree_build and verify_tree_assert must run with the same
+  # TMPDIR to agree on where a manifest lands. TMPDIR is commonly
+  # world-writable, so lock the dir to its owner rather than rely on umask.
+  if [ -z "${AUTONOMOUS_TEAM_STATE_DIR:-}" ]; then
+    chmod 700 "$mdir" || _vt_log "WARNING — chmod 700 did not apply to $mdir"
+  fi
   manifest="$(_vt_manifest_path "$dest" "$full_sha")"
   (cd "$dest" && xargs -0 -r sha256sum) < "$tmp/paths.z" > "$tmp/manifest" || {
     rm -rf "$tmp" "$dest"
