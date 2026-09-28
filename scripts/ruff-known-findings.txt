@@ -793,7 +793,7 @@ tests/test_run_analyst_live.py	F401	1	`pytest` imported but unused
 tests/test_sandbox_agent_block.py	E402	2	Module level import not at top of file
 tests/test_sandbox_agent_block.py	F401	1	`hooks.sandbox_rules.classify_cwd` imported but unused
 tests/test_sandbox_agent_block.py	F401	1	`pytest` imported but unused
-tests/test_sandbox_rules.py	E402	3	Module level import not at top of file
+tests/test_sandbox_rules.py	E402	4	Module level import not at top of file
 tests/test_sandbox_rules.py	F401	1	`hooks.sandbox_rules._extract_all_gh_query_values` imported but unused
 tests/test_sandbox_rules.py	F401	1	`hooks.sandbox_rules._strip_graphql_comments` imported but unused
 tests/test_sandbox_rules.py	F401	1	`hooks.sandbox_rules._worktree_root_from_cwd` imported but unused

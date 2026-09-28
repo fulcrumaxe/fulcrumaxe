@@ -53,6 +53,7 @@ from hooks.sandbox_rules import (  # noqa: E402
     is_worktree,
 )
 from hooks.background_rules import classify_background  # noqa: E402
+from hooks.enter_worktree_rule import classify_enter_worktree  # noqa: E402
 from hooks.payload_shape import record_payload_shape  # noqa: E402
 from hooks.spawn_tag_redaction import redact_spawn_tags  # noqa: E402
 
@@ -731,8 +732,30 @@ def main() -> None:
         else:
             _allow(tool_name, cwd, file_path, worktree_id)
 
+    elif tool_name == "EnterWorktree":
+        # D#2050: refuse at the call site when a worktree-pinned sub-agent
+        # targets a DIFFERENT worktree — see hooks/enter_worktree_rule.py for
+        # why (EnterWorktree succeeding there is a one-way trip; ExitWorktree
+        # itself refuses to undo it for a sub-agent caller). Every other
+        # shape — same worktree, non-worktree caller, or a tool_input shape
+        # this rule doesn't recognise — is allowed, per that module's own
+        # fail-open policy.
+        decision = classify_enter_worktree(cwd, tool_input)
+        if not decision.allow:
+            _block(tool_name, cwd, str(tool_input)[:300], worktree_id, decision.reason)
+        else:
+            if decision.reason.startswith("unrecognised_enter_worktree_shape"):
+                # Acceptance item 4: name the unrecognised shape rather than
+                # guess at it. Reuses payload_shape.py's writer (D#2324) on
+                # tool_input itself, so the observation row's key set is the
+                # EnterWorktree payload's own keys, not the outer envelope's
+                # (cwd/tool_name/tool_input) that main() already records above.
+                record_payload_shape(tool_input, _TELEMETRY_DIR)
+            _allow(tool_name, cwd, str(tool_input), worktree_id)
+
     else:
-        # Unknown tool — allow (hook is registered only for Bash/Edit/Write/Agent)
+        # Unknown tool — allow (hook is registered only for
+        # Bash/Edit/Write/Agent/EnterWorktree)
         _allow(tool_name, cwd, str(tool_input), worktree_id)
 
 

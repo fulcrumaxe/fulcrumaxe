@@ -8,6 +8,7 @@
     "repo_root.py": "library: imported by hooks/sandbox_rules.py (hence transitively by hooks/sandbox.py, hooks/background_rules.py and hooks/fleet_register.py) and directly by hooks/subagent_stop_dial_audit.py.",
     "sandbox_rules.py": "library: the sandbox rule set, imported by hooks/sandbox.py, hooks/background_rules.py and hooks/fleet_register.py. Never invoked as a standalone hook.",
     "payload_shape.py": "library: imported only by hooks/sandbox.py to record payload shape. Never invoked as its own hook.",
+    "enter_worktree_rule.py": "library (D#2050): the EnterWorktree cross-worktree deny rule, imported only by hooks/sandbox.py. Never invoked as its own hook.",
     "spawn_tag_redaction.py": "library: imported by hooks/sandbox.py, hooks/subagent_stop_dial_audit.py and hooks/cosmetic_retry_breaker.py to scrub spawn tags from block-log writes.",
     "bash_retry_warn.py": "opt-in warn-only hook. scripts/install-bash-retry-warn-hook.sh registers it into ~/.claude/settings.json (operator-local, not tracked) on request; not wired into the tracked settings by default.",
     "claude_execve_fence.py": "not a Claude Code lifecycle hook — a standalone seccomp CLI fence invoked directly by scripts and integration tests as `python3 hooks/claude_execve_fence.py -- <cmd>`. Its own module docstring states it is deliberately not wired through spawn-agent.sh or any settings file.",

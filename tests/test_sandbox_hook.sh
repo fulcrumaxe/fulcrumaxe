@@ -980,6 +980,61 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# D#2050 — EnterWorktree cross-worktree call-site refusal
+# ---------------------------------------------------------------------------
+# A worktree-pinned sub-agent's EnterWorktree(path=...) at a DIFFERENT
+# worktree is denied with a working remedy (item 2); the same shape at its
+# OWN worktree, or from a non-worktree-pinned caller, is allowed (item 3);
+# an unrecognised tool_input shape fails open and writes one observation row
+# naming the unrecognised key set (item 4).
+
+WT_OTHER="$MAIN_REPO/.claude/worktrees/otherid456"
+
+assert_blocked "D#2050 item 2: EnterWorktree targets a different worktree" \
+  "{\"tool_name\":\"EnterWorktree\",\"tool_input\":{\"path\":\"$WT_OTHER\"},\"cwd\":\"$WT_CLAUDE\"}" \
+  "cross_worktree_enter_forbidden"
+
+assert_blocked "D#2050 item 7: refusal names the remedy" \
+  "{\"tool_name\":\"EnterWorktree\",\"tool_input\":{\"path\":\"$WT_OTHER\"},\"cwd\":\"$WT_CLAUDE\"}" \
+  "scripts/lib/code-plane-pr.sh"
+
+assert_blocked "D#2050 item 7: refusal names the git show/archive alternative" \
+  "{\"tool_name\":\"EnterWorktree\",\"tool_input\":{\"path\":\"$WT_OTHER\"},\"cwd\":\"$WT_CLAUDE\"}" \
+  "git show <ref>:<path>"
+
+assert_allowed "D#2050 item 3: EnterWorktree targets the caller's own worktree" \
+  "{\"tool_name\":\"EnterWorktree\",\"tool_input\":{\"path\":\"$WT_CLAUDE\"},\"cwd\":\"$WT_CLAUDE\"}"
+
+assert_allowed "D#2050 item 3: EnterWorktree from a non-worktree-pinned (team-lead) cwd" \
+  "{\"tool_name\":\"EnterWorktree\",\"tool_input\":{\"path\":\"$WT_OTHER\"},\"cwd\":\"$MAIN_REPO\"}"
+
+assert_allowed "D#2050 item 4: unrecognised EnterWorktree tool_input shape fails open" \
+  "{\"tool_name\":\"EnterWorktree\",\"tool_input\":{\"worktree_name\":\"otherid456\"},\"cwd\":\"$WT_CLAUDE\"}"
+
+D2050_BLOCKS_FILE="$MAIN_REPO/.autonomous-team/hook-events/blocks-$(date +%F).jsonl"
+if [[ -f "$D2050_BLOCKS_FILE" ]] \
+  && grep -qF '"kind": "payload_shape"' "$D2050_BLOCKS_FILE" \
+  && grep -qF "worktree_name" "$D2050_BLOCKS_FILE"; then
+  echo "PASS: D#2050 item 4: unrecognised shape wrote an observation row naming the key set"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL: D#2050 item 4: no payload_shape row naming 'worktree_name' found in $D2050_BLOCKS_FILE"
+  FAIL=$((FAIL + 1))
+fi
+
+# Item 6: the rule cannot raise, for malformed tool_input shapes. Each of
+# these hits classify_enter_worktree with a shape it doesn't recognise —
+# assert allow (fail open), never an internal-error exit or a crash.
+assert_allowed "D#2050 item 6: EnterWorktree with tool_input missing entirely" \
+  "{\"tool_name\":\"EnterWorktree\",\"cwd\":\"$WT_CLAUDE\"}"
+
+assert_allowed "D#2050 item 6: EnterWorktree with tool_input not a dict (string)" \
+  "{\"tool_name\":\"EnterWorktree\",\"tool_input\":\"oops\",\"cwd\":\"$WT_CLAUDE\"}"
+
+assert_allowed "D#2050 item 6: EnterWorktree with a non-string path value" \
+  "{\"tool_name\":\"EnterWorktree\",\"tool_input\":{\"path\":123},\"cwd\":\"$WT_CLAUDE\"}"
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 

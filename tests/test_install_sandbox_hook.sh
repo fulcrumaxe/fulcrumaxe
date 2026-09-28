@@ -116,7 +116,7 @@ print(len(cmds))
 PYEOF
 }
 
-# Seeds a settings.json with the legacy absolute-path form for all four
+# Seeds a settings.json with the legacy absolute-path form for all five
 # matchers plus one SubagentStop entry.
 seed_legacy_settings() {
   local settings_path="$1" hook_abs="$2" stop_abs="$3"
@@ -129,7 +129,7 @@ settings = {
     "hooks": {
         "PreToolUse": [
             {"matcher": m, "hooks": [{"type": "command", "command": hook_cmd}]}
-            for m in ["Agent", "Bash", "Edit", "Write"]
+            for m in ["Agent", "Bash", "Edit", "EnterWorktree", "Write"]
         ],
         "SubagentStop": [
             {"matcher": "", "hooks": [{"type": "command", "command": stop_cmd}]}
@@ -157,16 +157,16 @@ else
   fail_test "settings files exist" "projA=$T/projA/.claude/settings.json projB=$T/projB/.claude/settings.json"
 fi
 
-# 2. Each has exactly four PreToolUse entries with matchers Agent Bash Edit
-#    Write, and one SubagentStop entry.
+# 2. Each has exactly five PreToolUse entries with matchers Agent Bash Edit
+#    EnterWorktree Write, and one SubagentStop entry.
 for proj in projA projB; do
   RESULT=$(inspect_settings "$T/$proj/.claude/settings.json")
   COUNT=$(echo "$RESULT" | sed -n '1p')
   MATCHERS=$(echo "$RESULT" | sed -n '2p')
   STOP_COUNT=$(echo "$RESULT" | sed -n '3p')
 
-  if [[ "$COUNT" == "4" && "$MATCHERS" == "Agent Bash Edit Write" ]]; then
-    ok "$proj: exactly four PreToolUse entries, matchers Agent Bash Edit Write"
+  if [[ "$COUNT" == "5" && "$MATCHERS" == "Agent Bash Edit EnterWorktree Write" ]]; then
+    ok "$proj: exactly five PreToolUse entries, matchers Agent Bash Edit EnterWorktree Write"
   else
     fail_test "$proj: PreToolUse matcher set" "count=$COUNT matchers='$MATCHERS'"
   fi
@@ -224,7 +224,7 @@ fi
 
 # 7. A run where a project's settings.json is pre-seeded with the legacy
 #    absolute-path command upgrades it in place to the $CLAUDE_PROJECT_DIR
-#    form and still ends with exactly four PreToolUse entries — not eight.
+#    form and still ends with exactly five PreToolUse entries — not ten.
 LEGACY_PROJ="$T/projC"
 mkdir -p "$LEGACY_PROJ/scripts" "$LEGACY_PROJ/hooks" "$LEGACY_PROJ/.claude"
 cp "$INSTALLER_SRC" "$LEGACY_PROJ/scripts/install-sandbox-hook.sh"
@@ -242,10 +242,10 @@ LEGACY_RESULT=$(inspect_pretooluse_commands "$LEGACY_PROJ/.claude/settings.json"
 LEGACY_COUNT=$(echo "$LEGACY_RESULT" | sed -n '1p')
 LEGACY_UNIQ_CMDS=$(echo "$LEGACY_RESULT" | sed -n '2p')
 
-if [[ "$LEGACY_COUNT" == "4" ]]; then
-  ok "legacy pre-seeded settings.json ends with exactly four PreToolUse entries (not eight)"
+if [[ "$LEGACY_COUNT" == "5" ]]; then
+  ok "legacy pre-seeded settings.json ends with exactly five PreToolUse entries (not ten)"
 else
-  fail_test "legacy upgrade entry count" "expected 4, got $LEGACY_COUNT"
+  fail_test "legacy upgrade entry count" "expected 5, got $LEGACY_COUNT"
 fi
 
 if [[ "$LEGACY_UNIQ_CMDS" == "1" ]]; then
@@ -333,32 +333,39 @@ fi
 
 # 9. Committed-registration regression test (the security-review blocking
 #    finding): this repo's own COMMITTED .claude/settings.json must already
-#    have the four PreToolUse matchers -- a fresh clone or `git worktree
+#    have all five PreToolUse matchers -- a fresh clone or `git worktree
 #    add` from this branch is sandboxed WITHOUT anyone running the
 #    installer. Checks the git-tracked blob via `git show` (a read-only
 #    verb) rather than the working tree, because the bug this guards
 #    against is exactly a gap between the two: an uncommitted local
 #    modification that `git checkout --`, `git restore`, or a fresh
 #    worktree checkout would silently drop.
+#
+#    Matchers are compared as a SET, not by raw entry count: a matcher can
+#    carry more than one PreToolUse entry when a second tool hooks the same
+#    event (e.g. "Agent" also has a fleet_register.py entry alongside this
+#    installer's own hooks/sandbox.py one) -- that is a different tool
+#    sharing the matcher, not a sign this installer's own registration is
+#    incomplete or duplicated. D#2050 added EnterWorktree as a fifth
+#    distinct matcher; the set comparison is what stays correct as more
+#    tools register hooks over time without this assertion needing to track
+#    each one's entry count.
 COMMITTED_SETTINGS=$(git show HEAD:.claude/settings.json 2>/dev/null)
 if [[ -z "$COMMITTED_SETTINGS" ]]; then
   fail_test "committed .claude/settings.json readable at HEAD" "git show HEAD:.claude/settings.json returned nothing"
 else
-  COMMITTED_RESULT=$(echo "$COMMITTED_SETTINGS" | python3 -c "
+  COMMITTED_MATCHERS=$(echo "$COMMITTED_SETTINGS" | python3 -c "
 import json, sys
 s = json.load(sys.stdin)
 pre = s.get('hooks', {}).get('PreToolUse', [])
-matchers = sorted(e.get('matcher', '') for e in pre if isinstance(e, dict))
-print(len(pre))
+matchers = sorted(set(e.get('matcher', '') for e in pre if isinstance(e, dict)))
 print(' '.join(matchers))
 ")
-  COMMITTED_COUNT=$(echo "$COMMITTED_RESULT" | sed -n '1p')
-  COMMITTED_MATCHERS=$(echo "$COMMITTED_RESULT" | sed -n '2p')
 
-  if [[ "$COMMITTED_COUNT" == "4" && "$COMMITTED_MATCHERS" == "Agent Bash Edit Write" ]]; then
-    ok "committed .claude/settings.json at HEAD already has all four PreToolUse matchers -- a fresh clone/worktree is sandboxed without running the installer"
+  if [[ "$COMMITTED_MATCHERS" == "Agent Bash Edit EnterWorktree Write" ]]; then
+    ok "committed .claude/settings.json at HEAD already has all five PreToolUse matchers -- a fresh clone/worktree is sandboxed without running the installer"
   else
-    fail_test "committed registration present at HEAD" "count=$COMMITTED_COUNT matchers='$COMMITTED_MATCHERS' -- this change must be committed, not left as a working-tree-only edit"
+    fail_test "committed registration present at HEAD" "matchers='$COMMITTED_MATCHERS' -- this change must be committed, not left as a working-tree-only edit"
   fi
 
   if echo "$COMMITTED_SETTINGS" | grep -qF '$CLAUDE_PROJECT_DIR'; then
