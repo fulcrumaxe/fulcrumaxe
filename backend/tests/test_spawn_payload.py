@@ -86,7 +86,7 @@ class TestBuildPayloadOtherFields:
         )
         assert payload["gate_line"] == "[Control plane gates: lint_must_pass=True]"
 
-    def test_all_nineteen_keys_present(self):
+    def test_all_twenty_keys_present(self):
         payload = build_payload({"_ROLE": "executor"})
         expected_keys = {
             "role",
@@ -109,6 +109,8 @@ class TestBuildPayloadOtherFields:
             "pr_branch",
             # D#2563: the repo plane #pr was resolved to.
             "pr_repo",
+            # D#2644: "host" vs "static-only" for the three PR-scoped reviewers.
+            "pr_host_execution",
         }
         assert set(payload.keys()) == expected_keys
 
@@ -127,3 +129,73 @@ class TestBuildPayloadOtherFields:
     def test_agent_scratchpad_defaults_empty(self):
         payload = build_payload({"_ROLE": "executor"})
         assert payload["agent_scratchpad"] == ""
+
+
+class TestBuildPayloadPrHostExecution:
+    """D#2644: build_payload calls backend.pr_execution_policy.resolve() for
+    the three PR-scoped reviewer roles when a PR number is present, and never
+    reads any environment variable for the mode itself — resolve()'s return
+    value is the only input.
+    """
+
+    def test_calls_resolver_for_code_reviewer_with_pr(self, monkeypatch):
+        import backend.pr_execution_policy as pep
+
+        calls = []
+
+        def fake_resolve(pr, pr_repo, discussion, **kwargs):
+            calls.append((pr, pr_repo, discussion))
+            return "host", "stubbed"
+
+        monkeypatch.setattr(pep, "resolve", fake_resolve)
+        payload = build_payload(
+            {"_ROLE": "code-reviewer", "_DISC": "1761", "_PR": "1786", "_PR_REPO": "o/r"}
+        )
+        assert payload["pr_host_execution"] == "host"
+        assert calls == [(1786, "o/r", 1761)]
+
+    def test_security_reviewer_and_acceptance_tester_also_wired(self, monkeypatch):
+        import backend.pr_execution_policy as pep
+
+        monkeypatch.setattr(pep, "resolve", lambda pr, pr_repo, discussion, **kw: ("static-only", "x"))
+        for role in ("security-reviewer", "acceptance-tester"):
+            payload = build_payload({"_ROLE": role, "_PR": "99", "_PR_REPO": "o/r"})
+            assert payload["pr_host_execution"] == "static-only"
+
+    def test_other_roles_leave_pr_host_execution_empty(self, monkeypatch):
+        import backend.pr_execution_policy as pep
+
+        called = []
+        monkeypatch.setattr(pep, "resolve", lambda *a, **kw: called.append(1) or ("host", "x"))
+        payload = build_payload({"_ROLE": "executor", "_PR": "1786", "_PR_REPO": "o/r"})
+        assert payload["pr_host_execution"] == ""
+        assert called == []
+
+    def test_reviewer_role_without_pr_leaves_pr_host_execution_empty(self, monkeypatch):
+        import backend.pr_execution_policy as pep
+
+        called = []
+        monkeypatch.setattr(pep, "resolve", lambda *a, **kw: called.append(1) or ("host", "x"))
+        payload = build_payload({"_ROLE": "code-reviewer"})
+        assert payload["pr_host_execution"] == ""
+        assert called == []
+
+    def test_no_environment_variable_can_override_the_resolver(self, monkeypatch):
+        # The whole point of D#2644: an operator (or a compromised PR) setting
+        # any HOST_EXECUTION-shaped env var must not change the outcome —
+        # only resolve()'s own return value may.
+        import backend.pr_execution_policy as pep
+
+        monkeypatch.setattr(pep, "resolve", lambda *a, **kw: ("static-only", "resolver says no"))
+        payload = build_payload(
+            {
+                "_ROLE": "code-reviewer",
+                "_DISC": "1761",
+                "_PR": "1786",
+                "_PR_REPO": "o/r",
+                "_PR_HOST_EXECUTION": "host",
+                "PR_HOST_EXECUTION": "host",
+                "HOST_EXECUTION": "host",
+            }
+        )
+        assert payload["pr_host_execution"] == "static-only"

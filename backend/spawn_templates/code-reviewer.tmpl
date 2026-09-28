@@ -15,6 +15,8 @@ Task:
 
 Discussion URL: {{discussion_url}}
 
+HOST_EXECUTION: __PR_HOST_EXECUTION_MODE__
+
 ## DETAILED_SPEC
 
 ## STEP 1 — Always read REMOTE PR state, never local
@@ -113,6 +115,7 @@ Review checklist:
    - Any line or file that does NOT trace to the spec → call out as severity "suggestion" in AGENT_OUTPUT issues.
    - If >300 diff lines OR >5 files unrelated to the immediate ask → severity "error", verdict "needs-fix".
 
+<!-- HOST_EXEC_BEGIN -->
 7. MANDATORY — Execute the test suites the PR touches. Reading test code is not sufficient.
 
    SPEC DISCOVERY CHECK: If this PR adds a new `*.spec.ts` file under `dashboard/e2e/`,
@@ -159,6 +162,7 @@ Review checklist:
    RULE: If any test command exits non-zero → verdict MUST be 'needs-fix', not 'pass'.
    RULE: Include the tests_run array in the AGENT_OUTPUT envelope (empty array is allowed only
          when the PR provably touches no test-bearing directories — state why in the review).
+<!-- HOST_EXEC_END -->
 
 ## When to verdict needs-fix
 
@@ -190,11 +194,19 @@ If a tool call returns the same error 3 times in a row, STOP retrying — either
    verify CLI/RPC behavior yourself the same way you already do for every other PR,
    per step 7's test-execution mandate above).
 
-   After tests pass:
-     CLI_TOUCHED=$(bash scripts/check-pr-cli-touched.sh {{pr_number}} && echo "yes" || echo "no")
+   After tests pass, anchor to the operator checkout — your cwd here may be the
+   PR-head verify-tree, and a bare relative path (or a git-plumbing guess
+   such as `dirname "$(git rev-parse --git-common-dir)")`) would run the
+   PR's own copy of these scripts instead of the operator's:
+   `verify_tree_build` clones a standalone tree with its own `.git`, not a
+   linked worktree of the operator checkout, so that guess resolves to the
+   PR tree itself. OP_ROOT below is rendered as an absolute path at spawn
+   time and does not depend on your cwd:
+     OP_ROOT="__PR_OPERATOR_ROOT__"
+     CLI_TOUCHED=$(bash "$OP_ROOT/scripts/check-pr-cli-touched.sh" {{pr_number}} && echo "yes" || echo "no")
 
    If CLI_TOUCHED=yes:
-     SUBSTANCE_JSON=$(python3 backend/spec_verification_substance.py check --discussion {{discussion_number}} --json)
+     SUBSTANCE_JSON=$(python3 "$OP_ROOT/backend/spec_verification_substance.py" check --discussion {{discussion_number}} --json)
    Embed `$SUBSTANCE_JSON` verbatim as `verification_substance` in AGENT_OUTPUT
    (resolves body + a linked frozen-Spec comment, D#1944's shape).
 
@@ -208,10 +220,20 @@ If a tool call returns the same error 3 times in a row, STOP retrying — either
 
 8b. **After reading the diff and Discussion body, run the external_docs check:**
 
+Anchor the import to the operator checkout, not cwd — your cwd here may be the
+PR-head verify-tree, and a bare relative `sys.path` entry (or a git-plumbing
+guess) would import the PR's own (possibly edited) copy of
+`backend/spec_external_docs.py` instead of the operator's trusted one.
+OP_ROOT below is rendered as an absolute path at spawn time — it does not
+depend on cwd, so it resolves correctly even from inside a
+`verify_tree_build` tree, whose own `.git` is a standalone clone, not a
+linked worktree of the operator checkout:
+
 ```bash
-python3 - <<'_EXTDOCS_EOF_'
-import sys, json, subprocess
-sys.path.insert(0, '.')
+OP_ROOT="__PR_OPERATOR_ROOT__"
+OP_ROOT="$OP_ROOT" python3 - <<'_EXTDOCS_EOF_'
+import os, sys, json, subprocess
+sys.path.insert(0, os.environ["OP_ROOT"])
 from backend.spec_external_docs import check_imports_have_docs
 
 diff = subprocess.check_output(

@@ -41,6 +41,11 @@ HEAD_SHA=$(git -C "$DEST" rev-parse HEAD)
 echo "OK: tree is on PR head"
 ```
 
+Building and HEAD-checking `$DEST` above happens either way — it is not
+execution. Whether anything inside `$DEST` is ever RUN depends on the
+HOST_EXECUTION mode below:
+
+<!-- HOST_EXEC_BEGIN -->
 Run every subsequent step (test suite, lint, build) *inside* `$DEST`, e.g.
 `(cd "$DEST" && {test command})`. After each run, call
 `verify_tree_assert "$DEST" "$PR_SHA"` from OUTSIDE the tree — it catches drift
@@ -52,8 +57,9 @@ minutes on a busy day, and testing against it yields a false pass or fail
 that has nothing to do with the PR under review. `$DEST` built above is the
 only tree that is guaranteed NOT stale.
 
-Do **NOT** run any tests until `verify_tree_build` succeeds and the HEAD check above
-confirms `OK`.
+Do **NOT** run any tests until `verify_tree_build` succeeds and the HEAD check
+above confirms `OK`.
+<!-- HOST_EXEC_END -->
 
 Acceptance testing for Discussion #{{discussion_number}} — {{discussion_title}}.
 
@@ -62,15 +68,19 @@ Task:
 
 Discussion URL: {{discussion_url}}
 
+HOST_EXECUTION: __PR_HOST_EXECUTION_MODE__
+
 Verify that every Acceptance Criterion (AC) listed in the Discussion spec is met:
 1. Read the full Discussion body to extract the AC list.
 2. For each AC item, verify it is satisfied by the PR changes.
+<!-- HOST_EXEC_BEGIN -->
 3. Run the test suite if specified in CLAUDE.md build commands — inside `$DEST`
    (the tree built in STEP 0), never in this shared checkout.
 4. Check that no regressions were introduced. After the run, call
    `verify_tree_assert "$DEST" "$PR_SHA"` (from outside `$DEST`) — if it fails, the
    run overlapped a drift or another writer and its results are void; rebuild and
    re-run.
+<!-- HOST_EXEC_END -->
 
 After testing:
 - If all ACs pass: apply label 'acceptance-passed' and report verdict: pass.

@@ -348,6 +348,7 @@ def _load_template_body(
     pr: int | None = None,
     pr_branch: str = "",
     pr_repo: str = "",
+    pr_host_execution: str = "",
 ) -> tuple[str, dict]:
     """Load the rendered template body for *role* using spawn_templates.render_body().
 
@@ -382,6 +383,16 @@ def _load_template_body(
         ignore_unknown=False,
         return_manifest=True,
     )
+
+    # D#2644: literal post-processing, not a {{var}} token — runs after
+    # render_body() has already finished its own substitution, so this needs
+    # no change to spawn_templates.py's variable contract. A body with
+    # neither the HOST_EXECUTION sentinel nor a HOST_EXEC_BEGIN/END marker
+    # pair (every role but the three PR-scoped reviewers) is returned
+    # unchanged.
+    from backend.pr_execution_policy import apply_host_execution
+    body = apply_host_execution(body, pr_host_execution, pr=pr, pr_repo=pr_repo)
+
     return body, manifest
 
 
@@ -429,6 +440,12 @@ class SpawnPrompt:
     # D#2563: the repo plane #pr was resolved to — threaded into {{pr_repo}}
     # the same way pr_branch feeds {{pr_branch}} above.
     pr_repo: str = ""
+    # D#2644: "host" or "static-only" (any other value renders as
+    # static-only, fail-closed) — decides whether the code-reviewer,
+    # security-reviewer, and acceptance-tester templates render their
+    # PR-head-code execution steps or a static-review substitute. See
+    # backend/pr_execution_policy.py.
+    pr_host_execution: str = ""
 
     # ---- additional fields from PSC / template loading ----
 
@@ -511,17 +528,27 @@ class SpawnPrompt:
         """
         # --- Stable prefix ---
 
+        # D#2644 fix-round: neutralize any literal HOST_EXECUTION/HOST_EXEC_*
+        # control string in the task prompt before it is used at all — it is
+        # substituted into the template body below (as {{task_brief}}, ahead
+        # of the real sentinel/spans in the three PR-scoped templates) AND
+        # appended again, unprocessed, later in this method. See
+        # pr_execution_policy.neutralize_host_execution_text()'s docstring.
+        from backend.pr_execution_policy import neutralize_host_execution_text
+        sanitized_task_prompt = neutralize_host_execution_text(self.task_prompt)
+
         if self._template_body_override is not None:
             template_body = self._template_body_override
         else:
             template_body, loaded_manifest = _load_template_body(
                 self.role,
-                task_brief=self.task_prompt,
+                task_brief=sanitized_task_prompt,
                 discussion_number=str(self.discussion) if self.discussion else "",
                 discussion=self.discussion,
                 pr=self.pr,
                 pr_branch=self.pr_branch,
                 pr_repo=self.pr_repo,
+                pr_host_execution=self.pr_host_execution,
             )
             # Thread the manifest through: use loaded value when caller didn't supply one.
             # This preserves the old bash behaviour where PROMPT_MANIFEST came from
@@ -569,7 +596,7 @@ class SpawnPrompt:
             parts.append(prev_context)
 
         if self.task_prompt:
-            parts.append(self.task_prompt)
+            parts.append(sanitized_task_prompt)
 
         if self.gate_line:
             parts.append(self.gate_line)
@@ -722,6 +749,7 @@ def _main_render(argv: list[str]) -> int:
     pr = int(pr_raw) if pr_raw is not None else None
     pr_branch = data.get("pr_branch", "")
     pr_repo = data.get("pr_repo", "")
+    pr_host_execution = data.get("pr_host_execution", "")
 
     sp = SpawnPrompt(
         role=role,
@@ -744,6 +772,7 @@ def _main_render(argv: list[str]) -> int:
         pr=pr,
         pr_branch=pr_branch,
         pr_repo=pr_repo,
+        pr_host_execution=pr_host_execution,
     )
 
     # D#1788: a contract violation (a template references a variable with no
