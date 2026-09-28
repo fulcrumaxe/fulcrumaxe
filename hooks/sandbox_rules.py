@@ -283,8 +283,25 @@ _REDIRECT_PATTERN = re.compile(
 # `>` of `<>` split on its own merits (nothing but `>`/`&`/`|` immediately
 # before it) while the `<` alternative keeps excluding all four characters,
 # including its own kind, exactly as before.
+#
+# D#2629 (perf, CWE-1333): a leading `(?<![0-9])` anchors the whole
+# alternation so it can only START matching at a non-digit boundary — the
+# first character of a digit run, or a position with no digit before it at
+# all. Without it, a long run of digits that never resolves to a real
+# operator (e.g. `echo ` + `"1" * 50000`, no trailing `<`/`>`) makes the
+# engine retry the `[0-9]*` branch, and its backtrack over the remaining
+# digits, from EVERY position inside the run — quadratic in the run's
+# length (measured: 0.011s at main, 18.8s for a 50k-digit run at #252's
+# head). The correct match for a genuine glued redirect (`10>x`) always
+# starts at the run's first digit, since `[0-9]*` is greedy and consumes the
+# whole prefix before the operator is checked — a match attempt starting
+# mid-run can never succeed where one starting at the run's boundary
+# doesn't already, so skipping those inner positions costs no coverage.
+# Verified against the #252 security reviewer's differential corpus (the
+# 141-row table, the 158-row adversarial set, and the 986 harvested test
+# literals): zero verdict changes.
 _GLUED_REDIRECT_OP_RE = re.compile(
-    r"(?:(?<![>&|])([0-9]*>{1,2})|(?<![<>&|])([0-9]*<(?!<)))(?=[^\s&(|])"
+    r"(?<![0-9])(?:(?<![>&|])([0-9]*>{1,2})|(?<![<>&|])([0-9]*<(?!<)))(?=[^\s&(|])"
 )
 
 

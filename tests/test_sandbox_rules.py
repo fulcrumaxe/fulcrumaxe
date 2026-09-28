@@ -5009,6 +5009,38 @@ class TestD2541GluedRedirectOperator:
         assert d.allow is True, f"expected ALLOW, got reason={d.reason!r}"
 
 
+class TestD2629GluedRedirectDigitPrefixLinear:
+    """`_GLUED_REDIRECT_OP_RE` (added by D#2541, code-plane #252) retried its
+    `[0-9]*` prefix from every position inside a run of digits, so
+    classification time grew quadratically with the longest digit run in
+    the command -- `classify_bash("echo " + "1" * 50000)` measured at 18.8s
+    against 0.011s on main, with no timeout anywhere in the hook. Fixed with
+    a leading `(?<![0-9])` that anchors the alternation to non-digit
+    boundaries, so a match attempt is never even started mid-run.
+    """
+
+    def test_long_digit_run_classifies_quickly(self) -> None:
+        # A generous bound (not a tight perf assertion like TestPerformance
+        # above): the pre-fix regex took ~2.9s at 20k digits and ~18.8s at
+        # 50k on the reference host, so 2s at 100k digits only passes once
+        # the quadratic blowup is actually gone.
+        command = "echo " + "1" * 100_000
+        t0 = time.perf_counter()
+        classify_bash(command, _WT_CLAUDE)
+        elapsed = time.perf_counter() - t0
+        assert elapsed < 2, f"classify_bash took {elapsed:.3f}s for a 100k-digit run"
+
+    def test_fd_ten_glued_to_audit_jsonl_still_blocks(self) -> None:
+        # The anchor must not change a single verdict -- a real glued
+        # redirect's digit prefix still starts matching at the run's first
+        # digit, so `10>` glued straight onto a protected basename keeps
+        # blocking exactly as it did before this fix.
+        cmd = "echo x 10>audit.jsonl"
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+        assert "audit.jsonl" in d.reason
+
+
 class TestD2541FixRound1HeredocBodyNotScannedForGluedRedirects:
     """Fix round 1 (code review finding #1): `_all_path_operands` called
     `_split_glued_redirect_operands` on the RAW command text, before heredoc
