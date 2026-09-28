@@ -304,7 +304,7 @@ SNAP1=$(mktemp --suffix='.json')
 _write_snapshot_empty "$SNAP1"
 
 OUTPUT1=$(AF_CONTROL_PLANE_CONFIG="$CFG1" SNAPSHOT_PATH="$SNAP1" \
-  SPAWN_AGENT=echo \
+  STEP5_TEST_MODE=1 SPAWN_AGENT=echo \
   bash "$SCRIPT" 2>&1)
 RC1=$?
 
@@ -326,7 +326,7 @@ SNAP2=$(mktemp --suffix='.json')
 _write_snapshot_empty "$SNAP2"
 
 OUTPUT2=$(AF_CONTROL_PLANE_CONFIG="$CFG2" SNAPSHOT_PATH="$SNAP2" \
-  SPAWN_AGENT=echo DISCUSSING_MOCK='[]' SPEC_READY_MOCK='[]' \
+  STEP5_TEST_MODE=1 SPAWN_AGENT=echo DISCUSSING_MOCK='[]' SPEC_READY_MOCK='[]' \
   bash "$SCRIPT" 2>&1)
 RC2=$?
 
@@ -348,7 +348,7 @@ SNAP3=$(mktemp --suffix='.json')
 _write_snapshot_spec_ready "$SNAP3" 99901
 
 OUTPUT3=$(AF_CONTROL_PLANE_CONFIG="$CFG3" SNAPSHOT_PATH="$SNAP3" \
-  SPAWN_AGENT=echo \
+  STEP5_TEST_MODE=1 SPAWN_AGENT=echo \
   bash "$SCRIPT" 2>&1)
 RC3=$?
 
@@ -373,7 +373,7 @@ _write_snapshot_spec_ready "$SNAP4" 88801
 _write_pr_state_entry 50100 88801 "code_review"
 
 OUTPUT4=$(AF_CONTROL_PLANE_CONFIG="$CFG4" SNAPSHOT_PATH="$SNAP4" \
-  SPAWN_AGENT=echo \
+  STEP5_TEST_MODE=1 SPAWN_AGENT=echo \
   bash "$SCRIPT" 2>&1)
 RC4=$?
 
@@ -398,7 +398,7 @@ _write_snapshot_spec_ready "$SNAP5" 77701
 _write_pr_state_entry 60100 77701 "code_review"
 
 OUTPUT5=$(AF_CONTROL_PLANE_CONFIG="$CFG5" SNAPSHOT_PATH="$SNAP5" \
-  SPAWN_AGENT=echo \
+  STEP5_TEST_MODE=1 SPAWN_AGENT=echo \
   bash "$SCRIPT" 2>&1)
 RC5=$?
 
@@ -426,7 +426,7 @@ _write_pr_state_entry 70100 55501 "code_review"
 
 _gate1_export_receipt 70100
 OUTPUT_T6=$(AF_CONTROL_PLANE_CONFIG="$CFG_T6" SNAPSHOT_PATH="$SNAP_T6" \
-  SPAWN_AGENT=echo REPO_ROOT="$REAL_REPO_ROOT" \
+  STEP5_TEST_MODE=1 SPAWN_AGENT=echo REPO_ROOT="$REAL_REPO_ROOT" \
   TWO_GATE_PR_BODY_70100="## Verification\nGate 1: PASS\nGate 2: PASS" \
   bash "$SCRIPT" 2>&1)
 RC_T6=$?
@@ -460,7 +460,7 @@ _write_pr_state_entry 70199 55599 "code_review"
 
 GATE1_TEST_MODE=absent _gate1_export_receipt 70199
 OUTPUT_T6B=$(AF_CONTROL_PLANE_CONFIG="$CFG_T6B" SNAPSHOT_PATH="$SNAP_T6B" \
-  SPAWN_AGENT=echo REPO_ROOT="$REAL_REPO_ROOT" \
+  STEP5_TEST_MODE=1 SPAWN_AGENT=echo REPO_ROOT="$REAL_REPO_ROOT" \
   TWO_GATE_PR_BODY_70199="## Verification\nGate 1: PASS\nGate 2: PASS" \
   bash "$SCRIPT" 2>&1)
 RC_T6B=$?
@@ -514,7 +514,7 @@ json.dump(entry, open('$BB_DIR_T7/80100.json', 'w'), indent=2)
 
 _gate1_export_receipt 80100
 OUTPUT_T7=$(AF_CONTROL_PLANE_CONFIG="$CFG_T7" SNAPSHOT_PATH="$SNAP_T7" \
-  SPAWN_AGENT=echo REPO_ROOT="$REAL_REPO_ROOT" \
+  STEP5_TEST_MODE=1 SPAWN_AGENT=echo REPO_ROOT="$REAL_REPO_ROOT" \
   TWO_GATE_PR_BODY_80100="## Verification\nGate 1: PASS\nGate 2: PASS" \
   bash "$SCRIPT" 2>&1)
 RC_T7=$?
@@ -566,7 +566,7 @@ json.dump(entry, open('$BB_DIR_T8/90100.json', 'w'), indent=2)
 
 _gate1_export_receipt 90100
 OUTPUT_T8=$(AF_CONTROL_PLANE_CONFIG="$CFG_T8" SNAPSHOT_PATH="$SNAP_T8" \
-  SPAWN_AGENT=echo REPO_ROOT="$REAL_REPO_ROOT" \
+  STEP5_TEST_MODE=1 SPAWN_AGENT=echo REPO_ROOT="$REAL_REPO_ROOT" \
   TWO_GATE_PR_BODY_90100="## Verification\nGate 1: PASS\nGate 2: PASS" \
   bash "$SCRIPT" 2>&1)
 RC_T8=$?
@@ -590,13 +590,13 @@ _write_snapshot_spec_ready "$SNAP6" 11101
 
 # First run — no pr_state entry, SPAWN_AGENT=echo so no real entry is created
 OUTPUT6A=$(AF_CONTROL_PLANE_CONFIG="$CFG6" SNAPSHOT_PATH="$SNAP6" \
-  SPAWN_AGENT=echo \
+  STEP5_TEST_MODE=1 SPAWN_AGENT=echo \
   bash "$SCRIPT" 2>&1)
 RC6A=$?
 
 # Second run — same state (SPAWN_AGENT=echo means no pr_state entry was created by spawn)
 OUTPUT6B=$(AF_CONTROL_PLANE_CONFIG="$CFG6" SNAPSHOT_PATH="$SNAP6" \
-  SPAWN_AGENT=echo \
+  STEP5_TEST_MODE=1 SPAWN_AGENT=echo \
   bash "$SCRIPT" 2>&1)
 RC6B=$?
 
@@ -655,7 +655,7 @@ _write_snapshot_spec_ready "$SNAP_T10" 22201
 _write_pr_state_sec_entry 91100 22201 "security_review" "True" 0
 
 OUTPUT_T10=$(AF_CONTROL_PLANE_CONFIG="$CFG_T10" SNAPSHOT_PATH="$SNAP_T10" \
-  SPAWN_AGENT=echo REPO_ROOT="$REAL_REPO_ROOT" \
+  STEP5_TEST_MODE=1 SPAWN_AGENT=echo REPO_ROOT="$REAL_REPO_ROOT" \
   bash "$SCRIPT" 2>&1)
 RC_T10=$?
 
@@ -680,7 +680,7 @@ _write_snapshot_spec_ready "$SNAP_T11" 22202
 _write_pr_state_sec_entry 91200 22202 "security_review" "False" 0
 
 OUTPUT_T11=$(AF_CONTROL_PLANE_CONFIG="$CFG_T11" SNAPSHOT_PATH="$SNAP_T11" \
-  SPAWN_AGENT=echo REPO_ROOT="$REAL_REPO_ROOT" \
+  STEP5_TEST_MODE=1 SPAWN_AGENT=echo REPO_ROOT="$REAL_REPO_ROOT" \
   bash "$SCRIPT" 2>&1)
 RC_T11=$?
 
@@ -705,7 +705,7 @@ _write_snapshot_spec_ready "$SNAP_T12" 22203
 _write_pr_state_sec_entry 91300 22203 "security_review" "True" 3
 
 OUTPUT_T12=$(AF_CONTROL_PLANE_CONFIG="$CFG_T12" SNAPSHOT_PATH="$SNAP_T12" \
-  SPAWN_AGENT=echo REPO_ROOT="$REAL_REPO_ROOT" \
+  STEP5_TEST_MODE=1 SPAWN_AGENT=echo REPO_ROOT="$REAL_REPO_ROOT" \
   bash "$SCRIPT" 2>&1)
 RC_T12=$?
 
@@ -733,7 +733,7 @@ _write_pr_state_sec_entry 91400 22204 "merging" "False" 0
 # _has_label uses real gh — label check will block merge since PR 91400 doesn't exist.
 # That's expected: verify no spawn attempted, script exits 0.
 OUTPUT_T13=$(AF_CONTROL_PLANE_CONFIG="$CFG_T13" SNAPSHOT_PATH="$SNAP_T13" \
-  SPAWN_AGENT=echo GH_MERGE=echo HOOKS_DISABLED=1 \
+  STEP5_TEST_MODE=1 SPAWN_AGENT=echo GH_MERGE=echo HOOKS_DISABLED=1 \
   DISCUSSING_MOCK='[]' \
   DASHBOARD_TOUCHED=no \
   REPO_ROOT="$REAL_REPO_ROOT" \
@@ -761,7 +761,7 @@ _write_snapshot_spec_ready "$SNAP_T14" 22205
 _write_pr_state_sec_entry 91500 22205 "merging" "False" 0
 
 OUTPUT_T14=$(AF_CONTROL_PLANE_CONFIG="$CFG_T14" SNAPSHOT_PATH="$SNAP_T14" \
-  SPAWN_AGENT=echo GH_MERGE=echo HOOKS_DISABLED=1 \
+  STEP5_TEST_MODE=1 SPAWN_AGENT=echo GH_MERGE=echo HOOKS_DISABLED=1 \
   DASHBOARD_TOUCHED=no \
   REPO_ROOT="$REAL_REPO_ROOT" \
   bash "$SCRIPT" 2>&1)
@@ -790,7 +790,7 @@ for TERM_PHASE in merged blocked; do
   _write_pr_state_sec_entry "$PR_T15" "$DISC_T15" "$TERM_PHASE" "False" 0
 
   OUTPUT_T15=$(AF_CONTROL_PLANE_CONFIG="$CFG_T15" SNAPSHOT_PATH="$SNAP_T15" \
-    SPAWN_AGENT=echo GH_MERGE=echo HOOKS_DISABLED=1 \
+    STEP5_TEST_MODE=1 SPAWN_AGENT=echo GH_MERGE=echo HOOKS_DISABLED=1 \
     DISCUSSING_MOCK='[]' \
     REPO_ROOT="$REAL_REPO_ROOT" \
     bash "$SCRIPT" 2>&1)
@@ -822,7 +822,7 @@ _write_pr_state_sec_entry 92000 22210 "merging" "False" 0
 
 # code-review-passed present, security-review-passed absent, trigger fires
 OUTPUT_T16=$(AF_CONTROL_PLANE_CONFIG="$CFG_T16" SNAPSHOT_PATH="$SNAP_T16" \
-  SPAWN_AGENT=echo GH_MERGE=echo HOOKS_DISABLED=1 \
+  STEP5_TEST_MODE=1 SPAWN_AGENT=echo GH_MERGE=echo HOOKS_DISABLED=1 \
   DASHBOARD_TOUCHED=no SECURITY_TRIGGER_RESULT=yes \
   HAS_LABEL_92000_code_review_passed=yes \
   HAS_LABEL_92000_security_review_passed=no \
@@ -857,7 +857,7 @@ _write_pr_state_sec_entry 92100 22211 "merging" "True" 0
 
 # Both code-review-passed and security-review-passed present, trigger fires
 OUTPUT_T17=$(AF_CONTROL_PLANE_CONFIG="$CFG_T17" SNAPSHOT_PATH="$SNAP_T17" \
-  SPAWN_AGENT=echo GH_MERGE=echo HOOKS_DISABLED=1 \
+  STEP5_TEST_MODE=1 SPAWN_AGENT=echo GH_MERGE=echo HOOKS_DISABLED=1 \
   DASHBOARD_TOUCHED=no SECURITY_TRIGGER_RESULT=yes \
   HAS_LABEL_92100_code_review_passed=yes \
   HAS_LABEL_92100_security_review_passed=yes \
@@ -890,7 +890,7 @@ _write_pr_state_sec_entry 92200 22212 "merging" "False" 0
 # code-review-passed present, no diff-content security trigger, but the
 # Discussion is provenance:external — security-review-passed still required.
 OUTPUT_T17B=$(AF_CONTROL_PLANE_CONFIG="$CFG_T17B" SNAPSHOT_PATH="$SNAP_T17B" \
-  SPAWN_AGENT=echo GH_MERGE=echo HOOKS_DISABLED=1 \
+  STEP5_TEST_MODE=1 SPAWN_AGENT=echo GH_MERGE=echo HOOKS_DISABLED=1 \
   DASHBOARD_TOUCHED=no SECURITY_TRIGGER_RESULT=no \
   EXTERNAL_PROVENANCE_FORCES_SECURITY=yes \
   HAS_LABEL_92200_code_review_passed=yes \
@@ -921,7 +921,7 @@ _write_snapshot_spec_ready "$SNAP_T17C" 22213
 _write_pr_state_sec_entry 92300 22213 "merging" "False" 0
 
 OUTPUT_T17C=$(AF_CONTROL_PLANE_CONFIG="$CFG_T17C" SNAPSHOT_PATH="$SNAP_T17C" \
-  SPAWN_AGENT=echo GH_MERGE=echo HOOKS_DISABLED=1 \
+  STEP5_TEST_MODE=1 SPAWN_AGENT=echo GH_MERGE=echo HOOKS_DISABLED=1 \
   DASHBOARD_TOUCHED=no SECURITY_TRIGGER_RESULT=no \
   EXTERNAL_PROVENANCE_FORCES_SECURITY=yes \
   HAS_LABEL_92300_code_review_passed=yes \
@@ -1199,7 +1199,7 @@ _write_snapshot_spec_ready "$SNAP_T21" 85801
 _write_pr_state_debate_entry 85810 85801 "debate" "True" 0
 
 OUTPUT_T21=$(AF_CONTROL_PLANE_CONFIG="$CFG_T21" SNAPSHOT_PATH="$SNAP_T21" \
-  SPAWN_AGENT=echo REPO_ROOT="$REAL_REPO_ROOT" \
+  STEP5_TEST_MODE=1 SPAWN_AGENT=echo REPO_ROOT="$REAL_REPO_ROOT" \
   HEAD_SHA_85810=abc1234 \
   DEBATER_RAN_85810=no \
   DISCUSSING_MOCK='[]' \
@@ -1242,7 +1242,7 @@ _write_pr_state_debate_entry 85811 85802 "debate" "True" 0
 
 START_T22=$(date +%s%N)
 OUTPUT_T22=$(AF_CONTROL_PLANE_CONFIG="$CFG_T22" SNAPSHOT_PATH="$SNAP_T22" \
-  SPAWN_AGENT=echo REPO_ROOT="$REAL_REPO_ROOT" \
+  STEP5_TEST_MODE=1 SPAWN_AGENT=echo REPO_ROOT="$REAL_REPO_ROOT" \
   HEAD_SHA_85811=abc5678 \
   DEBATER_RAN_85811=no \
   DISCUSSING_MOCK='[]' \
@@ -1286,7 +1286,7 @@ _write_snapshot_spec_ready "$SNAP_T23" 85803
 _write_pr_state_debate_entry 85812 85803 "debate" "True" 1
 
 OUTPUT_T23=$(AF_CONTROL_PLANE_CONFIG="$CFG_T23" SNAPSHOT_PATH="$SNAP_T23" \
-  SPAWN_AGENT=echo REPO_ROOT="$REAL_REPO_ROOT" \
+  STEP5_TEST_MODE=1 SPAWN_AGENT=echo REPO_ROOT="$REAL_REPO_ROOT" \
   HEAD_SHA_85812=abc9999 \
   DEBATER_RAN_85812=yes \
   DEBATER_VERDICT_85812=pass \
@@ -1319,7 +1319,7 @@ _write_snapshot_spec_ready "$SNAP_T24" 85804
 _write_pr_state_debate_entry 85813 85804 "debate" "True" 1
 
 OUTPUT_T24=$(AF_CONTROL_PLANE_CONFIG="$CFG_T24" SNAPSHOT_PATH="$SNAP_T24" \
-  SPAWN_AGENT=echo REPO_ROOT="$REAL_REPO_ROOT" \
+  STEP5_TEST_MODE=1 SPAWN_AGENT=echo REPO_ROOT="$REAL_REPO_ROOT" \
   HEAD_SHA_85813=abcaaaa \
   DEBATER_RAN_85813=yes \
   DEBATER_VERDICT_85813=pass \
@@ -1367,7 +1367,7 @@ _write_snapshot_stale_spec_ready "$SNAP_T25" 90125
 GH_LOG_T25=$(mktemp)
 
 OUTPUT_T25=$(AF_CONTROL_PLANE_CONFIG="$CFG_T25" SNAPSHOT_PATH="$SNAP_T25" \
-  SPAWN_AGENT=echo REPO_ROOT="$REAL_REPO_ROOT" \
+  STEP5_TEST_MODE=1 SPAWN_AGENT=echo REPO_ROOT="$REAL_REPO_ROOT" \
   PATH="$_GH_SHIM_DIR:$PATH" GH_CALL_LOG="$GH_LOG_T25" \
   DISCUSSING_MOCK='[]' \
   bash "$SCRIPT" 2>&1)
@@ -1391,7 +1391,7 @@ _write_snapshot_spec_ready "$SNAP_T26" 90126
 GH_LOG_T26=$(mktemp)
 
 OUTPUT_T26=$(AF_CONTROL_PLANE_CONFIG="$CFG_T26" SNAPSHOT_PATH="$SNAP_T26" \
-  SPAWN_AGENT=echo REPO_ROOT="$REAL_REPO_ROOT" \
+  STEP5_TEST_MODE=1 SPAWN_AGENT=echo REPO_ROOT="$REAL_REPO_ROOT" \
   PATH="$_GH_SHIM_DIR:$PATH" GH_CALL_LOG="$GH_LOG_T26" \
   DISCUSSING_MOCK='[]' \
   bash "$SCRIPT" 2>&1)
@@ -1432,7 +1432,7 @@ SNAP_T27=$(mktemp --suffix='.json')
 _write_snapshot_spec_ready "$SNAP_T27" 55527
 
 OUTPUT_T27A=$(AF_CONTROL_PLANE_CONFIG="$CFG_T27" SNAPSHOT_PATH="$SNAP_T27" \
-  SPAWN_AGENT=echo REPO_ROOT="$REAL_REPO_ROOT" \
+  STEP5_TEST_MODE=1 SPAWN_AGENT=echo REPO_ROOT="$REAL_REPO_ROOT" \
   DISCUSSING_MOCK='[]' \
   bash "$SCRIPT" 2>&1)
 
@@ -1446,7 +1446,7 @@ assert_not_contains "executor prompt does not point at a pull request" \
 _write_pr_state_entry 70127 55527 "code_review"
 _gate1_export_receipt 70127
 OUTPUT_T27B=$(AF_CONTROL_PLANE_CONFIG="$CFG_T27" SNAPSHOT_PATH="$SNAP_T27" \
-  SPAWN_AGENT=echo REPO_ROOT="$REAL_REPO_ROOT" \
+  STEP5_TEST_MODE=1 SPAWN_AGENT=echo REPO_ROOT="$REAL_REPO_ROOT" \
   DISCUSSING_MOCK='[]' \
   TWO_GATE_PR_BODY_70127="## Verification\nGate 1: PASS\nGate 2: PASS" \
   bash "$SCRIPT" 2>&1)
@@ -1544,7 +1544,7 @@ _write_snapshot_spec_ready "$SNAP_T29" 99929
 echo '{"project_name": "fork-with-no-private-twin"}' > "$T29_ROOT/.autonomous-team/config.json"
 OUTPUT_T29A=$(env -u AUTONOMOUS_TEAM_REPO \
   AF_CONTROL_PLANE_CONFIG="$CFG_T29" SNAPSHOT_PATH="$SNAP_T29" \
-  SPAWN_AGENT=echo REPO_ROOT="$REAL_REPO_ROOT" DISCUSSING_MOCK='[]' \
+  STEP5_TEST_MODE=1 SPAWN_AGENT=echo REPO_ROOT="$REAL_REPO_ROOT" DISCUSSING_MOCK='[]' \
   bash "$T29_ROOT/scripts/loop-phased-step5.sh" 2>&1)
 RC_T29A=$?
 
@@ -1560,7 +1560,7 @@ assert_not_contains "no executor is spawned against an unbuildable URL" \
 echo '{"repo": "autonomous-agent-7/fulcrumaxe"}' > "$T29_ROOT/.autonomous-team/config.json"
 OUTPUT_T29B=$(env -u AUTONOMOUS_TEAM_REPO \
   AF_CONTROL_PLANE_CONFIG="$CFG_T29" SNAPSHOT_PATH="$SNAP_T29" \
-  SPAWN_AGENT=echo REPO_ROOT="$REAL_REPO_ROOT" DISCUSSING_MOCK='[]' \
+  STEP5_TEST_MODE=1 SPAWN_AGENT=echo REPO_ROOT="$REAL_REPO_ROOT" DISCUSSING_MOCK='[]' \
   bash "$T29_ROOT/scripts/loop-phased-step5.sh" 2>&1)
 
 assert_contains "with a slug, the same tree reaches the executor spawn" \

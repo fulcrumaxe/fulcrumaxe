@@ -212,7 +212,7 @@ SNAP_A=$(mktemp --suffix='.json'); _write_snapshot_spec_ready "$SNAP_A" 90001
 _write_pr_state_sec_entry 96001 90001 "merging" "False" 0
 
 OUT_A=$(AF_CONTROL_PLANE_CONFIG="$CFG_A" SNAPSHOT_PATH="$SNAP_A" \
-  SPAWN_AGENT=echo GH_MERGE=echo HOOKS_DISABLED=1 DASHBOARD_TOUCHED=no DISCUSSING_MOCK='[]' \
+  STEP5_TEST_MODE=1 SPAWN_AGENT=echo GH_MERGE=echo HOOKS_DISABLED=1 DASHBOARD_TOUCHED=no DISCUSSING_MOCK='[]' \
   HAS_LABEL_96001_code_review_passed=yes \
   PR_DEPENDENTS_TEST_MODE=1 PR_DEP_HEADREF_96001="branch-noop" \
   PR_DEP_OPEN_LIST_JSON='[]' \
@@ -232,7 +232,7 @@ SNAP_B=$(mktemp --suffix='.json'); _write_snapshot_spec_ready "$SNAP_B" 90002
 _write_pr_state_sec_entry 96002 90002 "merging" "False" 0
 
 OUT_B=$(AF_CONTROL_PLANE_CONFIG="$CFG_B" SNAPSHOT_PATH="$SNAP_B" \
-  SPAWN_AGENT=echo GH_MERGE=echo HOOKS_DISABLED=1 DASHBOARD_TOUCHED=no DISCUSSING_MOCK='[]' \
+  STEP5_TEST_MODE=1 SPAWN_AGENT=echo GH_MERGE=echo HOOKS_DISABLED=1 DASHBOARD_TOUCHED=no DISCUSSING_MOCK='[]' \
   HAS_LABEL_96002_code_review_passed=yes \
   PR_DEPENDENTS_TEST_MODE=1 PR_DEP_HEADREF_96002="branch-with-dep" \
   PR_DEP_OPEN_LIST_JSON='[{"number":96003,"baseRefName":"branch-with-dep"}]' \
@@ -258,7 +258,7 @@ SNAP_C=$(mktemp --suffix='.json'); _write_snapshot_spec_ready "$SNAP_C" 90003
 _write_pr_state_sec_entry 96004 90003 "merging" "False" 0
 
 OUT_C=$(AF_CONTROL_PLANE_CONFIG="$CFG_C" SNAPSHOT_PATH="$SNAP_C" \
-  SPAWN_AGENT=echo GH_MERGE=echo HOOKS_DISABLED=1 DASHBOARD_TOUCHED=no DISCUSSING_MOCK='[]' \
+  STEP5_TEST_MODE=1 SPAWN_AGENT=echo GH_MERGE=echo HOOKS_DISABLED=1 DASHBOARD_TOUCHED=no DISCUSSING_MOCK='[]' \
   HAS_LABEL_96004_code_review_passed=yes \
   PR_DEPENDENTS_TEST_MODE=1 PR_DEP_LOOKUP_FAIL=1 \
   REPO_ROOT="$REAL_REPO_ROOT" \
@@ -281,7 +281,7 @@ SNAP_D=$(mktemp --suffix='.json'); _write_snapshot_spec_ready "$SNAP_D" 90004
 _write_pr_state_sec_entry 96005 90004 "merging" "False" 0
 
 OUT_D=$(AF_CONTROL_PLANE_CONFIG="$CFG_D" SNAPSHOT_PATH="$SNAP_D" \
-  SPAWN_AGENT=echo GH_MERGE=echo HOOKS_DISABLED=1 DASHBOARD_TOUCHED=no DISCUSSING_MOCK='[]' \
+  STEP5_TEST_MODE=1 SPAWN_AGENT=echo GH_MERGE=echo HOOKS_DISABLED=1 DASHBOARD_TOUCHED=no DISCUSSING_MOCK='[]' \
   HAS_LABEL_96005_code_review_passed=yes \
   PR_DEPENDENTS_DISABLE=1 \
   REPO_ROOT="$REAL_REPO_ROOT" \
