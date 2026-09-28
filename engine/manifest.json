@@ -209,7 +209,7 @@
     "scripts/lib/persona.sh": "87a51af038ac7ac22c835d40ee1cb13cfa4f6c0f1d31fa2c9cbeeb89d1205c96",
     "scripts/lib/planned-prs-gate.sh": "9bd85f7d4824675772e743ba9260a2a55d0398c3a24a0f1cb663c1913bb384ea",
     "scripts/lib/planned-prs-label.sh": "46d646258389b7fa1278d3d2f0abecd05d884cee772316048853d28594a4b16c",
-    "scripts/lib/platform-compat.sh": "e4f697178c52c25bacf98c9dfe753e67750157b6914bbb41938db6c728e7bfb7",
+    "scripts/lib/platform-compat.sh": "4e99ec6b1dc9f98f2bc833ae769b598e080866623bffd56e2b35e540a8489169",
     "scripts/lib/pr-artifacts.sh": "81cae6b93c7e1bff4f46f50a56d82dbe77d600193124a00462828b17876c8f0e",
     "scripts/lib/pr-browser-tree.sh": "6269b5c59c0315c027fcd8de6ae2d6f8131e1ddb8b91444df9c72da0f52b05c8",
     "scripts/lib/pr-dependents.sh": "8757ed7f44a5455a464247d250102fe29bd6f7480dfd4650ab6365e5b921b69b",

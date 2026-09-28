@@ -575,6 +575,74 @@ else
   fail "pc_stat_mtime on a missing file: rc=$MISSING_RC, output='$(cat "$SCRATCH_ROOT/missing-mtime.out")'"
 fi
 
+# --- pc_stat_perm / pc_stat_uid (D#2640): permission bits and owner uid, ---
+#     same GNU/BSD split and no-silent-fallback contract as pc_stat_mtime. -
+echo ""
+echo "--- pc_stat_perm returns permission bits for a chmod 700 dir and a chmod 600 file ---"
+PERM_DIR="$SCRATCH_ROOT/perm-dir-$$"
+mkdir -p "$PERM_DIR"
+chmod 700 "$PERM_DIR"
+(
+  source "$PLATFORM_COMPAT"
+  pc_stat_perm "$PERM_DIR"
+) > "$SCRATCH_ROOT/perm-dir.out" 2>"$SCRATCH_ROOT/perm-dir.err"
+if [[ "$(cat "$SCRATCH_ROOT/perm-dir.out")" == "700" ]]; then
+  pass "pc_stat_perm on a chmod 700 directory prints 700"
+else
+  fail "pc_stat_perm on a chmod 700 directory printed '$(cat "$SCRATCH_ROOT/perm-dir.out")', expected 700 (stderr: $(cat "$SCRATCH_ROOT/perm-dir.err"))"
+fi
+
+PERM_FILE="$SCRATCH_ROOT/perm-file-$$"
+printf 'x' > "$PERM_FILE"
+chmod 600 "$PERM_FILE"
+(
+  source "$PLATFORM_COMPAT"
+  pc_stat_perm "$PERM_FILE"
+) > "$SCRATCH_ROOT/perm-file.out" 2>"$SCRATCH_ROOT/perm-file.err"
+if [[ "$(cat "$SCRATCH_ROOT/perm-file.out")" == "600" ]]; then
+  pass "pc_stat_perm on a chmod 600 file prints 600"
+else
+  fail "pc_stat_perm on a chmod 600 file printed '$(cat "$SCRATCH_ROOT/perm-file.out")', expected 600 (stderr: $(cat "$SCRATCH_ROOT/perm-file.err"))"
+fi
+
+echo ""
+echo "--- pc_stat_uid returns the invoking uid for a file just created ---"
+UID_FILE="$SCRATCH_ROOT/uid-file-$$"
+printf 'x' > "$UID_FILE"
+(
+  source "$PLATFORM_COMPAT"
+  pc_stat_uid "$UID_FILE"
+) > "$SCRATCH_ROOT/uid-file.out" 2>"$SCRATCH_ROOT/uid-file.err"
+if [[ "$(cat "$SCRATCH_ROOT/uid-file.out")" == "$(id -u)" ]]; then
+  pass "pc_stat_uid on a file just created prints \$(id -u)"
+else
+  fail "pc_stat_uid on a file just created printed '$(cat "$SCRATCH_ROOT/uid-file.out")', expected $(id -u) (stderr: $(cat "$SCRATCH_ROOT/uid-file.err"))"
+fi
+
+echo ""
+echo "--- pc_stat_perm/pc_stat_uid return non-zero and print nothing for a missing path ---"
+PERM_MISSING_RC=0
+(
+  source "$PLATFORM_COMPAT"
+  pc_stat_perm "$SCRATCH_ROOT/does-not-exist-perm-$$"
+) > "$SCRATCH_ROOT/missing-perm.out" 2>/dev/null || PERM_MISSING_RC=$?
+if [[ "$PERM_MISSING_RC" -ne 0 ]] && [[ ! -s "$SCRATCH_ROOT/missing-perm.out" ]]; then
+  pass "pc_stat_perm on a missing path returns non-zero and prints nothing"
+else
+  fail "pc_stat_perm on a missing path: rc=$PERM_MISSING_RC, output='$(cat "$SCRATCH_ROOT/missing-perm.out")'"
+fi
+
+UID_MISSING_RC=0
+(
+  source "$PLATFORM_COMPAT"
+  pc_stat_uid "$SCRATCH_ROOT/does-not-exist-uid-$$"
+) > "$SCRATCH_ROOT/missing-uid.out" 2>/dev/null || UID_MISSING_RC=$?
+if [[ "$UID_MISSING_RC" -ne 0 ]] && [[ ! -s "$SCRATCH_ROOT/missing-uid.out" ]]; then
+  pass "pc_stat_uid on a missing path returns non-zero and prints nothing"
+else
+  fail "pc_stat_uid on a missing path: rc=$UID_MISSING_RC, output='$(cat "$SCRATCH_ROOT/missing-uid.out")'"
+fi
+
 # --- Spec check 15: scripts/auto-plan.sh:201 no longer calls 'date -d' -----
 echo ""
 echo "--- Spec check 15: scripts/auto-plan.sh no longer calls 'date -d' directly, uses pc_date_offset ---"

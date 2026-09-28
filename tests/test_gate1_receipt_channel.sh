@@ -61,6 +61,7 @@ GATE1_RECEIPT_LIB_SRC="$REPO_ROOT/scripts/lib/gate1-receipt.sh"
 REPO_RESOLVE_SRC="$REPO_ROOT/scripts/lib/repo-resolve.sh"
 SANITIZE_ECHO_SRC="$REPO_ROOT/scripts/lib/sanitize-echo.sh"
 INTAKE_GATE_SRC="$REPO_ROOT/scripts/lib/external_intake_gate.py"
+PLATFORM_COMPAT_SRC="$REPO_ROOT/scripts/lib/platform-compat.sh"
 
 # sanitize-echo.sh delegates to external_intake_gate.py, which resolves
 # BOT_ACCOUNT at import time (AUTONOMOUS_TEAM_BOT_ACCOUNT env var, or
@@ -85,7 +86,7 @@ GATE1_INVOKE_UNDER_TEST="${GATE1_INVOKE_OVERRIDE:-$GATE1_INVOKE_SRC}"
 
 for f in "$STEP5_SRC" "$GATE1_INVOKE_UNDER_TEST" "$RUN_PR_TESTS_SRC" \
          "$GATE1_RECEIPT_LIB_SRC" "$REPO_RESOLVE_SRC" "$SANITIZE_ECHO_SRC" \
-         "$INTAKE_GATE_SRC"; do
+         "$INTAKE_GATE_SRC" "$PLATFORM_COMPAT_SRC"; do
   if [ ! -f "$f" ]; then
     fail "setup" "required source file not found: $f"
     echo ""
@@ -93,6 +94,9 @@ for f in "$STEP5_SRC" "$GATE1_INVOKE_UNDER_TEST" "$RUN_PR_TESTS_SRC" \
     exit 1
   fi
 done
+
+# shellcheck source=/dev/null
+source "$PLATFORM_COMPAT_SRC"
 
 # ── Fixture: real gate1-invoke.sh in an operator-shaped dir ────────────────
 # Mirrors tests/test_gate1_receipt.sh's own fixture: real gate1-invoke.sh +
@@ -232,8 +236,8 @@ else
   RECEIPT_DIR_RHS="${RECEIPT_DIR_LINE#*GATE1_RECEIPT_DIR=}"
   eval "EVAL_RECEIPT_DIR=$RECEIPT_DIR_RHS"
   if [ -d "$EVAL_RECEIPT_DIR" ]; then
-    DIR_MODE=$(stat -c '%a' "$EVAL_RECEIPT_DIR" 2>/dev/null)
-    DIR_OWNER=$(stat -c '%u' "$EVAL_RECEIPT_DIR" 2>/dev/null)
+    DIR_MODE=$(pc_stat_perm "$EVAL_RECEIPT_DIR" 2>/dev/null)
+    DIR_OWNER=$(pc_stat_uid "$EVAL_RECEIPT_DIR" 2>/dev/null)
     if [ "$DIR_MODE" = "700" ]; then
       pass "item4-dir-mode-0700"
     else

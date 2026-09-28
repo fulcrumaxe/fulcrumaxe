@@ -37,6 +37,7 @@ GATE1_INVOKE_SRC="$REPO_ROOT/scripts/gate1-invoke.sh"
 RUN_PR_TESTS_SRC="$REPO_ROOT/scripts/run-pr-tests.sh"
 GATE1_RECEIPT_LIB_SRC="$REPO_ROOT/scripts/lib/gate1-receipt.sh"
 REPO_RESOLVE_SRC="$REPO_ROOT/scripts/lib/repo-resolve.sh"
+PLATFORM_COMPAT_SRC="$REPO_ROOT/scripts/lib/platform-compat.sh"
 
 PASS=0
 FAIL=0
@@ -45,7 +46,7 @@ ERRORS=()
 pass() { echo "  PASS: $1"; PASS=$((PASS + 1)); }
 fail() { echo "  FAIL: $1 — $2"; FAIL=$((FAIL + 1)); ERRORS+=("$1: $2"); }
 
-for f in "$GATE1_INVOKE_SRC" "$RUN_PR_TESTS_SRC" "$GATE1_RECEIPT_LIB_SRC" "$REPO_RESOLVE_SRC"; do
+for f in "$GATE1_INVOKE_SRC" "$RUN_PR_TESTS_SRC" "$GATE1_RECEIPT_LIB_SRC" "$REPO_RESOLVE_SRC" "$PLATFORM_COMPAT_SRC"; do
   if [ ! -f "$f" ]; then
     fail "setup" "required source file not found: $f"
     echo ""
@@ -53,6 +54,9 @@ for f in "$GATE1_INVOKE_SRC" "$RUN_PR_TESTS_SRC" "$GATE1_RECEIPT_LIB_SRC" "$REPO
     exit 1
   fi
 done
+
+# shellcheck source=/dev/null
+source "$PLATFORM_COMPAT_SRC"
 
 # ── Fixture setup ──────────────────────────────────────────────────────────
 # A fake "operator checkout" ($OP) holding real copies of gate1-invoke.sh,
@@ -240,8 +244,8 @@ print(sorted(d['caller']['containment_probes'].keys()))
 
   # item 6 — dir 0700, file 0600, owned by whoever ran this test.
   RECEIPT_DIR="$(dirname "$RECEIPT_PATH")"
-  DIR_MODE=$(stat -c '%a' "$RECEIPT_DIR" 2>/dev/null)
-  FILE_MODE=$(stat -c '%a' "$RECEIPT_PATH" 2>/dev/null)
+  DIR_MODE=$(pc_stat_perm "$RECEIPT_DIR" 2>/dev/null)
+  FILE_MODE=$(pc_stat_perm "$RECEIPT_PATH" 2>/dev/null)
   if [ "$DIR_MODE" = "700" ]; then
     pass "item6-dir-mode-0700"
   else
