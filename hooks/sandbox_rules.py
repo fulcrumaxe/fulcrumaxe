@@ -2928,17 +2928,17 @@ def _segment_cd_target(tokens: list[str]) -> Optional[str]:
     because of a `cd` earlier in it — the compensating guard D#2246 item 4
     requires. `_classify_unenumerated_write`'s segment walk calls this on
     every segment to track that, independently of write-candidacy.
+
+    D#2543: anchored on `_segment_command_position` (shared with
+    `_segment_command_name`) rather than its own hand-rolled env-prefix
+    walk, so a wrapped `timeout 5 cd <dir>` resolves its `cd` position the
+    same way `_segment_command_name` does, instead of the two silently
+    disagreeing about where the command name sits.
     """
-    if _segment_command_name(tokens) != "cd":
+    pos = _segment_command_position(tokens)
+    if pos is None or os.path.basename(tokens[pos]) != "cd":
         return None
-    i = 0
-    n = len(tokens)
-    while i < n and (
-        tokens[i] == "env"
-        or (_ENV_PREFIX_RE.match(tokens[i]) and "=" in tokens[i] and not tokens[i].startswith("-"))
-    ):
-        i += 1
-    for tok in tokens[i + 1 :]:
+    for tok in tokens[pos + 1 :]:
         if not tok.startswith("-"):
             return tok
     return None
@@ -3018,15 +3018,52 @@ def _split_command_segments(tokens: list[str]) -> list[list[str]]:
     return segments
 
 
+def _segment_command_position(tokens: list[str]) -> Optional[int]:
+    """Return the index in *tokens* of the command that actually RUNS, or
+    None if there is none (only env-var assignments / bare wrapper flags).
+
+    D#2543: `_segment_command_name` used to answer "what is the first
+    token", which every one of `_is_segment_write_candidate`'s exemptions
+    actually needs answered as "what command will actually run" — those
+    diverged the moment `env` needed hand-rolled special-casing here (a
+    skip-list of one name). `timeout 60 python3 -c ...` resolved to
+    `timeout`, a name none of the exemptions below recognise, so the
+    deny-by-default branch caught every wrapped invocation regardless of
+    what it actually ran.
+
+    Fixed by delegating to `_command_positions` (D#2058) instead of
+    growing a second, hand-rolled wrapper-skip loop here: that walker
+    already resolves past `_COMMAND_WRAPPER_TOKENS` (`timeout`, `nohup`,
+    `nice`, `stdbuf`, `setsid`, `time`, `ionice`, `xargs`) plus their own
+    flags and (for `timeout`) a bare numeric duration, past `env`/
+    `FOO=bar` prefixes, and — with `skip_command_builtin=True` — past the
+    `command` builtin too. This file already has exactly one definition of
+    "which tokens are a wrapper"; reusing it here means a wrapper spelling
+    added to that set in the future is fixed for every caller at once
+    rather than needing a second, easily-forgotten update (the `env`
+    special-case above was already one such list, of one, and this is the
+    fourth round of the same class of gap — see D#2483, D#2541).
+
+    *tokens* is a single already-isolated shell segment (from
+    `_split_command_segments`), so it never itself contains a
+    `;`/`&&`/`||`/`|`/`&` separator token — `_command_positions` can
+    therefore never walk past this segment's own end into a second,
+    unrelated command, and asking it for only the FIRST position found is
+    safe.
+    """
+    positions = _command_positions(tokens, skip_command_builtin=True)
+    return positions[0] if positions else None
+
+
 def _segment_command_name(tokens: list[str]) -> Optional[str]:
-    """Return the base executable name for a segment, skipping env-var assignments."""
-    for tok in tokens:
-        if tok == "env":
-            continue
-        if _ENV_PREFIX_RE.match(tok) and "=" in tok and not tok.startswith("-"):
-            continue
-        return os.path.basename(tok)
-    return None
+    """Return the base executable name for a segment — the command that
+    actually runs, resolved past env-var assignments AND command-prefix
+    wrappers, not just the first token. See `_segment_command_position`.
+    """
+    pos = _segment_command_position(tokens)
+    if pos is None:
+        return None
+    return os.path.basename(tokens[pos])
 
 
 def _segment_has_py_interpreter_token(segment: list[str]) -> bool:
@@ -3206,9 +3243,19 @@ def _is_segment_write_candidate(tokens: list[str]) -> bool:
     invocation gets the blanket exemption, a verbless one falls through to
     the normal scan below like any other command.
     """
-    name = _segment_command_name(tokens)
-    if name is None:
+    pos = _segment_command_position(tokens)
+    if pos is None:
         return False
+    name = os.path.basename(tokens[pos])
+    # D#2543: every check below (`_sed_is_in_place`, `_awk_is_in_place`,
+    # `_segment_git_has_verb`, `_python_c_payload`) is written assuming
+    # tokens[0] IS the resolved command and the rest of its own tokens
+    # follow immediately — true when there's no wrapper, false the moment
+    # one precedes it (`nice sed -i ...`: tokens[0] is `nice`, not `sed`).
+    # Slicing at the resolved position, once, here — rather than teaching
+    # each of those four functions its own wrapper-skip logic — keeps that
+    # assumption true for all of them without duplicating it four times.
+    effective = tokens[pos:]
     if name == "cd":
         # D#2246 item 4: `cd` alone writes nothing. The compensating guard —
         # a write candidate reached AFTER a `cd` that left the worktree —
@@ -3218,13 +3265,13 @@ def _is_segment_write_candidate(tokens: list[str]) -> bool:
     if name in _READONLY_COMMAND_NAMES:
         return False
     if name == "git":
-        return not _segment_git_has_verb(tokens)
+        return not _segment_git_has_verb(effective)
     if name == "sed":
-        return _sed_is_in_place(tokens)
+        return _sed_is_in_place(effective)
     if name == "awk":
-        return _awk_is_in_place(tokens)
+        return _awk_is_in_place(effective)
     if _is_py_interpreter_name(name):
-        payload, saw_dash_c = _python_c_payload(tokens)
+        payload, saw_dash_c = _python_c_payload(effective)
         if payload is not None:
             return not _python_payload_is_read_only(payload)
         # A `-c`-shaped flag was present but we couldn't cleanly extract its
