@@ -15,6 +15,8 @@ Task:
 
 Discussion URL: {{discussion_url}}
 
+HOST_EXECUTION: __PR_HOST_EXECUTION_MODE__
+
 ## DETAILED_SPEC
 
 ## STEP 1 — Always read REMOTE PR state, never local
@@ -113,6 +115,7 @@ Review checklist:
    - Any line or file that does NOT trace to the spec → call out as severity "suggestion" in AGENT_OUTPUT issues.
    - If >300 diff lines OR >5 files unrelated to the immediate ask → severity "error", verdict "needs-fix".
 
+<!-- HOST_EXEC_BEGIN -->
 7. MANDATORY — Execute the test suites the PR touches. Reading test code is not sufficient.
 
    SPEC DISCOVERY CHECK: If this PR adds a new `*.spec.ts` file under `dashboard/e2e/`,
@@ -159,6 +162,7 @@ Review checklist:
    RULE: If any test command exits non-zero → verdict MUST be 'needs-fix', not 'pass'.
    RULE: Include the tests_run array in the AGENT_OUTPUT envelope (empty array is allowed only
          when the PR provably touches no test-bearing directories — state why in the review).
+<!-- HOST_EXEC_END -->
 
 ## When to verdict needs-fix
 

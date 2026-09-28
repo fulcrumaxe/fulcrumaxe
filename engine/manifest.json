@@ -1,11 +1,11 @@
 {
   "engine_version": "0.3.0",
   "files": {
-    ".claude/agents/acceptance-tester.md": "5ae64a1abcfb85d08c282fcbd0d833348ef900e9d1366cf52a089007fc5d5c80",
+    ".claude/agents/acceptance-tester.md": "998ec0ba75a728e238176026aeea9ef524dc5f8560609ce8b750ca3250b0e5f5",
     ".claude/agents/accessibility-reviewer.md": "d84732f77d51ed5dd056826a81f48b7b4737e90069bbc3a4929a9ac618fc6ec6",
     ".claude/agents/analytics-engineer.md": "452a9f1e00ad425b67543a43b5b4e1d8cb6a0741666d343115727cbf4723608a",
     ".claude/agents/browser-tester.md": "619ac71ca33002e79ddb781d3e3550a0e156025cb495288404baf6bcf3dbfef6",
-    ".claude/agents/code-reviewer.md": "5e5efa6571c7106e124e541c3a5ed5b1998ad20f4b6c73a3ebeb6cc5a1161f74",
+    ".claude/agents/code-reviewer.md": "1d65887bf702e8284ecd67e0fbeabc36f2b7de35c0400db844d6a26754d4a2b6",
     ".claude/agents/cost-analyst.md": "31d8b7b94c88500ce5e85944dcbedd51f3253508927c59c04c057485a9d80c39",
     ".claude/agents/debater.md": "a5c736383fee35607ec8b7ac6eb7a453e6db34b9cd8eeabf70202bdec6d8a67c",
     ".claude/agents/docs-writer.md": "6119a6ff7fa0019bb83ea2041eb9597723d87914d9c8c1164db8d31b5c586016",
@@ -22,7 +22,7 @@
     ".claude/agents/run-analyst.md": "ad5c051201ce7fbbc1277f5dc8161ef0509c06f6d2a8df6deaa7f561fa5f6472",
     ".claude/agents/runbook-writer.md": "9f62bf52cf9e2f29e4847d072ea0ff1c6bb3580685ebc7e53688cac28765a7f1",
     ".claude/agents/security-expert.md": "590192be97557ae517704e2b100fff35342c837babcd7c6f4140eaefe1867dfa",
-    ".claude/agents/security-reviewer.md": "c7f2d842448c13309148d9512e02a38c1bf4cad3d2e95d675085d4e175643822",
+    ".claude/agents/security-reviewer.md": "64e85cb64513c695bde9f3d53358d76892e3e47c82f2bc17cfd85169e9b801bb",
     ".claude/agents/technical-architect.md": "912a6538ba3d871dedb71dadbbcafd4ad3b7058cff1cb7a71caa9938142875c3",
     ".claude/agents/tui-tester.md": "146d4545f5545217caffd62ce8df18aebf7830f72185c918b379da05732ddb6c",
     ".claude/agents/ux-designer.md": "ccfccbc34e22a0c2d78e7e96cce339dd992093f40d26a6d4aba5f5fc6fd3b7ab",

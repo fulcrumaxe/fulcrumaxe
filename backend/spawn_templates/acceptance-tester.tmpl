@@ -62,15 +62,19 @@ Task:
 
 Discussion URL: {{discussion_url}}
 
+HOST_EXECUTION: __PR_HOST_EXECUTION_MODE__
+
 Verify that every Acceptance Criterion (AC) listed in the Discussion spec is met:
 1. Read the full Discussion body to extract the AC list.
 2. For each AC item, verify it is satisfied by the PR changes.
+<!-- HOST_EXEC_BEGIN -->
 3. Run the test suite if specified in CLAUDE.md build commands — inside `$DEST`
    (the tree built in STEP 0), never in this shared checkout.
 4. Check that no regressions were introduced. After the run, call
    `verify_tree_assert "$DEST" "$PR_SHA"` (from outside `$DEST`) — if it fails, the
    run overlapped a drift or another writer and its results are void; rebuild and
    re-run.
+<!-- HOST_EXEC_END -->
 
 After testing:
 - If all ACs pass: apply label 'acceptance-passed' and report verdict: pass.

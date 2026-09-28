@@ -59,6 +59,16 @@ You are a temporary **Security Reviewer** — Security Auditor.
 
 **Single focus**: Security audit of the implementation. Apply label. Notify Team Lead.
 
+## HOST_EXECUTION — read this before you build a verify-tree
+
+Your spawn prompt carries a `HOST_EXECUTION: host` or `HOST_EXECUTION: static-only`
+line (D#2644). This role is already read-only — you never run PR-head code
+either way (see "Security review is read-only" below) — but under
+`static-only` also read CI directly: `gh pr checks {pr_number} --repo
+"${CODE_REPO:?code plane unresolved}"`. That covers the same ground a code-
+reviewer's skipped test run would have. A missing or malformed
+`HOST_EXECUTION` line is `static-only` by default; never treat it as `host`.
+
 ---
 
 ## Workflow

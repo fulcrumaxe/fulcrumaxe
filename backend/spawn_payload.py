@@ -27,6 +27,10 @@ import os
 import sys
 from typing import Mapping
 
+# D#2644: the three roles that may run PR-head code on the operator host when
+# (and only when) pr_execution_policy.resolve() confirms the PR is internal.
+_PR_HOST_EXECUTION_ROLES = frozenset({"code-reviewer", "security-reviewer", "acceptance-tester"})
+
 
 def _route_warnings(warnings: list, role: str, discussion: str) -> None:
     """Route pre-spawn-check.sh's WARNINGS array to a durable, greppable sink.
@@ -81,12 +85,29 @@ def build_payload(env: Mapping[str, str]) -> dict:
 
     disc_raw = env.get("_DISC", "")
     pr_raw = env.get("_PR", "")
+    role = env.get("_ROLE", "")
 
-    _route_warnings(psc.get("warnings") or [], env.get("_ROLE", ""), disc_raw)
+    _route_warnings(psc.get("warnings") or [], role, disc_raw)
+
+    pr_int = int(pr_raw) if pr_raw else None
+    disc_int = int(disc_raw) if disc_raw else None
+
+    # D#2644: resolved strictly from the two intake CLIs' exit codes — never
+    # from an environment variable, so nothing in the spawn environment can
+    # force "host". Left empty (renders as static-only, fail-closed) for
+    # every role that isn't one of the three PR-scoped reviewers, and for a
+    # PR-scoped reviewer spawned without a PR number.
+    pr_host_execution = ""
+    if role in _PR_HOST_EXECUTION_ROLES and pr_int is not None:
+        from backend.pr_execution_policy import resolve as _resolve_pr_host_execution
+
+        pr_host_execution, _reason = _resolve_pr_host_execution(
+            pr_int, env.get("_PR_REPO", ""), disc_int
+        )
 
     return {
-        "role":                  env.get("_ROLE", ""),
-        "discussion":            int(disc_raw) if disc_raw else None,
+        "role":                  role,
+        "discussion":            disc_int,
         "task_prompt":           env.get("_TASK", ""),
         "persona_voice":         psc.get("persona_voice", ""),
         "working_principles":    psc.get("working_principles", ""),
@@ -111,7 +132,7 @@ def build_payload(env: Mapping[str, str]) -> dict:
         "env_scrub_snippet":     env.get("_ENV_SCRUB", ""),
         "prior_test_runs_block": env.get("_PRIOR_RUNS", ""),
         "dial_state_at_spawn":   env.get("_DIAL_STATE", ""),
-        "pr":                    int(pr_raw) if pr_raw else None,
+        "pr":                    pr_int,
         "pr_branch":             env.get("_PR_BRANCH", ""),
         # D#2563: the repo plane PR #<pr> was resolved to (spawn-agent.sh's
         # --pr-plane / probe-both-planes resolution) — mirrors pr_branch
@@ -119,6 +140,10 @@ def build_payload(env: Mapping[str, str]) -> dict:
         # which repo to run `gh pr diff --repo` against, and that is no
         # longer always the code plane.
         "pr_repo":               env.get("_PR_REPO", ""),
+        # D#2644: "host" only when pr_execution_policy.resolve() confirmed an
+        # internal PR for one of the three reviewer roles; "" (renders as
+        # static-only) for every other role or PR-less spawn.
+        "pr_host_execution":     pr_host_execution,
     }
 
 

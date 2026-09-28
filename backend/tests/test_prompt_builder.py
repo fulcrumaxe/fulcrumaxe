@@ -716,6 +716,107 @@ class TestPrPlumbingThroughRealTemplate:
 
 
 # ---------------------------------------------------------------------------
+# HOST_EXECUTION rendering (D#2644)
+# ---------------------------------------------------------------------------
+
+_HOST_EXEC_FORBIDDEN_UNDER_STATIC_ONLY = (
+    "python3 -m pytest",
+    "run-pr-tests.sh",
+    "gate1-invoke.sh",
+    "scripts/ci/run-guards.sh",
+    "npm run test",
+)
+
+_HOST_EXEC_ROLES = ("code-reviewer", "security-reviewer", "acceptance-tester")
+
+
+def _host_exec_prompt(role: str, pr_host_execution: str) -> SpawnPrompt:
+    return SpawnPrompt(
+        role=role,
+        discussion=1,
+        pr=4242,
+        pr_repo="o/r",
+        task_prompt="review it",
+        hook_event_id=f"{role}-1-1",
+        pr_host_execution=pr_host_execution,
+    )
+
+
+class TestHostExecutionExternal:
+    """Spec item 2: static-only renders no host-execution commands, but does
+    tell the reviewer how to read CI instead."""
+
+    @pytest.mark.parametrize("role", _HOST_EXEC_ROLES)
+    def test_static_only_render_has_no_pr_head_execution(self, role):
+        result = _host_exec_prompt(role, "static-only").render()
+        assert "HOST_EXECUTION: static-only" in result
+        for forbidden in _HOST_EXEC_FORBIDDEN_UNDER_STATIC_ONLY:
+            assert forbidden not in result, f"{role}: found forbidden {forbidden!r} under static-only"
+        assert "gh pr checks 4242 --repo o/r" in result
+
+
+class TestHostExecutionInternal:
+    """Spec item 3: internal (host) renders are unchanged except for the
+    added HOST_EXECUTION line and, if the implementation uses them, the
+    HOST_EXEC_BEGIN/END marker lines."""
+
+    @pytest.mark.parametrize("role", _HOST_EXEC_ROLES)
+    def test_host_render_has_the_line(self, role):
+        result = _host_exec_prompt(role, "host").render()
+        assert "HOST_EXECUTION: host" in result
+
+    def test_code_reviewer_host_render_keeps_its_execution_step(self):
+        result = _host_exec_prompt("code-reviewer", "host").render()
+        assert "run-pr-tests.sh" in result
+        assert "gate1-invoke.sh" in result
+
+    @pytest.mark.parametrize("role", _HOST_EXEC_ROLES)
+    def test_host_render_is_a_pure_substitution_no_structural_change(self, role):
+        # apply_host_execution() is unit-tested directly in
+        # test_pr_execution_policy.py; here we only need the integration
+        # property: under "host" it is a same-line-count substitution of the
+        # HOST_EXECUTION sentinel, never a content rewrite — the wrapped
+        # host-exec span is passed through untouched, markers and all.
+        from backend.prompt_builder import _discussion_url, _pr_url
+        from backend.spawn_templates import render_body
+
+        raw = render_body(
+            role,
+            {
+                "task_brief": "review it",
+                "discussion_number": "1",
+                "discussion_url": _discussion_url(1),
+                "pr_number": "4242",
+                "pr_branch": "",
+                "pr_url": _pr_url(4242),
+                "pr_repo": "o/r",
+            },
+            ignore_unknown=False,
+        )
+        host_result = _host_exec_prompt(role, "host").render()
+        # The rendered prompt appends CHECKLIST/PERSONA/etc. sections after
+        # the template body, so compare only the template-body-sized prefix.
+        assert host_result.splitlines()[: len(raw.splitlines())] == [
+            line if not line.strip().startswith("HOST_EXECUTION:") else "HOST_EXECUTION: host"
+            for line in raw.splitlines()
+        ]
+
+
+class TestHostExecutionFailClosedDefault:
+    """Spec item 4: a missing or empty mode renders as static-only."""
+
+    @pytest.mark.parametrize("role", _HOST_EXEC_ROLES)
+    def test_empty_mode_is_static_only(self, role):
+        result = _host_exec_prompt(role, "").render()
+        assert "HOST_EXECUTION: static-only" in result
+
+    @pytest.mark.parametrize("role", _HOST_EXEC_ROLES)
+    def test_garbage_mode_is_static_only(self, role):
+        result = _host_exec_prompt(role, "Host").render()
+        assert "HOST_EXECUTION: static-only" in result
+
+
+# ---------------------------------------------------------------------------
 # build_from_psc factory
 # ---------------------------------------------------------------------------
 
