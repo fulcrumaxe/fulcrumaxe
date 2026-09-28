@@ -284,24 +284,42 @@ _REDIRECT_PATTERN = re.compile(
 # before it) while the `<` alternative keeps excluding all four characters,
 # including its own kind, exactly as before.
 #
-# D#2629 (perf, CWE-1333): a leading `(?<![0-9])` anchors the whole
-# alternation so it can only START matching at a non-digit boundary — the
-# first character of a digit run, or a position with no digit before it at
-# all. Without it, a long run of digits that never resolves to a real
-# operator (e.g. `echo ` + `"1" * 50000`, no trailing `<`/`>`) makes the
-# engine retry the `[0-9]*` branch, and its backtrack over the remaining
-# digits, from EVERY position inside the run — quadratic in the run's
-# length (measured: 0.011s at main, 18.8s for a 50k-digit run at #252's
-# head). The correct match for a genuine glued redirect (`10>x`) always
-# starts at the run's first digit, since `[0-9]*` is greedy and consumes the
-# whole prefix before the operator is checked — a match attempt starting
-# mid-run can never succeed where one starting at the run's boundary
-# doesn't already, so skipping those inner positions costs no coverage.
-# Verified against the #252 security reviewer's differential corpus (the
-# 141-row table, the 158-row adversarial set, and the 986 harvested test
-# literals): zero verdict changes.
+# D#2629 (perf, CWE-1333): a long run of digits that never resolves to a
+# real operator (e.g. `echo ` + `"1" * 50000`, no trailing `<`/`>`) used to
+# make the engine retry the `[0-9]*` branch, and its backtrack over the
+# remaining digits, from EVERY position inside the run — quadratic in the
+# run's length (measured: 0.011s at main, 18.8s for a 50k-digit run at
+# #252's head).
+#
+# D#2629 fix round 1 (security re-review): the first fix for that added a
+# leading `(?<![0-9])` anchor, on the theory that a match starting mid-run
+# can never succeed where one starting at the run's boundary doesn't
+# already. That is false whenever the character immediately before the
+# digit run is one the per-branch lookbehind already excludes — `2>&1>x`:
+# at the `1`, the `>` branch's own lookbehind fails (preceded by `&`), and
+# on main the engine then retries with an EMPTY digit prefix starting at
+# the `>` itself (preceded by `1`, which passes), matching and splitting
+# `>x`. The leading `(?<![0-9])` anchor blocks that empty-prefix retry too,
+# so `2>&1>x`, `y|1>x`, and `true&&1>x` stopped splitting at all — a
+# classifier bypass, not just a missed split (982 of 3,837 differential
+# probes flipped BLOCK to ALLOW).
+#
+# The actual fix drops the `[0-9]*` digit prefix from both branches
+# instead of anchoring it. The prefix was never needed for correctness:
+# the only caller, `_split_glued_redirect_operands`, inserts a space after
+# `m.group()` — i.e. only where the match ENDS matters, and both branches'
+# operators (`>`/`>>`/`<`) match at the same position whether or not a
+# digit run precedes them. Dropping the prefix removes the only source of
+# backtracking (there is nothing left to retry — each branch has exactly
+# one way to match at a given start position), which is what fixes the
+# quadratic blowup, and it cannot suppress a match the anchored or
+# unanchored-with-prefix versions used to make, since the operator itself
+# is unchanged and unconditional. Verified against the #252 security
+# reviewer's differential corpus (the 141-row table, the 158-row
+# adversarial set, and the 986 harvested test literals) plus 3,837 new
+# digit-run probes (5,122 commands total): zero verdict or reason changes.
 _GLUED_REDIRECT_OP_RE = re.compile(
-    r"(?<![0-9])(?:(?<![>&|])([0-9]*>{1,2})|(?<![<>&|])([0-9]*<(?!<)))(?=[^\s&(|])"
+    r"(?:(?<![>&|])(>{1,2})|(?<![<>&|])(<(?!<)))(?=[^\s&(|])"
 )
 
 

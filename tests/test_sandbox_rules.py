@@ -5014,9 +5014,18 @@ class TestD2629GluedRedirectDigitPrefixLinear:
     `[0-9]*` prefix from every position inside a run of digits, so
     classification time grew quadratically with the longest digit run in
     the command -- `classify_bash("echo " + "1" * 50000)` measured at 18.8s
-    against 0.011s on main, with no timeout anywhere in the hook. Fixed with
-    a leading `(?<![0-9])` that anchors the alternation to non-digit
-    boundaries, so a match attempt is never even started mid-run.
+    against 0.011s on main, with no timeout anywhere in the hook.
+
+    Fix round 1 (security re-review): the first attempt anchored the
+    alternation with a leading `(?<![0-9])` so a match could never even
+    start mid-run. That anchor also blocked the EMPTY-prefix retry an
+    operator makes right after a digit run that itself follows `>`, `&`, or
+    `|` -- `2>&1>x`: main splits the trailing `>` from a zero-length digit
+    prefix, but the anchor stopped that too, so `echo x 2>&1>audit.jsonl`,
+    `echo y|1>dial-registry.json`, and similar shapes stopped splitting at
+    all and went from BLOCK to ALLOW (982 of 3,837 differential probes
+    flipped). The actual fix drops the `[0-9]*` prefix from both branches
+    instead of anchoring it -- see `_GLUED_REDIRECT_OP_RE`'s module comment.
     """
 
     def test_long_digit_run_classifies_quickly(self) -> None:
@@ -5031,14 +5040,33 @@ class TestD2629GluedRedirectDigitPrefixLinear:
         assert elapsed < 2, f"classify_bash took {elapsed:.3f}s for a 100k-digit run"
 
     def test_fd_ten_glued_to_audit_jsonl_still_blocks(self) -> None:
-        # The anchor must not change a single verdict -- a real glued
-        # redirect's digit prefix still starts matching at the run's first
-        # digit, so `10>` glued straight onto a protected basename keeps
-        # blocking exactly as it did before this fix.
+        # A real glued redirect's digit prefix still starts matching at the
+        # run's first digit, so `10>` glued straight onto a protected
+        # basename keeps blocking exactly as it did before this fix.
         cmd = "echo x 10>audit.jsonl"
         d = classify_bash(cmd, _WT_CLAUDE)
         assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
         assert "audit.jsonl" in d.reason
+
+    def test_fd_dup_then_glued_redirect_still_blocks(self) -> None:
+        # Fix round 1 regression: `2>&1>audit.jsonl` writes/truncates the
+        # target in real bash. The digit run (`1`) sits right after `&`, so
+        # the `>` that follows it must still split off as its own operator
+        # even though its own per-branch lookbehind (excluding a preceding
+        # `>`/`&`/`|`) fails right at the digit run's start.
+        cmd = "echo x 2>&1>audit.jsonl"
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+        assert "audit.jsonl" in d.reason
+
+    def test_pipe_then_glued_redirect_still_blocks(self) -> None:
+        # Fix round 1 regression: `echo y|1>dial-registry.json` -- the `|`
+        # excludes the immediately-following `>` from its own branch, so
+        # the split has to happen at the digit run the same way as above.
+        cmd = "echo y|1>dial-registry.json"
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+        assert "dial-registry.json" in d.reason
 
 
 class TestD2541FixRound1HeredocBodyNotScannedForGluedRedirects:
