@@ -253,7 +253,7 @@
     "scripts/measure-spawn-context.sh": "0a3508460a4fc2e0b822d5260257a1f80aeedc185c6f623637c04f86e2328de1",
     "scripts/memory-triage.sh": "7a7cfe4025deb25ec14379d7a7ed9865a4d7f6138260992e91b2c7cc04272876",
     "scripts/memory-triage/apply-tiers.sh": "3affc2fe4433f58acd6256af4857c95c74e0951581fd6053b854f9362eef48c2",
-    "scripts/merge-and-hook.sh": "a85650eb50affd7bfecd89c955aa37a1f2c4b65c246f710a82b09d6ae1ede2c6",
+    "scripts/merge-and-hook.sh": "cdc5c49ff1d48ac767d61af46af4024f4fb2a5fd559e5e1e6b4f7d1ba9ee9132",
     "scripts/migrate-orphan-worktree-rate-unit.sh": "d9d1c597c47f408cc1562380216fabcae7717de5a83ff114ccc2d2cb7e389d24",
     "scripts/ollama-smoke-test.sh": "e96204779b8e46c7899ee64899d6cb12a90a1faa88173a1e8b5c516b5249a52d",
     "scripts/orchestrate.sh": "1fa620596028755eaa045a0b9c70db3b6d39279df80d2ecb2cd79e579855974c",

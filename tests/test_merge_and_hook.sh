@@ -280,13 +280,13 @@ exit 0
 GHEOF
   chmod +x "$tmpdir/bin/gh"
 
-  # Stub python3 — only intercepts external_intake_gate.py security-required;
-  # anything else falls through to the REAL interpreter (D#1614 introduces
-  # genuine python3 -c calls for JSON/CI-status evaluation that must actually
-  # run). The real path is baked in as an absolute path resolved with the
-  # test's normal (unstubbed) PATH — falling back to `env python3` here would
-  # re-resolve "python3" through the stub dir (which is prepended to PATH when
-  # this stub runs) and recurse forever.
+  # Stub python3 — only intercepts external_intake_gate.py security-required
+  # and check-discussion; anything else falls through to the REAL interpreter
+  # (D#1614 introduces genuine python3 -c calls for JSON/CI-status evaluation
+  # that must actually run). The real path is baked in as an absolute path
+  # resolved with the test's normal (unstubbed) PATH — falling back to `env
+  # python3` here would re-resolve "python3" through the stub dir (which is
+  # prepended to PATH when this stub runs) and recurse forever.
   local real_python3
   real_python3="$(command -v python3)"
   cat > "$tmpdir/bin/python3" <<PYEOF
@@ -299,6 +299,14 @@ if [[ "\$1" == *external_intake_gate.py* && "\$2" == "security-required" ]]; the
     *) echo "unknown" ;;
   esac
   exit "\$rc"
+fi
+# check_ci_provenance_gate's own call, once a PR touches .github/workflows/**
+# and the kill switch is not disabled (D#2646): STUB_CHECK_DISC_RC default 0
+# means "intake-approved" / not blocked, so every pre-existing test — none of
+# which ever reaches this branch, since none sets STUB_PR_FILES to a workflow
+# path — stays inert if it ever did.
+if [[ "\$1" == *external_intake_gate.py* && "\$2" == "check-discussion" ]]; then
+  exit "\${STUB_CHECK_DISC_RC:-0}"
 fi
 exec "$real_python3" "\$@"
 PYEOF
@@ -1743,6 +1751,107 @@ for MGL_LABEL in "${MERGE_GATE_REQUIRED_PASS_LABELS[@]}"; do
   unset TWO_GATE_PR_BODY_999 STUB_PR_LABELS STUB_PR_LABELS_EXACT STUB_TIMELINE
   rm -rf "$T_MGL8"
 done
+
+# ═══════════════════════════════════════════════════════════════════════════
+# D#2646 — --force-no-ci must override only the CI status result, never the
+# provenance gate (SEC-3 / AC-15). Before the fix, check_ci_provenance_gate
+# sat inside `if [[ "$FORCE_NO_CI" != "true" ]]`, so --force-no-ci skipped it
+# outright even though the comment above it claimed otherwise.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── Test FN-1: external provenance, real classifier path — --force-no-ci
+#    still refuses via the gate's own check-discussion call. ─────────────────
+echo "Test FN-1: --force-no-ci, external-provenance workflow PR — refused before any merge call"
+T_FN1=$(mktemp -d)
+setup_stubs "$T_FN1" 0
+export TWO_GATE_PR_BODY_999="Gate 1: PASS\nGate 2: PASS"
+export STUB_SEC_REQUIRED_RC=0            # HG-7: security review required
+export STUB_PR_LABELS="security-review-passed"   # ...and satisfied, so the run reaches step 0d
+export STUB_PR_FILES=".github/workflows/ci.yml"
+export STUB_CHECK_DISC_RC=1              # check-discussion refuses — not intake-approved
+OUT_FN1=$(run_script "$T_FN1" --pr 999 --force-no-ci --bypass-reason "x" 2>&1)
+RC_FN1=$?
+assert_exit "FN-1: exits 1 — provenance gate refuses" 1 "$RC_FN1"
+assert_contains "FN-1: cites the CI-status gate refusal" "CI-status gate refused for PR #999" "$OUT_FN1"
+assert_not_contains "FN-1: gh pr merge NOT called" "pr merge" "$OUT_FN1"
+AUDIT_FN1="$T_FN1/state/audit.jsonl"
+N_BLOCK_FN1=$(_audit_count "$AUDIT_FN1" "ci_gate_block")
+N_BYPASS_FN1=$(_audit_count "$AUDIT_FN1" "manual_merge_ci_bypass")
+if [[ "$N_BLOCK_FN1" -eq 1 ]]; then pass "FN-1: exactly 1 ci_gate_block row"; else fail "FN-1: expected 1 ci_gate_block row, got $N_BLOCK_FN1"; fi
+if [[ "$N_BYPASS_FN1" -eq 0 ]]; then pass "FN-1: zero manual_merge_ci_bypass rows"; else fail "FN-1: expected 0 manual_merge_ci_bypass rows, got $N_BYPASS_FN1"; fi
+unset TWO_GATE_PR_BODY_999 STUB_SEC_REQUIRED_RC STUB_PR_LABELS STUB_PR_FILES STUB_CHECK_DISC_RC
+rm -rf "$T_FN1"
+
+# ── Test FN-2: SEC-3 (CI kill switch disabled) under --force-no-ci ──────────
+echo "Test FN-2: --force-no-ci, workflow PR while CI_DISABLED — refused (D#1987 SEC-3)"
+T_FN2=$(mktemp -d)
+setup_stubs "$T_FN2" 0
+export TWO_GATE_PR_BODY_999="Gate 1: PASS\nGate 2: PASS"
+export STUB_PR_FILES=".github/workflows/ci.yml"
+export CI_KILL_SWITCH_OVERRIDE=true      # kill switch reads disabled
+export STUB_CHECK_DISC_RC=0              # provenance itself is not the blocker here
+OUT_FN2=$(run_script "$T_FN2" --pr 999 --force-no-ci --bypass-reason "x" 2>&1)
+RC_FN2=$?
+assert_exit "FN-2: exits 1 — SEC-3 refuses" 1 "$RC_FN2"
+assert_contains "FN-2: cites D#1987 SEC-3" "D#1987 SEC-3" "$OUT_FN2"
+assert_not_contains "FN-2: gh pr merge NOT called" "pr merge" "$OUT_FN2"
+AUDIT_FN2="$T_FN2/state/audit.jsonl"
+N_BYPASS_FN2=$(_audit_count "$AUDIT_FN2" "manual_merge_ci_bypass")
+if [[ "$N_BYPASS_FN2" -eq 0 ]]; then pass "FN-2: zero manual_merge_ci_bypass rows"; else fail "FN-2: expected 0 manual_merge_ci_bypass rows, got $N_BYPASS_FN2"; fi
+unset TWO_GATE_PR_BODY_999 STUB_PR_FILES CI_KILL_SWITCH_OVERRIDE STUB_CHECK_DISC_RC
+rm -rf "$T_FN2"
+
+# ── Test FN-3: non-regression — no workflow files, --force-no-ci still bypasses
+#    CI as before. ────────────────────────────────────────────────────────────
+echo "Test FN-3: --force-no-ci, no workflow files — bypass proceeds as before"
+T_FN3=$(mktemp -d)
+setup_stubs "$T_FN3" 0
+export TWO_GATE_PR_BODY_999="Gate 1: PASS\nGate 2: PASS"
+export STUB_PR_FILES="backend/server.py"
+export STUB_CI_CHECK_RUNS="$MISSING_MATRIX"
+export STUB_HEAD_SHA="cafebabe1944"
+OUT_FN3=$(run_script "$T_FN3" --pr 999 --force-no-ci --bypass-reason "x" 2>&1)
+RC_FN3=$?
+assert_exit "FN-3: exits 0 — bypass merges" 0 "$RC_FN3"
+assert_contains "FN-3: gh pr merge was called" "GH_ARGS:" "$OUT_FN3"
+AUDIT_FN3="$T_FN3/state/audit.jsonl"
+N_BYPASS_FN3=$(_audit_count "$AUDIT_FN3" "manual_merge_ci_bypass")
+if [[ "$N_BYPASS_FN3" -eq 1 ]]; then pass "FN-3: exactly 1 manual_merge_ci_bypass row"; else fail "FN-3: expected 1 manual_merge_ci_bypass row, got $N_BYPASS_FN3"; fi
+if python3 -c '
+import json, sys
+for line in open(sys.argv[1]):
+    row = json.loads(line)
+    if row.get("kind") == "manual_merge_ci_bypass":
+        assert row.get("head_sha"), "head_sha is empty"
+        sys.exit(0)
+sys.exit(1)
+' "$AUDIT_FN3" 2>/dev/null; then
+  pass "FN-3: bypass row has a non-empty head_sha"
+else
+  fail "FN-3: bypass row missing or has empty head_sha — $(cat "$AUDIT_FN3" 2>/dev/null)"
+fi
+unset TWO_GATE_PR_BODY_999 STUB_PR_FILES STUB_CI_CHECK_RUNS STUB_HEAD_SHA
+rm -rf "$T_FN3"
+
+# ── Test FN-4: non-regression — workflow file the gate passes, --force-no-ci
+#    does not turn every workflow PR into a refusal. ─────────────────────────
+echo "Test FN-4: --force-no-ci, workflow PR the gate passes — bypass still merges"
+T_FN4=$(mktemp -d)
+setup_stubs "$T_FN4" 0
+export TWO_GATE_PR_BODY_999="Gate 1: PASS\nGate 2: PASS"
+export STUB_PR_FILES=".github/workflows/ci.yml"
+export STUB_CHECK_DISC_RC=0              # internal/approved provenance
+export STUB_CI_CHECK_RUNS="$MISSING_MATRIX"
+export STUB_HEAD_SHA="cafebabe1944"
+OUT_FN4=$(run_script "$T_FN4" --pr 999 --force-no-ci --bypass-reason "x" 2>&1)
+RC_FN4=$?
+assert_exit "FN-4: exits 0 — bypass merges" 0 "$RC_FN4"
+assert_contains "FN-4: gh pr merge was called" "GH_ARGS:" "$OUT_FN4"
+AUDIT_FN4="$T_FN4/state/audit.jsonl"
+N_BYPASS_FN4=$(_audit_count "$AUDIT_FN4" "manual_merge_ci_bypass")
+if [[ "$N_BYPASS_FN4" -eq 1 ]]; then pass "FN-4: exactly 1 manual_merge_ci_bypass row"; else fail "FN-4: expected 1 manual_merge_ci_bypass row, got $N_BYPASS_FN4"; fi
+unset TWO_GATE_PR_BODY_999 STUB_PR_FILES STUB_CHECK_DISC_RC STUB_CI_CHECK_RUNS STUB_HEAD_SHA
+rm -rf "$T_FN4"
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""

@@ -493,14 +493,13 @@ _CI_AUDIT_WRITTEN=false
 
 # Provenance ordering (AC-15): an external-provenance PR touching
 # .github/workflows/** cannot self-certify its own CI result until the
-# D#1588 intake-approved human gate has cleared. --force-no-ci has never
-# bypassed this and still does not.
-if [[ "$FORCE_NO_CI" != "true" ]]; then
-  if ! check_ci_provenance_gate "$PR" "$_PR_REPO" "$_RESOLVED_DISC"; then
-    echo "[merge-and-hook] ERROR: CI-status gate refused for PR #$PR: $CI_STATUS_FAIL_REASON" >&2
-    ci_write_audit "ci_gate_block" "$PR" "" "" "" "$CI_STATUS_FAIL_REASON"
-    exit 1
-  fi
+# D#1588 intake-approved human gate has cleared. This gate runs on every
+# merge, --force-no-ci included; the flag overrides only the CI status
+# result checked further down, never this gate.
+if ! check_ci_provenance_gate "$PR" "$_PR_REPO" "$_RESOLVED_DISC"; then
+  echo "[merge-and-hook] ERROR: CI-status gate refused for PR #$PR: $CI_STATUS_FAIL_REASON" >&2
+  ci_write_audit "ci_gate_block" "$PR" "" "" "" "$CI_STATUS_FAIL_REASON"
+  exit 1
 fi
 
 # The gate runs even when --force-no-ci is set, and the override is applied to
