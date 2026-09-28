@@ -66,6 +66,19 @@ setup() {
   cp "$REPO_ROOT/scripts/run-pr-tests.sh" "$TEST_DIR/scripts/"
   cp "$REPO_ROOT/scripts/lib/repo-resolve.sh" "$REPO_ROOT/scripts/lib/worktree-ground-check.sh" "$TEST_DIR/scripts/lib/"
   git init -q "$TEST_DIR"  # run_suite's ground check needs $REPO_ROOT to resolve as a git tree
+  # D#2634: give the fixture tree a real commit. Without one, HEAD is unborn
+  # and run-pr-tests.sh's D#2365 tree guard (added after this fixture was
+  # written) cannot resolve a real sha for it -- on this host's git version,
+  # an unborn `rev-parse HEAD` even leaks the literal string "HEAD" to
+  # stdout instead of nothing, which used to slip past the script's own
+  # `[ -z "$TREE_HEAD_SHA" ]` check and fail later with a confusing
+  # "not in this tree's object graph" refusal instead. TEST_TREE_SHA is this
+  # commit's sha, handed to run-pr-tests.sh's own --pr-head-sha flag below so
+  # every call here satisfies the guard trivially (the tree is its own
+  # ancestor) without needing the gh stub to answer a real `--json
+  # headRefOid` query, which it was never written to do.
+  git -C "$TEST_DIR" commit -q --allow-empty -m "fixture root"
+  TEST_TREE_SHA="$(git -C "$TEST_DIR" rev-parse HEAD)"
 
   # gh stub: `pr diff --name-only` and the `pr view --json files` fallback
   # both return $GH_FILES (newline-separated), regardless of PR number.
@@ -98,6 +111,17 @@ fi
 exec "$REAL_PYTHON3" "\$@"
 PYEOF
   chmod +x "$TEST_DIR/bin/python3"
+
+  # D#2634: stub for the pr_amend e2e suite so the new RUN_PR_AMEND_E2E
+  # registry block (which gates on `-f tests/test_spawn_agent_pr_amend_e2e.sh`)
+  # has a real file to find and run. Its own real-network behaviour is out of
+  # scope here -- this file only exercises routing, not the suite's contents.
+  cat > "$TEST_DIR/tests/test_spawn_agent_pr_amend_e2e.sh" <<'E2EEOF'
+#!/usr/bin/env bash
+echo "stub pr_amend e2e"
+exit 0
+E2EEOF
+  chmod +x "$TEST_DIR/tests/test_spawn_agent_pr_amend_e2e.sh"
 }
 
 teardown() { rm -rf "$TEST_DIR"; }
@@ -119,7 +143,7 @@ _run_script_env() {
 }
 
 run_script() {
-  ( _run_script_env; bash "$TEST_DIR/scripts/run-pr-tests.sh" "$1" ) 2>"$TEST_DIR/stderr.log"
+  ( _run_script_env; bash "$TEST_DIR/scripts/run-pr-tests.sh" "$1" --pr-head-sha "$TEST_TREE_SHA" ) 2>"$TEST_DIR/stderr.log"
 }
 
 # Same as run_script, but the whole script runs under an enclosing `timeout`
@@ -139,7 +163,7 @@ run_script() {
 # against the rest of the codebase's grace margin.
 run_script_bounded() {
   local bound="$1" pr="$2"
-  ( _run_script_env; timeout --kill-after=5s "$bound" bash "$TEST_DIR/scripts/run-pr-tests.sh" "$pr" ) 2>"$TEST_DIR/stderr.log"
+  ( _run_script_env; timeout --kill-after=5s "$bound" bash "$TEST_DIR/scripts/run-pr-tests.sh" "$pr" --pr-head-sha "$TEST_TREE_SHA" ) 2>"$TEST_DIR/stderr.log"
 }
 
 # Real production flaky-history.jsonl, resolved the same way flaky_sentinel.py
@@ -669,6 +693,153 @@ test_d2177_item10_nongoal_comment_preserved() {
   fi
 }
 
+# D#2634 item 1: a diff of only backend/prompt_builder.py must run the e2e
+# suite in addition to pytest, and pytest's routing label must stay "pytest".
+test_d2634_item1_prompt_builder_routes_to_pytest_and_e2e() {
+  setup
+  # Explicit, not inherited: a prior test in this file sets FAKE_PYTEST_SLEEP
+  # as a plain (non-local) global and never resets it, so it would otherwise
+  # leak a 60s sleep into every pytest invocation from here on.
+  GH_FILES="backend/prompt_builder.py"
+  FAKE_PYTEST_SLEEP=0
+  FAKE_PYTEST_EXIT=0
+  local out suite e2e_cmd pytest_cmd
+  out=$(run_script 9101)
+
+  suite=$(routing_field "$out" "backend/prompt_builder.py" "suite")
+  if [ "$suite" = "pytest" ]; then
+    pass "d2634 item1: backend/prompt_builder.py's routing label stays pytest"
+  else
+    fail "d2634 item1: backend/prompt_builder.py's routing label stays pytest" "got: $suite"
+  fi
+
+  e2e_cmd=$(tests_run_field "$out" "bash tests/test_spawn_agent_pr_amend_e2e.sh" "command")
+  if [ "$e2e_cmd" != "__MISSING__" ]; then
+    pass "d2634 item1: backend/prompt_builder.py-only diff runs the pr_amend e2e suite"
+  else
+    fail "d2634 item1: backend/prompt_builder.py-only diff runs the pr_amend e2e suite" "no tests_run entry for it"
+  fi
+
+  pytest_cmd=$(tests_run_field "$out" "pytest" "command")
+  if [ "$pytest_cmd" != "__MISSING__" ]; then
+    pass "d2634 item1: pytest still runs alongside the e2e suite"
+  else
+    fail "d2634 item1: pytest still runs alongside the e2e suite" "no tests_run entry for pytest"
+  fi
+  teardown
+}
+
+# D#2634 item 2: the same must hold for backend/spawn_payload.py and
+# scripts/spawn-agent.sh, each changed alone -- "the same" meaning the e2e
+# suite runs, and any suite that already ran for that file before this
+# change (pytest for spawn_payload.py, pr-plane for spawn-agent.sh, per the
+# Spec's "routes to ... pytest (where it did before)" success condition)
+# keeps running with its existing label. scripts/spawn-agent.sh never
+# routed to pytest before this change and still doesn't -- only RUN_PR_PLANE
+# claims it.
+test_d2634_item2_spawn_payload_and_spawn_agent_route_to_e2e() {
+  setup
+  GH_FILES="backend/spawn_payload.py"
+  FAKE_PYTEST_SLEEP=0
+  FAKE_PYTEST_EXIT=0
+  local out suite e2e_cmd pytest_cmd
+  out=$(run_script 9102)
+  suite=$(routing_field "$out" "backend/spawn_payload.py" "suite")
+  if [ "$suite" = "pytest" ]; then
+    pass "d2634 item2: backend/spawn_payload.py's routing label stays pytest"
+  else
+    fail "d2634 item2: backend/spawn_payload.py's routing label stays pytest" "got: $suite"
+  fi
+  e2e_cmd=$(tests_run_field "$out" "bash tests/test_spawn_agent_pr_amend_e2e.sh" "command")
+  if [ "$e2e_cmd" != "__MISSING__" ]; then
+    pass "d2634 item2: backend/spawn_payload.py-only diff runs the pr_amend e2e suite"
+  else
+    fail "d2634 item2: backend/spawn_payload.py-only diff runs the pr_amend e2e suite" "no tests_run entry for it"
+  fi
+  pytest_cmd=$(tests_run_field "$out" "pytest" "command")
+  if [ "$pytest_cmd" != "__MISSING__" ]; then
+    pass "d2634 item2: pytest still runs for backend/spawn_payload.py"
+  else
+    fail "d2634 item2: pytest still runs for backend/spawn_payload.py" "no tests_run entry for pytest"
+  fi
+  teardown
+
+  setup
+  GH_FILES="scripts/spawn-agent.sh"
+  out=$(run_script 9103)
+  suite=$(routing_field "$out" "scripts/spawn-agent.sh" "suite")
+  if [ "$suite" = "pr-plane" ]; then
+    pass "d2634 item2: scripts/spawn-agent.sh's routing label stays pr-plane (unaffected by the new arm)"
+  else
+    fail "d2634 item2: scripts/spawn-agent.sh's routing label stays pr-plane (unaffected by the new arm)" "got: $suite"
+  fi
+  e2e_cmd=$(tests_run_field "$out" "bash tests/test_spawn_agent_pr_amend_e2e.sh" "command")
+  if [ "$e2e_cmd" != "__MISSING__" ]; then
+    pass "d2634 item2: scripts/spawn-agent.sh-only diff runs the pr_amend e2e suite"
+  else
+    fail "d2634 item2: scripts/spawn-agent.sh-only diff runs the pr_amend e2e suite" "no tests_run entry for it"
+  fi
+  teardown
+}
+
+# D#2634 item 3: a template-only diff must not route to the e2e suite. Templates
+# still get pytest coverage via the backend/* arm (PM decision: no template
+# carries the PR_AMEND_ROUTE block, so pytest already covers them).
+test_d2634_item3_template_only_does_not_route_to_e2e() {
+  setup
+  GH_FILES="backend/spawn_templates/code-reviewer.tmpl"
+  FAKE_PYTEST_SLEEP=0
+  FAKE_PYTEST_EXIT=0
+  local out suite e2e_count
+  out=$(run_script 9104)
+  suite=$(routing_field "$out" "backend/spawn_templates/code-reviewer.tmpl" "suite")
+  if [ "$suite" = "pytest" ]; then
+    pass "d2634 item3: a template-only diff still routes to pytest"
+  else
+    fail "d2634 item3: a template-only diff still routes to pytest" "got: $suite"
+  fi
+  e2e_count=$(tests_run_count "$out" "bash tests/test_spawn_agent_pr_amend_e2e.sh")
+  if [ "$e2e_count" = "0" ]; then
+    pass "d2634 item3: a template-only diff does not run the pr_amend e2e suite"
+  else
+    fail "d2634 item3: a template-only diff does not run the pr_amend e2e suite" "got $e2e_count tests_run entries for it"
+  fi
+  teardown
+}
+
+# D#2634 item 4 (mutation): a copy of run-pr-tests.sh with the new arm
+# deleted must turn item 1's e2e assertion red. "Deleted" here means the flag
+# the arm sets is neutered (RUN_PR_AMEND_E2E=true -> false in the arm body,
+# the one and only place that string appears) -- the registry block still
+# exists but is never armed, which is behaviourally identical to removing the
+# arm for every file it used to claim.
+test_d2634_item4_mutation_deleting_arm_turns_item1_red() {
+  setup
+  local occurrences
+  occurrences=$(grep -c '^      RUN_PR_AMEND_E2E=true$' "$TEST_DIR/scripts/run-pr-tests.sh")
+  if [ "$occurrences" = "1" ]; then
+    pass "d2634 item4: exactly one RUN_PR_AMEND_E2E=true site found to mutate"
+  else
+    fail "d2634 item4: exactly one RUN_PR_AMEND_E2E=true site found to mutate" "got $occurrences occurrences"
+  fi
+  sed 's/^      RUN_PR_AMEND_E2E=true$/      RUN_PR_AMEND_E2E=false/' \
+    "$TEST_DIR/scripts/run-pr-tests.sh" > "$TEST_DIR/scripts/run-pr-tests-mutant.sh"
+  chmod +x "$TEST_DIR/scripts/run-pr-tests-mutant.sh"
+
+  GH_FILES="backend/prompt_builder.py"
+  FAKE_PYTEST_SLEEP=0
+  FAKE_PYTEST_EXIT=0
+  local out e2e_cmd
+  out=$( ( _run_script_env; bash "$TEST_DIR/scripts/run-pr-tests-mutant.sh" 9105 --pr-head-sha "$TEST_TREE_SHA" ) 2>"$TEST_DIR/stderr.log" )
+  e2e_cmd=$(tests_run_field "$out" "bash tests/test_spawn_agent_pr_amend_e2e.sh" "command")
+  if [ "$e2e_cmd" = "__MISSING__" ]; then
+    pass "d2634 item4: with the arm neutered, backend/prompt_builder.py no longer routes to the e2e suite (item1's assertion goes red on this mutant)"
+  else
+    fail "d2634 item4: with the arm neutered, backend/prompt_builder.py no longer routes to the e2e suite (item1's assertion goes red on this mutant)" "e2e suite still ran: $e2e_cmd"
+  fi
+  teardown
+}
+
 # Negative half of the isolation proof: the real production file's row count
 # must be identical before and after the whole suite runs. A test asserting
 # "the override was set" is weaker than showing production state never moved.
@@ -691,6 +862,11 @@ test_d2177_item6_exactly_one_json_object_on_normal_path
 test_d2177_item7_no_double_counting_orphan_triage
 test_d2177_regression_bound_reaches_forked_grandchild
 test_d2177_item10_nongoal_comment_preserved
+
+test_d2634_item1_prompt_builder_routes_to_pytest_and_e2e
+test_d2634_item2_spawn_payload_and_spawn_agent_route_to_e2e
+test_d2634_item3_template_only_does_not_route_to_e2e
+test_d2634_item4_mutation_deleting_arm_turns_item1_red
 
 REAL_ROWS_AFTER=$(real_flaky_history_rows)
 if [ "$REAL_ROWS_AFTER" = "$REAL_ROWS_BEFORE" ]; then
