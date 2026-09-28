@@ -5391,6 +5391,142 @@ class TestD2483PR171Round3NonPythonInterpreterKnownGap:
         )
 
 
+class TestD2543WrapperResolvesToRealCommandName:
+    """D#2543: `_segment_command_name` used to return a segment's FIRST
+    token, skipping only `env`/a bare `FOO=bar` prefix -- so `timeout 60
+    python3 -c ...` resolved to `timeout`, a name none of
+    `_is_segment_write_candidate`'s exemptions recognise (the readonly
+    allowlist, the sed/awk in-place check, the git-verb check, the python
+    -c read/write judgement), and fell to the function's deny-by-default
+    branch regardless of what actually ran. A segment that only PRINTS a
+    protected filename therefore blocked exactly like one that writes it,
+    the moment ANY command-prefix wrapper sat in front of it -- and
+    CLAUDE.md instructs agents to bound every foreground run with
+    `timeout --kill-after=5s`, so this was not an exotic shape; `timeout 5
+    echo "..."` wrapping the canonical harmless command was the plainest
+    victim.
+
+    Fixed by resolving `_segment_command_name` (and the sed/awk/git/python
+    sub-checks `_is_segment_write_candidate` feeds it into) through
+    `_command_positions` -- the SAME walker
+    `_check_forbidden_fragment_positions` and the claude-spawn checks
+    already use to see past `_COMMAND_WRAPPER_TOKENS` -- rather than
+    growing a second, independent wrapper-skip list here. `env` being
+    hand-rolled at all was already one such list, of one name.
+    """
+
+    _MENTION_ROWS = [
+        pytest.param(
+            'python3 -c "print(\'see ' + _D2483_REGISTRY_BASENAME + '\')"',
+            id="bare_python_c",
+        ),
+        pytest.param(
+            'env FOO=1 python3 -c "print(\'see ' + _D2483_REGISTRY_BASENAME + '\')"',
+            id="env_prefixed",
+        ),
+        pytest.param(
+            'echo "see ' + _D2483_REGISTRY_BASENAME + '"',
+            id="bare_echo",
+        ),
+        pytest.param(
+            'timeout 60 python3 -c "print(\'see ' + _D2483_REGISTRY_BASENAME + '\')"',
+            id="timeout_wrapped_python",
+        ),
+        pytest.param(
+            'nice python3 -c "print(\'see ' + _D2483_REGISTRY_BASENAME + '\')"',
+            id="nice_wrapped_python",
+        ),
+        pytest.param(
+            'stdbuf -o0 python3 -c "print(\'see ' + _D2483_REGISTRY_BASENAME + '\')"',
+            id="stdbuf_wrapped_python",
+        ),
+        pytest.param(
+            'timeout 5 echo "see ' + _D2483_REGISTRY_BASENAME + '"',
+            id="timeout_wrapped_echo",
+        ),
+    ]
+
+    @pytest.mark.parametrize("cmd", _MENTION_ROWS)
+    def test_mention_through_wrapper_now_allowed(self, cmd: str) -> None:
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is True, f"expected ALLOW for `{cmd}`, got reason={d.reason!r}"
+
+    def test_fails_red_against_the_pre_fix_shape(self) -> None:
+        """This exact repro BLOCKed before the fix -- `_segment_command_name`
+        resolved to `timeout`, not `python3`, so the read-only-payload
+        exemption keyed on the python interpreter name was unreachable and
+        the segment fell to deny-by-default. Documented as the red-first
+        case; the PR body carries the actual red-then-green pytest run
+        against a revert of this fix (D#2149-style mutation evidence)."""
+        cmd = 'timeout 60 python3 -c "print(\'see ' + _D2483_REGISTRY_BASENAME + '\')"'
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is True
+        assert d.reason == ""
+
+    # ------------------------------------------------------------------
+    # Negative controls (Spec item 4): a wrapper must not launder a
+    # genuine write. Seeing PAST the wrapper is equally capable of seeing
+    # past it into a real write -- these prove it still doesn't.
+    # ------------------------------------------------------------------
+
+    def test_wrapper_does_not_launder_absolute_write_outside_worktree(self) -> None:
+        cmd = "timeout 60 python3 -c \"open('/etc/passwd','w').write(1)\""
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+        assert "path-token scan" in d.reason
+
+    def test_wrapper_does_not_launder_sed_in_place_write(self) -> None:
+        cmd = f"nice sed -i s/a/b/ {_D2483_REGISTRY_BASENAME}"
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+        assert _D2483_REGISTRY_BASENAME in d.reason
+
+    def test_wrapper_does_not_launder_rm_of_protected_file(self) -> None:
+        cmd = f"timeout 5 rm {_D2483_REGISTRY_BASENAME}"
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False, f"expected BLOCK for `{cmd}`, got allow=True"
+        assert _D2483_REGISTRY_BASENAME in d.reason
+
+    # ------------------------------------------------------------------
+    # Wrapper family enumeration (Spec item 5): every name
+    # `_COMMAND_WRAPPER_TOKENS` enumerates, proven via the cheapest
+    # observable exemption (the readonly allowlist, `echo`).
+    # ------------------------------------------------------------------
+
+    _WRAPPER_FAMILY = [
+        "nohup", "setsid", "ionice", "time", "xargs", "command", "stdbuf",
+        "timeout", "nice",
+    ]
+
+    @pytest.mark.parametrize("wrapper", _WRAPPER_FAMILY)
+    def test_wrapper_family_resolves_past_to_readonly_allowlist(
+        self, wrapper: str
+    ) -> None:
+        cmd = f'{wrapper} echo "see {_D2483_REGISTRY_BASENAME}"'
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is True, f"expected ALLOW for `{cmd}`, got reason={d.reason!r}"
+
+
+class TestD2543UvRunTwoTokenWrapperKnownGap:
+    """`uv run <interp>` is a TWO-token wrapper spelling.
+    `_COMMAND_WRAPPER_TOKENS` (and therefore `_command_positions`, and
+    therefore this fix) only ever skips single tokens, so `_segment_
+    command_name` resolves `uv run python3 -c ...` to `uv` -- not a
+    readonly name, not a python interpreter name -- and it still falls to
+    deny-by-default. Documented here as a known, NOT-closed gap (Spec item
+    5: name the wrappers the fix does not cover), the same way D#2483
+    documents its own non-python-interpreter gap next to its fix rather
+    than silently reopening or silently widening it later."""
+
+    def test_uv_run_prefix_still_not_resolved_past(self) -> None:
+        cmd = 'uv run python3 -c "print(\'see ' + _D2483_REGISTRY_BASENAME + '\')"'
+        d = classify_bash(cmd, _WT_CLAUDE)
+        assert d.allow is False, (
+            f"`uv run` now resolves past its wrapper -- if this now ALLOWs, "
+            f"update this test and the class docstring, got reason={d.reason!r}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # D#2483 PR-171 fix round 4 -- code review found that EVERY existing
 # "absolute payload" test above reaches its BLOCK verdict through site 1
