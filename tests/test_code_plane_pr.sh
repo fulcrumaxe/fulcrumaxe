@@ -1170,6 +1170,106 @@ else
 fi
 rm -rf "$FX_RUNGUARDS_FAIL"
 
+# ── D#2638 Case: --code-repo must be shaped like owner/name ──────────────────
+# The security reviewer on code-plane PR #242 tried injection-shaped values
+# ($(...), backticks, ;touch, ../../etc) as the slug and found no injection —
+# the value only ever becomes a quoted env assignment, never a live call. But
+# a malformed slug was still accepted silently and handed to every guard as
+# AUTONOMOUS_TEAM_REPO with no signal that anything was wrong. These cases
+# confirm a malformed slug is refused at argument-parsing, before any guard
+# runs, while a real owner/name slug and the empty (omitted) case behave
+# exactly as they did before this change.
+echo ""
+echo "=== D#2638 Case: --code-repo shape validation ==="
+FX_SHAPE="$(_fixture_repo)"
+mkdir -p "$FX_SHAPE/scripts/ci"
+cp "$REPO_ROOT/scripts/ci/run-guards.sh" "$FX_SHAPE/scripts/ci/run-guards.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$FX_SHAPE/scripts/ci/fixture-shape-guard.sh"
+COMMIT_SHAPE_BASE="$(_d2578_stage_and_commit "$FX_SHAPE" "base for --code-repo shape cases" \
+  scripts/ci/run-guards.sh scripts/ci/fixture-shape-guard.sh)"
+
+LOCAL_SHAPE="$TEST_SCRATCH/d2638-trivial.txt"
+printf 'trivial content\n' > "$LOCAL_SHAPE"
+
+# item 1: a bare word with no slash
+OUT_SHAPE_FOO="$(cd "$FX_SHAPE" && unset AUTONOMOUS_TEAM_REPO && code_plane_pr build \
+  --target-ref "$COMMIT_SHAPE_BASE" --base-ref "$COMMIT_SHAPE_BASE" \
+  --code-repo "foo" \
+  --branch test --message "d2638 foo" "trivial.txt=$LOCAL_SHAPE" 2>"$TEST_SCRATCH/d2638-foo.err")"
+RC_SHAPE_FOO=$?
+if [[ "$RC_SHAPE_FOO" -eq 2 ]]; then
+  _pass "item1 (D#2638): --code-repo foo exits 2"
+else
+  _fail "item1 (D#2638): expected exit 2, got $RC_SHAPE_FOO (stdout='$OUT_SHAPE_FOO'): $(cat "$TEST_SCRATCH/d2638-foo.err")"
+fi
+if grep -q -- '--code-repo' "$TEST_SCRATCH/d2638-foo.err" && grep -q "foo" "$TEST_SCRATCH/d2638-foo.err"; then
+  _pass "item1 (D#2638): stderr names both --code-repo and the bad value"
+else
+  _fail "item1 (D#2638): stderr missing --code-repo or the value: $(cat "$TEST_SCRATCH/d2638-foo.err")"
+fi
+if grep -qF -- '--- fixture-shape-guard.sh' "$TEST_SCRATCH/d2638-foo.err"; then
+  _fail "item1 (D#2638): fixture-shape-guard.sh was dispatched — refusal must happen before any guard runs: $(cat "$TEST_SCRATCH/d2638-foo.err")"
+else
+  _pass "item1 (D#2638): refusal happens before any guard dispatches"
+fi
+
+# item 2: further malformed shapes, each refused before any guard runs
+for D2638_CASE in "a/b/c" '$(x)' "../.." "owner/"; do
+  D2638_TAG="$(printf '%s' "$D2638_CASE" | tr -c 'A-Za-z0-9' '_')"
+  OUT_SHAPE="$(cd "$FX_SHAPE" && unset AUTONOMOUS_TEAM_REPO && code_plane_pr build \
+    --target-ref "$COMMIT_SHAPE_BASE" --base-ref "$COMMIT_SHAPE_BASE" \
+    --code-repo "$D2638_CASE" \
+    --branch test --message "d2638 $D2638_TAG" "trivial.txt=$LOCAL_SHAPE" 2>"$TEST_SCRATCH/d2638-$D2638_TAG.err")"
+  RC_SHAPE=$?
+  if [[ "$RC_SHAPE" -eq 2 ]]; then
+    _pass "item2 (D#2638): --code-repo '$D2638_CASE' exits 2"
+  else
+    _fail "item2 (D#2638): --code-repo '$D2638_CASE' expected exit 2, got $RC_SHAPE (stdout='$OUT_SHAPE'): $(cat "$TEST_SCRATCH/d2638-$D2638_TAG.err")"
+  fi
+  if grep -qF -- '--- fixture-shape-guard.sh' "$TEST_SCRATCH/d2638-$D2638_TAG.err"; then
+    _fail "item2 (D#2638): --code-repo '$D2638_CASE' dispatched a guard — refusal must happen first: $(cat "$TEST_SCRATCH/d2638-$D2638_TAG.err")"
+  else
+    _pass "item2 (D#2638): --code-repo '$D2638_CASE' refused before any guard dispatched"
+  fi
+done
+
+# item 3: a real owner/name slug behaves exactly as today — the guard runs
+# and build succeeds
+OUT_SHAPE_OK="$(cd "$FX_SHAPE" && unset AUTONOMOUS_TEAM_REPO && code_plane_pr build \
+  --target-ref "$COMMIT_SHAPE_BASE" --base-ref "$COMMIT_SHAPE_BASE" \
+  --code-repo "fixture-org/fixture-repo" \
+  --branch test --message "d2638 valid slug" "trivial.txt=$LOCAL_SHAPE" 2>"$TEST_SCRATCH/d2638-ok.err")"
+RC_SHAPE_OK=$?
+if [[ "$RC_SHAPE_OK" -eq 0 && "$OUT_SHAPE_OK" =~ ^[0-9a-f]{40}$ ]]; then
+  _pass "item3 (D#2638): --code-repo fixture-org/fixture-repo still exits 0 with a commit sha"
+else
+  _fail "item3 (D#2638): expected exit 0 with a commit sha, got rc=$RC_SHAPE_OK stdout='$OUT_SHAPE_OK': $(cat "$TEST_SCRATCH/d2638-ok.err")"
+fi
+if grep -qF -- '--- fixture-shape-guard.sh' "$TEST_SCRATCH/d2638-ok.err"; then
+  _pass "item3 (D#2638): a valid slug still reaches the guard"
+else
+  _fail "item3 (D#2638): a valid slug did not reach the guard: $(cat "$TEST_SCRATCH/d2638-ok.err")"
+fi
+
+# item 4: an explicit empty value behaves exactly as today — refused by the
+# pre-existing run-guards.sh gate, not by the new shape check
+OUT_SHAPE_EMPTY="$(cd "$FX_SHAPE" && unset AUTONOMOUS_TEAM_REPO && code_plane_pr build \
+  --target-ref "$COMMIT_SHAPE_BASE" --base-ref "$COMMIT_SHAPE_BASE" \
+  --code-repo "" \
+  --branch test --message "d2638 empty value" "trivial.txt=$LOCAL_SHAPE" 2>"$TEST_SCRATCH/d2638-empty.err")"
+RC_SHAPE_EMPTY=$?
+if [[ "$RC_SHAPE_EMPTY" -eq 2 ]]; then
+  _pass "item4 (D#2638): --code-repo '' still exits 2"
+else
+  _fail "item4 (D#2638): expected exit 2, got $RC_SHAPE_EMPTY (stdout='$OUT_SHAPE_EMPTY'): $(cat "$TEST_SCRATCH/d2638-empty.err")"
+fi
+if grep -q 'REFUSED' "$TEST_SCRATCH/d2638-empty.err" && grep -q 'no --code-repo was supplied' "$TEST_SCRATCH/d2638-empty.err"; then
+  _pass "item4 (D#2638): the empty value still hits the unchanged run-guards.sh refusal message"
+else
+  _fail "item4 (D#2638): the empty value did not hit the expected refusal message: $(cat "$TEST_SCRATCH/d2638-empty.err")"
+fi
+rm -rf "$FX_SHAPE"
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 rm -rf "$FX4" "$FX6" "$FX8"
 

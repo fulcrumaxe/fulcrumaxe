@@ -659,6 +659,18 @@ code_plane_pr_build() {
     _cpp_err "build: --skip-guards requires a non-empty reason"
     return 2
   fi
+  if [[ -n "$code_repo" ]]; then
+    if [[ ! "$code_repo" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+      _cpp_err "build: --code-repo '$code_repo' is not an owner/name slug"
+      return 2
+    fi
+    local cpp_repo_owner="${code_repo%%/*}" cpp_repo_name="${code_repo#*/}"
+    if [[ "$cpp_repo_owner" == "." || "$cpp_repo_owner" == ".." \
+       || "$cpp_repo_name" == "." || "$cpp_repo_name" == ".." ]]; then
+      _cpp_err "build: --code-repo '$code_repo' is not an owner/name slug"
+      return 2
+    fi
+  fi
 
   local target_sha base_sha
   target_sha="$(_cpp_resolve_commit target-ref "$target_ref")" || {
