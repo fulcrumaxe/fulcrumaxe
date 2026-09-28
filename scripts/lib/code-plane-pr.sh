@@ -20,6 +20,7 @@
 # Or invoke directly:
 #   bash scripts/lib/code-plane-pr.sh build --target-ref <ref> --base-ref <ref> \
 #     --branch <name> --message <msg> [--skip-guards <reason>] \
+#     [--mode <repo-path>=<100644|100755>] \
 #     <repo-path>=<local-file> [...]
 #   bash scripts/lib/code-plane-pr.sh extract --ref <ref>
 #   bash scripts/lib/code-plane-pr.sh push --remote <name> --branch <name> \
@@ -50,6 +51,16 @@
 #      accordingly. A derived file this step regenerates itself (a mirror or
 #      the manifest) is never executable, so it falls back to the target's
 #      recorded mode, or 100644 if the path is brand new.
+#
+#      An explicit `--mode <repo-path>=<100644|100755>` overrides both of the
+#      above for that one path — the only way to ship an intended mode flip
+#      on a path whose content is unchanged. It is never inferred from the
+#      local file's executable bit (a worktree checkout can carry a wrong
+#      one); the caller must ask for it by value. `--mode` may be repeated
+#      for different paths. A usage error (exit 2): a value other than the
+#      literal `100644` or `100755`; the same path given twice with
+#      conflicting values; or a path that is not one of the PATH=LOCALFILE
+#      pairs being written.
 #
 #   3. The scratch/index path is private and per-invocation. Every call uses
 #      its own `mktemp -d` — never a fixed location — so two concurrent
@@ -189,9 +200,18 @@ local ref, branch, index, or working tree.
 
   build   --target-ref <ref> --base-ref <ref> --branch <name>
           --message <msg> [--skip-guards <reason>] [--code-repo <owner/name>]
+          [--mode <repo-path>=<100644|100755>] ...
           <repo-path>=<local-file> [<repo-path>=<local-file> ...]
           --base-ref is required (pass the sha `extract` printed on stderr,
           or --target-ref's own value again for the genuine no-gap case).
+          --mode <repo-path>=<100644|100755> sets the mode for that one path
+          explicitly, whether it already exists on --target-ref or is new —
+          the only way to flip an existing path's mode when its content is
+          unchanged. It is never inferred from the local file's executable
+          bit. Repeatable, one path per flag. A value other than
+          100644/100755, the same path given twice with conflicting values,
+          or a path that is not one of the PATH=LOCALFILE pairs below is a
+          usage error (exit 2).
           Regenerates engine/manifest.json and the agents//commands/
           mirrors from the tree it just built, then runs the full
           scripts/ci/run-guards.sh suite against that same tree, and
@@ -632,6 +652,7 @@ code_plane_pr_build() {
   local base_ref="" target_ref="" branch="" message="" code_repo=""
   local skip_guards_given=false skip_guards_reason=""
   local -a pairs=()
+  local -a mode_specs=()
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -640,6 +661,7 @@ code_plane_pr_build() {
       --branch)       branch="$2";       shift 2 ;;
       --message)      message="$2";      shift 2 ;;
       --code-repo)    code_repo="$2";    shift 2 ;;
+      --mode)         mode_specs+=("$2"); shift 2 ;;
       --skip-guards)  skip_guards_given=true; skip_guards_reason="$2"; shift 2 ;;
       --) shift; pairs+=("$@"); break ;;
       -*) _cpp_err "build: unknown flag '$1'"; return 2 ;;
@@ -670,6 +692,44 @@ code_plane_pr_build() {
       _cpp_err "build: --code-repo '$code_repo' is not an owner/name slug"
       return 2
     fi
+  fi
+
+  # ── --mode overrides: parse, validate value, reject conflicting duplicates,
+  # then require each overridden path to be one of the PATH=LOCALFILE pairs
+  # actually being written. Never inferred from the local file's bit.
+  local -A mode_overrides=()
+  local mode_spec mspec_path mspec_value
+  for mode_spec in "${mode_specs[@]}"; do
+    mspec_path="${mode_spec%%=*}"
+    mspec_value="${mode_spec#*=}"
+    if [[ -z "$mspec_path" || "$mspec_path" == "$mode_spec" || -z "$mspec_value" ]]; then
+      _cpp_err "build: --mode expected <repo-path>=<100644|100755>, got '$mode_spec'"
+      return 2
+    fi
+    if [[ "$mspec_value" != "100644" && "$mspec_value" != "100755" ]]; then
+      _cpp_err "build: --mode value must be 100644 or 100755, got '$mspec_value' for '$mspec_path'"
+      return 2
+    fi
+    if [[ -n "${mode_overrides[$mspec_path]+set}" && "${mode_overrides[$mspec_path]}" != "$mspec_value" ]]; then
+      _cpp_err "build: --mode given twice for '$mspec_path' with conflicting values"
+      return 2
+    fi
+    mode_overrides["$mspec_path"]="$mspec_value"
+  done
+  if [[ "${#mode_overrides[@]}" -gt 0 ]]; then
+    local -A cpp_written_paths=()
+    local cpp_pair cpp_pair_path
+    for cpp_pair in "${pairs[@]}"; do
+      cpp_pair_path="${cpp_pair%%=*}"
+      [[ -n "$cpp_pair_path" && "$cpp_pair_path" != "$cpp_pair" ]] && cpp_written_paths["$cpp_pair_path"]=1
+    done
+    local mkey
+    for mkey in "${!mode_overrides[@]}"; do
+      if [[ -z "${cpp_written_paths[$mkey]+set}" ]]; then
+        _cpp_err "build: --mode '$mkey=${mode_overrides[$mkey]}' targets a path that is not being written"
+        return 2
+      fi
+    done
   fi
 
   local target_sha base_sha
@@ -736,6 +796,10 @@ code_plane_pr_build() {
       else
         mode="100644"
       fi
+    fi
+
+    if [[ -n "${mode_overrides[$repo_path]+set}" ]]; then
+      mode="${mode_overrides[$repo_path]}"
     fi
 
     local blob
