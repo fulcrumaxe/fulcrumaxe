@@ -66,11 +66,24 @@ _script_fixture_sourced_libs() {
   if [[ ! -f "$file" ]]; then
     return 0
   fi
-  { grep -E '^[[:space:]]*source[[:space:]]+"[^"]+\.sh"' "$file" || true; } \
-    | sed -E 's/^[[:space:]]*source[[:space:]]+"([^"]+)".*/\1/' \
-    | while IFS= read -r path; do
-        basename "$path"
-      done
+  local pat='^[[:space:]]*source[[:space:]]+"'
+  local line quoted base
+  while IFS= read -r line; do
+    [[ "$line" =~ $pat ]] || continue
+    # Take everything between the FIRST quote after `source` and the LAST
+    # quote on the line as the sourced path. A nested `"$(cd "$(dirname
+    # ...)" && pwd)/lib.sh"` construct puts more than one quote pair on the
+    # line, but the outermost pair still opens right after `source` and
+    # closes at the very end of the quoted argument — nothing legitimate
+    # follows it but a redirect or `|| true` — so greedy capture to the
+    # last quote on the line gets the whole path, nested quoting included.
+    quoted="${line#*\"}"
+    quoted="${quoted%\"*}"
+    base="${quoted##*/}"
+    if [[ "$base" =~ ^[A-Za-z0-9._-]+\.sh$ ]]; then
+      echo "$base"
+    fi
+  done < "$file"
   return 0
 }
 

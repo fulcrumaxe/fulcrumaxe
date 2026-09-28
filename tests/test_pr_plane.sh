@@ -188,6 +188,15 @@ assert_contains "resolves to 'code' (the only plane that had it)" "code" "$NAME_
 unset PRP_HIT_fulcrumaxe_fulcrumaxe_fixture PRP_HIT_autonomous_agent_7_fulcrumaxe_fixture
 unset PRP_SHA_fulcrumaxe_fulcrumaxe_fixture PRP_SHA_autonomous_agent_7_fulcrumaxe_fixture
 
+echo "=== _script_fixture_sourced_libs resolves a nested-quote source line ==="
+# two-gate-check.sh sources gate1-receipt-check.sh via
+# `source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gate1-receipt-check.sh"`
+# — a nested-quote path the parser used to stop at the first inner quote and
+# miss entirely, which is exactly why AC-8 below used to fail one directory
+# short (D#2639).
+SOURCED_LIBS="$(_script_fixture_sourced_libs "$REPO_ROOT/scripts/lib/two-gate-check.sh")"
+assert_contains "two-gate-check.sh's nested-quote source of gate1-receipt-check.sh is resolved" "gate1-receipt-check.sh" "$SOURCED_LIBS"
+
 echo "=== AC-8: an empty resolved plane aborts merge-and-hook.sh BEFORE gh runs ==="
 # Build a minimal copy of merge-and-hook.sh's own directory shape so its
 # SCRIPT_DIR-relative `source` lines resolve, mirroring

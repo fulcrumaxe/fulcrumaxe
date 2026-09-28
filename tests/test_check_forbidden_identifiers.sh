@@ -34,8 +34,9 @@ set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCAN_SRC="$REPO_ROOT/scripts/check-forbidden-identifiers.sh"
-ID_RESOLVE_SRC="$REPO_ROOT/scripts/lib/identity-resolve.sh"
 REAL_RULES="$REPO_ROOT/open-source/IDENTIFIER-RULES.txt"
+# shellcheck source=tests/lib/script-fixture.sh
+source "$REPO_ROOT/tests/lib/script-fixture.sh"
 
 PASS=0
 FAIL=0
@@ -86,8 +87,7 @@ trap 'rm -rf "$SCRATCH"' EXIT
 make_repo() {
   local root="$SCRATCH/$1"
   mkdir -p "$root/scripts/lib" "$root/open-source" "$root/src"
-  cp "$SCAN_SRC" "$root/scripts/check-forbidden-identifiers.sh"
-  cp "$ID_RESOLVE_SRC" "$root/scripts/lib/identity-resolve.sh"
+  stage_script_with_libs "$REPO_ROOT" "check-forbidden-identifiers.sh" "$root/scripts"
   printf 'baseline\n' > "$root/src/app.txt"
   git -C "$root" init -q
   git -C "$root" config user.email "test@example.invalid"
@@ -478,36 +478,45 @@ assert_contains "output carries a WARN naming what was not checked" "[WARN]" "$R
 assert_not_contains "no bare [SKIP] line for this branch" "[SKIP] Forbidden Identifiers" "$RESULT"
 
 echo "=== E. item 5: an empty rules file is a refusal, not a vacuous pass ==="
+# A 0-byte file says nothing about itself (no IDENTITIES_START, no
+# NO_IDENTITIES=declared), so the identifier-rules-resolve.sh state
+# resolver folds it into "missing" — same as a wholly absent file (item
+# 5c below) — before check-forbidden-identifiers.sh ever gets to parse a
+# FORBIDDEN_PATTERNS block. That resolver replaced this script's old bare
+# `[[ -f ]]` check for exactly this reason: it can no longer tell an empty
+# file from a missing one, which is fine, because it never needs to —
+# both are "no usable rules source" and both refuse the same way.
 R="$(make_repo emptyrules)"
 : > "$R/open-source/IDENTIFIER-RULES.txt"
 BASE="$(commit_baseline "$R")"
 OUT="$(run_scan "$R" "$BASE")"; RC=$?
-assert_rc "empty rules file -> rc 1" 1 "$RC" "$OUT"
+assert_rc "empty rules file -> rc 2 (folds into 'missing')" 2 "$RC" "$OUT"
 assert_not_contains "does not report PASS" "PASS (" "$OUT"
-assert_contains "refuses a vacuous PASS by name" "vacuous PASS" "$OUT"
+assert_contains "refuses as an undeclared rules source" "rules file not found or undeclared" "$OUT"
 
 echo "=== E. item 5b: a whitespace-only rules file refuses the same way a 0-byte one does ==="
 # A 0-byte file and a whitespace-only one are different byte shapes but the
-# same degenerate input: zero PARSED patterns. parse_block counts parsed
-# lines, not file bytes, so this should hit the identical "vacuous PASS"
-# refusal above rather than, say, a parse error or a silent pass on the
-# theory that whitespace "isn't really empty". Traced but untested before
-# this PR (D#2493 was exactly this shape of gap going unnoticed elsewhere).
+# same degenerate input: neither carries an IDENTITIES_START block or a
+# NO_IDENTITIES=declared line, so both say nothing about themselves and
+# both fold into "missing" the same way (see item 5's comment above).
+# Traced but untested before this PR (D#2493 was exactly this shape of gap
+# going unnoticed elsewhere).
 R="$(make_repo whitespacerules)"
 printf '   \n\t\n   \t  \n' > "$R/open-source/IDENTIFIER-RULES.txt"
 BASE="$(commit_baseline "$R")"
 OUT="$(run_scan "$R" "$BASE")"; RC=$?
-assert_rc "whitespace-only rules file -> rc 1" 1 "$RC" "$OUT"
+assert_rc "whitespace-only rules file -> rc 2 (folds into 'missing')" 2 "$RC" "$OUT"
 assert_not_contains "does not report PASS" "PASS (" "$OUT"
-assert_contains "refuses a vacuous PASS by name" "vacuous PASS" "$OUT"
+assert_contains "refuses as an undeclared rules source" "rules file not found or undeclared" "$OUT"
 
 echo "=== E. item 5c: open-source/ present but the rules file itself missing refuses, not skips ==="
 # Different from the D. case above (no open-source/ DIRECTORY at all, which
-# legitimately self-skips as export/adopter shape) and different from E
-# above (file present but empty). Here the directory exists but the file
-# inside it does not — rot, not shape, and scripts/check-forbidden-identifiers.sh
-# hits its own `[[ ! -f "$RULES_FILE" ]]` check for this, distinct from the
-# "zero forbidden patterns parsed" path E/5b hit.
+# legitimately self-skips as export/adopter shape). Here the directory
+# exists but the file inside it does not — rot, not shape. This now hits
+# the exact same identifier-rules-resolve.sh "missing" state, and the same
+# rc/message, as E and 5b above: the resolver can't tell "no file" from "a
+# file that says nothing about itself" and doesn't need to — all three are
+# "no usable rules source".
 R="$(make_repo missingrulesfile)"
 BASE="$(commit_baseline "$R")"
 OUT="$(run_scan "$R" "$BASE")"; RC=$?
@@ -524,11 +533,14 @@ assert_rc "unrelated prose near the patterns does not false-positive -> rc 0" 0 
 
 echo "=== G. SELF_LOGIN resolves at runtime instead of shipping as a literal ==="
 # Synthetic rules carrying a {SELF_LOGIN} token, shaped like the converted
-# public file: no IDENTITIES block, a SELF_LOGIN=undeclared bare key
-# (declared=1) or without it (declared=0).
+# public file: no IDENTITIES block (NO_IDENTITIES=declared says so, so the
+# identifier-rules-resolve.sh gate doesn't fold this into "missing" before
+# the FORBIDDEN_PATTERNS logic these tests actually exercise ever runs), a
+# SELF_LOGIN=undeclared bare key (declared=1) or without it (declared=0).
 write_selflogin_rules() {
   local root="$1" declared="$2"
   {
+    echo "NO_IDENTITIES=declared"
     [[ "$declared" -eq 1 ]] && echo "SELF_LOGIN=undeclared"
     echo "=== FORBIDDEN_PATTERNS_START ==="
     echo "{SELF_LOGIN}"
