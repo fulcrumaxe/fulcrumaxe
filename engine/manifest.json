@@ -236,7 +236,7 @@
     "scripts/lib/telemetry.sh": "e399f06a1f9d63bbd553b75da92a6ece0ae7c395d414388438db9e5ebe9eaba2",
     "scripts/lib/tree-capability.sh": "0773910698d04cf521f17f2b4f5c5123f8904e0268606e6299a79ef23cc51d11",
     "scripts/lib/two-gate-check.sh": "3a419d7ad0070b2e5dbec52ef087c77e3503df3497cae576afdea541bd9cbc83",
-    "scripts/lib/verify-tree.sh": "e48561966d1bbd584556f2d31981100baf78a8bd01da441a27b2ce82a28055f0",
+    "scripts/lib/verify-tree.sh": "36e2e51ad9028e3a312dc9965398e18f33bb2671d6fd6b359a30bf2396e2c552",
     "scripts/lib/working-principles.sh": "a4c32c00a53065c7114d216419aa9ce1e00e9440b3a05da85690fabe9774eb17",
     "scripts/lib/worktree-claims.sh": "6b7fa514ddda1a51ffe75e3ca8357c48d217a38b91ec5dcbccca124ef51b4c02",
     "scripts/lib/worktree-disk-guard.sh": "b7592597baf348ec4f57497842aae5f9656f18ea9243ff6ecbc8f24e89ecbe6d",
