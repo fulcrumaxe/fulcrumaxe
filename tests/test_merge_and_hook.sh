@@ -235,6 +235,15 @@ if [[ "$ARGS" == *"check-runs"* ]]; then
   exit 0
 fi
 
+# `gh pr view <PR> --repo ... --json headRefName --jq .headRefName` (D#6
+# S2-OWN product-PR refusal). Silent about GH_ARGS like the labels stub: the
+# wrapper reads it on every run, and tests use the absence of "GH_ARGS:" to
+# prove no merge was attempted. Default is an ordinary branch name.
+if [[ "$ARGS" == *"--json headRefName"* ]]; then
+  echo "${STUB_HEAD_REF:-test-branch}"
+  exit 0
+fi
+
 # `gh pr view <PR> --repo ... --json baseRefName --jq .baseRefName` (D#1965
 # conflicting-file computation needs the base ref name).
 if [[ "$ARGS" == *"--json baseRefName"* ]]; then
