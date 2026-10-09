@@ -469,6 +469,16 @@ jobs:
         if: ${{ !cancelled() }}
         run: bash tests/test_merge_and_hook.sh
 
+      # D#6 S2-OWN (fulcrumaxe cloud): the product-PR refusal in the real
+      # merge wrapper, run in a throwaway repo against a stub gh that the test
+      # proves is the stub, and the issue-scan filter that keeps the loop off
+      # product-owned issues. Hermetic, written under mktemp.
+      - name: Product-item guards (merge refusal, issue scan)
+        if: ${{ !cancelled() }}
+        run: |
+          bash tests/test_merge_and_hook_product_pr.sh
+          bash tests/test_product_item_skip.sh
+
       # D#1987: tests/test_ci_status_check.sh drives the real
       # scripts/lib/ci-status-check.sh — the CI-status merge gate itself —
       # through its own CI_STATUS_OVERRIDE_<pr> / CI_KILL_SWITCH_OVERRIDE mock

@@ -13,6 +13,9 @@
 #    refusal. Every PR-side call below (every gate, the CI check, the merge
 #    itself) uses the resolved slug, `_PR_REPO`. The resolved plane is passed
 #    to post-merge-hook.sh via `--plane` in HOOK_ARGS so it never re-probes.
+# 00b. Product-PR refusal (D#6 S2-OWN): a discussion-plane PR whose head branch
+#    starts with fx/ is a product-pipeline PR, and the owner merges it by hand.
+#    Refused before any other gate, exit 1, no merge call, no override flag.
 # 0-. Merge-gate label check (D#2455): refuses a PR carrying any label from the
 #    shared NACK set, or missing any label from the shared required-pass set —
 #    both read from scripts/lib/merge-gate-labels.sh, the same arrays
@@ -168,6 +171,33 @@ if [[ "$FORCE_NO_BROWSER_TEST" == "true" && -z "${BYPASS_REASON//[[:space:]]/}" 
   echo "[merge-and-hook] ERROR: --force-no-browser-test requires --bypass-reason <text> (non-empty). Refusing to merge PR #$PR." >&2
   echo "[merge-and-hook] Say what you are overriding and why — the audit row is the only record this dashboard PR was never browser-tested." >&2
   exit 1
+fi
+
+# ── Product-PR refusal (D#6 S2-OWN) ───────────────────────────────────────────
+# The product pipeline pushes its work to branches named fx/<run>-g<gen> and
+# leaves the merge to a person. This wrapper is the internal loop's merge path,
+# so it must never be the thing that merges one, even by mistake. Refused on the
+# discussion plane (the private repo the pipeline builds on). A repo with a
+# single plane resolves to "code" while being the same repo as the Discussion
+# plane, so the repo slug is compared as well; otherwise a single-repo setup
+# would skip the refusal.
+#
+# Runs before the label, freshness, CI and merge steps below: it costs one API
+# call and leaves nothing behind. No --force flag, for the same reason the
+# label gate has none: the merge is simply not this script's to make. An
+# unreadable head branch refuses as well, since "could not tell" must not read
+# as "not a product PR".
+if [[ "${PR_PLANE_NAME:-}" == "discussion" || ( -n "$_DISCUSSION_REPO" && "$_PR_REPO" == "$_DISCUSSION_REPO" ) ]]; then
+  _HEAD_REF_RC=0
+  _HEAD_REF="$(gh pr view "$PR" --repo "$_PR_REPO" --json headRefName --jq .headRefName 2>/dev/null)" || _HEAD_REF_RC=$?
+  if [[ "$_HEAD_REF_RC" -ne 0 || -z "$_HEAD_REF" ]]; then
+    echo "[merge-and-hook] ERROR: could not read PR #$PR's head branch, so cannot tell whether it is a product PR. Refusing to merge." >&2
+    exit 1
+  fi
+  if [[ "$_HEAD_REF" == fx/* ]]; then
+    echo "[merge-and-hook] ERROR: product PR: the owner merges it by hand. PR #$PR's head branch '$_HEAD_REF' starts with fx/. Refusing to merge; no merge call was made." >&2
+    exit 1
+  fi
 fi
 
 LOG_DIR="${MERGE_AND_HOOK_LOG_DIR:-$REPO_ROOT/.autonomous-team/dashboard-logs}"

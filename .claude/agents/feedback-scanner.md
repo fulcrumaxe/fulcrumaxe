@@ -67,6 +67,13 @@ Read user-reported feedback from GitHub Issues and Discussions. Triage it. Route
       Filter: exclude issues by boss_github_username (Boss files those intentionally)
       Filter: exclude issues already labeled "team-tracked"
       These are external users reporting problems or requesting features.
+      Product-owned issues are not the loop's: pipe the list through the skip
+      filter and work only on what it prints. It drops every issue labelled
+      `fulcrumaxe:product` (whoever applied the label) and logs one
+      "skipped: product item #N" team-log line per drop:
+        gh issue list --state open --json number,title,body,labels,author \
+          | bash scripts/lib/product-item-skip.sh --log-issue "$LOG" --repo "$REPO"
+      Never label, comment on, close or file a Discussion for a skipped issue.
 
    b. Discussion comments from non-team users:
       gh api graphql → read recent Discussion comments
