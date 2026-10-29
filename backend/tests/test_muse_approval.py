@@ -43,7 +43,7 @@ def test_muse_spawn_bare_denied() -> None:
 
 
 def test_muse_spawn_absolute_path_denied() -> None:
-    d = sandbox_rules.check_muse_spawn([], "/home/dev/.local/bin/muse exec --prompt 'hi'")
+    d = sandbox_rules.check_muse_spawn([], "/home/testuser/.local/bin/muse exec --prompt 'hi'")
     assert d.allow is False
 
 
