@@ -1443,10 +1443,12 @@ echo "=== CS-26: CI_PR_FILES_<pr> and CI_PROVENANCE_BLOCKED_<disc> are gated on 
 STUB_DIR26="$(mktemp -d)"
 cat > "$STUB_DIR26/gh" <<'GHSTUB'
 #!/usr/bin/env bash
-# Minimal gh stand-in for CS-26: answers `gh pr view ... --json files,changedFiles`
-# (D#2630 fix round 2: one combined fetch replaces the old separate
-# `--json files` / `--json changedFiles` calls) with a JSON object built
-# from $CS26_STUB_FILES, and `gh api -i .../CI_DISABLED` with an HTTP
+# Minimal gh stand-in for CS-26: answers the provenance gate's two fetches —
+# `gh api repos/.../pulls/<pr>/files --paginate` (D#366: the file list comes
+# through the paginated REST endpoint because `gh pr view --json files` never
+# paginates past 100) with a single JSON page built from $CS26_STUB_FILES
+# (REST shape: {"filename": ...}), and `gh pr view ... --json changedFiles`
+# with the scalar count — plus `gh api -i .../CI_DISABLED` with an HTTP
 # 200/{"value":"true"} (kill switch disabled) or HTTP 404 (kill switch
 # enabled) response depending on $CS26_STUB_KILL. Anything else (including
 # the `gh api graphql` calls external_intake_gate.py makes) fails, same as
@@ -1455,7 +1457,7 @@ cat > "$STUB_DIR26/gh" <<'GHSTUB'
 #
 # changedFiles is always $CS26_STUB_FILES's own file count, so it always
 # matches the files array it's built from — none of CS-26's scenarios are
-# about a mismatch, so the combined fetch is a no-op here.
+# about a mismatch, so the completeness check is a no-op here.
 if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
   json_field=""
   prev=""
@@ -1465,16 +1467,24 @@ if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
     fi
     prev="$arg"
   done
-  if [ "$json_field" = "files,changedFiles" ]; then
-    python3 - "${CS26_STUB_FILES:-}" <<'PYEOF'
-import json, sys
-blob = sys.argv[1]
-files = blob.split("\n") if blob else []
-print(json.dumps({"files": [{"path": f} for f in files], "changedFiles": len(files)}))
-PYEOF
+  if [ "$json_field" = "changedFiles" ]; then
+    grep -c '.' <<<"${CS26_STUB_FILES:-}"
     exit 0
   fi
   exit 127
+fi
+if [ "$1" = "api" ]; then
+  case "${2:-}" in
+    */pulls/*/files)
+      python3 - "${CS26_STUB_FILES:-}" <<'PYEOF'
+import json, sys
+blob = sys.argv[1]
+files = blob.split(chr(10)) if blob else []
+print(json.dumps([{"filename": f} for f in files]))
+PYEOF
+      exit 0
+      ;;
+  esac
 fi
 if [ "$1" = "api" ] && [ "$2" = "-i" ]; then
   if [ "$CS26_STUB_KILL" = "disabled" ]; then
@@ -1610,23 +1620,25 @@ _assert_seam_row "CS-26f" "$SEAM_TMP_26F" "CI_PROVENANCE_BLOCKED"
 rm -f "$SEAM_TMP_26F"
 
 # -----------------------------------------------------------------------
-# CS-27 (D#2630) — the real `gh pr view --json files` fetch (the `else`
-# branch above, reached whenever CI_PR_FILES_<pr> is unset) used to discard
-# gh's own exit status: the command substitution's rc was never read, so a
-# failed fetch and an empty-but-successful fetch landed on the exact same
-# "no workflow files" result and returned 0. That is fail-open on the one
-# case where the gate cannot actually tell whether the PR touches
-# .github/workflows/** — exactly when the kill-switch block matters most.
-# This section proves the fetch's own failure is now fail-closed,
-# regardless of kill-switch state, and that a real fetch that *succeeds*
-# is completely unaffected (CS-27c/d/e).
+# CS-27 (D#2630) — the real files-endpoint fetch (the `else` branch above,
+# reached whenever CI_PR_FILES_<pr> is unset) used to discard gh's own exit
+# status: the command substitution's rc was never read, so a failed fetch
+# and an empty-but-successful fetch landed on the exact same "no workflow
+# files" result and returned 0. That is fail-open on the one case where the
+# gate cannot actually tell whether the PR touches .github/workflows/** —
+# exactly when the kill-switch block matters most. This section proves the
+# fetch's own failure is now fail-closed, regardless of kill-switch state,
+# and that a real fetch that *succeeds* is completely unaffected (CS-27c/d/e).
 #
 # CS-27f/g (fix round 1) cover a second way that same fetch stayed fail-open:
-# `gh pr view --json files` returns at most 100 files and never paginates,
-# but still exits 0 — a rc check alone cannot see a >100-file PR whose
-# `.github/workflows/**` path landed past the cutoff. CS-27f drives exactly
-# that (150 changed, 100 returned) and expects a closed gate; CS-27g is the
-# control proving a matching count is not itself a new false block.
+# the old `gh pr view --json files` fetch returned at most 100 files and
+# never paginated, but still exited 0 — a rc check alone cannot see a
+# >100-file PR whose `.github/workflows/**` path landed past the cutoff.
+# CS-27f drives a count mismatch (150 changed, 100 returned) and expects a
+# closed gate; CS-27g is the control proving a matching count is not itself
+# a new false block. (D#366 moved the fetch to the paginated REST endpoint,
+# which has no 100-entry cutoff; the exact-match check is kept and still
+# guards the endpoint's own upper bound.)
 #
 # CS-27h..k (fix round 2) cover a third way the same check stayed fail-open:
 # round 1's undercount check counted LINES of `--jq '.files[].path'` output
@@ -1641,32 +1653,36 @@ rm -f "$SEAM_TMP_26F"
 # CS-27j drives a returned count greater than changedFiles (must block,
 # proving the `!=` fix rather than just `-lt`); CS-27k drives changedFiles=0
 # against a non-empty files array (must block, with its own message). All
-# four go through one combined `--json files,changedFiles` fetch and jq's
-# `.files | length` — an array count a newline can't inflate — never a line
-# count.
+# four go through the REST files endpoint plus the `changedFiles` scalar,
+# counted with jq's `[.[][]] | length` — an array count a newline can't
+# inflate — never a line count.
 # -----------------------------------------------------------------------
 echo ""
 echo "=== CS-27: an unreadable gh file-list fetch fails closed instead of falling through to 0 ==="
 STUB_DIR27="$(mktemp -d)"
 cat > "$STUB_DIR27/gh" <<'GHSTUB'
 #!/usr/bin/env bash
-# Minimal gh stand-in for CS-27: `gh pr view ... --json files,changedFiles`
-# (D#2630 fix round 2: one combined fetch replaces the old separate
-# `--json files` / `--json changedFiles` calls) answers according to
-# $CS27_STUB_RC / $CS27_STUB_JSON so the real fetch branch can be driven
-# both to failure (CS-27a/b) and to a staged success (CS-27c..k) without a
-# network call. Anything else fails, same shape as CS-26's stub.
+# Minimal gh stand-in for CS-27: the provenance gate's two fetches (D#366 —
+# the file list comes through the paginated REST endpoint because
+# `gh pr view --json files` never paginates past 100 and still exits 0).
+# `gh api repos/.../pulls/<pr>/files --paginate` answers according to
+# $CS27_STUB_RC / $CS27_STUB_JSON, and `gh pr view ... --json changedFiles`
+# answers the scalar — so the real fetch branch can be driven both to
+# failure (CS-27a/b) and to a staged success (CS-27c..k) without a network
+# call. Anything else fails, same shape as CS-26's stub.
 #
-# $CS27_STUB_JSON, when set, is emitted verbatim — this is how CS-27i/j/k
-# drive an exact files array, including one entry whose "path" string
-# contains a literal embedded newline (CS-27i), which a newline-joined env
-# var could never represent unambiguously.
+# $CS27_STUB_JSON, when set, is emitted verbatim as the files-endpoint body
+# (one JSON array per page, the exact shape `gh api --paginate` prints) —
+# this is how CS-27i/j/k drive an exact file set, including one entry whose
+# "filename" string contains a literal embedded newline (CS-27i), which a
+# newline-joined env var could never represent unambiguously. The
+# changedFiles scalar for those cases comes from $CS27_STUB_CHANGED_FILES.
 #
-# When $CS27_STUB_JSON is unset, the response is built from $CS27_STUB_FILES
-# (one plain path per line) and $CS27_STUB_CHANGED_FILES (defaults to
-# $CS27_STUB_FILES's own line count — a real per-file count for every one of
-# these newline-free fixtures) — so CS-27a..g, none of which sets
-# CS27_STUB_JSON, see no behavior change from this consolidation.
+# When $CS27_STUB_JSON is unset, the page is built from $CS27_STUB_FILES
+# (one plain path per line) and the scalar from $CS27_STUB_CHANGED_FILES
+# (defaults to $CS27_STUB_FILES's own line count — a real per-file count
+# for every one of these newline-free fixtures) — so CS-27a..g, none of
+# which sets CS27_STUB_JSON, see no behavior change from this consolidation.
 if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
   if [ "${CS27_STUB_RC:-0}" != "0" ]; then
     echo "gh: stubbed failure" >&2
@@ -1680,21 +1696,36 @@ if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
     fi
     prev="$arg"
   done
-  if [ "$json_field" = "files,changedFiles" ]; then
-    if [ -n "${CS27_STUB_JSON:-}" ]; then
-      printf '%s' "${CS27_STUB_JSON}"
-      exit 0
+  if [ "$json_field" = "changedFiles" ]; then
+    if [ -n "${CS27_STUB_CHANGED_FILES:-}" ]; then
+      echo "$CS27_STUB_CHANGED_FILES"
+    else
+      grep -c '.' <<<"${CS27_STUB_FILES:-}"
     fi
-    python3 - "${CS27_STUB_FILES:-}" "${CS27_STUB_CHANGED_FILES:-}" <<'PYEOF'
-import json, sys
-files_blob, changed = sys.argv[1], sys.argv[2]
-files = files_blob.split("\n") if files_blob else []
-if not changed:
-    changed = str(len(files))
-print(json.dumps({"files": [{"path": f} for f in files], "changedFiles": int(changed)}))
-PYEOF
     exit 0
   fi
+  exit 127
+fi
+if [ "$1" = "api" ]; then
+  case "${2:-}" in
+    */pulls/*/files)
+      if [ "${CS27_STUB_RC:-0}" != "0" ]; then
+        echo "gh: stubbed failure" >&2
+        exit "${CS27_STUB_RC}"
+      fi
+      if [ -n "${CS27_STUB_JSON:-}" ]; then
+        printf '%s' "${CS27_STUB_JSON}"
+        exit 0
+      fi
+      python3 - "${CS27_STUB_FILES:-}" <<'PYEOF'
+import json, sys
+files_blob = sys.argv[1]
+files = files_blob.split(chr(10)) if files_blob else []
+print(json.dumps([{"filename": f} for f in files]))
+PYEOF
+      exit 0
+      ;;
+  esac
   exit 127
 fi
 exit 127
@@ -1795,7 +1826,7 @@ assert_exit_1 "CS-27e: a workflow-touching file list from a real fetch still hit
 assert_contains "CS-27e: reason cites the kill-switch block" "CI_DISABLED='true'" "$CS27E_OUT"
 
 echo ""
-echo "--- CS-27f (150 changed, only 100 returned, workflow file truncated at position 120): fails closed on the undercount ---"
+echo "--- CS-27f (150 changed, only 100 returned): fails closed on the undercount ---"
 CS27F_FILES="$(for i in $(seq -w 1 100); do echo "plain-file-${i}.txt"; done)"
 CS27F_OUT=$(
   PATH="$STUB_DIR27:$PATH" \
@@ -1813,7 +1844,7 @@ CS27F_OUT=$(
   ' 2>&1
 ); CS27F_RC=$?
 assert_exit_1 "CS-27f: changedFiles=150 but only 100 paths returned fails closed, even though none of the 100 is a workflow path" "$CS27F_RC"
-assert_contains "CS-27f: reason cites the undercount" "reports 150 changed files but gh pr view --json files returned 100" "$CS27F_OUT"
+assert_contains "CS-27f: reason cites the undercount" "reports 150 changed files but the files endpoint returned 100" "$CS27F_OUT"
 
 echo ""
 echo "--- CS-27g (150 changed, 150 returned): a matching count is unaffected, no false block ---"
@@ -1841,13 +1872,14 @@ echo "--- CS-27h (100-of-100 control, no newline): a clean full-cap PR is not bl
 CS27H_JSON="$(python3 - <<'PYEOF'
 import json
 files = [f"plain-file-{i:03d}.txt" for i in range(1, 101)]
-print(json.dumps({"files": [{"path": f} for f in files], "changedFiles": 100}))
+print(json.dumps([{"filename": f} for f in files]))
 PYEOF
 )"
 CS27H_OUT=$(
   PATH="$STUB_DIR27:$PATH" \
       CS27_STUB_RC=0 \
       CS27_STUB_JSON="$CS27H_JSON" \
+      CS27_STUB_CHANGED_FILES=100 \
       CI_KILL_SWITCH_OVERRIDE=HTTP_404 \
   bash -c '
     source "'"$CI_LIB"'"
@@ -1870,15 +1902,16 @@ files = [f"plain-file-{i:03d}.txt" for i in range(1, 100)]
 # 100 to 101, matching changedFiles below and passing. The array still has
 # exactly 100 elements.
 files.append("plain-file-100.txt\nSNEAKY-EXTRA-LINE")
-# changedFiles=101 is the real total: a workflow file at position 101 exists
-# on the PR but is beyond gh's 100-item cap, so it never appears in "files".
-print(json.dumps({"files": [{"path": f} for f in files], "changedFiles": 101}))
+# changedFiles=101 is the real total; the endpoint returned 100 entries, so
+# the counts disagree and the gate must fail closed on the mismatch.
+print(json.dumps([{"filename": f} for f in files]))
 PYEOF
 )"
 CS27I_OUT=$(
   PATH="$STUB_DIR27:$PATH" \
       CS27_STUB_RC=0 \
       CS27_STUB_JSON="$CS27I_JSON" \
+      CS27_STUB_CHANGED_FILES=101 \
       CI_KILL_SWITCH_OVERRIDE=HTTP_404 \
   bash -c '
     source "'"$CI_LIB"'"
@@ -1890,20 +1923,21 @@ CS27I_OUT=$(
   ' 2>&1
 ); CS27I_RC=$?
 assert_exit_1 "CS-27i: newline-inflated 100-of-101 no longer passes as a match" "$CS27I_RC"
-assert_contains "CS-27i: reason cites the real 100-vs-101 mismatch" "reports 101 changed files but gh pr view --json files returned 100" "$CS27I_OUT"
+assert_contains "CS-27i: reason cites the real 100-vs-101 mismatch" "reports 101 changed files but the files endpoint returned 100" "$CS27I_OUT"
 
 echo ""
 echo "--- CS-27j (returned count greater than changedFiles): the old -lt check would have missed this, != catches it ---"
 CS27J_JSON="$(python3 - <<'PYEOF'
 import json
 files = [f"plain-file-{i:03d}.txt" for i in range(1, 106)]
-print(json.dumps({"files": [{"path": f} for f in files], "changedFiles": 100}))
+print(json.dumps([{"filename": f} for f in files]))
 PYEOF
 )"
 CS27J_OUT=$(
   PATH="$STUB_DIR27:$PATH" \
       CS27_STUB_RC=0 \
       CS27_STUB_JSON="$CS27J_JSON" \
+      CS27_STUB_CHANGED_FILES=100 \
       CI_KILL_SWITCH_OVERRIDE=HTTP_404 \
   bash -c '
     source "'"$CI_LIB"'"
@@ -1915,15 +1949,16 @@ CS27J_OUT=$(
   ' 2>&1
 ); CS27J_RC=$?
 assert_exit_1 "CS-27j: 105 files returned against changedFiles=100 blocks (returned > changed)" "$CS27J_RC"
-assert_contains "CS-27j: reason cites the 105-vs-100 mismatch" "reports 100 changed files but gh pr view --json files returned 105" "$CS27J_OUT"
+assert_contains "CS-27j: reason cites the 105-vs-100 mismatch" "reports 100 changed files but the files endpoint returned 105" "$CS27J_OUT"
 
 echo ""
 echo "--- CS-27k (changedFiles=0 with a non-empty files array): an inconsistent gh response blocks on its own ---"
-CS27K_JSON='{"files":[{"path":"README.md"}],"changedFiles":0}'
+CS27K_JSON='[{"filename":"README.md"}]'
 CS27K_OUT=$(
   PATH="$STUB_DIR27:$PATH" \
       CS27_STUB_RC=0 \
       CS27_STUB_JSON="$CS27K_JSON" \
+      CS27_STUB_CHANGED_FILES=0 \
       CI_KILL_SWITCH_OVERRIDE=HTTP_404 \
   bash -c '
     source "'"$CI_LIB"'"
@@ -1935,7 +1970,7 @@ CS27K_OUT=$(
   ' 2>&1
 ); CS27K_RC=$?
 assert_exit_1 "CS-27k: changedFiles=0 with 1 file returned blocks" "$CS27K_RC"
-assert_contains "CS-27k: reason cites the changedFiles=0 inconsistency" "reports changedFiles=0 but gh pr view --json files returned 1 path(s)" "$CS27K_OUT"
+assert_contains "CS-27k: reason cites the changedFiles=0 inconsistency" "reports changedFiles=0 but the files endpoint returned 1 path(s)" "$CS27K_OUT"
 
 rm -rf "$STUB_DIR27"
 

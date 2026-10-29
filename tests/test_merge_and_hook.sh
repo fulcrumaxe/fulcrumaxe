@@ -153,29 +153,35 @@ if [[ "$ARGS" == *"pr diff"* ]]; then
   exit 0
 fi
 
-# `gh pr view <PR> --repo ... --json files,changedFiles` (D#1614 provenance
-# gate; D#2630 fix round 2 — one combined fetch replaces the old separate
-# `--json files` / `--json changedFiles` calls). Builds a JSON object from
-# STUB_PR_FILES (one path per line) and STUB_CHANGED_FILES (defaults to
-# STUB_PR_FILES's own line count -- a real file count for every one of this
-# suite's plain, newline-free fixtures, so nothing here is about a mismatch
-# and this consolidation is a no-op for every pre-existing scenario, unless
-# STUB_CHANGED_FILES is set for a test that wants to drive one).
-if [[ "$ARGS" == *"--json files,changedFiles"* ]]; then
+# `gh api repos/.../pulls/<PR>/files --paginate` (D#1614 provenance gate;
+# D#366 — the file list comes through the paginated REST endpoint because
+# `gh pr view --json files` never paginates past 100). Serves one JSON page
+# built from STUB_PR_FILES (one path per line, REST shape: {"filename": ...}).
+if [[ "$ARGS" == *"pulls/"*"/files"* ]]; then
+  echo "GH_ARGS: $ARGS" >&2
+  python3 - "${STUB_PR_FILES:-}" <<'PYEOF'
+import json, sys
+files_blob = sys.argv[1]
+files = files_blob.split(chr(10)) if files_blob else []
+print(json.dumps([{"filename": f} for f in files]))
+PYEOF
+  exit 0
+fi
+
+# `gh pr view <PR> --repo ... --json changedFiles --jq .changedFiles`
+# (D#1614 provenance gate completeness scalar; the stub returns the
+# post-jq scalar the same way every other branch here returns post-jq
+# output). STUB_CHANGED_FILES wins when set; otherwise STUB_PR_FILES's own
+# line count — a real file count for every one of this suite's plain,
+# newline-free fixtures, so nothing here is about a mismatch unless
+# STUB_CHANGED_FILES is set for a test that wants to drive one.
+if [[ "$ARGS" == *"--json changedFiles"* ]]; then
   echo "GH_ARGS: $ARGS" >&2
   if [[ -n "${STUB_CHANGED_FILES:-}" ]]; then
-    changed_count="$STUB_CHANGED_FILES"
-  elif [[ -z "${STUB_PR_FILES:-}" ]]; then
-    changed_count=0
+    echo "$STUB_CHANGED_FILES"
   else
-    changed_count="$(printf '%s\n' "$STUB_PR_FILES" | grep -c '.')"
+    grep -c '.' <<<"${STUB_PR_FILES:-}"
   fi
-  python3 - "${STUB_PR_FILES:-}" "$changed_count" <<'PYEOF'
-import json, sys
-files_blob, changed = sys.argv[1], sys.argv[2]
-files = files_blob.split("\n") if files_blob else []
-print(json.dumps({"files": [{"path": f} for f in files], "changedFiles": int(changed)}))
-PYEOF
   exit 0
 fi
 

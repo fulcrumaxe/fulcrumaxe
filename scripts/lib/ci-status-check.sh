@@ -30,19 +30,21 @@
 #         1 also when the PR's file list cannot be read (fail closed) — with
 #         no file list, this gate cannot tell whether the PR touches
 #         .github/workflows/** at all, so it cannot safely fall through to 0.
-#         1 also when a single `gh pr view --json files,changedFiles` fetch
-#         shows the returned `.files` array length does not exactly match
-#         the PR's own `changedFiles` total (fail closed, D#2630), when
-#         either number is non-numeric, or when `changedFiles` is 0 while
-#         `.files` is non-empty — `gh pr view --json files` never paginates
-#         past 100 and still exits 0, so a >100-file PR with a
-#         `.github/workflows/**` path beyond the cutoff would otherwise read
-#         as "no workflow files" instead of "we can't see them all". The two
-#         counts are computed from one fetch with jq's `.files | length` (an
-#         array count), not by counting lines of printed paths — a path
-#         containing a literal newline inflates a line count by one without
-#         changing the array length, which let a >100-file PR's truncated
-#         100-entry response line up with its own `changedFiles` and pass.
+#         1 also when the fetched file count does not exactly match the PR's
+#         own `changedFiles` total (fail closed, D#2630), when either number
+#         is non-numeric, or when `changedFiles` is 0 while the fetched list
+#         is non-empty. The fetch goes through the paginated REST endpoint
+#         (`gh api repos/.../pulls/N/files --paginate`, D#366): `gh pr view
+#         --json files` never paginates past 100 and still exits 0, so the
+#         old single-fetch failed closed on EVERY PR over 100 files and none
+#         of them could merge through this wrapper. `gh api --paginate`
+#         emits one JSON array per page (unmerged — see `gh api --help`),
+#         and the count below slurps those pages back into one set with
+#         jq's `[.[][]] | length` (an array count), never by counting lines
+#         of printed paths — a path containing a literal newline inflates a
+#         line count by one without changing the array length. The
+#         exact-match check is kept: it now guards the REST endpoint's own
+#         upper bound rather than the 100-entry cutoff.
 #     Delegates the provenance half to scripts/lib/external_intake_gate.py —
 #     does not reinvent it.
 #
@@ -884,29 +886,35 @@ check_ci_provenance_gate() {
     if [ -n "${!files_mock:-}" ]; then
       echo "check_ci_provenance_gate: ignoring ${files_mock} — set CI_STATUS_TEST_MODE=1 to honour it" >&2
     fi
-    # D#2630 fix round 2: this used to be two separate `gh pr view` calls,
-    # and the "how many paths did we get back" side of the comparison was a
-    # LINE count (`grep -c '.'` over `--jq '.files[].path'` output), not a
-    # file count. A path containing a literal newline prints across two
-    # lines, so one such path inflates that count by one — enough for a
-    # >100-file PR's truncated 100-entry response to line up with its own
-    # `changedFiles` total and pass. Fetch both fields in ONE call and
-    # compute both numbers from that single JSON response with jq's
-    # `.files | length` — an array count, which a newline inside one path's
-    # string value can never inflate — instead of a text-line count.
-    local pr_json
-    pr_json="$(gh pr view "$pr" --repo "$repo" --json files,changedFiles 2>/dev/null)"
-    local pr_json_rc=$?
-    if [ "$pr_json_rc" -ne 0 ]; then
-      CI_STATUS_FAIL_REASON="could not read the file list for PR #$pr (gh pr view --json files,changedFiles failed, rc=$pr_json_rc) — cannot tell whether it modifies .github/workflows/**, failing closed"
+    # D#366: the file list used to come from `gh pr view --json files` in
+    # the same call as `changedFiles`. That field never paginates past 100
+    # entries and still exits 0, so the completeness check below failed
+    # closed on EVERY PR over 100 files — none of them could merge through
+    # this wrapper at all. Fetch the list through the paginated REST
+    # List-PR-files endpoint instead: `gh api --paginate` requests every
+    # page and prints one JSON array per page (unmerged — see
+    # `gh api --help`), and the count below slurps those pages back into a
+    # single set with jq's `[.[][]] | length` — an array count, which a
+    # newline inside one path's string value can never inflate (the D#2630
+    # fix-round-2 property, kept). The `changedFiles` scalar still comes
+    # from `gh pr view` — a single number has no cap to paginate past —
+    # and the exact-match check is kept: it now guards the REST endpoint's
+    # own upper bound rather than the 100-entry cutoff. The two fetches can
+    # race a commit landing between them; that direction fails closed (the
+    # operator re-runs), never open.
+    local files_json
+    files_json="$(gh api "repos/${repo}/pulls/${pr}/files" --paginate 2>/dev/null)"
+    local files_json_rc=$?
+    if [ "$files_json_rc" -ne 0 ]; then
+      CI_STATUS_FAIL_REASON="could not read the file list for PR #$pr (gh api repos/.../pulls/$pr/files --paginate failed, rc=$files_json_rc) — cannot tell whether it modifies .github/workflows/**, failing closed"
       return 1
     fi
 
     local changed_files_count returned_files_count
-    changed_files_count="$(printf '%s' "$pr_json" | jq -r '.changedFiles' 2>/dev/null)"
-    returned_files_count="$(printf '%s' "$pr_json" | jq -r '(.files | length)' 2>/dev/null)"
+    changed_files_count="$(gh pr view "$pr" --repo "$repo" --json changedFiles --jq .changedFiles 2>/dev/null)"
+    returned_files_count="$(printf '%s' "$files_json" | jq -s '[.[][]] | length' 2>/dev/null)"
     if ! [[ "$changed_files_count" =~ ^[0-9]+$ ]] || ! [[ "$returned_files_count" =~ ^[0-9]+$ ]]; then
-      CI_STATUS_FAIL_REASON="could not read changedFiles/files for PR #$pr (gh pr view --json files,changedFiles returned a non-numeric changedFiles or files count) — cannot verify the file list is complete, failing closed"
+      CI_STATUS_FAIL_REASON="could not read changedFiles/files for PR #$pr (the files endpoint or the changedFiles fetch returned a non-numeric count) — cannot verify the file list is complete, failing closed"
       return 1
     fi
 
@@ -916,7 +924,7 @@ check_ci_provenance_gate() {
     # fails closed with its own reason rather than falling into the generic
     # mismatch message below.
     if [ "$changed_files_count" -eq 0 ] && [ "$returned_files_count" -gt 0 ]; then
-      CI_STATUS_FAIL_REASON="PR #$pr reports changedFiles=0 but gh pr view --json files returned $returned_files_count path(s) — an inconsistent response from gh, failing closed"
+      CI_STATUS_FAIL_REASON="PR #$pr reports changedFiles=0 but the files endpoint returned $returned_files_count path(s) — an inconsistent response from gh, failing closed"
       return 1
     fi
 
@@ -924,11 +932,11 @@ check_ci_provenance_gate() {
     # count larger than changedFiles is exactly as unverifiable as a smaller
     # one — an exact match is what "the file list is complete" requires.
     if [ "$returned_files_count" -ne "$changed_files_count" ]; then
-      CI_STATUS_FAIL_REASON="PR #$pr reports $changed_files_count changed files but gh pr view --json files returned $returned_files_count (gh pr view never paginates past 100) — cannot tell whether a truncated or inflated list is accurate, failing closed"
+      CI_STATUS_FAIL_REASON="PR #$pr reports $changed_files_count changed files but the files endpoint returned $returned_files_count — cannot tell whether a truncated or inflated list is accurate, failing closed"
       return 1
     fi
 
-    files_list="$(printf '%s' "$pr_json" | jq -r '.files[].path' 2>/dev/null)"
+    files_list="$(printf '%s' "$files_json" | jq -sr '.[][] | .filename' 2>/dev/null)"
   fi
   if printf '%s\n' "$files_list" | grep -q '^\.github/workflows/'; then
     touches_workflows="true"

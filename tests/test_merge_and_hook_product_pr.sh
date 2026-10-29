@@ -70,7 +70,8 @@ if [[ "$ARGS" == *"--json body"* ]]; then echo "Closes D#4200"; exit 0; fi
 if [[ "$ARGS" == *"--json labels"* ]]; then echo "code-review-passed"; exit 0; fi
 if [[ "$ARGS" == *"graphql"* && "$ARGS" == *"discussion(number:"* ]]; then echo "D_kwDOFake"; exit 0; fi
 if [[ "$ARGS" == *"pr diff"* ]]; then exit 0; fi
-if [[ "$ARGS" == *"--json files,changedFiles"* ]]; then echo '{"files":[],"changedFiles":0}'; exit 0; fi
+if [[ "$ARGS" == *"pulls/"*"/files"* ]]; then echo '[]'; exit 0; fi
+if [[ "$ARGS" == *"--json changedFiles"* ]]; then echo '0'; exit 0; fi
 if [[ "$ARGS" == *"--json mergeable"* ]]; then echo "MERGEABLE|CLEAN"; exit 0; fi
 if [[ "$ARGS" == *"--json headRefOid"* ]]; then echo "deadbeefcafe0000"; exit 0; fi
 if [[ "$ARGS" == *"--json baseRefName"* ]]; then echo "main"; exit 0; fi
