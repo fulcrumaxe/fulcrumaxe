@@ -45,7 +45,7 @@ fi
 
 echo ""
 echo "Test 2: working principles injected (not forked)"
-if echo "$OUT" | grep -q "## Working Principles"; then
+if grep -q "## Working Principles" <<<"$OUT"; then
   pass "prompt contains ## Working Principles"
 else
   fail "working principles" "prompt missing '## Working Principles'"
@@ -68,7 +68,7 @@ fi
 
 echo ""
 echo "Test 4: AGENT_OUTPUT + tokens_used closing section required"
-if echo "$OUT" | grep -q "AGENT_OUTPUT" && echo "$OUT" | grep -q "tokens_used"; then
+if grep -q "AGENT_OUTPUT" <<<"$OUT" && grep -q "tokens_used" <<<"$OUT"; then
   pass "prompt requires AGENT_OUTPUT with tokens_used"
 else
   fail "closing section" "prompt missing AGENT_OUTPUT/tokens_used requirement"
@@ -91,7 +91,7 @@ for raw in 'autonomous-agent-7/fulcrumaxe' 'repository(owner:"autonomous-agent-7
 done
 BAD=0
 for needle in 'autonomous-agent-7'; do
-  if echo "$OUT" | grep -q -F "$needle"; then
+  if grep -q -F "$needle" <<<"$OUT"; then
     fail "sanitize '$needle'" "prompt still contains Claude-only text"
     BAD=1
   fi
@@ -99,12 +99,12 @@ done
 [[ "$BAD" -eq 0 ]] && pass "no private-plane slug remains"
 # Positive proof the slug rule fired (not just absent input): the GraphQL
 # owner pattern from the card must render in its public form.
-if echo "$OUT" | grep -q -F 'repository(owner:"fulcrumaxe", name:"fulcrumaxe")'; then
+if grep -q -F 'repository(owner:"fulcrumaxe", name:"fulcrumaxe")' <<<"$OUT"; then
   pass "private slug translated to public repo form"
 else
   fail "slug translation" "prompt missing public 'repository(owner:\"fulcrumaxe\", name:\"fulcrumaxe\")' form"
 fi
-if echo "$OUT" | grep -q "Closes D#"; then
+if grep -q "Closes D#" <<<"$OUT"; then
   pass "bare Closes D#n reference present"
 else
   fail "bare reference" "prompt missing bare 'Closes D#n' form"
@@ -164,21 +164,21 @@ for needle in 'https://github.com/autonomous-agent-7/fulcrumaxe/discussions/2601
               'Agent(subagent_type=executor)' \
               'claude CLI' \
               '{{discussion_url}}'; do
-  if echo "$HOUT" | grep -q -F "$needle"; then
+  if grep -q -F "$needle" <<<"$HOUT"; then
     fail "hostile needle '$needle'" "hostile brief token survived rendering"
     HBAD=1
   fi
 done
 [[ "$HBAD" -eq 0 ]] && pass "no hostile brief token survives rendering"
 # Positive proof each hostile token was translated, not just dropped input.
-for good in 'Closes D#2601' 'implement directly' 'scripts/lib/muse-spawn-prompt.sh' "(touch $PWN)" 'muse CLI'; do
-  if echo "$HOUT" | grep -q -F "$good"; then
+for good in 'Closes D#2601' 'subagent_spawn with the same args' 'scripts/lib/muse-spawn-prompt.sh' "(touch $PWN)" 'muse CLI'; do
+  if grep -q -F "$good" <<<"$HOUT"; then
     pass "hostile translation present: '$good'"
   else
     fail "hostile translation" "prompt missing translated form '$good'"
   fi
 done
-if echo "$HOUT" | grep -q -F "$REPO_ROOT"; then
+if grep -q -F "$REPO_ROOT" <<<"$HOUT"; then
   pass "\$CLAUDE_PROJECT_DIR translated to checkout root"
 else
   fail "project-dir translation" "prompt missing checkout root '$REPO_ROOT'"
@@ -188,15 +188,15 @@ rm -f "$ERR9"
 echo ""
 echo "Test 10: no literal {{...}} placeholder reaches output (loud markers, not blanks)"
 POUT=$(bash "$RENDERER" --role executor --brief "$BRIEF" --event-id "$EVENT_ID" --discussion 2601 2>/dev/null)
-if echo "$POUT" | grep -qE '\{\{'; then
+if grep -qE '\{\{' <<<"$POUT"; then
   fail "literal placeholder" "rendered prompt contains a literal '{{...}}' token:"
-  echo "$POUT" | grep -nE '\{\{[^}]*\}\}' | head -5
+  grep -nE '\{\{[^}]*\}\}' <<<"$POUT" | head -5
 else
   pass "no literal {{...}} in rendered prompt"
 fi
 # Loud, not silent: markers must be present, and the slots this lane HAS
 # suppliers for must carry their values.
-if echo "$POUT" | grep -q "MUSE:"; then
+if grep -q "MUSE:" <<<"$POUT"; then
   pass "unresolvable slots carry loud MUSE: markers"
 else
   fail "loud markers" "prompt has neither '{{...}}' nor 'MUSE:' — slots went silently blank"
@@ -205,7 +205,7 @@ for good in 'Implement Discussion #2601' \
             'Discussion URL: Closes D#2601' \
             '$(source scripts/lib/repo-resolve.sh && _resolve_code_repo)' \
             'MUSE:include-fragment:hard-stop-no-claude'; do
-  if echo "$POUT" | grep -q -F "$good"; then
+  if grep -q -F "$good" <<<"$POUT"; then
     pass "placeholder rendered: '$good'"
   else
     fail "placeholder rendering" "prompt missing rendered form '$good'"

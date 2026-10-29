@@ -11,7 +11,14 @@
 #     --role <role> \
 #     --brief "<discussion brief / task text>" \
 #     --event-id <role>-<discussion>-<unix-ts> \
-#     [--discussion <N>]
+#     [--discussion <N>] \
+#     [--no-register]
+#
+# On success (unless --no-register) this also records the spawn BEFORE the
+# prompt is used, mirroring scripts/spawn-agent.sh steps 3a/3b: a spawn-registry
+# row (the stop-time join key) and an agent_run start row, plus an agent-feed
+# line. All recording is non-fatal and stderr-only — stdout stays the prompt.
+# --no-register skips recording (smoke renders where no spawn will follow).
 #
 # --event-id is REQUIRED and must be stable: generate it once per spawn and
 # reuse the same value on every resume/fix round so pre-spawn-check and
@@ -38,11 +45,33 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # shellcheck source=scripts/lib/working-principles.sh
 source "$SCRIPT_DIR/working-principles.sh"
+# shellcheck source=scripts/lib/repo-resolve.sh
+source "$SCRIPT_DIR/repo-resolve.sh"
+
+# ── installing-repo resolution for the private→public slug rewrite ──────────
+# muse_sanitize adapts shared content (which names the private Discussion-plane
+# slug) to the INSTALLING repo — every install renders its own slug. Resolved
+# once per render via _resolve_code_repo; validated to a strict OWNER/NAME
+# shape and defaulted to the upstream slug when nothing resolves, so a bare
+# checkout (no config, no env — including this script's own test harness)
+# still translates instead of leaking the private slug or failing the render.
+# The fallback is display text only; it never reaches a `gh --repo` pin, so
+# D#1870's no-default rule for the resolver itself does not apply here.
+_MUSE_PUBLIC_REPO="$(_resolve_code_repo 2>/dev/null || true)"
+[[ "$_MUSE_PUBLIC_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || _MUSE_PUBLIC_REPO="fulcrumaxe/fulcrumaxe"
+_MUSE_PUBLIC_OWNER="${_MUSE_PUBLIC_REPO%%/*}"
+_MUSE_PUBLIC_NAME="${_MUSE_PUBLIC_REPO##*/}"
+# No further escaping is needed for the sed replacement position below: the
+# validated shape permits only letters, digits, dot, underscore, hyphen, and
+# the single slash separator (with the pipe delimiter in use), none of which
+# is special to sed there. Widening the shape above requires re-auditing the
+# rules.
 
 ROLE=""
 BRIEF=""
 EVENT_ID=""
 DISCUSSION=""
+NO_REGISTER=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -50,9 +79,10 @@ while [[ $# -gt 0 ]]; do
     --brief)      BRIEF="$2";      shift 2 ;;
     --event-id)   EVENT_ID="$2";   shift 2 ;;
     --discussion) DISCUSSION="$2"; shift 2 ;;
+    --no-register) NO_REGISTER=1;  shift   ;;
     *)
       echo "Error: unknown argument: $1" >&2
-      echo "Usage: $0 --role <role> --brief <text> --event-id <id> [--discussion <N>]" >&2
+      echo "Usage: $0 --role <role> --brief <text> --event-id <id> [--discussion <N>] [--no-register]" >&2
       exit 1
       ;;
   esac
@@ -72,7 +102,10 @@ TMPL="$REPO_ROOT/backend/spawn_templates/${ROLE}.tmpl"
 
 # ── muse_sanitize ─────────────────────────────────────────────────────────────
 # Rewrite Claude-only directives for the Muse plane:
-#   - Agent()/spawn-agent.sh spawning → implement directly (no Claude-native spawn here)
+#   - Agent(...) spawning → subagent_spawn with the same args, then
+#     subagent_wait (fix rounds via subagent_send_message). Args are preserved
+#     verbatim so role, isolation, and prompt survive the translation; the
+#     worktree-isolation mapping is spelled out inline at each site.
 #   - $CLAUDE_PROJECT_DIR           → repo checkout root ($REPO_ROOT)
 #   - Discussion URLs/prose         → bare `Closes D#n` (Discussion plane is private)
 #   - private Discussion-plane slug → public repo (code plane is this checkout)
@@ -91,14 +124,15 @@ TMPL="$REPO_ROOT/backend/spawn_templates/${ROLE}.tmpl"
 # match, so the translator installs verbatim and runs identically
 # everywhere. Do NOT "simplify" the splits back into literals.
 muse_sanitize() {
-  sed -e 's|scripts/spawn-agent\.sh|scripts/lib/muse-spawn-prompt.sh|g' \
-      -e 's|Agent(subagent_type=[^)]*)|implement directly|g' \
-      -e 's|Agent()/spawn-agent\.sh|direct implementation|g' \
+  sed -e 's|Agent()/spawn-agent\.sh|subagent_spawn + subagent_wait (prompt assembled by scripts/lib/muse-spawn-prompt.sh)|g' \
+      -e 's|Agent()|subagent_spawn, then subagent_wait for its result|g' \
+      -e 's|Agent(\([^)]*\))|subagent_spawn with the same args (\1), then subagent_wait for its result; pass worktree-isolation on the spawn call when the source says isolation="worktree", and use subagent_send_message for fix rounds|g' \
+      -e 's|scripts/spawn-agent\.sh|scripts/lib/muse-spawn-prompt.sh|g' \
       -e 's|\$CLAUDE_PROJECT_DIR|'"$REPO_ROOT"'|g' \
       -e 's|https://github\.com/[^[:space:]]*/discussions/\([0-9][0-9]*\)|Closes D#\1|g' \
-      -e 's|autonomous-agent-'"7"'/fulcrumaxe|fulcrumaxe/fulcrumaxe (public repo — the only plane)|g' \
-      -e 's|repository(owner:"autonomous-agent-'"7"'", name:"fulcrumaxe")|repository(owner:"fulcrumaxe", name:"fulcrumaxe")|g' \
-      -e 's|owner:\\"autonomous-agent-'"7"'\\"|owner:\\"fulcrumaxe\\"|g' \
+      -e 's|autonomous-agent-'"7"'/fulcrumaxe|'"$_MUSE_PUBLIC_REPO"' (public repo — the only plane)|g' \
+      -e 's|repository(owner:"autonomous-agent-'"7"'", name:"fulcrumaxe")|repository(owner:"'"$_MUSE_PUBLIC_OWNER"'", name:"'"$_MUSE_PUBLIC_NAME"'")|g' \
+      -e 's|owner:\\"autonomous-agent-'"7"'\\"|owner:\\"'"$_MUSE_PUBLIC_OWNER"'\\"|g' \
       -e 's|\bclaude\b|muse|g'
 }
 
@@ -211,6 +245,33 @@ _render_template() {
 
   printf '%s' "$text" | _muse_marker_sweep
 }
+
+# ── _record_spawn ─────────────────────────────────────────────────────────────
+# Mirror of spawn-agent.sh steps 3a/3b: registry row + agent_run start row +
+# agent-feed line, recorded BEFORE the printed prompt is used so the stop-time
+# join key exists no matter how quickly the spawn stops. Non-fatal, stderr-only.
+_record_spawn() {
+  [[ -n "$NO_REGISTER" ]] && return 0
+  PYTHONPATH="$REPO_ROOT" python3 -m backend.spawn_registry record "$EVENT_ID" "$ROLE" "${DISCUSSION:-}" >/dev/null \
+    || echo "[muse-spawn-prompt] WARN — registry record failed for $EVENT_ID (non-fatal)" >&2
+  local role_model=""
+  role_model="$(head -c 512 "$CARD" 2>/dev/null | grep -oE '^model:[[:space:]]*[^[:space:]]+' | head -1 | sed 's/^model:[[:space:]]*//' || true)"
+  python3 "$REPO_ROOT/backend/agent_run_tracker.py" start \
+    --agent-id "$EVENT_ID" \
+    --role "$ROLE" \
+    ${DISCUSSION:+--discussion "$DISCUSSION"} \
+    --event-id "$EVENT_ID" \
+    ${role_model:+--model "$role_model"} \
+    >/dev/null 2>&1 \
+    || echo "[muse-spawn-prompt] WARN — start_run failed for $EVENT_ID (non-fatal)" >&2
+  local feed_file="${MUSE_SPAWN_FEED_FILE:-$REPO_ROOT/.autonomous-team/agent-feed.jsonl}"
+  printf '{"ts":"%s","event":"spawn_notify","role":"%s","discussion":"%s","message":"muse spawn assembled"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$ROLE" "${DISCUSSION:-}" \
+    >> "$feed_file" 2>/dev/null || true
+  return 0
+}
+
+_record_spawn
 
 {
   echo "## ROLE: $ROLE"
