@@ -43,7 +43,12 @@ from backend._repo import REPO as _GH_REPO
 from backend._repo import REPO_OWNER as _REPO_OWNER
 from backend._repo import REPO_NAME as _REPO_NAME
 
-from backend.prompt_lane import sdk_lane
+from backend.prompt_lane import muse_lane as _muse_lane
+from backend.prompt_lane import sdk_lane as _sdk_lane
+
+# MUSE-PORT: lane switch — `sdk_lane` names the ACTIVE lane (re-apply after
+# engine re-bootstrap; see backend/prompt_lane/muse_lane.py should_use()).
+sdk_lane = _muse_lane if _muse_lane.should_use() else _sdk_lane
 
 from backend import state_paths as _state_paths
 from backend import dashboard_origins as _dashboard_origins
@@ -346,7 +351,12 @@ async def _main() -> None:
     if not sdk_lane.has_credential():
         _emit({
             "type": "error",
-            "error": "no SDK credential — set CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY, or run `claude login`",
+            # MUSE-PORT: lane-aware hint (sdk_lane has no CREDENTIAL_HINT).
+            "error": getattr(
+                sdk_lane,
+                "CREDENTIAL_HINT",
+                "no SDK credential — set CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY, or run `claude login`",
+            ),
         })
         sys.exit(1)
 

@@ -38,3 +38,8 @@ recharts
 vitest
 @testing-library/react
 @testing-library/user-event
+
+# First-party workspace packages — internal to this repo, no external doc anchor needed
+@lafk/contract
+@lafk/core
+@lafk/theme

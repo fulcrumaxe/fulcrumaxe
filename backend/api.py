@@ -1359,10 +1359,14 @@ def _audit_loop_run_request(instruction: str, source_ip: str) -> None:
 
 
 def _start_loop_run(instruction: str, project_id: str = "autonomous-forever", source: str = "start_loop_run_direct") -> dict:
-    """Spawn `claude -p <instruction>` in a daemon thread.
+    """Spawn `claude -p <instruction>` (or `muse exec` on the Muse lane) in a daemon thread.
+
+    Lane follows backend.prompt_lane.muse_lane.should_use(): Claude boxes keep
+    `claude -p` byte-for-byte; Muse-lane boxes exec `muse exec` with the same
+    headless posture as muse_lane.build_command.
 
     Returns the run dict (also stored in _LOOP_RUNS). Raises FileNotFoundError
-    with a helpful message if the claude binary is missing.
+    with a helpful message if the lane's binary is missing.
 
     project_id scopes the log file under
     .autonomous-team/loop-runs/<project_id>/<run_id>.log and is stored in the
@@ -1421,13 +1425,31 @@ def _start_loop_run(instruction: str, project_id: str = "autonomous-forever", so
     import datetime as _dt
     import subprocess
 
-    claude_bin = os.environ.get("AF_CLAUDE_BIN") or "claude"
-    # Quick existence check before spawning
     import shutil as _shutil
-    if _shutil.which(claude_bin) is None:
-        raise FileNotFoundError(
-            f"claude CLI not found at {claude_bin!r}; install Claude Code or set AF_CLAUDE_BIN env var"
-        )
+    try:
+        from backend.prompt_lane import muse_lane as _muse_lane
+
+        _use_muse = _muse_lane.should_use()
+    except ImportError:
+        _use_muse = False
+    _muse_bin: str | None = None
+    if _use_muse:
+        _muse_bin = _muse_lane.resolve_binary()
+        # Quick existence check before spawning
+        if _muse_bin is None or _shutil.which(_muse_bin) is None:
+            raise FileNotFoundError(
+                f"muse CLI not found at {_muse_bin!r}; install Muse Code or set MUSE_BIN env var"
+            )
+        _spawn_env_extra: dict[str, str] = {}
+    else:
+        claude_bin = os.environ.get("AF_CLAUDE_BIN") or "claude"
+        # Quick existence check before spawning
+        if _shutil.which(claude_bin) is None:
+            raise FileNotFoundError(
+                f"claude CLI not found at {claude_bin!r}; install Claude Code or set AF_CLAUDE_BIN env var"
+            )
+        _spawn_argv = [claude_bin, "-p", instruction]
+        _spawn_env_extra = {"CLAUDE_PROJECT_DIR": os.getcwd()}
 
     run_id = _dt.datetime.now(_dt.UTC).strftime("%Y%m%dT%H%M%SZ")
     log_dir = Path(".autonomous-team/loop-runs") / project_id
@@ -1443,6 +1465,19 @@ def _start_loop_run(instruction: str, project_id: str = "autonomous-forever", so
         counter += 1
         run_id = f"{run_id}-{counter}"
         log_path = log_dir / f"{run_id}.log"
+
+    if _use_muse:
+        # Same argv builder as the prompt lane (headless flags + AF_MODEL /
+        # AF_MUSE_PROVIDER / effort env support); the instruction is kept
+        # next to the log as the run's own record. Every role card ships as
+        # a typed subagent so loop-driven spawns can pass subagent_type.
+        _instruction_path = log_dir / f"{run_id}.prompt.md"
+        _instruction_path.write_text(instruction)
+        _spawn_argv = _muse_lane.build_command(
+            prompt_file=str(_instruction_path),
+            workspace=os.getcwd(),
+            agents_overlay=_muse_lane.build_agents_overlay(roles=_muse_lane.CORE_SPAWN_ROLES),
+        )
 
     run: dict = {
         "run_id": run_id,
@@ -1471,12 +1506,12 @@ def _start_loop_run(instruction: str, project_id: str = "autonomous-forever", so
             log_file.write(f"# instruction: {instruction}\n# started: {run_id}\n\n")
             log_file.flush()
             proc = subprocess.Popen(
-                [claude_bin, "-p", instruction],
+                _spawn_argv,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 bufsize=1,
                 text=True,
-                env={**os.environ, "CLAUDE_PROJECT_DIR": os.getcwd()},
+                env={**os.environ, **_spawn_env_extra},
             )
             with _LOOP_RUNS_LOCK:
                 run["pid"] = proc.pid

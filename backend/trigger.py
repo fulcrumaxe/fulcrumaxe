@@ -235,10 +235,57 @@ def main():
             _write_session(session_id, session["iteration_count"] + 1)
         # If session is None (first iteration), backend.ts writes session.json on done.
     else:
-        # TUI not running — fall back to a direct `claude` CLI invocation.
+        # TUI not running — fall back to a direct CLI invocation.
+        # MUSE-PORT: backend-aware (re-apply after engine re-bootstrap).
+        from backend.prompt_lane import muse_lane  # noqa: PLC0415
+
         home = Path.home()
         os.environ["GH_CONFIG_DIR"] = str(home / ".config" / "gh")
         os.environ["PATH"] = f"{home / '.local' / 'bin'}:{os.environ.get('PATH', '')}"
+
+        if muse_lane.should_use():
+            import uuid  # noqa: PLC0415
+
+            binary_path = muse_lane.resolve_binary()
+            if not binary_path:
+                logger.error(
+                    "TUI not running and could not resolve muse — checked "
+                    f"$MUSE_BIN ({os.environ.get('MUSE_BIN', 'unset')}) and PATH "
+                    f"(including {home / '.local' / 'bin'}). Install the 'muse' CLI, "
+                    "or start the TUI so cron iterations go through the FIFO instead. "
+                    "Skipping this iteration."
+                )
+                sys.exit(1)
+
+            # Muse accepts a pinned --session-id whether it exists or not,
+            # so unlike the claude path we always know the session id here
+            # and persist it ourselves (no TUI to write session.json for us).
+            if session_id is None:
+                session_id = str(uuid.uuid4())
+                _write_session(session_id, 1)
+            else:
+                _write_session(session_id, session["iteration_count"] + 1)
+
+            cmd = [
+                binary_path,
+                "exec",
+                "--workspace",
+                str(REPO_DIR),
+                "--approval-mode",
+                "never",
+                "--disable-sandbox",
+                "--trust-workspace",
+                "--session-id",
+                session_id,
+            ]
+            if os.environ.get("AF_MODEL"):
+                cmd += ["--model", os.environ["AF_MODEL"]]
+            if os.environ.get("AF_REASONING_EFFORT"):
+                cmd += ["--reasoning-effort", os.environ["AF_REASONING_EFFORT"]]
+            if os.environ.get("AF_MAX_MODEL_STEPS"):
+                cmd += ["--max-model-steps", os.environ["AF_MAX_MODEL_STEPS"]]
+            cmd += [prompt]
+            os.execv(binary_path, cmd)
 
         # Resolve claude: $CLAUDE_BIN env override, then PATH. No vendored
         # fallback — nothing in this repo installs a binary under a legacy
@@ -247,8 +294,9 @@ def main():
         if not binary_path:
             logger.error(
                 "TUI not running and could not resolve claude — checked "
-                "$CLAUDE_BIN and PATH. Install the 'claude' CLI, or start "
-                "the TUI so cron iterations go through the FIFO instead. "
+                f"$CLAUDE_BIN ({os.environ.get('CLAUDE_BIN', 'unset')}) and PATH "
+                f"(including {home / '.local' / 'bin'}). Install the 'claude' CLI, "
+                "or start the TUI so cron iterations go through the FIFO instead. "
                 "Skipping this iteration."
             )
             sys.exit(1)

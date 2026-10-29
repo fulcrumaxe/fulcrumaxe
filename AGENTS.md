@@ -47,3 +47,16 @@ Commit messages explain *why*, not just *what*.
    `bash scripts/post-agent-hook.sh --role <role> --discussion <N>
    --verdict <verdict> --input-tokens <N> --output-tokens <N>
    --event-id <id>` so telemetry lands in the same row the spawn opened.
+9. **Worktree fallback when native isolation rejects (serve hosts):**
+    some `muse serve` hosts reject isolated spawns with
+    `worktree_isolation_unavailable` and expose no knob to enable it.
+    When a spawn rejects that way, do NOT retry unisolated and do NOT
+    hand-roll `git worktree add`. Instead: provision via
+    `bash scripts/lib/muse-tl-worktree.sh provision --id "$EVENT_ID"
+    --role <role> --discussion <N> --branch <branch>`, capture the
+    printed path, and carry it in the `--brief` (all file and git work
+    inside it; never touch the main checkout). Then spawn WITHOUT the
+    isolation param. After merge, `release --id "$EVENT_ID" --status
+    merged`. Normal concurrency caps apply under fallback; heartbeat
+    each run, since brief-confined writers share your shell profile
+    outside their trees. Proven by `bash scripts/test-muse-tl-worktree.sh`.

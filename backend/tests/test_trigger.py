@@ -444,6 +444,127 @@ def test_main_fallback_exec_guard_missing_binary(tmp_path: Path, monkeypatch, ca
     assert any("install" in msg.lower() or "start the tui" in msg.lower() for msg in error_records), error_records
 
 
+def test_main_fallback_muse_guard_missing_binary(tmp_path: Path, monkeypatch, capsys, caplog):
+    """MUSE-PORT mirror of the claude fallback guard: AF_LANE=muse with no
+    muse binary must exit non-zero with an actionable message — not raise."""
+    monkeypatch.setattr("sys.argv", ["trigger.py", "hello"])
+    monkeypatch.setenv("AF_LANE", "muse")
+    monkeypatch.delenv("MUSE_BIN", raising=False)
+    monkeypatch.delenv("CLAUDE_BIN", raising=False)
+    import shutil as _shutil
+
+    monkeypatch.setattr(_shutil, "which", lambda _cmd: None)
+
+    fake_home = tmp_path / "fakehome"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+
+    with patch("backend.trigger._check_lockfile", return_value=True), \
+         patch("backend.trigger._run_preflight", return_value=(True, "{}")), \
+         patch("backend.trigger._read_session", return_value=None), \
+         patch("backend.trigger.os.path.exists", return_value=False), \
+         patch("backend.trigger.setup_logging", return_value=None, create=True), \
+         patch("backend.log.setup_logging", return_value=None, create=True):
+        with patch.dict("sys.modules", {
+            "backend.backup": MagicMock(create_backup=MagicMock(), prune_backups=MagicMock()),
+            "backend.session_manager": MagicMock(SessionManager=MagicMock()),
+        }):
+            with pytest.raises(SystemExit) as exc:
+                trigger_mod.main()
+
+    assert exc.value.code != 0, "expected a non-zero exit, not a silent success"
+    captured = capsys.readouterr()
+    assert "Traceback" not in (captured.out + captured.err)
+    error_records = [r.message for r in caplog.records if r.levelname == "ERROR"]
+    assert error_records, "expected an ERROR-level log naming the missing binary"
+    assert any(str(fake_home) in msg for msg in error_records), error_records
+    assert any("install" in msg.lower() or "start the tui" in msg.lower() for msg in error_records), error_records
+
+
+def test_main_fallback_muse_exec_argv(tmp_path: Path, monkeypatch):
+    """MUSE-PORT: AF_LANE=muse with a binary execs `muse exec` headless with
+    a pinned --session-id, and persists session.json itself (no TUI)."""
+    monkeypatch.setattr("sys.argv", ["trigger.py", "hello"])
+    monkeypatch.setenv("AF_LANE", "muse")
+    monkeypatch.setenv("MUSE_BIN", "/fake/muse")
+    for var in ("AF_MODEL", "AF_REASONING_EFFORT", "AF_MAX_MODEL_STEPS"):
+        monkeypatch.delenv(var, raising=False)
+
+    execed: dict = {}
+
+    def _fake_execv(path: str, argv: list[str]):  # noqa: ANN202
+        execed["path"] = path
+        execed["argv"] = argv
+        raise SystemExit(99)
+
+    with patch("backend.trigger._check_lockfile", return_value=True), \
+         patch("backend.trigger._run_preflight", return_value=(True, "{}")), \
+         patch("backend.trigger._read_session", return_value=None), \
+         patch("backend.trigger.os.path.exists", return_value=False), \
+         patch("backend.trigger.os.execv", side_effect=_fake_execv), \
+         patch("backend.trigger.setup_logging", return_value=None, create=True), \
+         patch("backend.log.setup_logging", return_value=None, create=True):
+        with patch.dict("sys.modules", {
+            "backend.backup": MagicMock(create_backup=MagicMock(), prune_backups=MagicMock()),
+            "backend.session_manager": MagicMock(SessionManager=MagicMock()),
+        }):
+            with pytest.raises(SystemExit) as exc:
+                trigger_mod.main()
+
+    assert exc.value.code == 99, "expected the patched execv to fire"
+    assert execed["path"] == "/fake/muse"
+    argv = execed["argv"]
+    assert argv[0:2] == ["/fake/muse", "exec"]
+    assert "--approval-mode" in argv and "never" in argv
+    assert "--disable-sandbox" in argv
+    assert "--trust-workspace" in argv
+    assert "--workspace" in argv and argv[argv.index("--workspace") + 1] == str(trigger_mod.REPO_DIR)
+    assert "--session-id" in argv
+    pinned = argv[argv.index("--session-id") + 1]
+    import uuid as _uuid
+
+    _uuid.UUID(pinned)  # raises unless a valid UUID was pinned
+    assert argv[-1] == "hello"
+    # New session persisted with count 1 (patch_paths fixture redirects to tmp).
+    session = json.loads(trigger_mod.SESSION_PATH.read_text())
+    assert session["session_id"] == pinned
+    assert session["iteration_count"] == 1
+
+
+def test_main_fallback_muse_exec_continues_session(tmp_path: Path, monkeypatch):
+    """MUSE-PORT: an existing session.json keeps its id and bumps the count."""
+    monkeypatch.setattr("sys.argv", ["trigger.py", "hello"])
+    monkeypatch.setenv("AF_LANE", "muse")
+    monkeypatch.setenv("MUSE_BIN", "/fake/muse")
+
+    execed: dict = {}
+
+    def _fake_execv(path: str, argv: list[str]):  # noqa: ANN202
+        execed["argv"] = argv
+        raise SystemExit(99)
+
+    existing = {"session_id": "sess-keep", "created_at": "2026-10-28T00:00:00+00:00", "iteration_count": 4}
+    with patch("backend.trigger._check_lockfile", return_value=True), \
+         patch("backend.trigger._run_preflight", return_value=(True, "{}")), \
+         patch("backend.trigger._read_session", return_value=existing), \
+         patch("backend.trigger._should_rotate", return_value=False), \
+         patch("backend.trigger.os.path.exists", return_value=False), \
+         patch("backend.trigger.os.execv", side_effect=_fake_execv), \
+         patch("backend.trigger.setup_logging", return_value=None, create=True), \
+         patch("backend.log.setup_logging", return_value=None, create=True):
+        with patch.dict("sys.modules", {
+            "backend.backup": MagicMock(create_backup=MagicMock(), prune_backups=MagicMock()),
+            "backend.session_manager": MagicMock(SessionManager=MagicMock()),
+        }):
+            with pytest.raises(SystemExit):
+                trigger_mod.main()
+
+    argv = execed["argv"]
+    assert argv[argv.index("--session-id") + 1] == "sess-keep"
+    session = json.loads(trigger_mod.SESSION_PATH.read_text())
+    assert session == {"session_id": "sess-keep", "created_at": session["created_at"], "iteration_count": 5}
+
+
 def test_main_default_prompt(tmp_path: Path, monkeypatch):
     """main() uses 'run /loop iteration' when no args given."""
     monkeypatch.setattr("sys.argv", ["trigger.py"])

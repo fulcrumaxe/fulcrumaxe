@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SubagentStop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /PATH/TO/PROJECT/scripts/subagent-stop-hook.sh"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -51,8 +51,10 @@
 # no suite" would authorize a free N/A on the gate's own file:
 #   - every null-routed file must appear in scripts/ci/gate1-routing-
 #     ledger.json with a non-empty reason, OR the whole PR is rejected as
-#     `unrouted` (never as N/A, never silently as a pass) — item 17. Checked
-#     when EVERY routing entry is null; a PR that also ran a real suite for
+#     `unrouted` (never as N/A, never silently as a pass) — item 17. Ledger
+#     keys ending in `/**` match the whole subtree beneath that prefix
+#     (D#370 R8: apps/roku/**); exact-path semantics are otherwise unchanged.
+#     Checked when EVERY routing entry is null; a PR that also ran a real suite for
 #     some other file is not affected by THIS particular check — its
 #     unrouted, non-`.py` files simply went untested, which is a
 #     pre-existing, out-of-scope property of run-pr-tests.sh's routing.
@@ -337,12 +339,26 @@ null_entries = [r for r in routing if r.get("suite") is None]
 real_entries = [r for r in routing if r.get("suite") is not None]
 all_null = len(real_entries) == 0
 
+def _ledger_reason(path):
+    # Exact key first (unchanged semantics), else a `/**` subtree-prefix
+    # key covering it (D#370 R8). Empty reasons never cover, either way.
+    _reason = ledger.get(path)
+    if _reason and str(_reason).strip():
+        return _reason
+    for _key, _val in ledger.items():
+        if not _key.endswith("/**") or not _val or not str(_val).strip():
+            continue
+        _prefix = _key[: -len("/**")]
+        if path == _prefix or path.startswith(_prefix + "/"):
+            return _val
+    return None
+
+
 if all_null and null_entries:
     unledgered = []
     for r in null_entries:
         path = r.get("file", "")
-        reason = ledger.get(path)
-        if not reason or not str(reason).strip():
+        if _ledger_reason(path) is None:
             unledgered.append(path)
     if unledgered:
         emit(

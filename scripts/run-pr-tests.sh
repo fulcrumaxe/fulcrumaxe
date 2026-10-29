@@ -60,6 +60,45 @@
 #                                    so they show up as suite:null in `routing`
 #                                    and are named on stderr rather than
 #                                    silently dropped (D#2177 side effect).
+#   R0 (D#370, fail-closed): a registry claim whose suite files are ALL
+#                                    absent from the measured tree routes
+#                                    suite:null — never non-null with an empty
+#                                    `tests_run` (the old shape authorized
+#                                    `ok` with zero tests run).
+#   scripts/test-*.sh (top level)    → self-routes like tests/*.sh above
+#                                    (R1: same "bash <file>" label, same
+#                                    bound, same denylist grammar).
+#   scripts/<s>.sh|py, scripts/lib/<s>.sh|py → scripts/test-<stem>.sh or
+#                                    scripts/test-<stem>-*.sh when at least
+#                                    one exists in the MEASURED tree (R2 stem
+#                                    mapping; all matches run, deduped).
+#   scripts/ci/**                    → bash scripts/ci/run-guards.sh, bounded
+#                                    by RUN_PR_TESTS_GUARDS_TIMEOUT (default
+#                                    600s; full sweep measured ~48s on the
+#                                    executor's host, so >10x headroom).
+#   .gate1-routing.json (measured tree root) → PR-carried first-coverage
+#                                    overlay for still-null files (R4; strict
+#                                    schema, malformed-never-permissive — see
+#                                    scripts/lib/gate1-routing-overlay.sh).
+#   First-coverage process (R6): to cover an unrouted file, a PR adds the
+#                                    suite file (+ an overlay entry only if no
+#                                    naming arm claims it); the reviewer
+#                                    verifies the suite FAILS without the fix
+#                                    (negative control) before approving.
+#   apps/web/**, apps/mobile/**      → npm run test in that workspace (R7),
+#                                    each only if its package.json carries a
+#                                    `test` script in the MEASURED tree
+#                                    (fail-closed per R0)
+#   workers/**                      → npm run test in workers/api (R7, same gate)
+#   packages/*/**                   → that package's npm run test (R7, same
+#                                    gate; packages/theme has no test script
+#                                    and stays null)
+#   containers/**                   → npm run test in containers/render (R7,
+#                                    same gate). Every R7 run is bounded 600s
+#                                    per workspace
+#                                    (RUN_PR_TESTS_PRODUCT_TIMEOUT), from the
+#                                    workspace dir. apps/roku/** stays null
+#                                    (no automatable suite — ledgered, R8).
 #   dashboard/**                  → npm install + npm run test + npm run test:e2e
 #   tui/** or root *.spec.ts      → cd tui && npm run test (if script exists)
 #   dashboard_tui/**              → tui-tester pre-merge sweep (blocks on error-severity findings)
@@ -166,6 +205,8 @@ REPO_ROOT="$(cd "${RUN_PR_TESTS_TREE_ROOT:-$SCRIPT_DIR/..}" && pwd)"
 source "$SCRIPT_DIR/lib/repo-resolve.sh"
 # shellcheck source=scripts/lib/worktree-ground-check.sh
 source "$SCRIPT_DIR/lib/worktree-ground-check.sh"
+# shellcheck source=scripts/lib/gate1-routing-overlay.sh
+source "$SCRIPT_DIR/lib/gate1-routing-overlay.sh"
 # The PR file list is a code-plane read; an empty slug would silently answer
 # from the checkout's origin remote, so refuse before `gh` runs.
 REPO="$(_require_code_repo "run-pr-tests")" || exit 1
@@ -259,6 +300,31 @@ _bash_suite_denylist_reason() {
   return 1
 }
 
+# R7 (D#370 PR2): product-family arms. _product_has_test <workspace-dir>
+# is the R0 fail-closed gate — 0 only when the workspace package.json
+# carries a `test` script IN THE MEASURED TREE ($REPO_ROOT). Parsed with
+# python3 (always present here) rather than node so routing never depends
+# on the runner's PATH; malformed JSON fails closed too.
+_product_has_test() {
+  local pkg="$REPO_ROOT/$1/package.json"
+  [ -f "$pkg" ] || return 1
+  python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("scripts", {}).get("test") else 1)' "$pkg" 2>/dev/null
+}
+# _product_claim <workspace-dir> — record the workspace for the R7 run
+# block (deduped) and set _PRODUCT_SUITE to the routing label. Bare call,
+# never command-substituted (the append would be lost with the subshell).
+_PRODUCT_SUITE=""
+_product_claim() {
+  local ws="$1" seen
+  if [ "${#PRODUCT_WORKSPACES[@]}" -gt 0 ]; then
+    for seen in "${PRODUCT_WORKSPACES[@]}"; do
+      if [ "$seen" = "$ws" ]; then _PRODUCT_SUITE="cd $ws && npm run test"; return 0; fi
+    done
+  fi
+  PRODUCT_WORKSPACES+=("$ws")
+  _PRODUCT_SUITE="cd $ws && npm run test"
+}
+
 # Collect changed files in the PR. --changed-files-from (D#2566) bypasses
 # both `gh` calls when the caller already resolved the list — this is the
 # other half of "the contained uid needs no credential": paired with
@@ -294,6 +360,8 @@ RUN_TUI_ANTI_PATTERNS=false
 RUN_POST_MERGE_HOOK=false
 RUN_PR_PLANE=false
 RUN_PR_AMEND_E2E=false
+RUN_GUARDS=false
+PRODUCT_WORKSPACES=()
 
 # Parallel to the loop below: which suite (if any) claimed ROUTING_FILES[i].
 # Manifest field only (D#2132) — not a routing-logic change. Unmatched
@@ -305,10 +373,24 @@ ROUTING_REASONS=()
 RUN_GENERIC_BASH=false
 GENERIC_BASH_FILES=()
 
+# R4 (D#370): load the PR-carried overlay from the MEASURED tree ($REPO_ROOT),
+# never the operator checkout — main's router code + the PR's tree content is
+# what breaks the first-coverage bootstrap deadlock. Malformed entries warn
+# on stderr and are ignored (never permissive); see the lib header for the
+# schema and the R6 first-coverage process.
+gate1_overlay_load "$REPO_ROOT"
+
 while IFS= read -r f; do
   [ -n "$f" ] || continue
   suite=""
   case "$f" in
+    scripts/ci/*)
+      # R3 (D#370): every scripts/ci/** change runs the full guard sweep
+      # (trust-adjacent guards included). Existence-gated per R0: if the
+      # runner itself is absent from the measured tree, this routes null.
+      if [ -f "$REPO_ROOT/scripts/ci/run-guards.sh" ]; then
+        RUN_GUARDS=true; suite="bash scripts/ci/run-guards.sh"
+      fi ;;
     backend/*|tests/*.py|*_test.py|test_*.py)
       # tests/*.py spans nested dirs too (case globbing lets * cross a slash),
       # so this still catches tests/backend/*.py, tests/integration/*.py,
@@ -325,6 +407,27 @@ while IFS= read -r f; do
       RUN_TS_BACKEND=true; suite="ts-backend" ;;
     tui/*)
       RUN_TUI=true; suite="tui" ;;
+    apps/web/*)
+      # R7 (D#370 PR2): product arms — each fires only when the workspace
+      # package.json carries a `test` script in the measured tree (R0
+      # fail-closed; packages/theme has none and stays null). Placed
+      # before *.spec.ts so workspace spec files route to their own
+      # suite instead of the dead tui arm below.
+      if _product_has_test apps/web; then _product_claim apps/web; suite="$_PRODUCT_SUITE"; fi ;;
+    apps/mobile/*)
+      if _product_has_test apps/mobile; then _product_claim apps/mobile; suite="$_PRODUCT_SUITE"; fi ;;
+    workers/*)
+      if _product_has_test workers/api; then _product_claim workers/api; suite="$_PRODUCT_SUITE"; fi ;;
+    packages/*)
+      _pp="${f#packages/}"
+      case "$_pp" in
+        */*)
+          _pp="packages/${_pp%%/*}"
+          if _product_has_test "$_pp"; then _product_claim "$_pp"; suite="$_PRODUCT_SUITE"; fi
+          ;;
+      esac ;;
+    containers/*)
+      if _product_has_test containers/render; then _product_claim containers/render; suite="$_PRODUCT_SUITE"; fi ;;
     *.spec.ts|*.test.ts)
       # Only route root-level spec/test files to TUI; ts-backend's are already caught above
       if [[ "$f" != ts-backend/* ]]; then
@@ -385,6 +488,18 @@ while IFS= read -r f; do
       ;;
   esac
 
+  # R0 (D#370, fail-closed): a registry claim whose suite files are ALL
+  # absent from the measured tree routes null — never non-null with an empty
+  # `tests_run` (tests/ does not exist in this repo, so every `[ -f
+  # tests/... ]` run-block guard below fails and the old label authorized
+  # `ok` with zero tests run). A naming arm (R2) or the overlay (R4) may
+  # still claim the file below; this only clears the dead registry label.
+  case "$suite" in
+    orphan-triage|post-merge-hook|pr-plane|pr-amend-e2e)
+      gate1_registry_has_suite "$suite" "$REPO_ROOT" || suite=""
+      ;;
+  esac
+
   # A third case, same reasoning as the second: a suite keyed only under
   # tests/ can't be reached by an earlier arm in the first case block. Any
   # directly-changed top-level tests/*.sh file maps to itself, overriding
@@ -406,7 +521,59 @@ while IFS= read -r f; do
         fi
       fi
       ;;
+    scripts/test-*.sh)
+      # R1 (D#370): shell suites self-route exactly like tests/*.sh above —
+      # same "bash <file>" label, same bound, same denylist grammar (entries
+      # keyed by full path). Top-level only: scripts/lib/** never self-routes.
+      if [[ "${f#scripts/}" != */* ]]; then
+        if reason="$(_bash_suite_denylist_reason "$f")"; then
+          suite=""
+        else
+          suite="bash $f"
+          RUN_GENERIC_BASH=true
+          GENERIC_BASH_FILES+=("$f")
+        fi
+      fi
+      ;;
   esac
+
+  # R2 (D#370): stem mapping — scripts/<s>.sh|py and scripts/lib/<s>.sh|py
+  # are claimed by scripts/test-<stem>.sh or scripts/test-<stem>-*.sh when at
+  # least one exists in the MEASURED tree. Fills only still-empty labels (a
+  # live registry claim or an R1 self-route above wins); R0 already cleared
+  # dead registry labels, so a stem suite CAN still claim those files here.
+  # Never overrides a denylist skip (reason set above).
+  if [ -z "$suite" ] && [ -z "$reason" ]; then
+    _stem_suites="$(gate1_stem_suites "$f" "$REPO_ROOT")"
+    if [ -n "$_stem_suites" ]; then
+      _stem_list=()
+      while IFS= read -r _ss; do
+        [ -n "$_ss" ] && _stem_list+=("$_ss")
+      done <<< "$_stem_suites"
+      _stem_first="${_stem_list[0]}"
+      if [ "${#_stem_list[@]}" -gt 1 ]; then
+        suite="bash $_stem_first (+$((${#_stem_list[@]} - 1)) more)"
+      else
+        suite="bash $_stem_first"
+      fi
+      RUN_GENERIC_BASH=true
+      GENERIC_BASH_FILES+=("${_stem_list[@]}")
+    fi
+  fi
+
+  # R4 (D#370): PR-carried first-coverage overlay, for STILL-null files only.
+  # The lib validated every entry at load (unknown keys/shapes ignored +
+  # stderr, suite must exist in-tree, ^bash \S+\.sh$ only); a hit runs from
+  # the measured tree and labels `routing` with the suite command. Never
+  # overrides a live claim or a denylist skip.
+  if [ -z "$suite" ] && [ -z "$reason" ]; then
+    _overlay_cmd="$(gate1_overlay_lookup "$f" || true)"
+    if [ -n "$_overlay_cmd" ]; then
+      suite="$_overlay_cmd"
+      RUN_GENERIC_BASH=true
+      GENERIC_BASH_FILES+=("${_overlay_cmd#bash }")
+    fi
+  fi
 
   ROUTING_FILES+=("$f")
   ROUTING_SUITES+=("$suite")
@@ -613,6 +780,30 @@ if [ "$RUN_GENERIC_BASH" = "true" ]; then
   for gf in "${GENERIC_BASH_FILES[@]}"; do
     RUN_SUITE_TIMEOUT_SECONDS="${RUN_PR_TESTS_BASH_TIMEOUT:-120}" \
       run_suite "$gf" "bash $gf" "$REPO_ROOT" bash "$gf"
+  done
+fi
+
+# R3 (D#370): scripts/ci guard sweep. Bounded — the full sweep measured ~48s
+# on the executor's host, so the 600s default has >10x headroom; override
+# with RUN_PR_TESTS_GUARDS_TIMEOUT if the guard set ever outgrows it. (The
+# [ -f ] here is belt-and-suspenders; routing above already gated per R0.)
+if [ "$RUN_GUARDS" = "true" ] && [ -f "$REPO_ROOT/scripts/ci/run-guards.sh" ]; then
+  RUN_SUITE_TIMEOUT_SECONDS="${RUN_PR_TESTS_GUARDS_TIMEOUT:-600}" \
+    run_suite "guards" "bash scripts/ci/run-guards.sh" "$REPO_ROOT" bash scripts/ci/run-guards.sh
+fi
+
+# R7 (D#370 PR2): product-family `npm run test` sweeps, one per touched
+# workspace, bounded 600s each and run from the workspace dir. The
+# test-script gate already fired at routing time per R0; the re-check here
+# is belt-and-suspenders so a mid-run tree change fails closed, not open.
+if [ "${#PRODUCT_WORKSPACES[@]}" -gt 0 ]; then
+  for _ws in "${PRODUCT_WORKSPACES[@]}"; do
+    if _product_has_test "$_ws"; then
+      RUN_SUITE_TIMEOUT_SECONDS="${RUN_PR_TESTS_PRODUCT_TIMEOUT:-600}" \
+        run_suite "$_ws:test" "cd $_ws && npm run test" "$REPO_ROOT/$_ws" npm run test
+    else
+      echo "[run-pr-tests] $_ws: test script gone from the measured tree -- skipping (fail-closed)" >&2
+    fi
   done
 fi
 

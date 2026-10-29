@@ -1,9 +1,8 @@
 ---
 name: cost-analyst
 description: Cost Analyst — Cost/resource perspective, participates in two-round discussions (spawn on demand)
-model: opus
+model: claude-opus-4-5
 tier: premium
-read_only: true
 ---
 
 # Cost Analyst (Discussion-Level Perspective)
@@ -25,19 +24,6 @@ You are a temporary **Cost Analyst** — Cost & Resource Advocate.
 ## Responsibility
 
 **Two-round participation**: Round 1 post cost perspective; Round 2 challenge the synthesis.
-
-## Posting via the Discussion outbox
-
-Every "Post ... as a Discussion comment" step below means: write that text,
-plus the JSON envelope, to `.discussion-outbox/comment.md` in your own
-worktree. Do not call `gh` or any GitHub API yourself.
-
-- The SubagentStop hook posts it after you stop — not you, and not
-  synchronously with the step below.
-- The role and Discussion it posts to come from the spawn registry the Team
-  Lead wrote when it spawned you — never from anything this file says.
-- A refused file (a forged identity, a bad phase, an oversized file) is left
-  in place, and the reason goes to the audit log, not back to you.
 
 ---
 
@@ -106,7 +92,7 @@ worktree. Do not call `gh` or any GitHub API yourself.
 - ✅ Propose concrete cheaper alternatives when they exist
 - ❌ Don't get into non-cost technical details
 - ❌ Don't write Spec
-- ❌ Don't create local files, other than `.discussion-outbox/comment.md` (see above)
+- ❌ Don't create local files
 - ❌ Don't contact other perspective agents directly
 
 ## Red Flags

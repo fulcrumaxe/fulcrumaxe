@@ -104,7 +104,10 @@ except Exception:
   # Only fire contamination recovery when we are actually on a non-default branch
   # (i.e. drift detected). Firing on every invocation was the BUG — it would reset
   # HEAD even when nothing was contaminated.
-  if [[ -n "$PARENT_BRANCH" && "$PARENT_BRANCH" != "$_DEFAULT_BRANCH" ]]; then
+  # Never fire under pytest: the suite shells these scripts on branch checkouts
+  # and recovery would move HEAD (or worse) mid-run. Production is unaffected —
+  # PYTEST_CURRENT_TEST exists only inside test processes.
+  if [[ -n "$PARENT_BRANCH" && "$PARENT_BRANCH" != "$_DEFAULT_BRANCH" && -z "${PYTEST_CURRENT_TEST:-}" ]]; then
     echo "[pre-spawn-check] Parent on '$PARENT_BRANCH', auto-resetting to $_DEFAULT_BRANCH (contamination recovery)" >&2
     bash "$SCRIPT_DIR/rotate-team-log.sh" comment \
       "[$(date +%H:%M)] pre-spawn-check: auto-recovered parent from contaminated branch '$PARENT_BRANCH' → $_DEFAULT_BRANCH" \
@@ -1046,7 +1049,7 @@ _load_context() {
     # by design) until this script's caller supplies a real pid — the same
     # honest "no live pid available" posture the legacy rows always had,
     # rather than a fabricated pid that merely looks more plausible.
-    if ! PYTHONPATH="$REPO_ROOT" python3 -m backend.fleet.concurrency register "$_PROJECT_NAME" "$_AGENT_ID" "$ROLE" "${CLAUDE_PID:-0}" 2>/dev/null; then
+    if ! PYTHONPATH="$REPO_ROOT" python3 -m backend.fleet.concurrency register "$_PROJECT_NAME" "$_AGENT_ID" "$ROLE" "${MUSE_PID:-${CLAUDE_PID:-0}}" 2>/dev/null; then
       echo "ERROR: blocked_reason=fleet_cap_exceeded — fleet agent cap reached, spawn of $ROLE blocked." >&2
       exit 1
     fi

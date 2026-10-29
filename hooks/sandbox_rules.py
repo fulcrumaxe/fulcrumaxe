@@ -748,6 +748,15 @@ _PYTHON_EXEC_CLAUDE_RE = re.compile(
     r"(?:os\.execvp|os\.execv|subprocess\.run|subprocess\.Popen)\s*\(\s*[\[\(]?[^)]*claude",
     re.DOTALL,
 )
+# Muse-lane mirrors (nested `muse` spawns from agent Bash are the same runaway
+# shape as nested `claude` spawns — agents must use subagent_spawn instead).
+# Mechanical copies of the claude set above; see check_muse_spawn.
+_DOLLAR_PAREN_MUSE_RE = re.compile(r"\$\([^)]*muse[^)]*\)")
+_BACKTICK_MUSE_RE = re.compile(r"`[^`]*muse[^`]*`")
+_PYTHON_EXEC_MUSE_RE = re.compile(
+    r"(?:os\.execvp|os\.execv|subprocess\.run|subprocess\.Popen)\s*\(\s*[\[\(]?[^)]*muse",
+    re.DOTALL,
+)
 
 
 def _is_claude_token(tok: str) -> bool:
@@ -768,6 +777,25 @@ def _is_claude_token(tok: str) -> bool:
     # We accept only "claude" with no suffix, or flags-suffixed forms handled
     # separately in the caller.
     return normalised == "claude" or normalised.endswith("/claude")
+
+
+def _is_muse_token(tok: str) -> bool:
+    """Return True if *tok* is a muse executable reference (after quote-strip).
+
+    Mirror of _is_claude_token for the Muse lane: nested `muse` spawns from
+    agent Bash are denied so agents use subagent_spawn instead.
+
+    Matches:
+      muse               (bare name)
+      /path/to/muse      (absolute path ending in /muse)
+      ./muse             (relative path)
+
+    Does NOT match:
+      muse-spark         (longer hyphenated name — not a spawn)
+      MUSE.md            (upper-case, file extension)
+    """
+    normalised = _QUOTE_STRIP_RE.sub("", tok)
+    return normalised == "muse" or normalised.endswith("/muse")
 
 
 def _is_git_token(tok: str) -> bool:
@@ -914,19 +942,23 @@ def _check_forbidden_fragment_positions(tokens: list[str]) -> Optional[str]:
     return None
 
 
-def _substitution_is_claude_spawn(inner: str) -> bool:
+def _substitution_is_claude_spawn(inner: str, binary: str = "claude") -> bool:
     """Return True if *inner* — the text captured inside a `$(...)` or
-    `` `...` `` command substitution — actually EXECUTES claude, rather than
-    merely mentioning the string somewhere (D#2099).
+    `` `...` `` command substitution — actually EXECUTES the agent binary,
+    rather than merely mentioning the string somewhere (D#2099).
 
     Applies the same tokenise-then-_command_positions technique used for the
     forbidden-fragment check (D#2058, extended by PR #2095): find where a new
     command starts inside the substitution (skipping env prefixes and
     wrapper tokens like `timeout`/`nohup`, exactly as the outer command is
-    walked), and test THOSE positions with `_is_claude_token`. A path
-    argument like `$HOME/.claude/projects/...` is never a command position,
-    so it can no longer trip this rule.
+    walked), and test THOSE positions with the binary's token predicate. A
+    path argument like `$HOME/.claude/projects/...` is never a command
+    position, so it can no longer trip this rule.
+
+    `binary` selects the predicate ("claude" default preserves every existing
+    caller; "muse" uses _is_muse_token).
     """
+    is_token = _is_muse_token if binary == "muse" else _is_claude_token
     normalised = _QUOTE_STRIP_RE.sub("", inner)
     normalised = re.sub(r"&&", " && ", normalised)
     normalised = re.sub(r"\|\|", " || ", normalised)
@@ -937,12 +969,18 @@ def _substitution_is_claude_spawn(inner: str) -> bool:
     except ValueError:
         inner_tokens = normalised.split()
     for pos in _command_positions(inner_tokens):
-        if _is_claude_token(inner_tokens[pos]):
+        if is_token(inner_tokens[pos]):
             return True
     return False
 
 
-def check_claude_spawn(argv: list[str], cmd_str: str) -> Decision:
+def check_muse_spawn(argv: list[str], cmd_str: str) -> Decision:
+    """Muse-lane twin of check_claude_spawn: deny nested `muse` process spawns
+    (agents must use subagent_spawn instead) and forbidden loop-trigger paths."""
+    return check_claude_spawn(argv, cmd_str, binary="muse")
+
+
+def check_claude_spawn(argv: list[str], cmd_str: str, binary: str = "claude") -> Decision:
     """Return Decision(allow=False, ...) if *cmd_str* attempts to spawn a claude
     process or invoke a forbidden loop-trigger path.
 
@@ -962,7 +1000,16 @@ def check_claude_spawn(argv: list[str], cmd_str: str) -> Decision:
         pre-tokenise.
     cmd_str:
         Raw shell command string as received from the Bash tool call.
+    binary:
+        Agent binary to guard ("claude" default preserves every existing
+        caller byte-for-byte, including reason strings; "muse" guards nested
+        `muse` spawns for the Muse lane with `muse_spawn_forbidden` reasons).
     """
+    is_token = _is_muse_token if binary == "muse" else _is_claude_token
+    tag = f"{binary}_spawn_forbidden"
+    dollar_re = _DOLLAR_PAREN_MUSE_RE if binary == "muse" else _DOLLAR_PAREN_CLAUDE_RE
+    backtick_re = _BACKTICK_MUSE_RE if binary == "muse" else _BACKTICK_CLAUDE_RE
+    pyexec_re = _PYTHON_EXEC_MUSE_RE if binary == "muse" else _PYTHON_EXEC_CLAUDE_RE
     # Tokenise up front, applying quote-strip normalisation to the raw string
     # first so that cl"au"de -p "..." becomes a single token "claude". Also
     # ensure shell metacharacters are space-surrounded so shlex.split
@@ -987,22 +1034,22 @@ def check_claude_spawn(argv: list[str], cmd_str: str) -> Decision:
     if matched_fragment is not None:
         return Decision(
             allow=False,
-            reason=f"claude_spawn_forbidden: matched pattern '{matched_fragment}'",
+            reason=f"{tag}: matched pattern '{matched_fragment}'",
         )
 
     # 2. Check each command position for a claude executable token
     for pos in _command_positions(tokens):
         tok = tokens[pos]
-        if _is_claude_token(tok):
+        if is_token(tok):
             return Decision(
                 allow=False,
-                reason="claude_spawn_forbidden: matched pattern 'claude'",
+                reason=f"{tag}: matched pattern '{binary}'",
             )
         # `exec claude …` — exec is the command, claude is the argument
-        if tok == "exec" and pos + 1 < len(tokens) and _is_claude_token(tokens[pos + 1]):
+        if tok == "exec" and pos + 1 < len(tokens) and is_token(tokens[pos + 1]):
             return Decision(
                 allow=False,
-                reason="claude_spawn_forbidden: matched pattern 'exec claude'",
+                reason=f"{tag}: matched pattern 'exec {binary}'",
             )
 
     # 3. Recurse into bash -c / sh -c payloads (original tokens, before quote-strip,
@@ -1016,17 +1063,17 @@ def check_claude_spawn(argv: list[str], cmd_str: str) -> Decision:
         if tok in ("bash", "sh") and i + 1 < len(orig_tokens) and orig_tokens[i + 1] == "-c":
             if i + 2 < len(orig_tokens):
                 inner = orig_tokens[i + 2]
-                inner_result = check_claude_spawn([], inner)
+                inner_result = check_claude_spawn([], inner, binary)
                 if not inner_result.allow:
                     return inner_result
 
     # 4. `command claude ...` -- bash builtin bypasses alias/function interception
     for pos in _command_positions(tokens):
         tok = tokens[pos]
-        if tok == "command" and pos + 1 < len(tokens) and _is_claude_token(tokens[pos + 1]):
+        if tok == "command" and pos + 1 < len(tokens) and is_token(tokens[pos + 1]):
             return Decision(
                 allow=False,
-                reason="claude_spawn_forbidden: matched pattern 'command claude'",
+                reason=f"{tag}: matched pattern 'command {binary}'",
             )
 
     # 5. Dollar-paren command substitution: $(claude -p ...) or $(...claude...)
@@ -1035,21 +1082,21 @@ def check_claude_spawn(argv: list[str], cmd_str: str) -> Decision:
     #    anywhere); _substitution_is_claude_spawn decides whether claude is
     #    actually in command position inside that substitution (D#2099) —
     #    a path argument like $(cat /tmp/.../claude-1000/x) no longer denies.
-    for match in _DOLLAR_PAREN_CLAUDE_RE.finditer(cmd_str):
+    for match in dollar_re.finditer(cmd_str):
         inner = match.group(0)[2:-1]  # strip leading "$(" and trailing ")"
-        if _substitution_is_claude_spawn(inner):
+        if _substitution_is_claude_spawn(inner, binary):
             return Decision(
                 allow=False,
-                reason="claude_spawn_forbidden: matched pattern '$(claude ...)'",
+                reason=f"{tag}: matched pattern '$({binary} ...)'",
             )
 
     # 6. Backtick command substitution: `claude -p ...` (same D#2099 narrowing).
-    for match in _BACKTICK_CLAUDE_RE.finditer(cmd_str):
+    for match in backtick_re.finditer(cmd_str):
         inner = match.group(0)[1:-1]  # strip leading/trailing backtick
-        if _substitution_is_claude_spawn(inner):
+        if _substitution_is_claude_spawn(inner, binary):
             return Decision(
                 allow=False,
-                reason="claude_spawn_forbidden: matched pattern '`claude ...`'",
+                reason=f"{tag}: matched pattern '`{binary} ...`'",
             )
 
     # 7. Foreign-language exec: python3 -c / python -c payloads that call claude via
@@ -1058,10 +1105,10 @@ def check_claude_spawn(argv: list[str], cmd_str: str) -> Decision:
         if tok in ("python3", "python") and i + 1 < len(orig_tokens) and orig_tokens[i + 1] == "-c":
             if i + 2 < len(orig_tokens):
                 payload = orig_tokens[i + 2]
-                if _PYTHON_EXEC_CLAUDE_RE.search(payload):
+                if pyexec_re.search(payload):
                     return Decision(
                         allow=False,
-                        reason="claude_spawn_forbidden: matched pattern 'python -c os.exec*/subprocess claude'",
+                        reason=f"{tag}: matched pattern 'python -c os.exec*/subprocess {binary}'",
                     )
 
     return Decision(allow=True, reason="")

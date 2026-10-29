@@ -13,7 +13,7 @@ Ported from `.claude/commands/update.md` — that file remains canonical for Cla
 
 - Work in the public repo checkout in front of you (the code plane). Never go looking for a private twin.
 - There is no Claude CLI here and no spawn wrapper: implement every step directly yourself, inline, in this session.
-- On a fresh clone with no state yet, populate first: `loop-bootstrap/bootstrap.sh --repo OWNER/NAME <local-path>` (bootstrap-first), then return here.
+- On a fresh clone with no state yet, populate first from a fulcrumaxe engine checkout: `bash <engine-checkout>/loop-bootstrap/bootstrap.sh --repo OWNER/NAME <local-path>` (bootstrap-first), then return here. (This tree ships no `loop-bootstrap/` of its own — bootstrap does not install it into targets.)
 - For any Discussion or Spec content: restate-never-paste — summarize in your own words, never paste bodies verbatim.
 - There is no plugin-marker substitution in Muse: no substituted text will appear in this document to tell you where the engine lives. Resolve the engine root explicitly per Step 2 and verify it — never fall back to searching the filesystem.
 
@@ -36,7 +36,7 @@ Never paraphrase exit 20 as anything resembling "up to date." That distinction i
 
 ## Step 2 — resolve `ENGINE_ROOT`
 
-This runs when Step 1 exited `10` (or `20`, if the user wants to reinstall regardless). In Muse, `ENGINE_ROOT` is the engine checkout you have open (`git rev-parse --show-toplevel` from a known engine checkout, or ask the user). Only trust a path you resolved this way — reading this file off disk tells you nothing about where the engine lives. Verify the tree IS the engine before proceeding:
+This runs when Step 1 exited `10` (or `20`, if the user wants to reinstall regardless). In Muse, `ENGINE_ROOT` is a fulcrumaxe engine checkout (a fresh `git clone https://github.com/fulcrumaxe/fulcrumaxe.git`, or one you already have — ask the user). Only trust a path you resolved this way — reading this file off disk tells you nothing about where the engine lives. Verify the tree IS the engine before proceeding:
 
 ```bash
 ENGINE_ROOT='<paste the resolved engine checkout path here>'

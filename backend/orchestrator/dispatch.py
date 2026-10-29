@@ -3,6 +3,7 @@
 Receives a spawn spec JSON on stdin from spawn-agent.sh when ROUTE_VIA_DISPATCHER=1.
 Reads credit_tracker.remaining_usd() and routes to:
   - sdk_runner  (when spawn is sdk_eligible + role in SDK_ELIGIBLE_ROLES + credit > $0)
+  - Muse lane signal (when AF_LANE=muse — short-circuit before credit logic)
   - Claude Code path (everything else, and always when credit is exhausted)
 
 Routing policy (D#1322 — selective offload):
@@ -171,11 +172,28 @@ def route(spec_dict: dict[str, Any]) -> dict[str, Any]:
     Returns
     -------
     dict with keys:
-        route:    'sdk' | 'cc' | 'both'
+        route:    'sdk' | 'cc' | 'both' | 'muse'
         run_id:   agent_id string
-        verdict:  verdict string from the run (or 'routed_to_cc' for CC path)
+        verdict:  verdict string from the run ('routed_to_cc' for CC path,
+                 'routed_to_muse' for Muse path)
         error:    error string or None
+
+    AF_LANE=muse short-circuits to the Muse route before any credit/offload
+    logic: spend accounting lives on the subscription plane under Muse
+    (pre-spawn-check), and the SDK runners are Claude-credential-bound. Only
+    the explicit AF_LANE=muse value routes here — auto-lane resolution stays
+    out so dispatcher behavior never flips implicitly under existing callers.
     """
+    if os.environ.get("AF_LANE") == "muse":
+        agent_id = _make_agent_id(spec_dict)
+        _record_cc_route(agent_id, spec_dict, via="muse")
+        logger.info("[orchestrator] AF_LANE=muse: routing role=%r to Muse lane", spec_dict.get("role", ""))
+        return {
+            "route": "muse",
+            "run_id": agent_id,
+            "verdict": "routed_to_muse",
+            "error": None,
+        }
     tracker = CreditTracker()
     remaining = tracker.remaining_usd()
     allow_fallback = bool(spec_dict.get("allow_subscription_fallback", False))
@@ -463,13 +481,14 @@ def _make_agent_id(spec_dict: dict[str, Any]) -> str:
     return f"{role}-{disc}-{int(_time.time())}"
 
 
-def _record_cc_route(agent_id: str, spec_dict: dict[str, Any]) -> None:
-    """Record routed_via="cc" in agent_run for a dispatcher-routed CC spawn.
+def _record_cc_route(agent_id: str, spec_dict: dict[str, Any], via: str = "cc") -> None:
+    """Record routed_via in agent_run for a dispatcher-routed non-SDK spawn.
 
-    Non-fatal: any failure is logged and swallowed. The CC runner
-    (spawn-agent.sh + SubagentStop hook) owns the full lifecycle row; this
-    call only writes the route column so _routing_counts can use the real
-    column instead of the used_usd proxy.
+    Non-fatal: any failure is logged and swallowed. The lane runner owns the
+    full lifecycle row; this call only writes the route column so
+    _routing_counts can use the real column instead of the used_usd proxy.
+    `via` is "cc" (spawn-agent.sh + SubagentStop hook) or "muse"
+    (muse-spawn-prompt.sh + wait-ready stop twin).
     """
     try:
         from backend.agent_run_tracker import start_run, complete_run  # noqa: PLC0415
@@ -485,7 +504,7 @@ def _record_cc_route(agent_id: str, spec_dict: dict[str, Any]) -> None:
         )
         complete_run(
             agent_id=agent_id,
-            routed_via="cc",
+            routed_via=via,
         )
     except Exception as exc:  # noqa: BLE001
         logger.debug("_record_cc_route failed (non-fatal): %s", exc)

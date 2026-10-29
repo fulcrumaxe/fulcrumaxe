@@ -629,7 +629,9 @@ fi
 
 if [[ "$_PAH_IN_LINKED_WORKTREE" == "false" ]]; then
   PARENT_BRANCH_HOOK=$(git -C "$REPO_ROOT" branch --show-current 2>/dev/null || echo "")
-  if [[ -n "$PARENT_BRANCH_HOOK" && "$PARENT_BRANCH_HOOK" != "main" ]]; then
+  # Never fire under pytest (see pre-spawn-check.sh): suite-driven runs on
+  # branch checkouts must not move HEAD mid-run.
+  if [[ -n "$PARENT_BRANCH_HOOK" && "$PARENT_BRANCH_HOOK" != "main" && -z "${PYTEST_CURRENT_TEST:-}" ]]; then
     echo "[post-agent-hook] Parent on '$PARENT_BRANCH_HOOK', auto-resetting to main (contamination recovery)" >&2
     bash "$SCRIPT_DIR/rotate-team-log.sh" comment \
       "[$(date +%H:%M)] post-agent-hook: auto-recovered parent from contaminated branch '$PARENT_BRANCH_HOOK' → main (after $ROLE $VERDICT)" \

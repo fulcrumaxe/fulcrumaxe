@@ -1228,7 +1228,7 @@ try:
     d = json.loads(sys.argv[1])
     r = d.get('route', '')
     # Validate: only known routes are honored; anything else is a crash signal
-    if r in ('sdk', 'cc', 'both', 'blocked'):
+    if r in ('sdk', 'cc', 'both', 'blocked', 'muse'):
         print(r)
     else:
         print('__invalid__')
@@ -1257,6 +1257,11 @@ except Exception:
     exit 0
   elif [[ "$_DISPATCH_ROUTE" == "blocked" ]]; then
     echo "[spawn-agent] dispatcher: spawn blocked — ${_DISPATCH_ERROR:-credit exhausted}" >&2
+    exit 1
+  elif [[ "$_DISPATCH_ROUTE" == "muse" ]]; then
+    # AF_LANE=muse with the Claude assembler is a lane mismatch: a Claude
+    # spawn here would contradict the operator's lane choice. Refuse loudly.
+    echo "[spawn-agent] dispatcher: route=muse but this is the Claude assembler — refusing; assemble with scripts/lib/muse-spawn-prompt.sh instead" >&2
     exit 1
   else
     # route=="cc" or route=="both" — continue to step 7 with the assembled prompt.
