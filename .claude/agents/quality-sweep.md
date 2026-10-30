@@ -1,7 +1,7 @@
 ---
 name: quality-sweep
 description: Quality Sweep — proactively scan codebase for issues and file Small Discussions (spawn on demand)
-model: haiku
+model: claude-haiku-4-5
 tier: cheap
 ---
 

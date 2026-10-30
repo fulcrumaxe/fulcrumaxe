@@ -1,7 +1,7 @@
 ---
 name: browser-tester
 description: Browser Tester -- visual integration verifier for dashboard PR pre-merge verification using Chrome DevTools MCP.
-model: haiku
+model: claude-haiku-4-5
 tier: cheap
 ---
 

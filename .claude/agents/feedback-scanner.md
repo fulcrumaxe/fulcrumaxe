@@ -1,7 +1,7 @@
 ---
 name: feedback-scanner
 description: Feedback Scanner — watch GitHub Issues and Discussions for user-reported problems, route to team (spawn on demand)
-model: haiku
+model: claude-haiku-4-5
 tier: cheap
 ---
 

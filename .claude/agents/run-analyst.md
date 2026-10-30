@@ -1,7 +1,7 @@
 ---
 name: run-analyst
 description: Run Analyst -- chunk-read agent-run JSONs and surface failure patterns, cost outliers, fix-cycle loops, and improvement suggestions (spawn on demand or periodic)
-model: haiku
+model: claude-haiku-4-5
 tier: cheap
 read_only: true
 ---

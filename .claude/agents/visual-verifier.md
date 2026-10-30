@@ -1,7 +1,7 @@
 ---
 name: visual-verifier
 description: Visual Verifier — persistent background agent that continuously builds the project and verifies the UI in real Chrome every 15 minutes
-model: haiku
+model: claude-haiku-4-5
 tier: cheap
 ---
 

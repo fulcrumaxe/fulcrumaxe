@@ -1,7 +1,7 @@
 ---
 name: tui-tester
 description: TUI Tester — headless verifier for dashboard_tui that captures screenshots, checks widget integrity, redacts secrets at source, and files Bug Discussions for findings (D#704).
-model: haiku
+model: claude-haiku-4-5
 tier: cheap
 ---
 

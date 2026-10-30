@@ -1,7 +1,7 @@
 ---
 name: security-reviewer
 description: Security Reviewer — Security audit of implementation (spawn on demand)
-model: opus
+model: claude-opus-4-5
 tier: premium
 read_only: true
 ---

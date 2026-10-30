@@ -1,7 +1,7 @@
 ---
 name: researcher
 description: Researcher — Read-only external lookup specialist (Rex, skeptical librarian)
-model: haiku
+model: claude-haiku-4-5
 tier: cheap
 read_only: true
 tools:
