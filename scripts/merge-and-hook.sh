@@ -648,18 +648,19 @@ _engine_lane queued
 # unreachable or unusable. Anything else from the hook counts as 5: this gate fails closed.
 # With operate false or absent it changes nothing.
 _cloud_decide_gate() {
-  local hook="$SCRIPT_DIR/hooks/pre-merge.d/cloud-decide.sh" rc=0
-  if [[ -f "$hook" ]]; then
-    bash "$hook" --pr "$PR" --head-sha "$_MERGE_SHA" ${_RESOLVED_DISC:+--discussion "$_RESOLVED_DISC"} || rc=$?
-    [[ "$rc" -eq 0 || "$rc" -eq 3 || "$rc" -eq 4 ]] || rc=5
+  local rc=0
+  if [[ -f "$SCRIPT_DIR/lib/cloud-merge-gate.sh" ]]; then
+    # shellcheck source=lib/cloud-merge-gate.sh
+    source "$SCRIPT_DIR/lib/cloud-merge-gate.sh"
+    CLOUD_MERGE_GATE_ROOT="$REPO_ROOT" cloud_merge_gate "$PR" "$_MERGE_SHA" "${_RESOLVED_DISC:-}" || rc=$?
   elif grep -qE '"operate"[[:space:]]*:[[:space:]]*(true|"|[^f[:space:]])' "$REPO_ROOT/.autonomous-team/config.json" 2>/dev/null; then
-    # The hook is missing but the config asks for the cloud gate: refuse rather than skip it.
+    # The shared helper is missing but the config asks for the cloud gate: refuse rather than skip it.
     echo "cloud unreachable; merge refused (fail-closed)" >&2
     rc=5
+    _engine_lane refused
   fi
   if [[ "$rc" -ne 0 ]]; then
     echo "[merge-and-hook] cloud decide refused the merge of PR #$PR (exit $rc)." >&2
-    _engine_lane refused
     exit "$rc"
   fi
 }

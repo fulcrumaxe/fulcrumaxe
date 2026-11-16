@@ -586,7 +586,7 @@ def run_import(
 
     # --- v0: no dependency graph, no BLOCKED-BY -----------------------------
     for item in v0_selected:
-        exit_code |= _create_or_drift(item, client, created_map, dry_run, now_iso, blocked_refs=None)
+        exit_code |= _create_or_drift(item, client, created_map, dry_run, now_iso, blocked_refs=None, repo_path=repo_path)
 
     # --- v1: topological creation order + BLOCKED-BY ------------------------
     # Items whose Discussion already exists just need the idempotent
@@ -595,7 +595,7 @@ def run_import(
     for item in v1_selected:
         key = f'{item["fm"].get("epic")}.{item["fm"].get("task")}'
         if key in created_map:
-            exit_code |= _create_or_drift(item, client, created_map, dry_run, now_iso, blocked_refs=[])
+            exit_code |= _create_or_drift(item, client, created_map, dry_run, now_iso, blocked_refs=[], repo_path=repo_path)
         else:
             pending.append(item)
 
@@ -626,7 +626,7 @@ def run_import(
                 continue
 
             key = f'{epic}.{fm.get("task")}'
-            new_number = _create_v1(item, client, dry_run, now_iso, resolved_refs)
+            new_number = _create_v1(item, client, dry_run, now_iso, resolved_refs, repo_path)
             if new_number is not None:
                 created_map[key] = new_number
             made_progress = True
@@ -643,12 +643,39 @@ def run_import(
     return exit_code
 
 
+def _cloud_spec_gate(repo_path: Path, fm: dict[str, Any], title: str, body: str) -> Optional[int]:
+    """EB-10d: creating a Discussion that is already SPEC_READY is a Spec flip, so with
+    cloud_bridge.operate true the cloud must say act or announce first (decide engine_spec_ready, keyed on the
+    task and the body text). Returns None to go ahead, else the exit code contribution (an ask is 0: nothing
+    failed, a person has to answer). Operate off or absent: always None. Fails closed otherwise."""
+    code, msg = 5, "cloud unreachable; Spec not flipped (fail-closed)"
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+        import cloud_engine_gate  # noqa: PLC0415
+
+        key_id = re.sub(r"[^A-Za-z0-9_-]", "-", f"import-{fm.get('epic')}-{fm.get('task')}")[:60]
+        # The body's first line carries SINCE:<now>; hashing it would give every run a new key, so no approval
+        # could ever be reused. Key on the body with that stamp blanked (the task file's content is still in it).
+        stable_body = re.sub(r"SINCE:\S+", "SINCE:-", body, count=1)
+        code, msg, _reply = cloud_engine_gate.gate_spec_ready(str(repo_path), None, title, stable_body, key_id=key_id)
+    except Exception:
+        from backend.discussion_outbox import _operate_maybe_on  # noqa: PLC0415
+
+        if not _operate_maybe_on(repo_path):
+            return None
+    if code == 0:
+        return None
+    print(f"[!] {title}: {msg}; not created", file=sys.stderr)
+    return 0 if code == 3 else 1
+
+
 def _create_v1(
     item: dict[str, Any],
     client: GraphQLClient,
     dry_run: bool,
     now_iso: str,
     resolved_refs: list[str],
+    repo_path: Path,
 ) -> Optional[int]:
     fm = item["fm"]
     title = format_title(fm)
@@ -662,6 +689,9 @@ def _create_v1(
         # "the importer would act on this" from "it would skip it" without
         # touching the network. Do not reword without checking that caller.
         print(f"  [dry-run] would create Discussion: {title!r}")
+        return None
+
+    if _cloud_spec_gate(repo_path, fm, title, body) is not None:
         return None
 
     try:
@@ -684,6 +714,7 @@ def _create_or_drift(
     dry_run: bool,
     now_iso: str,
     blocked_refs: Optional[list[str]],
+    repo_path: Path,
 ) -> int:
     """Create a fresh Discussion, or — if one already exists for this
     epic.task key — check for content drift and update in place if the
@@ -710,6 +741,10 @@ def _create_or_drift(
             # Discussion" is pinned wording a shell caller greps for.
             print(f"  [dry-run] would create Discussion: {title!r}")
             return 0
+        if body.startswith("<!-- STATUS:SPEC_READY"):
+            refused = _cloud_spec_gate(repo_path, fm, title, body)
+            if refused is not None:
+                return refused
         try:
             number, _node_id = client.create_discussion(title, body)
         except RateLimitError:
