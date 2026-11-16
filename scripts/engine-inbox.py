@@ -23,6 +23,9 @@ engine-host-inbox/<seq>-<id>.json and the reader writes NO outcome: the host wri
 engine-inbox/done/<seq>-<id>.outcome.json itself (applied, or refused with host_not_running / unknown_agent) and
 removes its file. When the heartbeat goes stale with files pending, the next tick takes them back through the
 terminal path (halt, expiry and repo are re-checked; replay already counted at hand-off).
+A command the host has claimed (renamed into engine-host-inbox/claimed/) is taken back only when the claiming process
+is dead (engine-host.json's pid and the supervisor pid in engine-host.lock), never on a stale heartbeat. A command whose
+outcome file already exists is never taken back, from either directory: its file is removed.
 exit: 0 pass done   2 inbox or config unsafe (nothing written)
 """
 import json
@@ -71,6 +74,25 @@ def _time(v):
     except (AttributeError, ValueError):
         return None
     return t.timestamp() if t.tzinfo is not None else None
+
+
+def pid_alive(pid, start=None):
+    """A pid that exists and, when a start time is recorded and readable, is still the process that recorded it."""
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        pass
+    except OSError:
+        return False
+    if start is not None:
+        try:
+            with open("/proc/%d/stat" % pid) as f:
+                now = f.read().rsplit(")", 1)[1].split()[19]
+        except (OSError, IndexError):
+            return True  # cannot tell: stay alive
+        if now != start:
+            return False
+    return True
 
 
 def valid_args(kind, a, settable):
@@ -331,8 +353,32 @@ class Reader:
             return False
         return True
 
+    def claimer_alive(self):
+        """Whether the process that claims commands out of engine-host-inbox/ may still be running. Fail closed: a file
+        that exists but cannot be read, or has a wrong shape, counts as alive. Two records are checked and either one
+        alive is enough: engine-host.json's pid (the host the supervisor started) and engine-host.lock's pid (the
+        supervisor itself, which runs the ticker that claims). A pid reused by another process (its start time differs
+        from the recorded one) is dead."""
+        for name, start_key in (("engine-host.json", "start_time"), ("engine-host.lock", "start")):
+            try:
+                rec = cd._read_json_nofollow(os.path.join(self.sdir, name), 4096, "host")
+            except cd.Refused:
+                return True
+            if rec is None:
+                continue
+            if not isinstance(rec, dict) or not _int(rec.get("pid"), 2):
+                return True
+            start = rec.get(start_key)
+            if start is not None and (not isinstance(start, str) or len(start) > 64):
+                return True
+            if pid_alive(rec["pid"], start or None):
+                return True
+        return False
+
     def take_back(self, bridge, settable):
-        """Commands left in engine-host-inbox/ by a host whose heartbeat has gone stale go through the terminal path."""
+        """Commands left in engine-host-inbox/ by a host whose heartbeat has gone stale go through the terminal path.
+        Commands the host has claimed (engine-host-inbox/claimed/) are taken back only when the claiming process is
+        dead, never on a stale heartbeat alone: a host still applying one must not see it applied twice."""
         d = os.path.join(self.sdir, "engine-host-inbox")
         try:
             if not check_dir(d, missing_ok=True):
@@ -341,9 +387,22 @@ class Reader:
             print("engine-inbox: engine-host-inbox is not safe; its commands were left alone", file=sys.stderr)
             return
         clean_stale_tmp(d)
-        if self.host_live():
-            return
-        entries = sorted((int(m.group(1)), e) for e in os.listdir(d) for m in [NAME.fullmatch(e)] if m)
+        dirs = []
+        if not self.host_live():
+            dirs.append(d)
+        cdir = os.path.join(d, "claimed")
+        try:
+            if check_dir(cdir, missing_ok=True):
+                clean_stale_tmp(cdir)
+                if not self.claimer_alive():
+                    dirs.append(cdir)
+        except Unsafe:
+            print("engine-inbox: engine-host-inbox/claimed is not safe; its commands were left alone", file=sys.stderr)
+        for src in dirs:
+            self.take_back_from(src, bridge, settable)
+
+    def take_back_from(self, d, bridge, settable):
+        entries =sorted((int(m.group(1)), e) for e in os.listdir(d) for m in [NAME.fullmatch(e)] if m)
         for _seq, entry in entries[:200]:
             name = entry[:-5].lower()
             path = os.path.join(d, entry)

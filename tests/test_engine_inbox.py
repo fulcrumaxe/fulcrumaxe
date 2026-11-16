@@ -6,6 +6,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -469,3 +470,100 @@ def test_spawn_key_binds_the_role_inside_the_spawn_id(w):
             " g.spawn_key('other', 842, 'executor-842-1763300000'), g.spawn_key('other', 9, 'zzz-bot-9-1763300000'))" % (w.root + "/scripts/lib"))
     r = subprocess.run([sys.executable, "-c", code], env=w.env(), capture_output=True, text=True)
     assert r.stdout.split() == ["spawn:executor-842-1763300000", "None", "None", "spawn:zzz-bot-9-1763300000"], r.stderr
+
+
+def dead_pid():
+    p = subprocess.Popen([sys.executable, "-c", "pass"])
+    p.wait()
+    return p.pid
+
+
+def claim(w, c):
+    """Put a command where a host that claimed it leaves it."""
+    name = w.put(c)
+    d = w.state + "/engine-host-inbox/claimed"
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    os.chmod(w.state + "/engine-host-inbox", 0o700)
+    os.chmod(d, 0o700)
+    os.rename("%s/%s.json" % (w.inbox, name), "%s/%s.json" % (d, name))
+    return name
+
+
+def test_a_claimed_command_stays_while_the_pid_lives_even_with_a_stale_heartbeat(w):
+    n = claim(w, w.cmd("pause_loop"))
+    host(w, age=600)  # stale heartbeat, but the pid is this very process
+    r = w.run()
+    assert r.returncode == 0 and w.outcome(n) is None and r.stdout == ""
+    assert os.path.exists("%s/engine-host-inbox/claimed/%s.json" % (w.state, n))
+
+
+def test_a_claimed_command_is_taken_back_once_the_pid_is_dead(w):
+    n = claim(w, w.cmd("pause_loop"))
+    host(w, age=600, pid=dead_pid())
+    r = w.run()
+    assert w.outcome(n) == APPLIED and "pause the loop" in r.stdout
+    assert not os.path.exists("%s/engine-host-inbox/claimed/%s.json" % (w.state, n)) and os.path.exists("%s/%s.json" % (w.done, n))
+
+
+def test_a_claimed_command_with_no_host_record_is_taken_back(w):
+    n = claim(w, w.cmd("resume_loop"))
+    w.run()
+    assert w.outcome(n) == APPLIED
+
+
+def test_a_live_supervisor_in_the_lock_keeps_claimed_commands_even_if_the_host_pid_is_dead(w):
+    n = claim(w, w.cmd("pause_loop"))
+    host(w, age=600, pid=dead_pid())
+    w.write_json(w.state + "/engine-host.lock", {"pid": os.getpid(), "start": ""})
+    w.run()
+    assert w.outcome(n) is None
+    w.write_json(w.state + "/engine-host.lock", {"pid": dead_pid(), "start": "1"})
+    w.run()
+    assert w.outcome(n) == APPLIED
+
+
+def test_a_pid_reused_by_another_process_is_dead(w):
+    n = claim(w, w.cmd("pause_loop"))
+    w.write_json(w.state + "/engine-host.json", {"pid": os.getpid(), "start_time": "1", "heartbeat_at": iso(datetime.now(timezone.utc) - timedelta(seconds=600))})
+    w.run()
+    assert w.outcome(n) == APPLIED
+
+
+def test_an_unreadable_host_record_keeps_claimed_commands(w):
+    n = claim(w, w.cmd("pause_loop"))
+    w.write_json(w.state + "/engine-host.json", "not an object")
+    w.run()
+    assert w.outcome(n) is None
+
+
+def test_a_command_with_an_outcome_is_skipped_and_removed_from_claimed_and_the_inbox(w):
+    a = claim(w, w.cmd("pause_loop"))
+    host(w)
+    b = w.put(w.cmd("start_day"))
+    w.run()  # b is handed to the host
+    for n in (a, b):
+        w.write_json("%s/%s.outcome.json" % (w.done, n), {"outcome": "refused", "refusal": "unknown_agent"})
+    host(w, age=600, pid=dead_pid())
+    r = w.run()
+    assert r.stdout == ""
+    assert w.outcome(a) == refused("unknown_agent") and w.outcome(b) == refused("unknown_agent")
+    assert os.listdir(w.state + "/engine-host-inbox/claimed") == [] and os.listdir(w.state + "/engine-host-inbox") == ["claimed"]
+
+
+def test_taking_back_a_claimed_command_still_rechecks_repo_expiry_halt_and_operate(w):
+    host(w, age=600, pid=dead_pid())
+    now = datetime.now(timezone.utc)
+    wrong = claim(w, w.cmd("pause_loop", repo_gh_id=REPO_ID + 1))
+    old = claim(w, w.cmd("pause_loop", issued_at=iso(now - timedelta(seconds=100)), expires_at=iso(now + timedelta(seconds=1))))
+    time.sleep(1.5)
+    w.run()
+    assert w.outcome(wrong) == refused("wrong_repo") and w.outcome(old) == refused("expired")
+    halted = claim(w, w.cmd("pause_loop"))
+    w.halt()
+    w.run()
+    assert w.outcome(halted) == refused("halted")
+    w.halt(False)
+    off = claim(w, w.cmd("pause_loop"))
+    w.config(operate=False)
+    w.run()
+    assert w.outcome(off) == refused("operate_off")
