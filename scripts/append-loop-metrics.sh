@@ -347,6 +347,8 @@ if [[ "$DRY_RUN" != "true" && "$_ENGINE_EMIT_LIVE" == "true" ]]; then
   case "$ORIGIN" in
     cron|interactive|host)
       timeout 10 bash "$SCRIPT_DIR/engine-emit.sh" loop_tick --origin "$ORIGIN" --duration-s "$DURATION_SECONDS" >/dev/null 2>&1 || true
+      # Owner commands from the cloud inbox; fixed sentences for the Team Lead go to stdout.
+      timeout 60 python3 "$SCRIPT_DIR/engine-inbox.py" run 2>/dev/null || true
       timeout 60 python3 "$SCRIPT_DIR/engine-team-log-poll.py" >/dev/null 2>&1 || true
       timeout 10 python3 "$SCRIPT_DIR/engine-plan-snapshot.py" --if-changed >/dev/null 2>&1 || true
       timeout 10 bash "$SCRIPT_DIR/engine-emit.sh" engine_heartbeat --origin "$ORIGIN" >/dev/null 2>&1 || true

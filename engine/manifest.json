@@ -55,7 +55,7 @@
     "scripts/annotate-proof.sh": "93171b2b56d8222ece59b6e06dd3d19c5764878320af6839a49048fbfe9527af",
     "scripts/ansi-to-png.sh": "e1076e17d23fef4a61850604332fa318bc8793cbaa49ddd4cb64db40de18e9e2",
     "scripts/api-integration-test.sh": "08c04914fe7d6ef7758258dd5553ff6ba05bc11d3c9191745d5108eb7e66207a",
-    "scripts/append-loop-metrics.sh": "8db38aab8120a5b15d85e494a3fb80d8fe5c12e9247a4ec3d4fb20b9092cfb02",
+    "scripts/append-loop-metrics.sh": "45810e73e4f9f178bfe1c2c852166c1418f9239be0dcc7be60abae4b3702733c",
     "scripts/archive-test-spawned-metrics.sh": "dae4ff11244fdc559cdd89ae8534b4c362ed190306492aca29624d2a0fb52cc3",
     "scripts/audit-registered-hooks.sh": "2207dd11a3e159b6ab4d8f9a134d567c75ba8931c4f98bafd239e2efc867d977",
     "scripts/audit-replay.sh": "b27b766caa0d0fc89114ec9381eeeb319ad2bdc5ae5cf9d77e5a860c42818856",
