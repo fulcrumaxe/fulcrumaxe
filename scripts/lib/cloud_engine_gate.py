@@ -104,16 +104,17 @@ def gate_spawn(repo_root, role_raw, discussion, spawn_id, command_id=None, engin
     return code, _message(code, reply), reply
 
 
-def gate_spec_ready(repo_root, discussion, title, body_text):
+def gate_spec_ready(repo_root, discussion, title, body_text, key_id=None):
     """Decide engine_spec_ready for flipping a Spec. Returns (exit code, fixed message, reply). Never raises.
-    The key binds the Spec text, so an old act cannot be replayed for a Spec that has since changed."""
+    The key binds the Spec text, so an old act cannot be replayed for a Spec that has since changed.
+    discussion may be None (the importer asks before the Discussion exists); key_id then names the task."""
     try:
         digest = hashlib.sha256(body_text.encode("utf-8")).hexdigest()[:16]
-        subject = {"discussion": discussion}
+        subject = {"discussion": discussion} if discussion else {}
         tag = tag_of_title(title)
         if tag:
             subject["tag"] = tag  # a missing tag is sent as no tag, and the cloud asks
-        code, _outcome, reply = cd.decide(repo_root, "engine_spec_ready", "spec:%s:%s" % (discussion, digest), subject)
+        code, _outcome, reply = cd.decide(repo_root, "engine_spec_ready", "spec:%s:%s" % (discussion or key_id, digest), subject)
     except BaseException:
         return cd.EXIT_UNREACHABLE, "cloud unreachable; Spec not flipped (fail-closed)", None
     if code == cd.EXIT_ACT:

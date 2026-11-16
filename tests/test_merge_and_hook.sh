@@ -1903,7 +1903,7 @@ ebd_setup() {  # $1 tmpdir  $2 mode ("" = no server)  $3 operate (true|false|abs
   mkdir -p "$t/schemas" "$t/scripts/hooks/pre-merge.d" "$t/.autonomous-team" "$t/run"
   chmod 700 "$t/run"
   cp "$REPO_ROOT/scripts/engine-emit.sh" "$t/scripts/engine-emit.sh"
-  cp "$REPO_ROOT/scripts/lib/engine_emit.py" "$REPO_ROOT/scripts/lib/state-dir.sh" "$REPO_ROOT/scripts/lib/cloud_decide.py" "$t/scripts/lib/"
+  cp "$REPO_ROOT/scripts/lib/engine_emit.py" "$REPO_ROOT/scripts/lib/state-dir.sh" "$REPO_ROOT/scripts/lib/cloud_decide.py" "$REPO_ROOT/scripts/lib/cloud-merge-gate.sh" "$t/scripts/lib/"
   cp "$REPO_ROOT/schemas/engine-events.v1.json" "$t/schemas/engine-events.v1.json"
   cp "$REPO_ROOT/scripts/hooks/pre-merge.d/cloud-decide.sh" "$t/scripts/hooks/pre-merge.d/cloud-decide.sh"
   printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$2" >> "%s/teamlog.txt"\n' "$t" > "$t/scripts/rotate-team-log.sh"

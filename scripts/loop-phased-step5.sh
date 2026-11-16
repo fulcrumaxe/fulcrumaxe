@@ -1837,7 +1837,28 @@ ${_ci_gate_detail}"
             _log "D#$DISC_NUM PR#$PR_NUM: merging unpinned — no gated head SHA available from the CI check"
           fi
           _GH_MERGE_OUT=""
-          _gh_merge "$PR_NUM" "${_MERGE_ARGS[@]}" || MERGE_RC=$?
+          # EB-10d: with cloud_bridge.operate true the cloud must say act or announce for THIS head
+          # before the squash-merge (decide engine_merge, key merge:<pr>:<head sha>). Operate off or
+          # absent: the gate returns 0 at once and nothing here changes.
+          _CLOUD_GATE_RC=0
+          if [ -f "$SCRIPT_DIR/lib/cloud-merge-gate.sh" ]; then
+            source "$SCRIPT_DIR/lib/cloud-merge-gate.sh"
+            _CLOUD_SHA="${_GATE_SHA:-}"
+            if [ -z "$_CLOUD_SHA" ] && CLOUD_MERGE_GATE_ROOT="$REPO_ROOT" cloud_merge_gate_operate_on; then
+              # No gated SHA from the CI check: decide on the live head, and pin the merge to that same head.
+              _CLOUD_SHA="$(_pr_head_sha "$PR_NUM")"
+              [ -n "$_CLOUD_SHA" ] && _MERGE_ARGS+=(--match-head-commit "$_CLOUD_SHA")
+            fi
+            CLOUD_MERGE_GATE_ROOT="$REPO_ROOT" cloud_merge_gate "$PR_NUM" "$_CLOUD_SHA" "$DISC_NUM" || _CLOUD_GATE_RC=$?
+          elif CLOUD_MERGE_GATE_ROOT="$REPO_ROOT" bash -c 'grep -qE "\"operate\"[[:space:]]*:[[:space:]]*(true|\"|[^f[:space:]])" "$CLOUD_MERGE_GATE_ROOT/.autonomous-team/config.json" 2>/dev/null'; then
+            _CLOUD_GATE_RC=5
+          fi
+          if [ "$_CLOUD_GATE_RC" -ne 0 ]; then
+            _log "D#$DISC_NUM PR#$PR_NUM: cloud decide refused the merge (exit $_CLOUD_GATE_RC: 3 ask, 4 halted, 5 unusable) — pr_state stays merging; next iteration asks again"
+            MERGE_RC=$_CLOUD_GATE_RC
+          else
+            _gh_merge "$PR_NUM" "${_MERGE_ARGS[@]}" || MERGE_RC=$?
+          fi
 
           if [ "$MERGE_RC" -eq 0 ]; then
             _log "D#$DISC_NUM PR#$PR_NUM: merged successfully"
@@ -1877,7 +1898,9 @@ ${_ci_gate_detail}"
             # failure — distinguish it the same way the manual path's
             # ci_merge_sha_pinned already classifies "head-moved", so this
             # isn't reported next to a rate-limit guess.
-            if [ -n "$_GATE_SHA" ] && printf '%s' "${_GH_MERGE_OUT:-}" | grep -qiE 'head branch was modified|does not match|match-head-commit'; then
+            if [ "$_CLOUD_GATE_RC" -ne 0 ]; then
+              : # refused by the cloud gate above (already logged)
+            elif [ -n "$_GATE_SHA" ] && printf '%s' "${_GH_MERGE_OUT:-}" | grep -qiE 'head branch was modified|does not match|match-head-commit'; then
               _log "D#$DISC_NUM PR#$PR_NUM: merge refused — head branch moved since the CI gate read SHA $_GATE_SHA (expected outcome of the SHA pin; next iteration retries)"
             else
               _log "D#$DISC_NUM PR#$PR_NUM: merge failed (rc=$MERGE_RC) — may be rate-limited or already merged"

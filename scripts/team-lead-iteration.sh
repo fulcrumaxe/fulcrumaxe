@@ -634,7 +634,31 @@ else
 
     if [ "$has_code_review" -gt 0 ]; then
       log "Merging PR #$pr_num: $pr_title"
-      dry "gh pr merge $pr_num --squash --delete-branch --repo $CODE_REPO"
+      # EB-10d: with cloud_bridge.operate true the cloud must say act or announce for THIS head before
+      # the squash-merge (decide engine_merge, key merge:<pr>:<head sha>). Operate off or absent: the
+      # gate returns 0 at once and nothing changes. A dry run merges nothing, so it asks nothing.
+      if [ "$DRY_RUN" = "false" ]; then
+        _cloud_rc=0
+        _cloud_sha=""
+        if [ -f "$SCRIPT_DIR/lib/cloud-merge-gate.sh" ]; then
+          source "$SCRIPT_DIR/lib/cloud-merge-gate.sh"
+          if CLOUD_MERGE_GATE_ROOT="$REPO_ROOT" cloud_merge_gate_operate_on; then
+            _cloud_sha=$(gh pr view "$pr_num" --repo "$CODE_REPO" --json headRefOid --jq .headRefOid 2>/dev/null || echo "")
+          fi
+          CLOUD_MERGE_GATE_ROOT="$REPO_ROOT" cloud_merge_gate "$pr_num" "$_cloud_sha" || _cloud_rc=$?
+        elif grep -qE '"operate"[[:space:]]*:[[:space:]]*(true|"|[^f[:space:]])' "$REPO_ROOT/.autonomous-team/config.json" 2>/dev/null; then
+          _cloud_rc=5
+        fi
+        if [ "$_cloud_rc" -ne 0 ]; then
+          log "PR #$pr_num: cloud decide refused the merge (exit $_cloud_rc: 3 ask, 4 halted, 5 unusable); not merging"
+          continue
+        fi
+      fi
+      if [ -n "${_cloud_sha:-}" ]; then
+        dry "gh pr merge $pr_num --squash --delete-branch --match-head-commit $_cloud_sha --repo $CODE_REPO"
+      else
+        dry "gh pr merge $pr_num --squash --delete-branch --repo $CODE_REPO"
+      fi
       if [ "$DRY_RUN" = "false" ]; then
         PR_BODY=$(gh pr view "$pr_num" --repo "$CODE_REPO" --json body --jq '.body' 2>/dev/null || echo "")
         DISC_NUM=$(echo "$PR_BODY" | grep -oE 'Closes #([0-9]+)|Discussion #([0-9]+)' | grep -oE '[0-9]+' | head -1 || echo "")
