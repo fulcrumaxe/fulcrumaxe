@@ -39,6 +39,10 @@ def spawn_key(role, discussion, spawn_id):
     if not SPAWN_ID.fullmatch(sid):
         return None
     if EVENT_ID.fullmatch(sid):
+        # The role inside the id must be the call's own role, or a quoted id would replay another spawn's approval.
+        m = TRAILER_PARTS.fullmatch(sid)
+        if not m or (role != "other" and not _same_role(m.group(1), role)):
+            return None
         return "spawn:" + sid
     return "spawn:%s:%s:%s" % (role, discussion or "nod", sid)
 

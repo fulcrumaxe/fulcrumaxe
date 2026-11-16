@@ -73,6 +73,13 @@ _CEILINGS: dict[str, int] = {
 }
 _DEFAULT_CEILING = 5
 
+# Classes a cloud command may set (EB-10c). The source kind "cloud_command" is refused for every other
+# class even when a (forged) allowlist file names it.
+SETTABLE_DIAL_CLASSES = frozenset({
+    "docs.write", "tests.add", "deps.bump", "agent.spawn", "merge.standard", "merge.fast-path",
+    "memory.write", "archive.move",
+})
+
 # ---------------------------------------------------------------------------
 # Operator-facing remedy for an unauthenticated source
 # ---------------------------------------------------------------------------
@@ -560,6 +567,11 @@ def check(class_name: str, requested_level: int = 1) -> tuple[bool, str]:
     state = registry[class_name]
     current = state["level"]
     ceiling = state["ceiling"]
+    # With cloud_bridge.operate true the cloud's ceiling can only lower the level (EB-10c).
+    from backend import cloud_ceiling  # noqa: PLC0415
+    cloud = cloud_ceiling.ceiling_for(class_name)
+    if cloud is not None:
+        current = min(current, cloud)
 
     if requested_level < 1:
         return (False, f"requested_level must be >= 1, got {requested_level}")
@@ -611,6 +623,10 @@ def set_dial(
         raise DialCeilingExceeded(
             f"level {level} exceeds ceiling {ceiling} for class {class_name!r}"
         )
+
+    if isinstance(source, dict) and source.get("kind") == "cloud_command" and class_name not in SETTABLE_DIAL_CLASSES:
+        _emit_dial_rejection(class_name, level, source, "class_not_cloud_settable")
+        raise ValueError(f"class {class_name!r} cannot be set from a cloud command")
 
     if not _authenticate_source(source):
         _emit_dial_rejection(class_name, level, source, "unauthenticated_source")
