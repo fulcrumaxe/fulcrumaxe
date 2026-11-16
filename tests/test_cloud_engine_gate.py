@@ -14,7 +14,7 @@ import pytest
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, ROOT)
 os.environ.setdefault("AUTONOMOUS_TEAM_STATE_DIR", tempfile.mkdtemp(prefix="fxgate-state-"))
-from testsupport.fake_cloud_decide import FakeDecide, UUID_A, UUID_B  # noqa: E402
+from testsupport.fake_cloud_decide import FakeDecide  # noqa: E402
 from backend import discussion_outbox as ob  # noqa: E402
 
 PAYLOAD = os.path.join(ROOT, "tests", "fixtures", "engine_agent_hooks", "pretooluse-agent.synthetic.json")
