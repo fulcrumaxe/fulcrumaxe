@@ -404,6 +404,8 @@ else
   echo "gate1-invoke: no manifest produced at $MANIFEST_PATH (runner exit $rc) — skipping receipt write" >&2
 fi
 
+gate1_receipt_emit "$PR_NUMBER" "$PR_HEAD_SHA" "$rc" "$([ -f "$MANIFEST_PATH" ] && echo true || echo false)"
+
 [ "$_CHANGED_FILES_IS_TEMP" = "true" ] && rm -f "$CHANGED_FILES_FROM"
 [ "$_MANIFEST_IS_TEMP" = "true" ] && rm -f "$MANIFEST_PATH"
 

@@ -46,6 +46,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # Allow callers (and tests) to override the output file via environment variable.
+# Engine-bridge events are only written for the real metrics file, never for an override.
+_ENGINE_EMIT_LIVE=true
+[[ -n "${METRICS_FILE:-}" ]] && _ENGINE_EMIT_LIVE=false
 METRICS_FILE="${METRICS_FILE:-$REPO_ROOT/.autonomous-team/loop-metrics.jsonl}"
 
 # ── Defaults ──────────────────────────────────────────────────────────────
@@ -338,4 +341,19 @@ if [[ "$DRY_RUN" == "true" ]]; then
 else
   mkdir -p "$(dirname "$METRICS_FILE")"
   printf '%s\n' "$VALIDATED_ROW" >> "$METRICS_FILE"
+fi
+
+# ── Engine bridge events ──────────────────────────────────────────────────
+# loop_tick (raw origin and duration only), then the sources the loop tick polls,
+# then a heartbeat that reports how old each of them is. Never changes this
+# script's exit status.
+if [[ "$DRY_RUN" != "true" && "$_ENGINE_EMIT_LIVE" == "true" ]]; then
+  case "$ORIGIN" in
+    cron|interactive|host)
+      bash "$SCRIPT_DIR/engine-emit.sh" loop_tick --origin "$ORIGIN" --duration-s "$DURATION_SECONDS" >/dev/null 2>&1 || true
+      timeout 60 python3 "$SCRIPT_DIR/engine-team-log-poll.py" >/dev/null 2>&1 || true
+      python3 "$SCRIPT_DIR/engine-plan-snapshot.py" --if-changed >/dev/null 2>&1 || true
+      bash "$SCRIPT_DIR/engine-emit.sh" engine_heartbeat --origin "$ORIGIN" >/dev/null 2>&1 || true
+      ;;
+  esac
 fi

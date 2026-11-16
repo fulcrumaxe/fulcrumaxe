@@ -286,6 +286,9 @@ if ! hook_event_has_step "agent_feed"; then
 
   bash "$SCRIPT_DIR/agent-feed-append.sh" "${FEED_ARGS[@]}" \
     || true  # non-fatal unless disk full
+  # Engine bridge: the merge as a closed-shape event. Never fails the hook.
+  bash "$SCRIPT_DIR/engine-emit.sh" merged --pr "$PR" --closes "$([[ -n "$DISCUSSION" ]] && echo true || echo false)" \
+    ${DISCUSSION:+--discussion "$DISCUSSION"} >/dev/null 2>&1 || true
   hook_event_mark_step "agent_feed"
 fi
 

@@ -632,6 +632,10 @@ elif [[ -n "${PR_DEP_LIST:-}" ]]; then
   _DELETE_BRANCH_MODE="keep"
 fi
 
+# Engine bridge: lane states as closed-shape events. Never changes this script's exit status.
+_engine_lane() { bash "$SCRIPT_DIR/engine-emit.sh" merge_lane --pr "$PR" --state "$1" ${_RESOLVED_DISC:+--discussion "$_RESOLVED_DISC"} >/dev/null 2>&1 || true; }
+_engine_lane queued
+
 echo "[merge-and-hook] merging PR #$PR (squash, delete-branch=$([[ "$_DELETE_BRANCH_MODE" == "delete" ]] && echo yes || echo no), sha=$_MERGE_SHA)..."
 # Bounded: at most one 409 re-gate retry (two attempts total), never open-ended.
 _MERGE_OK=false
@@ -663,6 +667,7 @@ for _MERGE_ATTEMPT in 1 2; do
     _MERGE_SHA="$CI_STATUS_HEAD_SHA"
   else
     echo "[merge-and-hook] ERROR: merge failed for PR #$PR: $CI_STATUS_FAIL_REASON" >&2
+    _engine_lane failed
     if [[ "${CI_STATUS_FAIL_KIND:-}" == "conflict" ]]; then
       # D#2339: this wording used to live inline here, and the pre-wait probe
       # in Step 0c would have been a second place to phrase the same condition.
@@ -674,9 +679,11 @@ for _MERGE_ATTEMPT in 1 2; do
 done
 if [[ "$_MERGE_OK" != "true" ]]; then
   echo "[merge-and-hook] ERROR: merge did not succeed for PR #$PR after re-gate retry." >&2
+  _engine_lane failed
   exit 1
 fi
 echo "[merge-and-hook] PR #$PR merged."
+_engine_lane merged
 
 # D#2271 PR-a: no-op when this merge was actually CI-verified or when a
 # decline reason was already recorded above; otherwise leaves the fallback
