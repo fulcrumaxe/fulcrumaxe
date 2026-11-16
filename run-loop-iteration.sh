@@ -283,7 +283,7 @@ Steps (in order):
    a. Any Discussion with STATUS:SPEC_READY and no active impl-coordinator → spawn impl-coordinator via Team Lead
    b. Any open PR missing review labels → spawn code-reviewer
    c. Nothing actionable → notify project-manager to run idea generation
-7. Auto-merge check (CLAUDE.md /loop step 6): for each open PR, check gate labels; if all required gates are met, merge via: gh pr merge {number} --squash --repo $GH_REPO
+7. Auto-merge check (CLAUDE.md /loop step 6): for each open PR, check gate labels; if all required gates are met, merge via: bash scripts/merge-and-hook.sh --pr {number} (never gh pr merge directly: the wrapper asks the cloud first and records the merge)
 8. Update .autonomous-team/now.md with what you found and what you acted on
 PROMPT
 )
