@@ -1,14 +1,10 @@
 #!/usr/bin/env python3
 """engine-team-log-poll.py: turn new team-log comments into closed-shape engine events.
 
-Reads new comments on the open team-log issue through `gh` (the local token) and
-emits team_log_line, plus ask_raised for a needs-boss line. The comment text is
-classified locally and dropped: only enums, ids and numbers reach an event. The
-cursor lives in the state directory, so a second run emits nothing new. Open asks
-are re-read each run; one whose comment was deleted or no longer says needs-boss
-is cleared as withdrawn.
-
-Test seams: ENGINE_TEAM_LOG_REPO and ENGINE_TEAM_LOG_ISSUE skip the repo and issue lookup.
+Emits team_log_line, plus ask_raised for a needs-boss line; comment text is classified locally
+and dropped. The cursor lives in the state dir. An open ask is cleared (withdrawn) only when its
+comment is definitely gone (HTTP 404) or no longer says needs-boss; any other error keeps it.
+Test seams: ENGINE_TEAM_LOG_REPO, ENGINE_TEAM_LOG_ISSUE, ENGINE_TEAM_LOG_GH_TIMEOUT.
 """
 import hashlib
 import json
@@ -16,7 +12,6 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
 import engine_emit  # noqa: E402
@@ -34,10 +29,14 @@ ASK_KINDS = [("credential", r"credential|token|auth|secret"), ("budget", r"budge
              ("owner_decision", r"decision|owner|approve|approval")]
 
 
+NotFound = type("NotFound", (RuntimeError,), {})  # gh answered HTTP 404: definitely gone
+
+
 def gh(args):
-    r = subprocess.run(["gh"] + args, capture_output=True, text=True, timeout=120)
+    r = subprocess.run(["gh"] + args, capture_output=True, text=True,
+                       timeout=int(os.environ.get("ENGINE_TEAM_LOG_GH_TIMEOUT") or 120))
     if r.returncode != 0:
-        raise RuntimeError("gh failed")
+        raise (NotFound if "HTTP 404" in r.stderr else RuntimeError)("gh failed")
     return r.stdout
 
 
@@ -74,11 +73,7 @@ def read_cursor(path):
 
 
 def write_cursor(path, c):
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".cursor-")
-    os.fchmod(fd, 0o600)
-    with os.fdopen(fd, "w") as f:
-        json.dump(c, f)
-    os.replace(tmp, path)
+    engine_emit._write_atomic(path, c, ".cursor-")  # removes its temp file if the write fails
 
 
 def locate():
@@ -96,14 +91,15 @@ def locate():
 
 
 def check_open_asks(repo, c, sdir):
-    """Clear asks whose comment is gone. Returns True when anything was cleared."""
     cleared = False
     for ask_id, cid in list(c["open_asks"].items()):
         try:
             body = json.loads(gh(["api", "repos/%s/issues/comments/%d" % (repo, cid)])).get("body", "")
             gone = "needs-boss" not in body
-        except RuntimeError:
+        except NotFound:
             gone = True
+        except (RuntimeError, subprocess.SubprocessError, ValueError):
+            continue  # rate limit, 5xx, timeout, bad JSON: keep the ask and look again next tick
         if gone:
             engine_emit.emit("ask_cleared", {"ask_id": ask_id, "how": "withdrawn"}, sdir)
             del c["open_asks"][ask_id]
@@ -146,6 +142,6 @@ def main():
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except (engine_emit.EmitError, RuntimeError, OSError, ValueError) as e:
+    except (engine_emit.EmitError, RuntimeError, OSError, ValueError, subprocess.SubprocessError) as e:
         print("engine-team-log-poll: %s" % e.__class__.__name__, file=sys.stderr)
         sys.exit(1)

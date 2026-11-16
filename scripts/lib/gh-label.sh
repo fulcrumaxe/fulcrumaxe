@@ -146,10 +146,8 @@ _gh_label_graphql_mutate() {
   return $rc
 }
 
-# _gh_label_emit_gate <pr_number> <label> — engine bridge: a review-gate label as a
-# gate_receipt event (gate, pass or fail, and the PR's head sha). Any other label is a
-# no-op. Best effort: a missing sha or a failing emitter never fails the label call.
-# A label applied twice emits twice; the reader de-duplicates on (PR, label, head sha).
+# _gh_label_emit_gate <pr> <label>: a review-gate label as a gate_receipt event; other labels
+# are a no-op. Best effort. A label applied twice emits twice (the reader de-duplicates).
 _gh_label_emit_gate() {
   local pr="$1" label="$2" gate result sha
   case "$label" in
@@ -164,9 +162,8 @@ _gh_label_emit_gate() {
   esac
   sha=$(gh pr view "$pr" --repo "$_GH_LABEL_REPO" --json headRefOid --jq .headRefOid 2>/dev/null || true)
   [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || return 0
-  bash "$(dirname "${BASH_SOURCE[0]}")/../engine-emit.sh" gate_receipt --pr "$pr" --gate "$gate" \
+  timeout 10 bash "$(dirname "${BASH_SOURCE[0]}")/../engine-emit.sh" gate_receipt --pr "$pr" --gate "$gate" \
     --result "$result" --head-sha "$sha" >/dev/null 2>&1 || true
-  return 0
 }
 
 # apply_label <pr_number> <label>

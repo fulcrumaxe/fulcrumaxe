@@ -757,7 +757,7 @@ TODAY=$(date '+%Y-%m-%d')
 PLAN_TODAY=".autonomous-team/PLAN-${TODAY}.md"
 [ -f "$PLAN_TODAY" ] || bash "$REPO_ROOT/scripts/auto-plan.sh" --date "$TODAY" 2>&1 | sed 's/^/  /'
 # Engine bridge: today's plan and the roadmap as a closed-shape snapshot. Never blocks the ritual.
-python3 "$REPO_ROOT/scripts/engine-plan-snapshot.py" --root "$REPO_ROOT" --plan-date "$TODAY" >/dev/null 2>&1 || true
+timeout 10 python3 "$REPO_ROOT/scripts/engine-plan-snapshot.py" --root "$REPO_ROOT" --plan-date "$TODAY" >/dev/null 2>&1 || true
 
 # ── 4. The day's plan ────────────────────────────────────────────────────────
 echo ""

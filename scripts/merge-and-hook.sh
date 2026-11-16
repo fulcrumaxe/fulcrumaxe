@@ -633,9 +633,8 @@ elif [[ -n "${PR_DEP_LIST:-}" ]]; then
 fi
 
 # Engine bridge: lane states as closed-shape events. Never changes this script's exit status.
-_engine_lane() { bash "$SCRIPT_DIR/engine-emit.sh" merge_lane --pr "$PR" --state "$1" ${_RESOLVED_DISC:+--discussion "$_RESOLVED_DISC"} >/dev/null 2>&1 || true; }
+_engine_lane() { timeout 10 bash "$SCRIPT_DIR/engine-emit.sh" merge_lane --pr "$PR" --state "$1" ${_RESOLVED_DISC:+--discussion "$_RESOLVED_DISC"} >/dev/null 2>&1 || true; }
 _engine_lane queued
-
 echo "[merge-and-hook] merging PR #$PR (squash, delete-branch=$([[ "$_DELETE_BRANCH_MODE" == "delete" ]] && echo yes || echo no), sha=$_MERGE_SHA)..."
 # Bounded: at most one 409 re-gate retry (two attempts total), never open-ended.
 _MERGE_OK=false

@@ -342,18 +342,14 @@ else
   mkdir -p "$(dirname "$METRICS_FILE")"
   printf '%s\n' "$VALIDATED_ROW" >> "$METRICS_FILE"
 fi
-
-# ── Engine bridge events ──────────────────────────────────────────────────
-# loop_tick (raw origin and duration only), then the sources the loop tick polls,
-# then a heartbeat that reports how old each of them is. Never changes this
-# script's exit status.
+# Engine bridge: loop_tick, the polled sources, then a heartbeat. Never changes the exit status.
 if [[ "$DRY_RUN" != "true" && "$_ENGINE_EMIT_LIVE" == "true" ]]; then
   case "$ORIGIN" in
     cron|interactive|host)
-      bash "$SCRIPT_DIR/engine-emit.sh" loop_tick --origin "$ORIGIN" --duration-s "$DURATION_SECONDS" >/dev/null 2>&1 || true
+      timeout 10 bash "$SCRIPT_DIR/engine-emit.sh" loop_tick --origin "$ORIGIN" --duration-s "$DURATION_SECONDS" >/dev/null 2>&1 || true
       timeout 60 python3 "$SCRIPT_DIR/engine-team-log-poll.py" >/dev/null 2>&1 || true
-      python3 "$SCRIPT_DIR/engine-plan-snapshot.py" --if-changed >/dev/null 2>&1 || true
-      bash "$SCRIPT_DIR/engine-emit.sh" engine_heartbeat --origin "$ORIGIN" >/dev/null 2>&1 || true
+      timeout 10 python3 "$SCRIPT_DIR/engine-plan-snapshot.py" --if-changed >/dev/null 2>&1 || true
+      timeout 10 bash "$SCRIPT_DIR/engine-emit.sh" engine_heartbeat --origin "$ORIGIN" >/dev/null 2>&1 || true
       ;;
   esac
 fi

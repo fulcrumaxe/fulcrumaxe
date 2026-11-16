@@ -1,17 +1,11 @@
 #!/usr/bin/env python3
 """engine_emit.py: the only writer of engine-events.jsonl.
 
-Every engine source goes through emit(), one JSON line per call, checked against
-schemas/engine-events.v1.json before anything is written. The line carries raw
-facts only: closed enums, ids and counts, never free text and never a computed
-figure. Sequence numbers are per engine instance, handed out under a flock, so
-concurrent callers get unique, gapless numbers.
-
-State directory: $AUTONOMOUS_TEAM_STATE_DIR, else ~/.autonomous-forever-state.
-Files are mode 0600 and opened O_NOFOLLOW; the directory is 0700 when created.
-
-CLI (see scripts/engine-emit.sh):
-  engine_emit.py <kind> [--field value ...]     exit 0 written, 2 refused, 1 I/O failure
+emit() writes one JSON line per call, checked against schemas/engine-events.v1.json
+first: raw facts only (enums, ids, counts), never free text or a computed figure.
+Seqs are per engine instance, taken under a flock; a failed write gives its seq back.
+State dir: $AUTONOMOUS_TEAM_STATE_DIR, else ~/.autonomous-forever-state (files 0600, O_NOFOLLOW).
+CLI: engine_emit.py <kind> [--field value ...]   exit 0 written, 2 refused, 1 I/O failure
 """
 import datetime
 import fcntl
@@ -114,9 +108,8 @@ def _read_instance(path):
     return {"engine_instance_id": str(uuid.uuid4()), "next_seq": 0}
 
 
-def _write_atomic(path, data):
-    d = os.path.dirname(path)
-    fd, tmp = tempfile.mkstemp(dir=d, prefix=".engine-instance-")
+def _write_atomic(path, data, prefix=".engine-instance-"):
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=prefix)
     try:
         os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w") as f:
@@ -130,15 +123,26 @@ def _write_atomic(path, data):
         raise
 
 
+def _append(epath, ev):
+    try:
+        if os.lstat(epath).st_size >= ROTATE_BYTES:
+            os.replace(epath, epath + ".1")
+    except FileNotFoundError:
+        pass
+    fd = os.open(epath, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        os.write(fd, (json.dumps(ev, separators=(",", ":")) + "\n").encode())
+    finally:
+        os.close(fd)
+
+
 def emit(kind, fields, sdir=None):
-    """Validate and append one event. Returns the event written."""
     schema = load_schema()
     ev = {"v": 1, "seq": 0, "ts": datetime.datetime.now(datetime.timezone.utc).strftime(
         "%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z", "engine_instance_id": str(uuid.uuid4()), "kind": kind}
     ev.update({k: v for k, v in fields.items() if v is not None})
     validate(ev, schema)  # before taking a seq, so a refused event burns none
-    if os.environ.get("ENGINE_EMIT_DISABLE") == "1":  # test harnesses: validate, write nothing
-        return ev
     sdir = sdir or state_dir()
     os.makedirs(sdir, mode=0o700, exist_ok=True)
     lock = os.open(os.path.join(sdir, LOCK), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
@@ -146,40 +150,30 @@ def emit(kind, fields, sdir=None):
         fcntl.flock(lock, fcntl.LOCK_EX)
         ipath = os.path.join(sdir, INSTANCE)
         inst = _read_instance(ipath)
-        ev["seq"], ev["engine_instance_id"] = inst["next_seq"], inst["engine_instance_id"]
-        _write_atomic(ipath, {"engine_instance_id": inst["engine_instance_id"],
-                              "next_seq": inst["next_seq"] + 1})
-        epath = os.path.join(sdir, EVENTS)
+        iid, n = inst["engine_instance_id"], inst["next_seq"]
+        ev["seq"], ev["engine_instance_id"] = n, iid
+        _write_atomic(ipath, {"engine_instance_id": iid, "next_seq": n + 1})
         try:
-            if os.lstat(epath).st_size >= ROTATE_BYTES:
-                os.replace(epath, epath + ".1")
-        except FileNotFoundError:
-            pass
-        fd = os.open(epath, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-        try:
-            os.fchmod(fd, 0o600)
-            os.write(fd, (json.dumps(ev, separators=(",", ":")) + "\n").encode())
-        finally:
-            os.close(fd)
+            _append(os.path.join(sdir, EVENTS), ev)
+        except BaseException:
+            try:  # still under the lock: give the seq back so no gap is left on disk
+                _write_atomic(ipath, {"engine_instance_id": iid, "next_seq": n})
+            except OSError:
+                pass
+            raise
     finally:
         os.close(lock)  # releases the flock
     return ev
 
 
 def _age(path_or_paths, now):
-    """Seconds since the newest of the given paths last changed, or None when none exists."""
     paths = [path_or_paths] if isinstance(path_or_paths, str) else path_or_paths
-    times = []
-    for p in paths:
-        try:
-            times.append(os.stat(p).st_mtime)
-        except OSError:
-            pass
+    times = [os.stat(p).st_mtime for p in paths if os.path.exists(p)]  # None when none exists
     return max(0, int(now - max(times))) if times else None
 
 
 def source_ages(sdir=None, repo_root=None, now=None):
-    """Age in seconds of each source the engine reads. A missing source is omitted, never 0."""
+    # Age in seconds of each source; a missing source is omitted, never 0.
     sdir = sdir or state_dir()
     root = repo_root or os.environ.get("ENGINE_EMIT_REPO_ROOT") or os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "..", "..")

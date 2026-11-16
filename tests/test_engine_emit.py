@@ -199,6 +199,21 @@ def test_refused_event_burns_no_sequence_number(tmp_path):
     assert [e["seq"] for e in lines(tmp_path)] == [0, 1]
 
 
+def test_failed_append_gives_the_seq_back_so_no_gap_reaches_disk(tmp_path):
+    emit(tmp_path, "loop_tick", "--origin", "cron", "--duration-s", "1")
+    events = tmp_path / "engine-events.jsonl"
+    saved = tmp_path / "saved"
+    events.rename(saved)
+    os.symlink(tmp_path / "missing" / "nowhere", events)  # dangling: the append fails
+    for _ in range(2):
+        assert emit(tmp_path, "loop_tick", "--origin", "cron", "--duration-s", "2").returncode == 1
+        assert json.load(open(tmp_path / "engine-instance.json"))["next_seq"] == 1
+    events.unlink()
+    saved.rename(events)
+    assert emit(tmp_path, "loop_tick", "--origin", "cron", "--duration-s", "3").returncode == 0
+    assert [e["seq"] for e in lines(tmp_path)] == [0, 1]
+
+
 def test_two_hundred_concurrent_calls_are_unique_and_gapless(tmp_path):
     def one(i):
         return emit(tmp_path, "loop_tick", "--origin", "host", "--duration-s", str(i)).returncode

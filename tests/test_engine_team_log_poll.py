@@ -5,6 +5,8 @@ import os
 import stat
 import subprocess
 
+import pytest
+
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 POLL = os.path.join(ROOT, "scripts", "engine-team-log-poll.py")
 
@@ -13,12 +15,16 @@ GH_STUB = """#!/usr/bin/env bash
 case "$*" in
   *"--slurp"*) python3 -c 'import json,sys; print(json.dumps([json.load(open(sys.argv[1]))]))' "$GH_FIXTURE" ;;
   *"issues/comments/"*)
+    if [ -n "$GH_COMMENT_ERR" ]; then
+      [ "$GH_COMMENT_ERR" = "timeout" ] && sleep 5
+      echo "gh: $GH_COMMENT_ERR" >&2; exit 1
+    fi
     id="${@: -1}"; id="${id##*/}"
     python3 -c 'import json,sys
 for c in json.load(open(sys.argv[1])):
     if str(c["id"]) == sys.argv[2]:
         print(json.dumps(c)); sys.exit(0)
-sys.exit(1)' "$GH_FIXTURE" "$id" ;;
+print("gh: Not Found (HTTP 404)", file=sys.stderr); sys.exit(1)' "$GH_FIXTURE" "$id" ;;
   *) exit 1 ;;
 esac
 """
@@ -100,3 +106,46 @@ def test_a_withdrawn_ask_is_cleared(tmp_path):
     assert last["ask_id"] == hashlib.sha256(b"IC_kwDOaaa103").hexdigest()[:16]
     run(env)
     assert len(events(state)) == 5  # cleared once
+
+
+@pytest.mark.parametrize("err", ["API rate limit exceeded (HTTP 403)", "API rate limit exceeded (HTTP 429)",
+                                 "Bad Gateway (HTTP 502)", "timeout"])
+def test_a_gh_error_other_than_404_keeps_the_ask(tmp_path, err):
+    env, fixture, state = setup(tmp_path)
+    run(env)
+    before = len(events(state))
+    r = run(dict(env, GH_COMMENT_ERR=err, ENGINE_TEAM_LOG_GH_TIMEOUT="1"))
+    assert r.returncode == 0 and "Traceback" not in r.stderr
+    assert len(events(state)) == before  # no ask_cleared
+    assert json.load(open(state / "engine-team-log-cursor.json"))["open_asks"]
+    run(env)  # the next healthy tick still sees the ask and does not clear it
+    assert len(events(state)) == before
+
+
+def test_a_404_clears_the_ask_but_a_changed_body_does_too(tmp_path):
+    env, fixture, state = setup(tmp_path)
+    run(env)
+    run(dict(env, GH_COMMENT_ERR="Not Found (HTTP 404)"))
+    assert events(state)[-1]["kind"] == "ask_cleared"
+    env, fixture, state = setup(_sub(tmp_path))
+    run(env)
+    edited = [dict(c) for c in COMMENTS]
+    edited[2]["body"] = "[11:00] team-lead: resolved, credential for D#12 replaced"
+    fixture.write_text(json.dumps(edited))
+    run(env)
+    assert events(state)[-1]["kind"] == "ask_cleared"
+
+
+def test_write_cursor_leaves_no_temp_file_when_the_write_fails(tmp_path, monkeypatch):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("poll", POLL)
+    poll = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(poll)
+    with pytest.raises(TypeError):
+        poll.write_cursor(str(tmp_path / "cursor.json"), {"bad": object()})
+    assert os.listdir(tmp_path) == []
+
+
+def _sub(tmp_path):
+    (tmp_path / "b").mkdir()
+    return tmp_path / "b"

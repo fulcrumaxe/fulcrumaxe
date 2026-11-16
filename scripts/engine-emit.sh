@@ -1,13 +1,7 @@
 #!/usr/bin/env bash
-# scripts/engine-emit.sh: append one event to engine-events.jsonl.
-#
-#   bash scripts/engine-emit.sh <kind> --field value ...
-#   bash scripts/engine-emit.sh checkin --name ROW --origin cron   # alias of checkin_tick
-#
-# Fields are closed ids, enums and counts, checked against
-# schemas/engine-events.v1.json. Free text is refused: exit 2, nothing written.
-# Exit 1 means the line could not be written. Instrumented callers always run
-# this as `... || true`: an emitter failure never changes their own exit status.
+# engine-emit.sh <kind> --field value ...  (checkin = checkin_tick): append one event.
+# Fields are checked against schemas/engine-events.v1.json; free text is refused.
+# Exit 2 refused, 1 could not write. Callers run it as `timeout 10 ... || true`.
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/state-dir.sh

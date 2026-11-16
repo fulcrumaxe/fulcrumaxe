@@ -3,15 +3,9 @@
 
   engine-plan-snapshot.py [--root DIR] [--plan-date YYYY-MM-DD] [--if-changed]
 
-Items come from .autonomous-team/PLAN-<date>.md (else the newest PLAN-*.md): every
-distinct D#N, in order of first appearance, "merged" when a line naming it carries a
-checked box and "planned" otherwise. Roadmap rows come from the task_status table in
-.autonomous-team/roadmap.json. A row that does not fit the closed shapes (key form,
-status, planned_prs) is left out and counted on stderr; the snapshot is still sent.
-
-A snapshot is sent in chunks of at most 500 rows (and well under 64 KiB each) that share
-a snapshot_id, so the reader applies it only once every chunk has arrived. --if-changed
-does nothing unless the plan or roadmap file changed since the last snapshot.
+Plan items are the distinct D#N in PLAN-<date>.md (else the newest), "merged" when a checked
+line names them. Roadmap rows come from roadmap.json task_status; a row that does not fit the
+closed shapes is left out and counted. Sent in chunks (500 rows, 60 KB) under one snapshot_id.
 Exit: 0 sent or nothing to do, 2 refused, 1 could not write.
 """
 import argparse
