@@ -196,12 +196,132 @@ def test_terminal_kinds_print_fixed_sentences_and_are_applied(w):
     assert "Owner asked to stop agent abc123" in r.stdout and "pause the loop" in r.stdout
 
 
-def test_a_running_host_gets_the_command_instead_of_a_sentence(w):
-    w.write_json(w.state + "/engine-host.json", {"pid": os.getpid()})
+def host(w, age=0, pid=None):
+    beat = iso(datetime.now(timezone.utc) - timedelta(seconds=age))
+    w.write_json(w.state + "/engine-host.json", {"pid": pid or os.getpid(), "heartbeat_at": beat})
+
+
+def test_a_live_host_gets_the_file_and_writes_the_outcome_itself(w):
+    host(w)
     n = w.put(w.cmd("resume_loop"))
     r = w.run()
-    assert w.outcome(n) == APPLIED and r.stdout == ""
+    assert r.returncode == 0 and r.stdout == ""
+    assert w.outcome(n) is None  # the host owns it
     assert os.path.exists("%s/engine-host-inbox/%s.json" % (w.state, n))
+    assert not os.path.exists("%s/%s.json" % (w.inbox, n)) and not os.path.exists("%s/%s.json" % (w.done, n))
+    assert not os.path.exists(w.state + "/engine-notices")
+    again = w.put(w.cmd("pause_loop", command_seq=1))  # the hand-off counted: a replay of seq 1 is refused
+    w.run()
+    assert w.outcome(again) == refused("seq_not_increasing")
+
+
+def test_a_pid_alone_is_not_a_live_host(w):
+    w.write_json(w.state + "/engine-host.json", {"pid": os.getpid()})
+    a = w.put(w.cmd("resume_loop"))
+    host(w, age=120)
+    b = w.put(w.cmd("pause_loop"))
+    r = w.run()
+    assert w.outcome(a) == APPLIED and w.outcome(b) == APPLIED and "pause the loop" in r.stdout
+    assert not os.path.exists(w.state + "/engine-host-inbox")
+
+
+def test_a_host_gone_stale_gets_its_pending_commands_taken_back(w):
+    host(w)
+    n = w.put(w.cmd("pause_loop"))
+    w.run()
+    assert w.outcome(n) is None
+    host(w, age=300)
+    r = w.run()
+    assert w.outcome(n) == APPLIED and "pause the loop" in r.stdout
+    assert not os.path.exists("%s/engine-host-inbox/%s.json" % (w.state, n)) and os.path.exists("%s/%s.json" % (w.done, n))
+
+
+def test_taking_back_still_honours_halt_and_a_finished_host_copy_is_dropped(w):
+    host(w)
+    a = w.put(w.cmd("pause_loop"))
+    b = w.put(w.cmd("start_day"))
+    w.run()
+    w.write_json("%s/%s.outcome.json" % (w.done, b), {"outcome": "refused", "refusal": "unknown_agent"})  # the host did b
+    host(w, age=300)
+    w.halt()
+    w.run()
+    assert w.outcome(a) == refused("halted") and w.outcome(b) == refused("unknown_agent")
+    assert os.listdir(w.state + "/engine-host-inbox") == []
+
+
+def test_notices_are_files_survive_a_discarded_tick_and_reprint_until_removed(w):
+    c = w.cmd("request_spawn", {"role": "executor", "discussion": 842})
+    n = w.put(c)
+    r = subprocess.run([sys.executable, w.root + "/scripts/engine-inbox.py", "run"], cwd=w.root, env=w.env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    assert r.returncode == 0 and w.outcome(n) == APPLIED
+    f = "%s/engine-notices/%s.json" % (w.state, n)
+    assert stat.S_IMODE(os.stat(f).st_mode) == 0o600
+    assert os.listdir(w.state + "/engine-notices") == [n + ".json"]
+    again = w.run()
+    assert "Owner requested executor for D#842 (cloud command %s)." % c["command_id"] in again.stdout
+    os.unlink(f)
+    assert w.run().stdout == ""
+
+
+def test_a_notice_that_cannot_be_written_is_not_applied(w):
+    os.makedirs(w.state + "/engine-notices", mode=0o755)
+    os.chmod(w.state + "/engine-notices", 0o755)
+    n = w.put(w.cmd("pause_loop"))
+    w.run()
+    assert w.outcome(n) == refused("host_not_running")
+
+
+def test_stale_tmp_files_are_cleaned_and_never_collide(w):
+    old = w.done + "/.x.outcome.json.0123456789abcdef.tmp"
+    open(old, "w").write("x")
+    os.utime(old, (1, 1))
+    n = w.put(w.cmd("pause_loop"))
+    w.run()
+    assert not os.path.exists(old) and w.outcome(n) == APPLIED
+
+
+def test_wrong_shape_replay_state_is_unsafe_and_writes_nothing(w):
+    n = w.put(w.cmd("start_day"))
+    w.write_json(w.state + "/engine-inbox-state.json", {"v": 1, "last_seq": [], "ids": {}})
+    r = w.run()
+    assert r.returncode == 2 and w.outcome(n) is None and os.path.exists("%s/%s.json" % (w.inbox, n))
+
+
+def test_set_dial_without_an_allowlist_entry_is_operate_off_not_ceiling(w):
+    w.write_json(w.state + "/dial-directive-allowlist.json", SYSTEM)
+    a = w.put(w.cmd("set_dial", {"dial_class": "docs.write", "level": 2, "ttl": "none"}))
+    w.run()
+    assert w.outcome(a) == refused("operate_off")
+
+
+# ---- one malformed command never wedges the inbox --------------------------------------------------
+
+@pytest.mark.parametrize("what", ["kind_list", "dial_class_list", "role_list", "choice_list", "deep"])
+def test_a_malformed_command_is_refused_and_the_next_one_is_applied_during_a_halt(w, what):
+    w.halt()
+    if what == "deep":
+        name = "1-%s" % uuid.uuid4()
+        with open("%s/%s.json" % (w.inbox, name), "w") as f:
+            f.write("[" * 20000)
+        os.chmod("%s/%s.json" % (w.inbox, name), 0o600)
+        w.seq = 1
+    else:
+        c = w.cmd("start_day")
+        if what == "kind_list":
+            c["kind"] = ["start_day"]
+        elif what == "dial_class_list":
+            c = w.cmd("set_dial", {"dial_class": ["docs.write"], "level": 2, "ttl": "none"})
+        elif what == "role_list":
+            c = w.cmd("request_spawn", {"role": ["executor"], "discussion": 1})
+        else:
+            c = w.cmd("answer_ask", {"ask_id": ASK, "choice": ["approve"]})
+        name = w.put(c)
+    ask = w.put(w.cmd("answer_ask", {"ask_id": ASK, "choice": "approve"}))
+    r = w.run()
+    assert r.returncode == 0, r.stderr
+    assert w.outcome(name) == refused("signature_invalid") and os.path.exists("%s/%s.json" % (w.done, name))
+    assert not os.path.exists("%s/%s.json" % (w.inbox, name))
+    assert w.outcome(ask) == APPLIED and os.path.exists(w.state + "/asks/%s.answer.json" % ASK)
 
 
 @pytest.mark.parametrize("what", ["unknown_kind", "extra_key", "bad_args", "long_note", "control_note", "long_life", "name_mismatch"])
@@ -346,6 +466,6 @@ def test_operate_off_leaves_check_unchanged(tmp_path):
 def test_spawn_key_binds_the_role_inside_the_spawn_id(w):
     code = ("import sys; sys.path.insert(0, %r)\nimport cloud_engine_gate as g\n"
             "print(g.spawn_key('executor', 842, 'executor-842-1763300000'), g.spawn_key('code-reviewer', 842, 'executor-842-1763300000'),"
-            " g.spawn_key('other', 842, 'executor-842-1763300000'))" % (w.root + "/scripts/lib"))
+            " g.spawn_key('other', 842, 'executor-842-1763300000'), g.spawn_key('other', 9, 'zzz-bot-9-1763300000'))" % (w.root + "/scripts/lib"))
     r = subprocess.run([sys.executable, "-c", code], env=w.env(), capture_output=True, text=True)
-    assert r.stdout.split() == ["spawn:executor-842-1763300000", "None", "spawn:executor-842-1763300000"], r.stderr
+    assert r.stdout.split() == ["spawn:executor-842-1763300000", "None", "None", "spawn:zzz-bot-9-1763300000"], r.stderr
