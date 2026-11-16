@@ -1,0 +1,5 @@
+{"_fixture": "SYNTHETIC: hand-written for tests, not a captured payload",
+ "hook_event_name": "PostToolUse", "tool_name": "Agent", "tool_use_id": "toolu_01SyntheticSpawn0001",
+ "session_id": "synthetic-session", "cwd": "/fictional/worktree",
+ "tool_input": {"subagent_type": "fulcrumaxe:executor", "prompt": "SECRETPROMPT do the thing"},
+ "tool_response": {"status": "async_launched", "agentId": "agentsyn1", "content": "SECRETRESULT text"}}
