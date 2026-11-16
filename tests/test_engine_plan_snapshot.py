@@ -1,4 +1,5 @@
 """engine-plan-snapshot.py: PLAN items, roadmap rows, chunking and the closed shapes."""
+import importlib.util
 import json
 import os
 import re
@@ -98,3 +99,13 @@ def test_nothing_to_snapshot_is_not_an_error(tmp_path):
     (root / ".autonomous-team").mkdir(parents=True)
     r = run(root, tmp_path / "state")
     assert r.returncode == 0 and not os.path.exists(tmp_path / "state" / "engine-events.jsonl")
+
+
+def test_chunks_keep_the_items_list_under_the_protocol_cap():
+    snap = importlib.util.spec_from_file_location("engine_plan_snapshot", SNAP)
+    mod = importlib.util.module_from_spec(snap)
+    snap.loader.exec_module(mod)
+    items = [{"discussion": n, "ordinal": n, "state": "planned"} for n in range(1, 701)]
+    out = mod.chunks("2026-11-16", items, [])
+    assert len(out) >= 3 and all(len(c["items"]) <= 300 for c in out)
+    assert sum(len(c["items"]) for c in out) == 700

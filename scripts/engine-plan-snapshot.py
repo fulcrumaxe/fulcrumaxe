@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib
 import engine_emit  # noqa: E402
 
 MAX_ROWS, MAX_BYTES, MAX_CHUNKS = 500, 60000, 100
+MAX_ITEMS = 300  # the shared protocol caps the items list of one chunk lower than the roadmap list
 CURSOR = "engine-plan-cursor.json"
 ALL = engine_emit.load_schema()["$defs"]
 DEFS = ALL["plan_snapshot"]["properties"]
@@ -66,7 +67,7 @@ def chunks(plan_date, items, rows):
     for part, x in pending:
         cur[part].append(x)
         size = len(json.dumps(cur, separators=(",", ":")))
-        if len(cur["items"]) + len(cur["roadmap"]) > MAX_ROWS or size > MAX_BYTES:
+        if len(cur["items"]) + len(cur["roadmap"]) > MAX_ROWS or len(cur["items"]) > MAX_ITEMS or size > MAX_BYTES:
             cur[part].pop()
             out.append(cur)
             cur = {"items": [], "roadmap": []}

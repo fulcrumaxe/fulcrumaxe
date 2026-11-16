@@ -77,12 +77,17 @@
     "safeint": {
       "type": "integer",
       "minimum": 0,
-      "maximum": 9007199254740991
+      "maximum": 2147483647
+    },
+    "seconds": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 2678400
     },
     "posint": {
       "type": "integer",
       "minimum": 1,
-      "maximum": 9007199254740991
+      "maximum": 2147483647
     },
     "tokens": {
       "type": "integer",
@@ -149,7 +154,6 @@
         "mission-analyst",
         "docs-writer",
         "debater",
-        "explore",
         "other"
       ]
     },
@@ -170,7 +174,6 @@
         "mission-analyst",
         "docs-writer",
         "debater",
-        "explore",
         "team-lead",
         "other"
       ]
@@ -317,7 +320,7 @@
           "$ref": "#/$defs/posint"
         },
         "duration_s": {
-          "$ref": "#/$defs/safeint"
+          "$ref": "#/$defs/seconds"
         },
         "model": {
           "$ref": "#/$defs/model_id"
@@ -631,7 +634,7 @@
           ]
         },
         "duration_s": {
-          "$ref": "#/$defs/safeint"
+          "$ref": "#/$defs/seconds"
         }
       }
     },
@@ -766,7 +769,7 @@
           "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
         },
         "snapshot_id": {
-          "$ref": "#/$defs/hex16"
+          "$ref": "#/$defs/agent_id"
         },
         "chunk_index": {
           "$ref": "#/$defs/safeint"
@@ -778,7 +781,7 @@
         },
         "items": {
           "type": "array",
-          "maxItems": 500,
+          "maxItems": 300,
           "items": {
             "type": "object",
             "additionalProperties": false,
@@ -815,7 +818,6 @@
             "additionalProperties": false,
             "required": [
               "row_key",
-              "discussion",
               "status",
               "planned_prs"
             ],
@@ -1099,7 +1101,7 @@
           ]
         },
         "duration_s": {
-          "$ref": "#/$defs/safeint"
+          "$ref": "#/$defs/seconds"
         }
       }
     },
@@ -1148,7 +1150,7 @@
           ]
         },
         "duration_s": {
-          "$ref": "#/$defs/safeint"
+          "$ref": "#/$defs/seconds"
         },
         "model": {
           "$ref": "#/$defs/model_id"

@@ -1,0 +1,14 @@
+{
+  "v": 1,
+  "engine_instance_id": "0b9b3a52-6c1e-4c53-9d5f-1f3f2a6f7a10",
+  "seq": 0,
+  "ts": "2026-11-16T15:00:00.000Z",
+  "kind": "agent_started",
+  "spawn_id": "toolu_01AbC",
+  "role": "executor",
+  "discussion": 842,
+  "background": true,
+  "isolation": "worktree",
+  "model": "claude-sonnet-5-5",
+  "prompt": "do it"
+}

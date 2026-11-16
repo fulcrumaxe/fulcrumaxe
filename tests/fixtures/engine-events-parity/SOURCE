@@ -1,0 +1,4 @@
+repo: fulcrumaxe/fulcrumaxe-cloud (code plane, PR #991)
+branch: engine-bridge-eb1-protocol
+sha: 6d9f91cb44cc13c4235cbcd79145033e9a03f3c1
+path: packages/runner-protocol/test/fixtures/engine-events/
