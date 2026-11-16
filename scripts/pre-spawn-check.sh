@@ -788,6 +788,46 @@ if [[ -n "$DISCUSSION" && "$DRY_RUN" != "1" ]]; then
   fi
 fi
 
+# ── 2c. Cloud decide gate (engine bridge) ─────────────────────────────────────
+# With cloud_bridge.operate true in config.json, the cloud must answer act or announce (decide
+# engine_spawn, keyed on this spawn's --event-id) before anything below registers a slot or loads
+# context. ask / halted / unreachable are hard blocks, exit 1, with spawn_blocked reason cloud_denied /
+# halted / cloud_unreachable (the gate emits the engine event). Skipped in dry-run (a decide raises a
+# receipt or an ask in the cloud). With operate off or absent it does nothing.
+if [[ "$DRY_RUN" != "1" ]] && { [[ -f "$SCRIPT_DIR/lib/cloud-spawn-gate.sh" ]] || \
+   grep -qE '"operate"[[:space:]]*:[[:space:]]*(true|"|[^f[:space:]])' "$REPO_ROOT/.autonomous-team/config.json" 2>/dev/null; }; then
+  _CG_RC=0
+  if [[ -f "$SCRIPT_DIR/lib/cloud-spawn-gate.sh" ]]; then
+    # shellcheck source=scripts/lib/cloud-spawn-gate.sh
+    source "$SCRIPT_DIR/lib/cloud-spawn-gate.sh"
+    _CG_ARGS=(check --role "$ROLE" --spawn-id "$EVENT_ID_ARG")
+    [[ -n "$DISCUSSION" ]] && _CG_ARGS+=(--discussion "$DISCUSSION")
+    [[ -n "${FX_ENGINE_COMMAND_ID:-}" ]] && _CG_ARGS+=(--command-id "$FX_ENGINE_COMMAND_ID")
+    _CG_OUT="$(cloud_spawn_gate "$REPO_ROOT" "${_CG_ARGS[@]}")" || _CG_RC=$?
+  else
+    echo "cloud unreachable; spawn refused (fail-closed)" >&2   # gate library missing, operate asked for
+    _CG_RC=5
+  fi
+  case "$_CG_RC" in
+    0)
+      if [[ "$_CG_OUT" == announce* ]]; then
+        bash "$SCRIPT_DIR/rotate-team-log.sh" comment \
+          "[$(date +%H:%M)] team-lead: spawn of $ROLE going ahead under the cloud's announce (${_CG_OUT#announce })" \
+          2>/dev/null || true
+      fi
+      ;;
+    *)
+      case "$_CG_RC" in 3) _CG_REASON="cloud_denied" ;; 4) _CG_REASON="halted" ;; *) _CG_REASON="cloud_unreachable" ;; esac
+      echo "ERROR: blocked_reason=$_CG_REASON — the cloud decide gate refused the spawn of $ROLE (exit $_CG_RC)." >&2
+      emit_spawn_block "$_CG_REASON" "cloud decide gate refused (exit $_CG_RC)" '{}'
+      bash "$SCRIPT_DIR/rotate-team-log.sh" comment \
+        "[$(date +%H:%M)] team-lead: cloud decide gate refused spawn of $ROLE (${_CG_REASON})" \
+        2>/dev/null || true
+      exit 1
+      ;;
+  esac
+fi
+
 # ── 3. Context load (project context, agent memory, gate context) ─────────────
 # Always load context (needed for JSON output); side effects gated on DRY_RUN
 _load_context() {

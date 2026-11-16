@@ -23,7 +23,9 @@ UUID_A = "11111111-1111-4111-8111-111111111111"
 UUID_B = "22222222-2222-4222-8222-222222222222"
 KEY_RE = re.compile(r"[A-Za-z0-9:_-]{1,128}")
 TYPES = {"engine_spawn", "engine_merge", "engine_spec_ready"}
-SUBJECT_KEYS = {"discussion", "pr", "role", "head_sha", "tag"}
+ROLES = {"executor", "code-reviewer", "security-reviewer", "acceptance-tester", "browser-tester", "project-manager",
+         "technical-architect", "product-owner", "cost-analyst", "performance-expert", "security-expert", "other"}
+SUBJECT_KEYS ={"discussion", "pr", "role", "head_sha", "tag"}
 
 
 def reply_body(disposition, receipt=UUID_A, ask=None, answered=None, halted=False):
@@ -91,6 +93,10 @@ def validate_request(method, path, headers, raw):
             return "subject " + k
     if "head_sha" in s and not re.fullmatch(r"[0-9a-f]{40}", str(s["head_sha"])):
         return "subject head_sha"
+    if "tag" in s and s["tag"] not in {"feature", "critical", "small", "bug", "doc", "process", "other"}:
+        return "subject tag"
+    if "role" in s and s["role"] not in ROLES:
+        return "subject role"
     return None
 
 
