@@ -494,7 +494,7 @@ class RealGitHubClient(GitHubClient):
         query = (
             "query($owner:String!,$name:String!,$number:Int!){ "
             "repository(owner:$owner,name:$name){ discussion(number:$number){ "
-            "id body } } }"
+            "id title body } } }"
         )
         out = self._run(
             [
@@ -507,7 +507,7 @@ class RealGitHubClient(GitHubClient):
         )
         data = json.loads(out)
         disc = data["data"]["repository"]["discussion"]
-        return {"id": disc["id"], "body": disc.get("body") or ""}
+        return {"id": disc["id"], "title": disc.get("title") or "", "body": disc.get("body") or ""}
 
     def list_comments(self, repo: str, number: int) -> list[dict]:
         owner, name = repo.split("/", 1)
@@ -600,7 +600,72 @@ def _process_comment(text: str, role: str, discussion, client: GitHubClient, rep
     return _outcome_row(agent_id, role, discussion, "comment", sha, "posted")
 
 
-def _process_body(text: str, role: str, discussion, client: GitHubClient, repo: str, sha: str, agent_id: str) -> dict:
+def _operate_maybe_on(repo_root) -> bool:
+    """Used only when the cloud gate could not run: True unless config.json plainly has no operate switch on."""
+    try:
+        cfg = json.loads((Path(repo_root) / ".autonomous-team" / "config.json").read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError):
+        return True
+    bridge = cfg.get("cloud_bridge") if isinstance(cfg, dict) else None
+    return bool(bridge) and (not isinstance(bridge, dict) or bridge.get("operate", False) is not False)
+
+
+_SPEC_GATE_REASONS = {3: "cloud_ask", 4: "cloud_halted", 5: "cloud_unreachable"}
+
+
+def _first_time_held(discussion, text: str, code: int) -> bool:
+    """True the first time this exact Spec text is held for this reason, so a file that stays in the outbox
+    does not add a team-log line on every Stop event. Any error counts as first time (log rather than hide)."""
+    try:
+        marks = Path(state_paths.AUDIT_LOG).parent / "spec-gate-held"
+        marks.mkdir(parents=True, exist_ok=True)
+        name = "%s-%s-%s" % (discussion, hashlib.sha256(text.encode("utf-8")).hexdigest()[:16], code)
+        fd = os.open(str(marks / name), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        os.close(fd)
+        return True
+    except FileExistsError:
+        return False
+    except Exception:
+        return True
+
+
+def _cloud_spec_ready_gate(repo_root, discussion, title: str, text: str) -> Optional[str]:
+    """EB-10b: with cloud_bridge.operate true the cloud must say act or announce (decide engine_spec_ready,
+    keyed on the Spec text, tag from the title prefix) before a Spec is flipped to SPEC_READY. Returns a
+    refusal reason, or None to go ahead. Operate off or absent: always None. Fails closed otherwise."""
+    code, msg = 5, "cloud unreachable; Spec not flipped (fail-closed)"
+    try:
+        import importlib.util  # noqa: PLC0415
+        path = Path(repo_root) / "scripts" / "lib" / "cloud_engine_gate.py"
+        spec = importlib.util.spec_from_file_location("cloud_engine_gate", str(path))
+        mod = importlib.util.module_from_spec(spec)
+        sys.path.insert(0, str(path.parent))
+        try:
+            spec.loader.exec_module(mod)
+        finally:
+            sys.path.remove(str(path.parent))
+        code, msg, _reply = mod.gate_spec_ready(str(repo_root), discussion, title, text)
+    except Exception:
+        if not _operate_maybe_on(repo_root):
+            return None
+    if code == 0:
+        return None
+    if _first_time_held(discussion, text, code):
+        try:
+            subprocess.run(
+                ["timeout", "10", "bash", str(Path(repo_root) / "scripts" / "rotate-team-log.sh"), "comment",
+                 f"[spec-gate] D#{discussion} stays at its current status: {msg}"],
+                stdin=subprocess.DEVNULL, capture_output=True, timeout=15,
+            )
+        except Exception:
+            pass
+    return _SPEC_GATE_REASONS.get(code, "cloud_unreachable")
+
+
+def _process_body(text: str, role: str, discussion, client: GitHubClient, repo: str, sha: str, agent_id: str,
+                  repo_root=None) -> dict:
     try:
         disc = client.get_discussion(repo, discussion)
     except Exception:
@@ -613,6 +678,15 @@ def _process_body(text: str, role: str, discussion, client: GitHubClient, repo: 
     reason = _check_body_guards(current_body, text)
     if reason:
         return _refused_row(agent_id, role, discussion, "body", sha, reason)
+
+    # The flip itself: a body whose phase becomes SPEC_READY from some other phase (EB-10b).
+    if _parse_status_line(text.splitlines()[0])[0] == "SPEC_READY" \
+            and _parse_status_line((current_body.splitlines() or [""])[0])[0] != "SPEC_READY":
+        # No repo root means the cloud gate cannot run, and whether operate is on cannot be known: refuse.
+        reason = "cloud_unreachable" if repo_root is None else \
+            _cloud_spec_ready_gate(repo_root, discussion, disc.get("title") or "", text)
+        if reason:
+            return _refused_row(agent_id, role, discussion, "body", sha, reason)
 
     try:
         client.update_body(repo, discussion, text)
@@ -631,6 +705,7 @@ def _process_one_file(
     identity_reason: Optional[str],
     client: GitHubClient,
     repo: str,
+    repo_root=None,
 ) -> dict:
     content, reason = _validate_outbox_file(path, worktree_root)
     if reason:
@@ -658,7 +733,7 @@ def _process_one_file(
     if kind == "comment":
         row = _process_comment(text, role, discussion, client, repo, sha, agent_id)
     else:
-        row = _process_body(text, role, discussion, client, repo, sha, agent_id)
+        row = _process_body(text, role, discussion, client, repo, sha, agent_id, repo_root)
 
     if row["outcome"] in ("posted", "duplicate"):
         _move_to_sent(path.parent, path, sha)
@@ -720,7 +795,7 @@ def process_stop_event(payload: dict, repo_root, client: Optional[GitHubClient] 
 
     rows = []
     for kind, path in present:
-        row = _process_one_file(kind, path, Path(cwd), agent_id, identity_entry, identity_reason, client, repo)
+        row = _process_one_file(kind, path, Path(cwd), agent_id, identity_entry, identity_reason, client, repo, repo_root)
         _append_audit(row)
         rows.append(row)
     return rows
