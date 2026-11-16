@@ -1,0 +1,6 @@
+{"_fixture": "SYNTHETIC: hand-written for tests, not a captured payload",
+ "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_use_id": "toolu_01SyntheticSpawn0001",
+ "session_id": "synthetic-session", "cwd": "/fictional/worktree",
+ "tool_input": {"subagent_type": "fulcrumaxe:executor", "description": "SECRETDESC build the thing",
+  "prompt": "SECRETPROMPT implement the widget for Discussion #4321 then stop. See D#99.",
+  "run_in_background": true, "isolation": "worktree", "model": "sonnet"}}

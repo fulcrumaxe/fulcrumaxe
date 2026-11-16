@@ -235,6 +235,14 @@ else
   unset _ID_ROLE _ID_DISC
 fi
 
+# ── 3a. Engine bridge: agent_stopped (facts only; never changes this hook's exit status) ──
+# A dry run (tests) with no state dir of its own would write into the real one: skip it then.
+[[ "${SUBAGENT_STOP_DRY_RUN:-0}" == "1" && -z "${AUTONOMOUS_TEAM_STATE_DIR:-}" ]] && AGENT_ID_EMIT="" || AGENT_ID_EMIT="$AGENT_ID"
+[[ -n "$AGENT_ID_EMIT" ]] && timeout 10 python3 "$SCRIPT_DIR/lib/engine_agent_events.py" stopped \
+  --agent-id "$AGENT_ID" --role "$ROLE" --verdict "$VERDICT" --discussion "${DISCUSSION:-}" --pr "${PR:-}" \
+  --transcript "${TRANSCRIPT_PATH:-}" --session "$SESSION_ID" --repo-root "$REPO_ROOT" \
+  >/dev/null 2>&1 </dev/null || true
+
 # ── 3b. Drop pure-noise rows (unknown:unknown with no spawn context) ──────────
 # Task-tool sub-agents, native sub-spawns, and the parent Team Lead session all
 # fire SubagentStop without embedding a hook_event_id or AGENT_OUTPUT envelope.
