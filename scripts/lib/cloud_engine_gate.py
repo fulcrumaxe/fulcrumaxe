@@ -51,6 +51,14 @@ def tag_of_title(title):
     return t if t in cd.TAGS and t != "other" else "other"
 
 
+def _operate_on(repo_root):
+    """True when the cloud gate applies; a config that cannot be read counts as on (fail closed)."""
+    try:
+        return cd.operate_enabled(cd.load_bridge(repo_root))
+    except cd.Refused:
+        return True
+
+
 def _emit_blocked(repo_root, role, discussion, reason):
     cmd = ["timeout", "10", "bash", os.path.join(repo_root, "scripts", "engine-emit.sh"), "spawn_blocked",
            "--role", role, "--reason", reason]
@@ -82,9 +90,7 @@ def gate_spawn(repo_root, role_raw, discussion, spawn_id, command_id=None, engin
         key = spawn_key(role_raw, disc, spawn_id)
         if key is None:
             # No usable spawn id: with operate off nothing is asked or refused; with it on this is a refusal.
-            _c, outcome, reply = cd.decide(repo_root, "engine_spawn", "spawn:none", {}, None)
-            code = cd.EXIT_ACT if outcome == "off" else cd.EXIT_UNREACHABLE
-            reply = None
+            code, reply = (cd.EXIT_UNREACHABLE if _operate_on(repo_root) else cd.EXIT_ACT), None
         else:
             code, _o, reply = cd.decide(repo_root, "engine_spawn", key, {"role": role, "discussion": disc}, command_id)
     except BaseException:
@@ -121,8 +127,9 @@ def _hook(repo_root):
     ti = payload.get("tool_input") if isinstance(payload, dict) else None
     if not isinstance(ti, dict) or payload.get("tool_name") not in ("Agent", "Task"):
         # Not a spawn we can describe. Only a configured gate may refuse it.
-        code, outcome, _r = cd.decide(repo_root, "engine_spawn", "spawn:none", {}, None)
-        return (cd.EXIT_ACT if outcome == "off" else cd.EXIT_UNREACHABLE), "", None
+        if _operate_on(repo_root):
+            return cd.EXIT_UNREACHABLE, "cloud unreachable; spawn refused (fail-closed)", None
+        return cd.EXIT_ACT, "", None
     prompt = ti.get("prompt") if isinstance(ti.get("prompt"), str) else ""
     trailers = TRAILER.findall(prompt)
     sid = trailers[-1] if trailers else payload.get("tool_use_id")
