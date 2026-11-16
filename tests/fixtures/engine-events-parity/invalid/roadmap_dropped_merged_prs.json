@@ -1,0 +1,26 @@
+{
+  "v": 1,
+  "engine_instance_id": "0b9b3a52-6c1e-4c53-9d5f-1f3f2a6f7a10",
+  "seq": 0,
+  "ts": "2026-11-16T15:00:00.000Z",
+  "kind": "plan_snapshot",
+  "snapshot_id": "snap01",
+  "chunk_index": 0,
+  "chunk_count": 1,
+  "plan_date": "2026-11-16",
+  "items": [
+    {
+      "discussion": 842,
+      "ordinal": 1,
+      "state": "in_progress"
+    }
+  ],
+  "roadmap": [
+    {
+      "row_key": "EB-1",
+      "status": "done",
+      "planned_prs": 1,
+      "merged_prs": 1
+    }
+  ]
+}

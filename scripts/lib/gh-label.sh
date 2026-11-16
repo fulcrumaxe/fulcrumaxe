@@ -146,6 +146,26 @@ _gh_label_graphql_mutate() {
   return $rc
 }
 
+# _gh_label_emit_gate <pr> <label>: a review-gate label as a gate_receipt event; other labels
+# are a no-op. Best effort. A label applied twice emits twice (the reader de-duplicates).
+_gh_label_emit_gate() {
+  local pr="$1" label="$2" gate result sha
+  case "$label" in
+    code-review-passed)       gate=code_review;     result=pass ;;
+    code-review-needs-fix)    gate=code_review;     result=fail ;;
+    security-review-passed)   gate=security_review; result=pass ;;
+    security-needs-fix|security-review-needs-fix|security-issue) gate=security_review; result=fail ;;
+    acceptance-passed)        gate=acceptance;      result=pass ;;
+    acceptance-failed)        gate=acceptance;      result=fail ;;
+    browser-test-passed)      gate=browser;         result=pass ;;
+    *) return 0 ;;
+  esac
+  sha=$(gh pr view "$pr" --repo "$_GH_LABEL_REPO" --json headRefOid --jq .headRefOid 2>/dev/null || true)
+  [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || return 0
+  timeout 10 bash "$(dirname "${BASH_SOURCE[0]}")/../engine-emit.sh" gate_receipt --pr "$pr" --gate "$gate" \
+    --result "$result" --head-sha "$sha" >/dev/null 2>&1 || true
+}
+
 # apply_label <pr_number> <label>
 # Adds a label to a PR/issue. REST outside a worktree, GraphQL inside one.
 # Returns the real exit status either way — a nonexistent label is a
@@ -159,8 +179,10 @@ apply_label() {
   _gh_label_require_repo || return 1
 
   if _gh_label_in_worktree; then
-    _gh_label_graphql_mutate "addLabelsToLabelable" "$pr" "$label"
-    return $?
+    local wrc=0
+    _gh_label_graphql_mutate "addLabelsToLabelable" "$pr" "$label" || wrc=$?
+    [[ $wrc -eq 0 ]] && _gh_label_emit_gate "$pr" "$label"
+    return $wrc
   fi
 
   local out rc
@@ -168,6 +190,8 @@ apply_label() {
   rc=$?
   if [[ $rc -ne 0 ]]; then
     echo "apply_label: failed to add '${label}' to #${pr}: ${out}" >&2
+  else
+    _gh_label_emit_gate "$pr" "$label"
   fi
   return $rc
 }

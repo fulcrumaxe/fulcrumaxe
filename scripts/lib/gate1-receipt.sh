@@ -171,3 +171,15 @@ PYEOF
 
   printf '%s\n' "$path"
 }
+
+# gate1_receipt_emit PR SHA RC HAVE_MANIFEST: Gate 1 outcome as a gate_receipt event
+# (pass, fail, or error without a manifest). Never fails its caller.
+gate1_receipt_emit() {
+  local pr="${1:-}" sha="${2:-}" rc="${3:-1}" have_manifest="${4:-false}" result=error
+  gate1_receipt_validate_sha "$sha" || return 0
+  if [ "$have_manifest" = "true" ]; then
+    if [ "$rc" = "0" ]; then result=pass; else result=fail; fi
+  fi
+  timeout 10 bash "$(dirname "${BASH_SOURCE[0]}")/../engine-emit.sh" gate_receipt --pr "$pr" --gate gate1 \
+    --result "$result" --head-sha "$sha" >/dev/null 2>&1 || true
+}

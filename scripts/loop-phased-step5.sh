@@ -533,8 +533,12 @@ except Exception:
 # -----------------------------------------------------------------------
 _apply_label() {
   local pr="$1" label="$2"
-  gh api -X POST "repos/"$_CODE_REPO"/issues/${pr}/labels" \
-    -f "labels[]=${label}" 2>/dev/null || true
+  if gh api -X POST "repos/"$_CODE_REPO"/issues/${pr}/labels" \
+    -f "labels[]=${label}" 2>/dev/null; then
+    # Engine bridge: a review-gate label is also a gate_receipt event (no-op for any other label).
+    if declare -F _gh_label_emit_gate >/dev/null; then _gh_label_emit_gate "$pr" "$label" || true; fi
+  fi
+  return 0
 }
 
 # -----------------------------------------------------------------------

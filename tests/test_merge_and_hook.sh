@@ -468,6 +468,37 @@ assert_exit "test2: exit code is 0" 0 "$RC"
 unset TWO_GATE_PR_BODY_999
 rm -rf "$T2"
 
+# ── Test 2b: the lane is reported as closed-shape engine events ───────────────
+# The real wrapper and the real emitter, copied into the fixture tree. A broken
+# emitter (ENGINE_EMIT_FORCE_FAIL) must not change the wrapper's exit code.
+echo "Test 2b: merge lane events (queued, merged) and an emitter failure changes nothing"
+T2B=$(mktemp -d)
+setup_stubs "$T2B" 0
+mkdir -p "$T2B/schemas"
+cp "$REPO_ROOT/scripts/engine-emit.sh" "$T2B/scripts/engine-emit.sh"
+cp "$REPO_ROOT/scripts/lib/engine_emit.py" "$T2B/scripts/lib/engine_emit.py"
+cp "$REPO_ROOT/scripts/lib/state-dir.sh" "$T2B/scripts/lib/state-dir.sh"
+cp "$REPO_ROOT/schemas/engine-events.v1.json" "$T2B/schemas/engine-events.v1.json"
+export TWO_GATE_PR_BODY_999="Gate 1: PASS\nGate 2: PASS"
+run_script "$T2B" --pr 999 > "$T2B/out.txt" 2>&1
+RC=$?
+assert_exit "test2b: exit code is 0" 0 "$RC"
+LANES=$(python3 -c "
+import json,sys
+for l in open(sys.argv[1]):
+    e=json.loads(l)
+    print(e['kind'], e.get('state'), e.get('pr'), e.get('discussion'))" "$T2B/state/engine-events.jsonl" 2>&1)
+assert_contains "test2b: queued lane event" "merge_lane queued 999 4200" "$LANES"
+assert_contains "test2b: merged lane event" "merge_lane merged 999 4200" "$LANES"
+rm -f "$T2B/state/engine-events.jsonl" "$T2B/state/engine-instance.json"
+ENGINE_EMIT_FORCE_FAIL=1 run_script "$T2B" --pr 999 > "$T2B/out.txt" 2>&1
+RC=$?
+assert_exit "test2b: exit code is 0 with the emitter failing" 0 "$RC"
+assert_contains "test2b: merge still happened" "PR #999 merged." "$(cat "$T2B/out.txt")"
+[[ ! -e "$T2B/state/engine-events.jsonl" ]] && pass "test2b: failing emitter wrote nothing" || fail "test2b: failing emitter wrote nothing" "file exists"
+unset TWO_GATE_PR_BODY_999
+rm -rf "$T2B"
+
 # ── Test 3: hook exits 42 — exit code propagates exactly ─────────────────────
 echo "Test 3: hook exits 42 — arbitrary non-zero exit propagates"
 T3=$(mktemp -d)

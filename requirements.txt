@@ -65,3 +65,6 @@ pytest-asyncio>=0.24.0
 # hang to the wrong test (D#2441). Lower bound is the version actually resolved
 # on the measuring host: pytest-timeout 2.4.0.
 pytest-timeout>=2.4.0
+# Engine event schema parity: tests/test_engine_events_parity.py checks fixtures against
+# schemas/engine-events.v1.json with a real validator (D#842).
+jsonschema>=4.23.0,<5
