@@ -464,8 +464,78 @@ function _ghMerge(prArgs: string[]): number {
     timeout: 60_000,
     encoding: "utf-8",
     stdio: "inherit",
+    env: process.env,
   });
   return r.status ?? 1;
+}
+
+// ---------------------------------------------------------------------------
+// EB-10e: the cloud gate before the loop's own squash-merge.
+// Same decision as scripts/lib/cloud-merge-gate.sh (decide engine_merge, key
+// merge:<pr>:<head sha>), reached through that helper so bash and TypeScript cannot
+// answer differently. Exit: 0 go ahead, 3 ask, 4 halted, 5 cloud unusable (fail closed).
+// With cloud_bridge.operate false or absent in .autonomous-team/config.json the
+// helper returns 0 and nothing else happens.
+// ---------------------------------------------------------------------------
+
+const _OPERATE_ON_RE = /"operate"[ \t\r\n]*:[ \t\r\n]*(true|"|[^f \t\r\n])/;
+
+// Resolved per call (not at import) so a test can point it at a throwaway tree.
+function _gateRoot(): string {
+  return process.env["AF_REPO_ROOT"] ?? REPO_ROOT;
+}
+
+/** True when config.json asks for the cloud gate (operate present and not plainly false). */
+export function cloudOperateOn(): boolean {
+  try {
+    return _OPERATE_ON_RE.test(readFileSync(join(_gateRoot(), ".autonomous-team", "config.json"), "utf-8"));
+  } catch {
+    return false;
+  }
+}
+
+/** Ask the cloud whether this PR's head may be merged. Never throws; anything unusable is 5. */
+export function cloudMergeGate(pr: number, sha: string, discNum?: number): number {
+  const root = _gateRoot();
+  const helper = join(root, "scripts", "lib", "cloud-merge-gate.sh");
+  if (!existsSync(helper)) {
+    // The helper is missing but the config asks for the gate: refuse rather than skip it.
+    return cloudOperateOn() ? 5 : 0;
+  }
+  const disc = discNum !== undefined && discNum > 0 ? String(discNum) : "";
+  const r = spawnSync(
+    "bash",
+    ["-c", 'source "$1" && cloud_merge_gate "$2" "$3" "$4"', "_", helper, String(pr), sha, disc],
+    {
+      timeout: 45_000,
+      encoding: "utf-8",
+      stdio: "inherit",
+      env: { ...process.env, CLOUD_MERGE_GATE_ROOT: root },
+    }
+  );
+  const rc = r.status;
+  return rc === 0 || rc === 3 || rc === 4 ? rc : 5;
+}
+
+/**
+ * The merging phase's merge: cloud gate first, then gh pr merge. With operate on, the
+ * decision is made on the live head and the merge is pinned to that same head
+ * (--match-head-commit), as the bash step5 does. Returns the merge exit code, or the
+ * gate's (3/4/5) when the cloud refused, in which case gh is never run.
+ */
+export function mergeGated(prNum: number, discNum: number): number {
+  const args = [String(prNum), "--squash", "--delete-branch", "--repo", _CODE_REPO];
+  let sha = "";
+  if (cloudOperateOn()) {
+    sha = _prHeadSha(prNum);
+    if (sha) args.push("--match-head-commit", sha);
+  }
+  const gateRc = cloudMergeGate(prNum, sha, discNum);
+  if (gateRc !== 0) {
+    _log(`D#${discNum} PR#${prNum}: cloud decide refused the merge (exit ${gateRc}: 3 ask, 4 halted, 5 unusable) — stays in merging; next iteration asks again`);
+    return gateRc;
+  }
+  return _ghMerge(args);
 }
 
 // ---------------------------------------------------------------------------
@@ -582,7 +652,7 @@ function _prHeadSha(pr: number): string {
   const r = spawnSync(
     "gh",
     ["pr", "view", String(pr), "--repo", _CODE_REPO, "--json", "headRefOid", "--jq", ".headRefOid"],
-    { timeout: 20_000, encoding: "utf-8" }
+    { timeout: 20_000, encoding: "utf-8", env: process.env }
   );
   return (r.stdout ?? "").trim();
 }
@@ -1412,12 +1482,7 @@ function _phaseB_specReady(codeReviewGate: boolean): void {
           } else {
             _log(`D#${discNum} PR#${prNum}: all gate labels present — merging`);
 
-            const mergeRc = _ghMerge([
-              String(prNum),
-              "--squash",
-              "--delete-branch",
-              "--repo", _CODE_REPO,
-            ]);
+            const mergeRc = mergeGated(prNum, discNum);
 
             if (mergeRc === 0) {
               _log(`D#${discNum} PR#${prNum}: merged successfully`);
