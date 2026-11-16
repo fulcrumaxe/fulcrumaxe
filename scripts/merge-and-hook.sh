@@ -71,6 +71,13 @@
 # 5. Tees hook output to .autonomous-team/dashboard-logs/manual-merge-<PR>.log.
 # 6. Exits with the hook's exit code so callers can detect failure.
 #
+# 3b. Cloud decide gate (engine bridge): with cloud_bridge.operate true in
+#    .autonomous-team/config.json, scripts/hooks/pre-merge.d/cloud-decide.sh asks the
+#    cloud (decide engine_merge, request_key merge:<pr>:<head sha>) right before each
+#    squash-merge attempt. act / announce proceed; ask exits 3, halted exits 4, and an
+#    unreachable, slow or malformed answer exits 5 with no merge (fail closed). Every
+#    refusal reports the merge lane as `refused`. With operate false or absent: no change.
+#
 # This ensures that manual merges by Team Lead always run the same post-merge
 # bookkeeping (stats, team-log, wiki sync, etc.) as the loop auto-merge path.
 #
@@ -635,6 +642,27 @@ fi
 # Engine bridge: lane states as closed-shape events. Never changes this script's exit status.
 _engine_lane() { timeout 10 bash "$SCRIPT_DIR/engine-emit.sh" merge_lane --pr "$PR" --state "$1" ${_RESOLVED_DISC:+--discussion "$_RESOLVED_DISC"} >/dev/null 2>&1 || true; }
 _engine_lane queued
+
+# Engine bridge: with cloud_bridge.operate true the cloud must say act or announce for THIS head
+# before the squash-merge (scripts/hooks/pre-merge.d/cloud-decide.sh). Exit 3 ask, 4 halted, 5 cloud
+# unreachable or unusable. Anything else from the hook counts as 5: this gate fails closed.
+# With operate false or absent it changes nothing.
+_cloud_decide_gate() {
+  local hook="$SCRIPT_DIR/hooks/pre-merge.d/cloud-decide.sh" rc=0
+  if [[ -f "$hook" ]]; then
+    bash "$hook" --pr "$PR" --head-sha "$_MERGE_SHA" ${_RESOLVED_DISC:+--discussion "$_RESOLVED_DISC"} || rc=$?
+    [[ "$rc" -eq 0 || "$rc" -eq 3 || "$rc" -eq 4 ]] || rc=5
+  elif grep -qE '"operate"[[:space:]]*:[[:space:]]*(true|"|[^f[:space:]])' "$REPO_ROOT/.autonomous-team/config.json" 2>/dev/null; then
+    # The hook is missing but the config asks for the cloud gate: refuse rather than skip it.
+    echo "cloud unreachable; merge refused (fail-closed)" >&2
+    rc=5
+  fi
+  if [[ "$rc" -ne 0 ]]; then
+    echo "[merge-and-hook] cloud decide refused the merge of PR #$PR (exit $rc)." >&2
+    _engine_lane refused
+    exit "$rc"
+  fi
+}
 echo "[merge-and-hook] merging PR #$PR (squash, delete-branch=$([[ "$_DELETE_BRANCH_MODE" == "delete" ]] && echo yes || echo no), sha=$_MERGE_SHA)..."
 # Bounded: at most one 409 re-gate retry (two attempts total), never open-ended.
 _MERGE_OK=false
@@ -646,6 +674,7 @@ for _MERGE_ATTEMPT in 1 2; do
   # D#1614 409 head-moved retry, which used to abort with exit 9 instead.
   # Do NOT replace this with `set +e`; that would disarm the rest of the file.
   _MRC=0
+  _cloud_decide_gate
   ci_merge_sha_pinned "$PR" "$_PR_REPO" "$_MERGE_SHA" "$_DELETE_BRANCH_MODE" || _MRC=$?
   if [[ "$_MRC" -eq 0 ]]; then
     _MERGE_OK=true

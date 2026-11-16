@@ -1893,6 +1893,120 @@ if [[ "$N_BYPASS_FN4" -eq 1 ]]; then pass "FN-4: exactly 1 manual_merge_ci_bypas
 unset TWO_GATE_PR_BODY_999 STUB_PR_FILES STUB_CHECK_DISC_RC STUB_CI_CHECK_RUNS STUB_HEAD_SHA
 rm -rf "$T_FN4"
 
+# ── Tests EBD: the cloud decide gate before the squash-merge (EB-10a) ─────────
+# The real wrapper, the real hook and client, the real emitter, against a fake of the runner's decide socket
+# (testsupport/fake_cloud_decide.py) that enforces the request contract. No real repo, no real state dir.
+EBD_SHA="abcdef0123456789abcdef0123456789abcdef01"
+ebd_setup() {  # $1 tmpdir  $2 mode ("" = no server)  $3 operate (true|false|absent)
+  local t="$1" mode="$2" op="$3"
+  setup_stubs "$t" 0
+  mkdir -p "$t/schemas" "$t/scripts/hooks/pre-merge.d" "$t/.autonomous-team" "$t/run"
+  chmod 700 "$t/run"
+  cp "$REPO_ROOT/scripts/engine-emit.sh" "$t/scripts/engine-emit.sh"
+  cp "$REPO_ROOT/scripts/lib/engine_emit.py" "$REPO_ROOT/scripts/lib/state-dir.sh" "$REPO_ROOT/scripts/lib/cloud_decide.py" "$t/scripts/lib/"
+  cp "$REPO_ROOT/schemas/engine-events.v1.json" "$t/schemas/engine-events.v1.json"
+  cp "$REPO_ROOT/scripts/hooks/pre-merge.d/cloud-decide.sh" "$t/scripts/hooks/pre-merge.d/cloud-decide.sh"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$2" >> "%s/teamlog.txt"\n' "$t" > "$t/scripts/rotate-team-log.sh"
+  case "$op" in
+    absent) echo '{}' > "$t/.autonomous-team/config.json" ;;
+    *) printf '{"cloud_bridge": {"operate": %s, "repo_gh_id": 4242, "socket_path": "%s/run/fx-runner/engine-bridge.sock"}}\n' "$op" "$t" > "$t/.autonomous-team/config.json" ;;
+  esac
+  EBD_PID=""
+  if [[ -n "$mode" ]]; then
+    python3 "$REPO_ROOT/testsupport/fake_cloud_decide.py" --sock "$t/run/fx-runner/engine-bridge.sock" --mode "$mode" --log "$t/server.log" > /dev/null 2>&1 &
+    EBD_PID=$!
+    for _i in $(seq 1 50); do [[ -S "$t/run/fx-runner/engine-bridge.sock" ]] && break; sleep 0.1; done
+  fi
+}
+ebd_run() {  # $1 tmpdir -> sets EBD_RC, EBD_OUT; stops the server
+  local t="$1"
+  export TWO_GATE_PR_BODY_999="Gate 1: PASS\nGate 2: PASS" STUB_HEAD_SHA="$EBD_SHA" STUB_CALL_LOG="$t/calls.log"
+  EBD_OUT=$(run_script "$t" --pr 999 2>&1); EBD_RC=$?
+  unset TWO_GATE_PR_BODY_999 STUB_HEAD_SHA STUB_CALL_LOG
+  [[ -n "${EBD_PID:-}" ]] && kill "$EBD_PID" 2>/dev/null
+  EBD_PID=""
+}
+ebd_lanes() { python3 -c "
+import json,sys
+for l in open(sys.argv[1]):
+    e=json.loads(l)
+    if e['kind']=='merge_lane': print(e['state'])" "$1/state/engine-events.jsonl" 2>/dev/null; }
+ebd_merged() { grep -q "pr merge" "$1/calls.log" 2>/dev/null; }
+# What the fake server saw, as one request body per line.
+ebd_bodies() { python3 -c "
+import json,sys
+for l in open(sys.argv[1]):
+    r=json.loads(l); print(r['violation'], r['body'])" "$1/server.log" 2>/dev/null; }
+
+echo "Test EBD-1: operate false and operate absent — merge unchanged, the cloud is never asked"
+for _op in false absent; do
+  T=$(mktemp -d); ebd_setup "$T" "http_500" "$_op"; ebd_run "$T"
+  assert_exit "EBD-1[$_op]: exit 0" 0 "$EBD_RC"
+  assert_contains "EBD-1[$_op]: merged" "PR #999 merged." "$EBD_OUT"
+  [[ ! -s "$T/server.log" ]] && pass "EBD-1[$_op]: no request reached the server" || fail "EBD-1[$_op]: server was called"
+  rm -rf "$T"
+done
+
+echo "Test EBD-2: act — merge proceeds; the request is the exact decide shape"
+T=$(mktemp -d); ebd_setup "$T" act true; ebd_run "$T"
+assert_exit "EBD-2: exit 0" 0 "$EBD_RC"
+assert_contains "EBD-2: merged" "PR #999 merged." "$EBD_OUT"
+ebd_merged "$T" && pass "EBD-2: gh pr merge was called" || fail "EBD-2: gh pr merge not called"
+assert_contains "EBD-2: no contract violation, exact body" "None {\"repo_gh_id\":4242,\"decision_type\":\"engine_merge\",\"request_key\":\"merge:999:$EBD_SHA\",\"subject\":{\"discussion\":4200,\"pr\":999,\"head_sha\":\"$EBD_SHA\"}}" "$(ebd_bodies "$T")"
+rm -rf "$T"
+
+echo "Test EBD-3: announce — merge proceeds and the team log names the receipt"
+T=$(mktemp -d); ebd_setup "$T" announce true; ebd_run "$T"
+assert_exit "EBD-3: exit 0" 0 "$EBD_RC"
+ebd_merged "$T" && pass "EBD-3: gh pr merge was called" || fail "EBD-3: gh pr merge not called"
+assert_contains "EBD-3: team-log line has the receipt id" "11111111-1111-4111-8111-111111111111" "$(cat "$T/teamlog.txt" 2>/dev/null)"
+rm -rf "$T"
+
+echo "Test EBD-4: ask — no merge, exit 3, lane refused"
+T=$(mktemp -d); ebd_setup "$T" ask true; ebd_run "$T"
+assert_exit "EBD-4: exit 3" 3 "$EBD_RC"
+assert_contains "EBD-4: says who is waited for" "waiting for a person in the cloud (ask 22222222-2222-4222-8222-222222222222)" "$EBD_OUT"
+ebd_merged "$T" && fail "EBD-4: gh pr merge WAS called" || pass "EBD-4: gh pr merge not called"
+assert_contains "EBD-4: lane refused" "refused" "$(ebd_lanes "$T")"
+assert_not_contains "EBD-4: lane never merged" "merged" "$(ebd_lanes "$T")"
+rm -rf "$T"
+
+echo "Test EBD-5: halted — no merge, exit 4, lane refused"
+T=$(mktemp -d); ebd_setup "$T" halted true; ebd_run "$T"
+assert_exit "EBD-5: exit 4" 4 "$EBD_RC"
+ebd_merged "$T" && fail "EBD-5: gh pr merge WAS called" || pass "EBD-5: gh pr merge not called"
+assert_contains "EBD-5: lane refused" "refused" "$(ebd_lanes "$T")"
+rm -rf "$T"
+
+echo "Test EBD-6: local halt file — refused before any socket call"
+T=$(mktemp -d); ebd_setup "$T" act true
+echo '{"halted": true}' > "$T/state/engine-halt.json"
+ebd_run "$T"
+assert_exit "EBD-6: exit 4" 4 "$EBD_RC"
+[[ ! -s "$T/server.log" ]] && pass "EBD-6: socket never called" || fail "EBD-6: socket was called"
+ebd_merged "$T" && fail "EBD-6: gh pr merge WAS called" || pass "EBD-6: gh pr merge not called"
+rm -rf "$T"
+
+echo "Test EBD-7: cloud unreachable, 5xx, malformed — fail closed, exit 5, fixed line, lane refused"
+for _m in "" http_503 not_json extra_key truncated; do
+  T=$(mktemp -d); ebd_setup "$T" "$_m" true; ebd_run "$T"
+  assert_exit "EBD-7[${_m:-no server}]: exit 5" 5 "$EBD_RC"
+  assert_contains "EBD-7[${_m:-no server}]: fixed line" "cloud unreachable; merge refused (fail-closed)" "$EBD_OUT"
+  ebd_merged "$T" && fail "EBD-7[${_m:-no server}]: gh pr merge WAS called" || pass "EBD-7[${_m:-no server}]: gh pr merge not called"
+  assert_contains "EBD-7[${_m:-no server}]: lane refused" "refused" "$(ebd_lanes "$T")"
+  rm -rf "$T"
+done
+
+echo "Test EBD-8: hook file missing or crashing while operate is true — still fails closed"
+T=$(mktemp -d); ebd_setup "$T" act true; rm -f "$T/scripts/hooks/pre-merge.d/cloud-decide.sh"; ebd_run "$T"
+assert_exit "EBD-8: hook missing: exit 5" 5 "$EBD_RC"
+ebd_merged "$T" && fail "EBD-8: hook missing: merged" || pass "EBD-8: hook missing: no merge"
+rm -rf "$T"
+T=$(mktemp -d); ebd_setup "$T" act true; printf '#!/usr/bin/env bash\nexit 1\n' > "$T/scripts/hooks/pre-merge.d/cloud-decide.sh"; ebd_run "$T"
+assert_exit "EBD-8: hook crash (exit 1) becomes exit 5" 5 "$EBD_RC"
+ebd_merged "$T" && fail "EBD-8: hook crash: merged" || pass "EBD-8: hook crash: no merge"
+rm -rf "$T"
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
