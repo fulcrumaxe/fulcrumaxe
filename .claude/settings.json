@@ -102,6 +102,17 @@
           }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $CLAUDE_PROJECT_DIR/scripts/hooks/engine-agent-linked.sh"
+          }
+        ]
+      }
     ]
   },
   "cleanupPeriodDays": 2

@@ -2,6 +2,8 @@
 """engine_agent_events.py: agent_started / agent_stopped engine events from hook payloads.
 
   engine_agent_events.py started                       PreToolUse(Agent|Task) payload on stdin
+  engine_agent_events.py linked                        PostToolUse(Agent|Task) payload on stdin
+  engine_agent_events.py blocked --role R --reason X [--discussion N]
   engine_agent_events.py stopped --agent-id ID --role R --verdict V [--discussion N] [--pr N]
                                  [--transcript P] [--session S] [--repo-root P]
 
@@ -58,6 +60,32 @@ def started(payload):
             "discussion": posint(m.group(1)) if m else None, "model": model_of(ti.get("model"))}
 
 
+AGENT_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+SPAWN_ID = re.compile(r"toolu_[A-Za-z0-9]{1,64}")
+REASONS = {"circuit_breaker", "budget", "planned_prs", "no_spec", "halted", "cloud_denied",
+           "cloud_unreachable", "other"}
+
+
+def linked(payload):
+    """spawn_id (tool_use_id) -> agent_id (from the tool response), or None when either is missing."""
+    if payload.get("tool_name") not in ("Agent", "Task"):
+        return None
+    resp = payload.get("tool_response")
+    resp = resp if isinstance(resp, dict) else {}
+    agent_id = resp.get("agentId") or resp.get("agent_id")
+    spawn_id = payload.get("tool_use_id")
+    if not (isinstance(agent_id, str) and AGENT_ID.fullmatch(agent_id)
+            and isinstance(spawn_id, str) and SPAWN_ID.fullmatch(spawn_id)):
+        return None
+    return {"spawn_id": spawn_id, "agent_id": agent_id}
+
+
+def blocked(a):
+    """A refused spawn: the role and a closed reason code, nothing else."""
+    return {"role": role_of(a.role), "discussion": posint(a.discussion),
+            "reason": a.reason if a.reason in REASONS else "other"}
+
+
 def own_model(path):
     """Model of the last assistant record in the subagent's own transcript, or None."""
     found = None
@@ -104,17 +132,21 @@ def emit(kind, fields):
 
 def main(argv):
     ap = argparse.ArgumentParser()
-    ap.add_argument("which", choices=("started", "stopped"))
-    for n in ("agent-id", "role", "verdict", "discussion", "pr", "transcript", "session", "repo-root"):
+    ap.add_argument("which", choices=("started", "linked", "blocked", "stopped"))
+    for n in ("agent-id", "role", "verdict", "discussion", "pr", "transcript", "session", "repo-root",
+              "reason"):
         ap.add_argument("--" + n, default="")
     a = ap.parse_args(argv)
-    if a.which == "started":
+    if a.which in ("started", "linked"):
         payload = json.load(sys.stdin)
-        fields = started(payload) if isinstance(payload, dict) else None
+        build = started if a.which == "started" else linked
+        fields = build(payload) if isinstance(payload, dict) else None
+    elif a.which == "blocked":
+        fields = blocked(a)
     else:
         fields = stopped(a) if a.agent_id else None
     if fields:
-        emit("agent_" + a.which, fields)
+        emit("spawn_blocked" if a.which == "blocked" else "agent_" + a.which, fields)
 
 
 if __name__ == "__main__":

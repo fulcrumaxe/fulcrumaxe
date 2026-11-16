@@ -8,6 +8,7 @@ import subprocess
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 FIX = os.path.join(ROOT, "tests", "fixtures", "engine_agent_hooks")
 START = os.path.join(ROOT, "scripts", "hooks", "engine-agent-start.sh")
+LINKED = os.path.join(ROOT, "scripts", "hooks", "engine-agent-linked.sh")
 STOP = os.path.join(ROOT, "scripts", "subagent-stop-hook.sh")
 ENVELOPE = {"v", "seq", "ts", "engine_instance_id", "kind"}
 STUB_MSG = "SECRETLAST <!-- AGENT_OUTPUT -->\n```json\n" + json.dumps(
@@ -146,3 +147,50 @@ def test_stop_hook_still_finishes_when_the_emitter_fails(tmp_path):
     assert r.returncode == 0
     assert events(tmp_path) == []
     assert os.path.exists(tmp_path / "args.json")  # the hook's own work still ran
+
+
+def post_payload(**resp):
+    p = json.load(open(os.path.join(FIX, "posttooluse-agent.synthetic.json")))
+    p["tool_response"].update(resp)
+    return p
+
+
+def run_linked(tmp_path, stdin, **env):
+    return subprocess.run(["bash", LINKED], input=stdin, env=base_env(tmp_path, env),
+                          capture_output=True, text=True)
+
+
+def test_linked_ties_the_spawn_id_to_the_agent_id_and_nothing_else(tmp_path):
+    r = run_linked(tmp_path, json.dumps(post_payload()))
+    assert (r.returncode, r.stdout, r.stderr) == (0, "", "")
+    (ev,) = events(tmp_path)
+    assert set(ev) - ENVELOPE == {"spawn_id", "agent_id"}
+    assert (ev["kind"], ev["spawn_id"], ev["agent_id"]) == ("agent_linked", "toolu_01SyntheticSpawn0001", "agentsyn1")
+    assert "SECRET" not in open(tmp_path / "state" / "engine-events.jsonl").read()
+
+
+def test_linked_emits_nothing_without_an_agent_id(tmp_path):
+    p = post_payload()
+    p["tool_response"] = {"status": "completed", "content": "SECRETRESULT"}
+    q = post_payload(agentId="not a valid id!")
+    r2 = post_payload()
+    r2["tool_response"] = "plain string response"
+    r3 = post_payload()
+    r3["tool_name"] = "Bash"
+    for payload_ in (p, q, r2, r3):
+        assert run_linked(tmp_path, json.dumps(payload_)).returncode == 0
+    for stdin in ("", "not json", "[1]"):
+        assert run_linked(tmp_path, stdin).stdout == ""
+    assert events(tmp_path) == []
+
+
+def test_linked_hook_never_blocks_when_the_emitter_fails(tmp_path):
+    r = run_linked(tmp_path, json.dumps(post_payload()), ENGINE_EMIT_FORCE_FAIL="1")
+    assert (r.returncode, r.stdout, r.stderr) == (0, "", "")
+    assert events(tmp_path) == []
+
+
+def test_post_tool_use_hook_is_registered_for_agent_and_task():
+    cfg = json.load(open(os.path.join(ROOT, ".claude", "settings.json")))
+    (entry,) = [e for e in cfg["hooks"]["PostToolUse"] if "engine-agent-linked.sh" in json.dumps(e)]
+    assert entry["matcher"] == "Agent|Task"

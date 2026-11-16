@@ -62,6 +62,15 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Engine bridge: report a refused spawn as a spawn_blocked event (role + closed reason only, no
+# free text). Observe-only: prints nothing, never changes an exit code. --dry-run emits nothing.
+_engine_spawn_blocked() {
+  [[ "$DRY_RUN" == "1" ]] && return 0
+  timeout 10 python3 "$SCRIPT_DIR/lib/engine_agent_events.py" blocked \
+    --role "$ROLE" --reason "$1" --discussion "$DISCUSSION" >/dev/null 2>&1 || true
+  return 0
+}
+
 # Defensive check: parent repo must be on main before any spawn proceeds.
 # A leaked executor branch on the parent repo causes worktree contamination downstream.
 # Instead of refusing (exit 3), auto-recover to main and log the event so the
@@ -123,6 +132,7 @@ if [[ "$SUBAGENT_TYPE" == "general-purpose" ]]; then
   echo "  acceptance-tester, browser-tester, mission-analyst, technical-architect, product-owner," >&2
   echo "  cost-analyst, performance-expert, security-expert, run-analyst, feedback-scanner," >&2
   echo "  quality-sweep, visual-verifier" >&2
+  _engine_spawn_blocked other
   exit 2
 fi
 
@@ -149,6 +159,7 @@ if [[ "${ROLE_ALLOWLIST_OVERRIDE:-}" != "1" ]]; then
         $([ -n "$DISCUSSION" ] && echo "--discussion $DISCUSSION") \
         2>/dev/null || true
     fi
+    _engine_spawn_blocked other
     exit 1
   fi
 fi
@@ -271,6 +282,7 @@ PYEOF
   RECENT_PM="${RECENT_PM:-0}"
   if [[ "$RECENT_PM" -ge 1 ]]; then
     echo "ERROR: pm_dedup — project-manager spawn for D#$DISCUSSION blocked (duplicate within ${PM_DEDUP_WINDOW}s)." >&2
+    _engine_spawn_blocked other
     exit 1
   fi
 fi
@@ -337,6 +349,7 @@ if [[ "$DRY_RUN" != "1" ]]; then
         "[$(date +%H:%M)] team-lead: BUDGET EXCEEDED — skipping spawn of $ROLE" \
         2>/dev/null || true
       echo "ERROR: budget exceeded. Spawn of $ROLE blocked." >&2
+      _engine_spawn_blocked budget
       exit 1
     fi
     hook_event_mark_step "budget_check"
@@ -360,6 +373,7 @@ if [[ -n "$ROLE_TOKEN_CAP" && "$ROLE_TOKEN_CAP" != "null" ]] && python3 -c "int(
         "[$(date +%H:%M)] team-lead: per-role token_cap block — $ROLE needs ${ROLE_TOKEN_CAP} tokens but only ${BUDGET_REMAINING_INT} remaining" \
         2>/dev/null || true
       echo "ERROR: per-role token_cap ($ROLE_TOKEN_CAP) for $ROLE exceeds budget remaining ($BUDGET_REMAINING_INT). Spawn blocked." >&2
+      _engine_spawn_blocked budget
       exit 1
     fi
   fi
@@ -391,6 +405,7 @@ print(json.dumps({
     'role': sys.argv[3],
 }))
 " "$SUB_PCT" "$TARGET_PCT" "$ROLE"
+    _engine_spawn_blocked budget
     exit 1
   fi
 fi
@@ -410,6 +425,7 @@ if [[ "$DRY_RUN" != "1" ]]; then
         "[$(date +%H:%M)] team-lead: Discussion #$DISCUSSION circuit-breaker open ($CIRCUIT_FAILURES failures) -- skipping spawn of $ROLE, needs manual review" \
         2>/dev/null || true
       echo "ERROR: circuit-breaker open for Discussion #$DISCUSSION ($CIRCUIT_FAILURES failures >= 3 threshold). Spawn blocked." >&2
+      _engine_spawn_blocked circuit_breaker
       exit 1
     fi
     hook_event_mark_step "circuit_breaker_check"
@@ -518,6 +534,7 @@ except Exception as e:
           echo "[HEALTH-FAIL] $_HEALTH_CMD exited $_HEALTH_CACHED_EXIT (cached)" >&2
           if [[ "$_HEALTH_BLOCKS" == "true" ]]; then
             echo "blocked_reason=health_check_failed" >&2
+            _engine_spawn_blocked other
             exit 1
           fi
         fi
@@ -553,6 +570,7 @@ except Exception:
         printf '%s\n' "$_HEALTH_OUTPUT" >&2
         if [[ "$_HEALTH_BLOCKS" == "true" ]]; then
           echo "blocked_reason=health_check_failed" >&2
+          _engine_spawn_blocked other
           exit 1
         fi
       fi
@@ -647,6 +665,7 @@ except Exception as e:
         "[$(date +%H:%M)] team-lead: dial_denied — $ROLE (class=${_DIAL_CLASS}): ${_DIAL_REASON}" \
         2>/dev/null || true
     fi
+    _engine_spawn_blocked other
     exit 1
   elif [[ "$_DIAL_CLASS" == "sandbox.modify" ]]; then
     echo "WARNING: sandbox.modify dial fired for spawn of $ROLE (touchpoints=${TOUCHPOINTS_ARG:-none}) — allowed at requested_level=1 because ceiling=1 makes level=2 unraisable (D#1805). Recording audit row kind=dial_sandbox_modify_fired." >&2
@@ -764,6 +783,7 @@ if [[ -n "$DISCUSSION" && "$DRY_RUN" != "1" ]]; then
         ;;
     esac
     echo "ERROR: external-intake gate blocked spawn of $ROLE for Discussion #$DISCUSSION — ${_INTAKE_MSG}" >&2
+    _engine_spawn_blocked other
     exit 1
   fi
 fi
@@ -938,6 +958,7 @@ _load_context() {
     # first flagged.
     if ! _PROJECT_NAME_EARLY=$(PYTHONPATH="$REPO_ROOT" python3 -m backend.fleet.project_name "$REPO_ROOT" 2>&1); then
       echo "ERROR: pre-spawn-check: could not resolve fleet project name: $_PROJECT_NAME_EARLY" >&2
+      _engine_spawn_blocked other
       exit 1
     fi
     _PER_PROJECT_CAP=$(python3 "$REPO_ROOT/backend/control_plane.py" get "policies.${ROLE}.max_concurrent" 2>/dev/null | tr -d '"' || echo "")
@@ -973,6 +994,7 @@ _load_context() {
           "[$(date +%H:%M)] team-lead: per-project concurrency cap (${_PER_PROJECT_CAP}) reached for ${_PROJECT_NAME_EARLY} — ${_ACTIVE_PROJECT} active. Spawn of $ROLE blocked." \
           2>/dev/null || true
         echo "ERROR: blocked_reason=per_project_cap_exceeded — per-project agent cap (${_PER_PROJECT_CAP}) reached (${_ACTIVE_PROJECT} active). Spawn of $ROLE blocked." >&2
+        _engine_spawn_blocked other
         exit 1
       fi
     fi
@@ -986,6 +1008,7 @@ _load_context() {
     # Same resolver as the per-project cap check above — see D#2314 D1/S3 notes there.
     if ! _PROJECT_NAME=$(PYTHONPATH="$REPO_ROOT" python3 -m backend.fleet.project_name "$REPO_ROOT" 2>&1); then
       echo "ERROR: pre-spawn-check: could not resolve fleet project name: $_PROJECT_NAME" >&2
+      _engine_spawn_blocked other
       exit 1
     fi
     # Use EVENT_ID_ARG as the stable shared identifier — it is passed unchanged to post-agent-hook.sh
@@ -1048,6 +1071,7 @@ _load_context() {
     # rather than a fabricated pid that merely looks more plausible.
     if ! PYTHONPATH="$REPO_ROOT" python3 -m backend.fleet.concurrency register "$_PROJECT_NAME" "$_AGENT_ID" "$ROLE" "${CLAUDE_PID:-0}" 2>/dev/null; then
       echo "ERROR: blocked_reason=fleet_cap_exceeded — fleet agent cap reached, spawn of $ROLE blocked." >&2
+      _engine_spawn_blocked other
       exit 1
     fi
   fi
