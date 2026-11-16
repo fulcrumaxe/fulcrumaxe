@@ -324,6 +324,22 @@ def test_importer_v1_creation_matrix(world, mode):
         assert "discussion" not in sent["subject"] and sent["subject"]["tag"] == "feature"
 
 
+def test_importer_spec_key_ignores_since_stamp_but_tracks_body(world):
+    world.serve(sorted(MATRIX)[0])
+    mod = _load_importer()
+
+    def key(now_iso, text="text"):
+        world.server.requests.clear()
+        item = _item(world)
+        item["file_body"] = text
+        mod._create_v1(item, FakeClient(), False, now_iso, [], world.root)
+        return json.loads(world.server.requests[-1]["body"])["request_key"]
+
+    a = key("2026-11-16T00:00:00Z")
+    assert a == key("2026-11-17T09:30:00Z")
+    assert a != key("2026-11-16T00:00:00Z", text="changed body")
+
+
 @pytest.mark.parametrize("mode", sorted(MATRIX))
 def test_importer_create_or_drift_matrix(world, mode):
     code, create = MATRIX[mode]

@@ -654,7 +654,10 @@ def _cloud_spec_gate(repo_path: Path, fm: dict[str, Any], title: str, body: str)
         import cloud_engine_gate  # noqa: PLC0415
 
         key_id = re.sub(r"[^A-Za-z0-9_-]", "-", f"import-{fm.get('epic')}-{fm.get('task')}")[:60]
-        code, msg, _reply = cloud_engine_gate.gate_spec_ready(str(repo_path), None, title, body, key_id=key_id)
+        # The body's first line carries SINCE:<now>; hashing it would give every run a new key, so no approval
+        # could ever be reused. Key on the body with that stamp blanked (the task file's content is still in it).
+        stable_body = re.sub(r"SINCE:\S+", "SINCE:-", body, count=1)
+        code, msg, _reply = cloud_engine_gate.gate_spec_ready(str(repo_path), None, title, stable_body, key_id=key_id)
     except Exception:
         from backend.discussion_outbox import _operate_maybe_on  # noqa: PLC0415
 
