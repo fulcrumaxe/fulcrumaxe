@@ -615,6 +615,22 @@ def _operate_maybe_on(repo_root) -> bool:
 _SPEC_GATE_REASONS = {3: "cloud_ask", 4: "cloud_halted", 5: "cloud_unreachable"}
 
 
+def _first_time_held(discussion, text: str, code: int) -> bool:
+    """True the first time this exact Spec text is held for this reason, so a file that stays in the outbox
+    does not add a team-log line on every Stop event. Any error counts as first time (log rather than hide)."""
+    try:
+        marks = Path(state_paths.AUDIT_LOG).parent / "spec-gate-held"
+        marks.mkdir(parents=True, exist_ok=True)
+        name = "%s-%s-%s" % (discussion, hashlib.sha256(text.encode("utf-8")).hexdigest()[:16], code)
+        fd = os.open(str(marks / name), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        os.close(fd)
+        return True
+    except FileExistsError:
+        return False
+    except Exception:
+        return True
+
+
 def _cloud_spec_ready_gate(repo_root, discussion, title: str, text: str) -> Optional[str]:
     """EB-10b: with cloud_bridge.operate true the cloud must say act or announce (decide engine_spec_ready,
     keyed on the Spec text, tag from the title prefix) before a Spec is flipped to SPEC_READY. Returns a
@@ -636,14 +652,15 @@ def _cloud_spec_ready_gate(repo_root, discussion, title: str, text: str) -> Opti
             return None
     if code == 0:
         return None
-    try:
-        subprocess.run(
-            ["timeout", "10", "bash", str(Path(repo_root) / "scripts" / "rotate-team-log.sh"), "comment",
-             f"[spec-gate] D#{discussion} stays at its current status: {msg}"],
-            stdin=subprocess.DEVNULL, capture_output=True, timeout=15,
-        )
-    except Exception:
-        pass
+    if _first_time_held(discussion, text, code):
+        try:
+            subprocess.run(
+                ["timeout", "10", "bash", str(Path(repo_root) / "scripts" / "rotate-team-log.sh"), "comment",
+                 f"[spec-gate] D#{discussion} stays at its current status: {msg}"],
+                stdin=subprocess.DEVNULL, capture_output=True, timeout=15,
+            )
+        except Exception:
+            pass
     return _SPEC_GATE_REASONS.get(code, "cloud_unreachable")
 
 
@@ -663,9 +680,11 @@ def _process_body(text: str, role: str, discussion, client: GitHubClient, repo: 
         return _refused_row(agent_id, role, discussion, "body", sha, reason)
 
     # The flip itself: a body whose phase becomes SPEC_READY from some other phase (EB-10b).
-    if repo_root is not None and _parse_status_line(text.splitlines()[0])[0] == "SPEC_READY" \
+    if _parse_status_line(text.splitlines()[0])[0] == "SPEC_READY" \
             and _parse_status_line((current_body.splitlines() or [""])[0])[0] != "SPEC_READY":
-        reason = _cloud_spec_ready_gate(repo_root, discussion, disc.get("title") or "", text)
+        # No repo root means the cloud gate cannot run, and whether operate is on cannot be known: refuse.
+        reason = "cloud_unreachable" if repo_root is None else \
+            _cloud_spec_ready_gate(repo_root, discussion, disc.get("title") or "", text)
         if reason:
             return _refused_row(agent_id, role, discussion, "body", sha, reason)
 

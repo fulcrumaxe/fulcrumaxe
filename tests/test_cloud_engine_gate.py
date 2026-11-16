@@ -101,7 +101,8 @@ class World:
 
 
 @pytest.fixture
-def world(tmp_path):
+def world(tmp_path, monkeypatch):
+    monkeypatch.setenv("AUTONOMOUS_TEAM_STATE_DIR", str(tmp_path / "state"))  # in-process outbox state too
     w = World(tmp_path)
     yield w
     w.close()
@@ -238,12 +239,42 @@ def test_hook_matrix(world, mode):
 
 def test_hook_and_pre_spawn_share_one_key_through_the_prompt_trailer(world):
     srv = world.serve("act")
-    prompt = "do it for D#99\nhook_event_id=" + EVENT_ID
+    prompt = "do it for D#842\nhook_event_id=" + EVENT_ID
     assert world.hook({"prompt": prompt}).returncode == 0
     assert world.prespawn().returncode == 0
     keys = [json.loads(q["body"])["request_key"] for q in srv.requests]
     assert keys == ["spawn:" + EVENT_ID] * 2
     assert json.loads(srv.requests[0]["body"])["subject"] == {"role": "executor", "discussion": 842}
+
+
+@pytest.mark.parametrize("prompt,subagent", [
+    ("do it for D#842\nhook_event_id=" + EVENT_ID, "fulcrumaxe:code-reviewer"),  # trailer is another role's
+    ("do it for D#842\nhook_event_id=" + EVENT_ID, "mystery-role"),
+    ("do it for D#7\nhook_event_id=" + EVENT_ID, "fulcrumaxe:executor"),  # trailer's Discussion is not this call's
+    ("do it\nhook_event_id=" + EVENT_ID, "fulcrumaxe:executor"),
+])
+def test_hook_replayed_trailer_is_not_the_key(world, prompt, subagent):
+    """An approved spawn:executor-842-<ts> must not be reusable by a call that only quotes its trailer."""
+    srv = world.serve("act")
+    assert world.hook({"prompt": prompt, "subagent_type": subagent}).returncode == 0
+    assert json.loads(srv.requests[0]["body"])["request_key"] == "spawn:" + "executor:4321:toolu_01SyntheticSpawn0001".replace(
+        "executor:4321", role_and_disc(prompt, subagent))
+    assert "spawn:" + EVENT_ID not in srv.requests[0]["body"]
+
+
+def role_and_disc(prompt, subagent):
+    import re
+    role = subagent.rsplit(":", 1)[-1]
+    role = role if role in ("executor", "code-reviewer") else "other"
+    m = re.search(r"D#(\d+)", prompt)
+    return "%s:%s" % (role, m.group(1) if m else "nod")
+
+
+def test_hook_matching_trailer_for_the_same_role_still_shares_the_key(world):
+    srv = world.serve("act")
+    prompt = "do it for D#842\nhook_event_id=" + EVENT_ID
+    assert world.hook({"prompt": prompt, "subagent_type": "executor"}).returncode == 0
+    assert json.loads(srv.requests[0]["body"])["request_key"] == "spawn:" + EVENT_ID
 
 
 @pytest.mark.parametrize("raw", ["", "not json", "[]", json.dumps({"tool_name": "Bash"})])
@@ -311,7 +342,8 @@ def test_spec_ready_matrix(world, mode):
 
 @pytest.mark.parametrize("title,tag", [("[Feature] x", "feature"), ("[Critical] x", "critical"), ("[Small] x", "small"),
                                        ("[Bug] x", "bug"), ("[Doc] x", "doc"), ("[Process] x", "process"),
-                                       ("[Strategy] x", "other"), ("  [bug] lower", "bug"), ("no prefix", None), ("", None)])
+                                       ("[Strategy] x", "other"), ("  [bug] lower", "bug"), ("no prefix", None), ("", None),
+                                       ("[Small][Feature] two", None), ("[Small] [Feature] two", None)])
 def test_spec_ready_sends_the_tag_and_a_key_bound_to_the_spec_text(world, title, tag):
     import hashlib
     row, _gh, srv = flip(world, title, "act")
@@ -363,6 +395,18 @@ def test_spec_ready_gate_that_cannot_load_refuses_when_operate_is_on_and_passes_
     assert row["outcome"] == "refused:cloud_unreachable"
 
 
-def test_spec_ready_no_flip_without_repo_root_is_unchanged():
+def test_spec_ready_flip_without_repo_root_refuses():
     gh = FakeGH("[Feature] x", spec("CONSENSUS"))
-    assert ob._process_body(spec(), "project-manager", 842, gh, "o/r", "s", "a")["outcome"] == "posted"
+    assert ob._process_body(spec(), "project-manager", 842, gh, "o/r", "s", "a")["outcome"] == "refused:cloud_unreachable"
+    assert gh.updates == []
+    # a body that is not a flip never needs the gate
+    gh2 = FakeGH("[Feature] x", spec("DISCUSSING"))
+    assert ob._process_body(spec("CONSENSUS"), "project-manager", 842, gh2, "o/r", "s", "a")["outcome"] == "posted"
+
+
+def test_spec_ready_held_file_logs_once_per_spec_text(world):
+    for _ in range(3):
+        flip(world, "[Small] x", "ask" if world.server is None else None)
+    assert world.teamlog().count("[spec-gate] D#842 stays") == 1
+    flip(world, "[Small] x", None, new=spec(extra=" edited"))  # different text: logged again
+    assert world.teamlog().count("[spec-gate] D#842 stays") == 2

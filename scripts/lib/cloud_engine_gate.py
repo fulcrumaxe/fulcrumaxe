@@ -25,6 +25,7 @@ import cloud_decide as cd  # noqa: E402
 
 EVENT_ID = re.compile(r"[a-z]+(?:-[a-z]+)*-(?:[0-9]+|nod)-[0-9]{9,12}")  # spawn-agent.sh's hook_event_id
 TRAILER = re.compile(r"^hook_event_id=([a-z]+(?:-[a-z]+)*-(?:[0-9]+|nod)-[0-9]{9,12})$", re.MULTILINE)
+TRAILER_PARTS = re.compile(r"([a-z]+(?:-[a-z]+)*)-([0-9]+|nod)-[0-9]{9,12}")
 SPAWN_ID = re.compile(r"[A-Za-z0-9_-]{1,100}")
 TITLE_TAG = re.compile(r"\s*\[([A-Za-z]+)\]")
 REASON = {cd.EXIT_ASK: "cloud_denied", cd.EXIT_HALTED: "halted", cd.EXIT_UNREACHABLE: "cloud_unreachable"}
@@ -47,6 +48,8 @@ def tag_of_title(title):
     m = TITLE_TAG.match(title) if isinstance(title, str) else None
     if not m:
         return None
+    if TITLE_TAG.match(title, m.end()):
+        return None  # a second bracket prefix ([Small][Feature]): which one counts is unclear, so no tag
     t = m.group(1).lower()
     return t if t in cd.TAGS and t != "other" else "other"
 
@@ -118,6 +121,13 @@ def gate_spec_ready(repo_root, discussion, title, body_text):
     return code, _message(code, reply).replace("spawn refused", "Spec not flipped"), reply
 
 
+def _same_role(trailer_role, subagent_type):
+    """The trailer's role segment and the call's subagent_type name the same role (an unknown role must match by name)."""
+    from engine_agent_events import role_of  # noqa: PLC0415
+    a, b = role_of(trailer_role), role_of(subagent_type)
+    return a == b and (a != "other" or trailer_role == str(subagent_type or "").rsplit(":", 1)[-1].strip().lower())
+
+
 def _hook(repo_root):
     from engine_agent_events import role_of, posint  # noqa: PLC0415
     try:
@@ -131,14 +141,20 @@ def _hook(repo_root):
             return cd.EXIT_UNREACHABLE, "cloud unreachable; spawn refused (fail-closed)", None
         return cd.EXIT_ACT, "", None
     prompt = ti.get("prompt") if isinstance(ti.get("prompt"), str) else ""
-    trailers = TRAILER.findall(prompt)
-    sid = trailers[-1] if trailers else payload.get("tool_use_id")
-    m = re.search(r"(?:\bD#|\bDiscussion #)(\d{1,15})\b", prompt)
-    disc = posint(m.group(1)) if m else None
-    if trailers:
-        part = trailers[-1].rsplit("-", 2)[1]
-        disc = posint(part) if part != "nod" else None
     role = role_of(ti.get("subagent_type"))
+    mentioned = [posint(x) for x in re.findall(r"(?:\bD#|\bDiscussion #)(\d{1,15})\b", prompt)]
+    disc = mentioned[0] if mentioned else None
+    sid = payload.get("tool_use_id")
+    # The prompt is caller-controlled text. Its last hook_event_id trailer is the spawn's id only when the
+    # trailer names this call's role and a Discussion the prompt itself is about; otherwise a quoted trailer
+    # from another spawn would replay that spawn's approval. Anything else keys on tool_use_id.
+    trailers = TRAILER.findall(prompt)
+    if trailers:
+        tm = TRAILER_PARTS.fullmatch(trailers[-1])
+        if tm and _same_role(tm.group(1), ti.get("subagent_type")) and \
+                (tm.group(2) == "nod" or posint(tm.group(2)) in mentioned):
+            sid = trailers[-1]
+            disc = posint(tm.group(2)) if tm.group(2) != "nod" else None
     return gate_spawn(repo_root, role, disc, sid, os.environ.get("FX_ENGINE_COMMAND_ID") or None)
 
 
