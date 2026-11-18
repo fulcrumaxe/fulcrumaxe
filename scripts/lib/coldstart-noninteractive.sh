@@ -23,8 +23,13 @@
 #     (every delegated step is idempotent).
 #
 # COLDSTART_TEST_KILL_STEP=<step> SIGKILLs this process right after that step
-# reports `started`. It exists only so the resume test can kill a run at each
-# step deterministically.
+# reports `started`, but only when COLDSTART_TEST_HOOKS=1 is set as well; a
+# stray KILL_STEP alone is ignored. It exists only so the resume test can kill
+# a run at each step deterministically.
+#
+# The journal is keyed on the answers file's sha256 and the resolved --path.
+# A run whose key differs from the journal's discards the journal (and the
+# recorded interview session) and starts fresh, with a note on stderr.
 
 source "$SCRIPT_DIR/lib/coldstart-status.sh"
 source "$SCRIPT_DIR/lib/coldstart-preflight.sh"
@@ -36,10 +41,26 @@ _NI_CURRENT_STEP="preflight"
 
 _ni_journal_dir() { echo "$STATE_DIR/coldstart-run"; }
 _ni_is_done() { [[ -f "$(_ni_journal_dir)/$1.done" ]]; }
+_ni_run_key() {
+  python3 -I - "$NI_ANSWERS_FILE" "$REPO_PATH" <<'PYEOF'
+import hashlib, os, sys
+print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest(), os.path.realpath(sys.argv[2]))
+PYEOF
+}
 _ni_mark_done() {
   mkdir -p "$(_ni_journal_dir)" || return 1
+  [[ -f "$(_ni_journal_dir)/key" ]] || _ni_run_key > "$(_ni_journal_dir)/key" || return 1
   : > "$(_ni_journal_dir)/$1.done"
 }
+# Discard a journal written for other answers or another path.
+_ni_check_journal_key() {
+  local dir; dir="$(_ni_journal_dir)"
+  [[ -d "$dir" ]] || return 0
+  [[ "$(cat "$dir/key" 2>/dev/null)" == "$(_ni_run_key)" ]] && return 0
+  echo "[coldstart] answers or path changed since the last run; starting fresh" >&2
+  rm -rf "$dir" "$STATE_DIR/coldstart/$_NI_SESSION"
+}
+_ni_test_kill() { [[ "${COLDSTART_TEST_HOOKS:-}" == "1" && "${COLDSTART_TEST_KILL_STEP:-}" == "$1" ]] && kill -KILL $$; return 0; }
 
 _ni_on_signal() {
   coldstart_status_emit "$_NI_CURRENT_STEP" failed interrupted || true
@@ -55,9 +76,7 @@ _ni_step() {
     return 0
   fi
   coldstart_status_emit "$step" started
-  if [[ "${COLDSTART_TEST_KILL_STEP:-}" == "$step" ]]; then
-    kill -KILL $$
-  fi
+  _ni_test_kill "$step"
   if "$fn" && _ni_mark_done "$step"; then
     coldstart_status_emit "$step" ok
     return 0
@@ -167,13 +186,14 @@ coldstart_noninteractive_run() {
   # Preflight is read-only and cheap, so it runs on every start, resumed or not.
   _NI_CURRENT_STEP="preflight"
   coldstart_status_emit preflight started
-  if [[ "${COLDSTART_TEST_KILL_STEP:-}" == "preflight" ]]; then kill -KILL $$; fi
+  _ni_test_kill preflight
   if ! _ni_preflight; then
     coldstart_status_emit preflight failed preflight_failed
     return 1
   fi
   coldstart_status_emit preflight ok
 
+  _ni_check_journal_key
   # Answers are checked before anything is written.
   _NI_CURRENT_STEP="interview"
   if ! _ni_is_done interview; then

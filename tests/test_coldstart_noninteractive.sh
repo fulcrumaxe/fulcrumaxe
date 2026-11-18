@@ -59,15 +59,15 @@ new_sb() {
   : > "$T/gh.log"; : > "$T/shim.log"
 }
 
-write_answers() { # file [omit-topic]
-  python3 -I - "$1" "${2:-}" <<'PYEOF'
+write_answers() { # file [omit-topic] [vision]
+  python3 -I - "$1" "${2:-}" "${3:-a demo}" <<'PYEOF'
 import json, sys
 a = {
   "identity": {"project_name": "demo", "boss_github_username": "demo-owner"},
   "stack": {"primary_language": "python"},
   "deploy": {"ci_provider": "github"},
   "autonomy": {"agent_spawn_level": "2"},
-  "mission": {"product_vision": "a demo"},
+  "mission": {"product_vision": sys.argv[3]},
 }
 a.pop(sys.argv[2], None)
 json.dump(a, open(sys.argv[1], "w"))
@@ -183,7 +183,7 @@ check_resume() { # ENG — kill at each step, rerun, same tree as a clean run
   [[ -n "$clean" ]] || return 1
   for step in preflight interview wiring deps sandbox_hook bundle; do
     new_sb; st="$T/kill-$step.txt"; : > "$st"
-    COLDSTART_TEST_KILL_STEP="$step" ni_run "$eng" "$ans" public "$st"
+    COLDSTART_TEST_HOOKS=1 COLDSTART_TEST_KILL_STEP="$step" ni_run "$eng" "$ans" public "$st"
     [[ $RC -eq 137 ]] || { echo "kill at $step: rc=$RC (wanted 137)"; return 1; }
     ni_run "$eng" "$ans" public "$st"
     [[ $RC -eq 0 ]] || { echo "resume after $step: rc=$RC: $(tail -3 "$SB/err.log")"; return 1; }
@@ -191,6 +191,25 @@ check_resume() { # ENG — kill at each step, rerun, same tree as a clean run
       echo "tree differs after kill at $step"; return 1
     fi
   done
+}
+
+check_kill_hook_flag() { # ENG — a stray KILL_STEP without TEST_HOOKS=1 is ignored
+  local eng="$1" st="$T/hook.txt" ans="$T/ans.json"
+  new_sb; write_answers "$ans"; : > "$st"
+  COLDSTART_TEST_KILL_STEP=wiring ni_run "$eng" "$ans" private "$st"
+  [[ $RC -eq 0 ]]
+}
+
+check_changed_answers() { # ENG — answers B after a killed run with answers A: B is what gets recorded
+  local eng="$1" st="$T/chg.txt" a="$T/ans-a.json" b="$T/ans-b.json" rec
+  new_sb; write_answers "$a" "" "vision-from-A"; write_answers "$b" "" "vision-from-B"; : > "$st"
+  COLDSTART_TEST_HOOKS=1 COLDSTART_TEST_KILL_STEP=wiring ni_run "$eng" "$a" private "$st"
+  [[ $RC -eq 137 ]] || return 1
+  ni_run "$eng" "$b" private "$st"
+  [[ $RC -eq 0 ]] || return 1
+  grep -q 'starting fresh' "$SB/err.log" || return 1
+  rec="$SB/root/.demo-state/coldstart/noninteractive/answers.json"
+  grep -q 'vision-from-B' "$rec" && ! grep -q 'vision-from-A' "$rec"
 }
 
 check_branch_flag() { # ENG — bootstrap writes only when B is checked out
@@ -261,6 +280,16 @@ M6="$(engine_copy m-resume)"
 sed -i 's/  coldstart_status_emit "\$step" started$/  coldstart_status_emit "$step" started; _ni_mark_done "$step"/' "$M6/scripts/lib/coldstart-noninteractive.sh"
 grep -q '_ni_mark_done "\$step"$' "$M6/scripts/lib/coldstart-noninteractive.sh" || bad "resume mutant not applied"
 expect_caught "resume (step journalled before it finishes)" check_resume "$M6"
+
+echo "== test hook flag and journal key"
+expect_pass "KILL_STEP alone is ignored without COLDSTART_TEST_HOOKS=1" check_kill_hook_flag "$ENG"
+M8="$(engine_copy m-hook)"
+sed -i 's/"${COLDSTART_TEST_HOOKS:-}" == "1" && //' "$M8/scripts/lib/coldstart-noninteractive.sh"
+expect_caught "kill-hook flag requirement" check_kill_hook_flag "$M8"
+expect_pass "changed answers after a killed run: fresh run records B" check_changed_answers "$ENG"
+M9="$(engine_copy m-key)"
+sed -i 's/  \[\[ -d "\$dir" \]\] || return 0/  return 0/' "$M9/scripts/lib/coldstart-noninteractive.sh"
+expect_caught "journal key check" check_changed_answers "$M9"
 
 echo "== bootstrap --branch"
 expect_pass "--branch refuses a different checked-out branch, passes the matching one, flag-less unchanged" check_branch_flag "$ENG"
