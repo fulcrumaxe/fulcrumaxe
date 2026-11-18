@@ -165,6 +165,18 @@ Options:
                             straight to the seed step — this is how you
                             continue after the HALT checkpoint, or after a
                             partial 403-interrupted seed run.
+  --non-interactive        Unattended provision: never reads stdin. Needs
+                            --answers-file. A core interview topic missing from
+                            it exits 3 with missing_topic:<id>. The labels step
+                            reports skipped/cloud_owned (the cloud owns it).
+  --answers-file <json>    {"identity": {...}, "stack": {...}, ...} — one object
+                            per core topic (identity stack deploy autonomy mission).
+  --status-fd <n>          With --non-interactive: write one
+                            "step=<s> state=<s> [code=<c>]" line per event to
+                            descriptor n (n >= 3).
+  --repo-visibility <v>    public | private | unknown (default unknown). Anything
+                            but private runs the intake-gate self-check.
+  --print-status-schema    Print the sha256 of the status vocabulary and exit 0.
   --help                   Show this message and exit 0.
 
 Ordered pipeline: preflight -> mechanical wiring -> dependency install ->
@@ -188,6 +200,11 @@ DRY_RUN=0
 SELF_TEST=0
 PHASE=""
 RESUME=0
+NON_INTERACTIVE=0
+NI_ANSWERS_FILE=""
+NI_REPO_VISIBILITY="unknown"
+STATUS_FD=""
+PRINT_STATUS_SCHEMA=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -213,6 +230,16 @@ while [[ $# -gt 0 ]]; do
       PHASE="${2:-}"; shift 2 || { echo "ERROR: --phase requires a value" >&2; exit 1; } ;;
     --resume)
       RESUME=1; shift ;;
+    --non-interactive)
+      NON_INTERACTIVE=1; shift ;;
+    --answers-file)
+      NI_ANSWERS_FILE="${2:-}"; shift 2 || { echo "ERROR: --answers-file requires a value" >&2; exit 1; } ;;
+    --status-fd)
+      STATUS_FD="${2:-}"; shift 2 || { echo "ERROR: --status-fd requires a value" >&2; exit 1; } ;;
+    --repo-visibility)
+      NI_REPO_VISIBILITY="${2:-}"; shift 2 || { echo "ERROR: --repo-visibility requires a value" >&2; exit 1; } ;;
+    --print-status-schema)
+      PRINT_STATUS_SCHEMA=1; shift ;;
     *)
       echo "Unknown flag: $1" >&2
       usage >&2
@@ -231,6 +258,23 @@ fi
 # non-interactively. Dispatched before the --path/--name requirement since
 # self-test supplies its own synthetic values and never touches GitHub.
 # ---------------------------------------------------------------------------
+
+# --print-status-schema — print the sha256 of the status vocabulary file the
+# --status-fd stream is built from, so a consumer can pin it. Needs nothing else.
+if [[ "$PRINT_STATUS_SCHEMA" -eq 1 ]]; then
+  source "$SCRIPT_DIR/lib/coldstart-status.sh"
+  coldstart_status_hash
+  exit $?
+fi
+
+if [[ -n "$STATUS_FD" && "$NON_INTERACTIVE" -ne 1 ]]; then
+  echo "ERROR: --status-fd is only meaningful with --non-interactive" >&2
+  exit 1
+fi
+case "$NI_REPO_VISIBILITY" in
+  public|private|unknown) ;;
+  *) echo "ERROR: --repo-visibility must be public, private or unknown (got: $NI_REPO_VISIBILITY)" >&2; exit 1 ;;
+esac
 
 if [[ "$SELF_TEST" -eq 1 ]]; then
   source "$SCRIPT_DIR/lib/coldstart-halt-flow.sh"
@@ -278,6 +322,18 @@ EPICS_DIR="${BACKLOG:-$REPO_PATH/epics}"
 # calls made per the interview handoff -- see coldstart-halt-flow.sh's
 # _coldstart_halt_interview_handoff for that half of the fix.
 export AUTONOMOUS_TEAM_STATE_DIR="$STATE_DIR"
+
+# --non-interactive — the unattended provision run (module: coldstart-noninteractive.sh).
+# Dispatched ahead of --dry-run's plan and the interactive pipeline; it never
+# reads stdin and reports progress on --status-fd.
+if [[ "$NON_INTERACTIVE" -eq 1 && "$DRY_RUN" -eq 0 ]]; then
+  source "$SCRIPT_DIR/lib/coldstart-noninteractive.sh"
+  if [[ -n "$STATUS_FD" ]]; then
+    coldstart_status_init "$STATUS_FD" || exit 1
+  fi
+  coldstart_noninteractive_run
+  exit $?
+fi
 
 # ---------------------------------------------------------------------------
 # --dry-run — print the ordered plan, touch nothing, exit 0
