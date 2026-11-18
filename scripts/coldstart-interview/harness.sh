@@ -27,6 +27,7 @@
 #                                                   merge JSON (question_id -> value) into answers.json
 #                                                   for TOPIC, filling any missing question with its
 #                                                   manifest default; update timing.json
+#   --list-core-topics                             print JSON array of the core topic ids
 #   --status [--session ID]                        print a human-readable summary
 #   --finish-session [--session ID]                write total wall-clock + core-complete flag
 #   --list-questions TOPIC [--mode new|existing] [--session ID]
@@ -45,7 +46,7 @@ STATE_ROOT="${AUTONOMOUS_TEAM_STATE_DIR:-$HOME/.autonomous-forever-state}"
 CORE_TOPIC_IDS=(identity stack deploy autonomy mission)
 
 usage() {
-  sed -n '2,36p' "${BASH_SOURCE[0]}"
+  sed -n '2,37p' "${BASH_SOURCE[0]}"
 }
 
 session_dir() {
@@ -429,6 +430,7 @@ while [[ $# -gt 0 ]]; do
     --start-topic) CMD="start-topic"; TOPIC="$2"; shift 2 ;;
     --record-topic) CMD="record-topic"; TOPIC="$2"; shift 2 ;;
     --answers) ANSWERS_JSON="$2"; shift 2 ;;
+    --list-core-topics) CMD="list-core-topics"; shift ;;
     --status) CMD="status"; shift ;;
     --finish-session) CMD="finish-session"; shift ;;
     --list-questions) CMD="list-questions"; TOPIC="$2"; shift 2 ;;
@@ -443,6 +445,9 @@ case "$CMD" in
   self-test)
     self_test
     exit 0
+    ;;
+  list-core-topics)
+    python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "${CORE_TOPIC_IDS[@]}"
     ;;
   start-session)
     SESSION="${SESSION:-$(new_session_id)}"

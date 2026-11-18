@@ -18,7 +18,11 @@
 coldstart_preflight() {
   local missing=0
 
-  if ! command -v gh >/dev/null 2>&1; then
+  # COLDSTART_GH_OPTIONAL=1 (non-interactive runs): every gh call belongs to
+  # the cloud there, so a missing or signed-out gh is not a gap.
+  if [[ "${COLDSTART_GH_OPTIONAL:-0}" == "1" ]]; then
+    :
+  elif ! command -v gh >/dev/null 2>&1; then
     echo "[preflight] missing prerequisite: gh (GitHub CLI) — install from https://cli.github.com/"
     missing=1
   else

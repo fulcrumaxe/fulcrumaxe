@@ -172,6 +172,7 @@ FORCE=false
 TARGET=""
 TARGET_REPO=""
 SIMULATE_MISSING=""
+TARGET_BRANCH=""
 
 # Parse args
 while [[ $# -gt 0 ]]; do
@@ -182,13 +183,15 @@ while [[ $# -gt 0 ]]; do
       SIMULATE_MISSING="${2:-}"; shift 2 || { echo "ERROR: --simulate-missing requires a relative path" >&2; exit 1; } ;;
     --repo)
       TARGET_REPO="${2:-}"; shift 2 || { echo "ERROR: --repo requires OWNER/NAME" >&2; exit 1; } ;;
+    --branch)
+      TARGET_BRANCH="${2:-}"; shift 2 || { echo "ERROR: --branch requires a branch name" >&2; exit 1; } ;;
     -*) echo "Unknown flag: $1" >&2; exit 1 ;;
     *) TARGET="$1"; shift ;;
   esac
 done
 
 if [[ -z "$TARGET" ]]; then
-  echo "Usage: bash loop-bootstrap/bootstrap.sh --repo OWNER/NAME [--dry-run] [--force] /path/to/target-repo" >&2
+  echo "Usage: bash loop-bootstrap/bootstrap.sh --repo OWNER/NAME [--dry-run] [--force] [--branch B] /path/to/target-repo" >&2
   exit 1
 fi
 
@@ -233,6 +236,22 @@ fi
 if ! git -C "$TARGET" rev-parse --git-dir > /dev/null 2>&1; then
   echo "ERROR: $TARGET is not a git repository" >&2
   exit 1
+fi
+
+# --branch B: install only while B is the checked-out branch of the target,
+# so the files land on B and on no other branch. Checked before anything is
+# written; a mismatch (or a detached HEAD) leaves $TARGET untouched. Without
+# the flag nothing here runs.
+if [[ -n "$TARGET_BRANCH" ]]; then
+  if [[ ! "$TARGET_BRANCH" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]]; then
+    echo "ERROR: --branch is not a valid branch name: $TARGET_BRANCH" >&2
+    exit 1
+  fi
+  CURRENT_BRANCH="$(git -C "$TARGET" symbolic-ref --short -q HEAD 2>/dev/null || true)"
+  if [[ "$CURRENT_BRANCH" != "$TARGET_BRANCH" ]]; then
+    echo "ERROR: --branch $TARGET_BRANCH, but $TARGET has ${CURRENT_BRANCH:-a detached HEAD} checked out. Check out $TARGET_BRANCH first. $TARGET was not touched." >&2
+    exit 1
+  fi
 fi
 
 # Platform preflight (D#2263) — refuse here, before this script writes

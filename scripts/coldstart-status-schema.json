@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "line": "step=<step> state=<state> [code=<code>]",
+  "steps": ["preflight", "interview", "wiring", "deps", "labels", "sandbox_hook", "bundle", "done"],
+  "states": ["started", "ok", "failed", "skipped"],
+  "codes": ["missing_topic", "cloud_owned", "preflight_failed", "wiring_failed", "deps_failed", "interrupted"],
+  "code_suffix": {"missing_topic": "^[a-z_]+$"}
+}
