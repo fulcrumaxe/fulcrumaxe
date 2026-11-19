@@ -9,7 +9,6 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 T="$(mktemp -d "${TMPDIR:-/tmp}/harness-af.XXXXXX")"
 trap 'rm -rf "$T"' EXIT
 FAILS=0
-N=0
 
 H() { # H HARNESS STATE ARGS...   (stdin closed)
   local h="$1" st="$2"; shift 2
@@ -20,7 +19,7 @@ answers_of() { python3 -c "import json,sys;print(json.dumps(json.load(open(sys.a
 
 # run_checks HARNESS — prints the name of each failing check; returns 1 if any.
 run_checks() {
-  local h="$1" bad=0 st f
+  local h="$1" bad=0 st f N
   N="$(basename "$(mktemp -d "$T/run.XXXXXX")")"
   st="$T/st-$N"; f="$T/ans-$N.json"
   mkdir -p "$st"
