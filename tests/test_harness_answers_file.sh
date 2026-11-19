@@ -21,7 +21,7 @@ answers_of() { python3 -c "import json,sys;print(json.dumps(json.load(open(sys.a
 # run_checks HARNESS — prints the name of each failing check; returns 1 if any.
 run_checks() {
   local h="$1" bad=0 st f
-  N=$((N + 1))
+  N="$(basename "$(mktemp -d "$T/run.XXXXXX")")"
   st="$T/st-$N"; f="$T/ans-$N.json"
   mkdir -p "$st"
   printf '{"github_login":"someone"}' > "$f"
@@ -47,12 +47,21 @@ run_checks() {
   # 5. a directory and a missing path are refused
   H "$h" "$st" --record-topic identity --answers-file "$T" --session f >/dev/null 2>&1 && { echo "directory-accepted"; bad=1; }
   H "$h" "$st" --record-topic identity --answers-file "$T/none.json" --session f >/dev/null 2>&1 && { echo "missing-accepted"; bad=1; }
+  # 5b. an empty path is refused
+  H "$h" "$st" --record-topic identity --answers-file "" --session h >/dev/null 2>&1 && { echo "empty-path-accepted"; bad=1; }
+  # 5c. a FIFO is refused without blocking (own 5 s timeout, so a regression fails instead of hanging)
+  mkfifo "$T/fifo-$N"
+  timeout --kill-after=1s 5 bash -c 'AUTONOMOUS_TEAM_STATE_DIR="$1" bash "$2" --record-topic identity --answers-file "$3" --session i </dev/null >/dev/null 2>&1' _ "$st" "$h" "$T/fifo-$N"
+  case $? in 1) ;; 124|137) echo "fifo-hangs"; bad=1 ;; 0) echo "fifo-accepted"; bad=1 ;; *) ;; esac
   # 6. both flags together are refused
   H "$h" "$st" --record-topic identity --answers '{}' --answers-file "$f" --session g >/dev/null 2>&1 && { echo "both-accepted"; bad=1; }
-  # 7. a refused file records nothing
-  if [[ -e "$st/coldstart/d/answers.json" ]] && grep -q 'identity' "$st/coldstart/d/answers.json" 2>/dev/null; then
-    echo "refused-wrote"; bad=1
-  fi
+  # 7. no refused file recorded anything: sessions c d e f g h i were all refused
+  local sess
+  for sess in c d e f g h i; do
+    if [[ -e "$st/coldstart/$sess/answers.json" ]] && grep -q 'identity' "$st/coldstart/$sess/answers.json" 2>/dev/null; then
+      echo "refused-wrote-$sess"; bad=1
+    fi
+  done
   return $bad
 }
 
@@ -79,7 +88,9 @@ mutant() { # mutant NAME SED-EXPR
 }
 mutant nofollow 's/os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK/os.O_RDONLY | os.O_NONBLOCK/'
 mutant size 's/st.st_size > 65536/st.st_size > 10**9/;s/os.read(fd, 65537)/os.read(fd, 10**9)/'
+mutant nonblock 's/os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK/os.O_RDONLY | os.O_NOFOLLOW/'
 mutant object 's/if not isinstance(obj, dict):/if False:/'
+mutant emptypath 's/if \[\[ "\$ANSWERS_FILE_SET" -eq 1 \]\]; then/if [[ -n "$ANSWERS_FILE" ]]; then/'
 mutant both 's/if \[\[ -n "\$ANSWERS_JSON" \]\]; then/if false; then/'
 
 if [[ $FAILS -eq 0 ]]; then echo "PASS test_harness_answers_file"; else echo "$FAILS failure(s)"; exit 1; fi

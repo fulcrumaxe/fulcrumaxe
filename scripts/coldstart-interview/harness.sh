@@ -455,6 +455,7 @@ SESSION=""
 TOPIC=""
 ANSWERS_JSON=""
 ANSWERS_FILE=""
+ANSWERS_FILE_SET=0
 MODE=""
 CMD=""
 
@@ -467,7 +468,7 @@ while [[ $# -gt 0 ]]; do
     --start-topic) CMD="start-topic"; TOPIC="$2"; shift 2 ;;
     --record-topic) CMD="record-topic"; TOPIC="$2"; shift 2 ;;
     --answers) ANSWERS_JSON="$2"; shift 2 ;;
-    --answers-file) ANSWERS_FILE="$2"; shift 2 ;;
+    --answers-file) ANSWERS_FILE="$2"; ANSWERS_FILE_SET=1; shift 2 ;;
     --list-core-topics) CMD="list-core-topics"; shift ;;
     --status) CMD="status"; shift ;;
     --finish-session) CMD="finish-session"; shift ;;
@@ -506,7 +507,11 @@ case "$CMD" in
     ;;
   record-topic)
     [[ -n "$SESSION" ]] || { echo "--session required" >&2; exit 1; }
-    if [[ -n "$ANSWERS_FILE" ]]; then
+    if [[ "$ANSWERS_FILE_SET" -eq 1 ]]; then
+      if [[ -z "$ANSWERS_FILE" ]]; then
+        echo "--answers-file needs a file path (got an empty value)" >&2
+        exit 1
+      fi
       if [[ -n "$ANSWERS_JSON" ]]; then
         echo "--answers and --answers-file cannot be combined" >&2
         exit 1
