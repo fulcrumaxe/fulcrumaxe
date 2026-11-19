@@ -27,6 +27,11 @@
 #                                                   merge JSON (question_id -> value) into answers.json
 #                                                   for TOPIC, filling any missing question with its
 #                                                   manifest default; update timing.json
+#   --record-topic TOPIC --answers-file FILE [--session ID]
+#                                                   same, with the answers object read from FILE
+#                                                   (a regular file, not a symlink, at most 64 KiB,
+#                                                   holding one JSON object). Not combinable with
+#                                                   --answers. Never reads stdin.
 #   --list-core-topics                             print JSON array of the core topic ids
 #   --status [--session ID]                        print a human-readable summary
 #   --finish-session [--session ID]                write total wall-clock + core-complete flag
@@ -93,6 +98,37 @@ except (FileNotFoundError, json.JSONDecodeError):
 answered = set((answers.get("topics") or {}).keys())
 remaining = [t for t in core_ids if t not in answered]
 print(json.dumps(remaining))
+PYEOF
+}
+
+# read_answers_file FILE — print the file's JSON object, compact, on stdout.
+# Refuses a symlink, a non-regular file, anything over 64 KiB and anything that
+# is not a JSON object, so a caller-chosen path cannot be followed elsewhere.
+read_answers_file() {
+  python3 - "$1" <<'PYEOF'
+import json, os, stat, sys
+
+path = sys.argv[1]
+try:
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+except OSError as e:
+    sys.exit(f"--answers-file: cannot open {path} ({e.strerror})")
+try:
+    st = os.fstat(fd)
+    if not stat.S_ISREG(st.st_mode):
+        sys.exit("--answers-file: not a regular file")
+    if st.st_size > 65536:
+        sys.exit("--answers-file: larger than 64 KiB")
+    data = os.read(fd, 65537)
+finally:
+    os.close(fd)
+try:
+    obj = json.loads(data.decode("utf-8"))
+except ValueError:
+    sys.exit("--answers-file: not valid JSON")
+if not isinstance(obj, dict):
+    sys.exit("--answers-file: must hold one JSON object")
+print(json.dumps(obj))
 PYEOF
 }
 
@@ -418,6 +454,8 @@ print('ok')
 SESSION=""
 TOPIC=""
 ANSWERS_JSON=""
+ANSWERS_FILE=""
+ANSWERS_FILE_SET=0
 MODE=""
 CMD=""
 
@@ -430,6 +468,7 @@ while [[ $# -gt 0 ]]; do
     --start-topic) CMD="start-topic"; TOPIC="$2"; shift 2 ;;
     --record-topic) CMD="record-topic"; TOPIC="$2"; shift 2 ;;
     --answers) ANSWERS_JSON="$2"; shift 2 ;;
+    --answers-file) ANSWERS_FILE="$2"; ANSWERS_FILE_SET=1; shift 2 ;;
     --list-core-topics) CMD="list-core-topics"; shift ;;
     --status) CMD="status"; shift ;;
     --finish-session) CMD="finish-session"; shift ;;
@@ -468,6 +507,17 @@ case "$CMD" in
     ;;
   record-topic)
     [[ -n "$SESSION" ]] || { echo "--session required" >&2; exit 1; }
+    if [[ "$ANSWERS_FILE_SET" -eq 1 ]]; then
+      if [[ -z "$ANSWERS_FILE" ]]; then
+        echo "--answers-file needs a file path (got an empty value)" >&2
+        exit 1
+      fi
+      if [[ -n "$ANSWERS_JSON" ]]; then
+        echo "--answers and --answers-file cannot be combined" >&2
+        exit 1
+      fi
+      ANSWERS_JSON="$(read_answers_file "$ANSWERS_FILE")" || exit 1
+    fi
     if [[ -z "$ANSWERS_JSON" ]]; then
       ANSWERS_JSON='{}'
     fi

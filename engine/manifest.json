@@ -95,7 +95,7 @@
     "scripts/ci/ts-backend-test-integrity.sh": "681c61a8092f8f77ec48924b9b7d7d76f1cfaa6d6eddd6f26fa53a6cc5244d70",
     "scripts/ci/unpinned-gh-pr-guard.sh": "7d43e8bf4151714e7128c3a31b160b0384cc2f4fc00d35602979024bd33c1ce4",
     "scripts/codex-subagent-hook.sh": "48e41a6ab9ff31c6ca9115f909335ed34931a4536f3196a01a5a3fbba7b8a7eb",
-    "scripts/coldstart-interview/harness.sh": "64839f558e4b859756be294c8f81e04a2e61e5bb1faba360140be559b2fa2e6f",
+    "scripts/coldstart-interview/harness.sh": "38e4e88b0cde11e78273010459b7c93af6e757bf746c60587ad5b2dbb305f03e",
     "scripts/coldstart-interview/repo-signals.sh": "3f7d8982d841a06ce22d632dbcadba134422e0f5d4aeb59189611b82fa666114",
     "scripts/coldstart-project.sh": "e01afd0ed873909a99d36ce0f0bff342a203c1edf147211997cc4e0fec02302f",
     "scripts/coldstart-tutorial/tutor.sh": "397745aba3318e5fdbea81d28b159628fcc6225204e60c1c96a3e02c582b46a8",
