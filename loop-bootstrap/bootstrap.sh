@@ -1534,7 +1534,9 @@ echo "  #   bash scripts/bootstrap-github-labels.sh"
 echo "  bash scripts/setup-deps.sh    # install Python dependencies — not run automatically by this bootstrap"
 for BOOTSTRAP_DEP_DIR in dashboard ts-backend tui; do
   if [[ -f "$TARGET/$BOOTSTRAP_DEP_DIR/package.json" ]]; then
-    if [[ "$BOOTSTRAP_DEP_DIR" == "ts-backend" && -f "$TARGET/$BOOTSTRAP_DEP_DIR/bun.lock" ]]; then
+    if [[ "$BOOTSTRAP_DEP_DIR" == "ts-backend" ]] && ! command -v bun >/dev/null 2>&1; then
+      echo "  # ts-backend/: skipped (TypeScript backend; bun not installed)"
+    elif [[ "$BOOTSTRAP_DEP_DIR" == "ts-backend" && -f "$TARGET/$BOOTSTRAP_DEP_DIR/bun.lock" ]]; then
       echo "  (cd $BOOTSTRAP_DEP_DIR && bun install)   # install Node dependencies — not run automatically by this bootstrap"
     else
       echo "  (cd $BOOTSTRAP_DEP_DIR && npm install)   # install Node dependencies — not run automatically by this bootstrap"

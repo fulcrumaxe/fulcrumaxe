@@ -67,6 +67,15 @@ bootstrap_deps_node() {
     return 0
   fi
 
+  # ts-backend/ is the additive TypeScript port; nothing the installed engine
+  # runs needs it (the dashboard defaults to the Python backend, and preflight
+  # skips its gate when the folder is absent). Without bun it is skipped, not
+  # failed - in dry-run too, so the plan matches what a real run does.
+  if [[ "$dir" == "ts-backend" ]] && ! command -v bun >/dev/null 2>&1; then
+    echo "[bootstrap-deps] ts-backend/: skipped (TypeScript backend; bun not installed)"
+    return 0
+  fi
+
   local cmd
   cmd="$(_bootstrap_deps_node_cmd "$dir")"
 
