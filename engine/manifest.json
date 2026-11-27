@@ -63,7 +63,7 @@
     "scripts/backfill-agent-runs.sh": "657a9d1cf1fcfba3d92e0edf63b7bbe2e0276422ba672401d1d852b05a254611",
     "scripts/backfill-codex-runs.sh": "06ba7e598b5ab04a25be3c2524aa8e6fc5e0c22850c33168251c8baa276cb89f",
     "scripts/backfill-loop-metrics.sh": "b31e2909d096a91b391aab70798188869ab1a775b4e3ae97fd5dbc133b329005",
-    "scripts/bootstrap-deps.sh": "b5cdce5086025a2f7081efbe46f23556c9511e3d5bf8be8ab33391ac8446e093",
+    "scripts/bootstrap-deps.sh": "a1a8d8be85c56e8e2b88116fa12cda2799078cc4e4802d43d67c717ae6802b48",
     "scripts/bootstrap-github-labels.sh": "4ed61ed617be6ec4895f6f106f676766b7f8fcd447ce8936602ae91c8e540ee6",
     "scripts/build-proof-report.sh": "cb613f9f635b2917ad0e461e7944a829eecee83e268b47c43d481ed7bc055210",
     "scripts/build-public-seed.sh": "031d94f7f76ccd1bdef657262c171781aeda4f4256f8cc67068231ee0b50b04b",
